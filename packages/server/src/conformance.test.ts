@@ -1,4 +1,4 @@
-import { afterAll } from "vitest";
+import { afterEach } from "vitest";
 import type { LykeionApi } from "@lykeion/api";
 import {
   conversationWritesConformance,
@@ -24,7 +24,18 @@ async function makeLab(): Promise<ConformanceLab> {
   return { owner: lab.ownerApi, member: lab.memberApi };
 }
 
-afterAll(async () => {
+/**
+ * After each test, not once at the end. Every case below builds its own
+ * server, and 87 of them accumulate across this file; draining that from a
+ * single `afterAll` charges the whole file's teardown to one hook against one
+ * 10s budget, and holds 87 servers, SQLite handles, and temporary directories
+ * open until the last test has run. Unloaded that drain takes ~140ms, which
+ * hides the problem — under a full `pnpm -r test` it has reached 10s and
+ * failed the file. Draining per test, no hook closes more than the one or two
+ * servers that test built, so the cost is spread across 85 budgets instead of
+ * concentrated in one and the servers do not pile up behind it.
+ */
+afterEach(async () => {
   for (const done of cleanups.splice(0)) await done();
 });
 
