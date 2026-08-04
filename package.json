@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "pnpm -r run build",
-    "test": "pnpm -r run test",
+    "test": "pnpm -r --workspace-concurrency=1 run test",
     "typecheck": "pnpm -r run typecheck",
     "server": "pnpm --filter @lykeion/ui build && pnpm --filter @lykeion/server start",
     "dev:lab": "pnpm --filter @lykeion/ui dev:lab",

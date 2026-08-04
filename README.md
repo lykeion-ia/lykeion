@@ -35,9 +35,18 @@ State is held in memory for the session — a reload starts over.
 
 | Command | Does |
 | --- | --- |
-| `pnpm -r test` | Run the test suite |
+| `pnpm test` | Run the test suite |
 | `pnpm -r typecheck` | Type-check every package |
 | `pnpm run build` | Production build |
+
+`pnpm test` runs the packages one at a time, and that is deliberate: use it
+rather than `pnpm -r test`. Each package's vitest already sizes its own worker
+pool to every core, so running four of them at once oversubscribes the machine
+about fourfold, and tests that assert against a clock — a teardown budget, a
+render that has to settle, an expiry — start losing to the scheduler rather
+than to any change in the code. Measured on an 8-core machine, `pnpm -r test`
+failed two runs in three, on tests that pass every time their own package runs
+alone; one package at a time passed three in three and cost about 13s.
 
 ## License
 
