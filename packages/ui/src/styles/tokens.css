@@ -1,0 +1,175 @@
+/*
+ * Lykeion design tokens — a seed-driven theme system. Each theme supplies just
+ * five seeds (background, ink, surface, accent, on-accent); every structural
+ * token below derives from them via color-mix(), so a single set of formulas
+ * serves both light and dark themes. Themes override only the seeds in the
+ * [data-theme="..."] blocks that follow. The :root seeds are Midnight, the boot
+ * default — so the first paint (before JS applies data-theme) is already correct.
+ *
+ * The accent is used scarcely (brand mark, focus, one primary action). The
+ * named palettes are the [data-theme="..."] blocks below; the theme picker in
+ * Settings offers them by name.
+ *
+ * color-mix() is supported by every browser the app targets.
+ */
+:root {
+  /* ---- the five theme seeds (default = Midnight) ---- */
+  --seed-bg: #0f0f10;
+  --seed-ink: #eeeff1;
+  --seed-surface: #151516;
+  --seed-accent: #d25e65;
+  --seed-on-accent: #ffffff;
+
+  /* ---- structural tokens, derived from the seeds ---- */
+
+  /* Canvas + four-step surface ladder. Each step mixes the surface toward ink,
+     so contrast grows in the right direction for light AND dark themes. */
+  --canvas: var(--seed-bg);
+  --surface-1: var(--seed-surface);
+  --surface-2: color-mix(in srgb, var(--seed-surface) 92%, var(--seed-ink));
+  --surface-3: color-mix(in srgb, var(--seed-surface) 85%, var(--seed-ink));
+  --surface-4: color-mix(in srgb, var(--seed-surface) 78%, var(--seed-ink));
+
+  /* The chrome — left rail, Task left-side pane, top TabBar — sits one small
+     step off the canvas so it reads as a single distinct frame. */
+  --sidebar: color-mix(in srgb, var(--seed-bg) 93%, var(--seed-ink));
+  --lane: color-mix(in srgb, var(--seed-bg) 96%, var(--seed-ink));
+  --line-soft: var(--seed-surface);
+
+  /* Ink scale — ink toward canvas for the muted/subtle/tertiary steps. */
+  --ink: var(--seed-ink);
+  --ink-muted: color-mix(in srgb, var(--seed-ink) 82%, var(--seed-bg));
+  --ink-subtle: color-mix(in srgb, var(--seed-ink) 55%, var(--seed-bg));
+  --ink-tertiary: color-mix(in srgb, var(--seed-ink) 40%, var(--seed-bg));
+
+  /* Hairlines — canvas nudged toward ink, from faint to strong. */
+  --hairline: color-mix(in srgb, var(--seed-bg) 88%, var(--seed-ink));
+  --hairline-strong: color-mix(in srgb, var(--seed-bg) 80%, var(--seed-ink));
+  --hairline-tertiary: color-mix(in srgb, var(--seed-bg) 73%, var(--seed-ink));
+
+  /* Accent + its hover/focus (toward ink / toward canvas), plus the aliases a
+     few components use. */
+  --primary: var(--seed-accent);
+  --on-primary: var(--seed-on-accent);
+  --primary-hover: color-mix(in srgb, var(--seed-accent) 88%, var(--seed-ink));
+  --primary-focus: color-mix(in srgb, var(--seed-accent) 82%, var(--seed-bg));
+  --accent: var(--seed-accent);
+  --accent-hover: color-mix(in srgb, var(--seed-accent) 88%, var(--seed-ink));
+  --accent-focus: color-mix(in srgb, var(--seed-accent) 82%, var(--seed-bg));
+  --iris: var(--seed-accent);
+  --brand-secure: color-mix(in srgb, var(--seed-accent) 55%, var(--seed-ink));
+
+  /* Semantic signal colors — hue-stable across themes. --danger-bg keeps its
+     alpha so it tints any canvas; --danger-fg is nudged toward ink so it stays
+     legible on light themes too. */
+  --warn: #d9a441;
+  --danger: #e5705b;
+  --danger-bg: rgba(229, 112, 91, 0.14);
+  --danger-fg: color-mix(in srgb, var(--danger) 65%, var(--seed-ink));
+  --success: #27a644;
+
+  /* Type */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/*
+ * Themes — each overrides only the five seeds; every derived token above
+ * re-resolves automatically. Placed after :root so that on <html data-theme>
+ * (same element, equal specificity) these win by source order.
+ */
+[data-theme="ash"] {
+  --seed-bg: #ffffff;
+  --seed-ink: #44494d;
+  --seed-surface: #edeef3;
+  --seed-accent: #475ba1;
+  --seed-on-accent: #ffffff;
+}
+[data-theme="midnight"] {
+  --seed-bg: #0f0f10;
+  --seed-ink: #eeeff1;
+  --seed-surface: #151516;
+  --seed-accent: #d25e65;
+  --seed-on-accent: #ffffff;
+}
+[data-theme="dawn"] {
+  --seed-bg: #2a222e;
+  --seed-ink: #eeeff1;
+  --seed-surface: #382a3c;
+  --seed-accent: #a84376;
+  --seed-on-accent: #ffffff;
+}
+[data-theme="pale"] {
+  --seed-bg: #292d3e;
+  --seed-ink: #eeeff1;
+  --seed-surface: #292d3e;
+  --seed-accent: #7d57c1;
+  --seed-on-accent: #ffffff;
+}
+[data-theme="barbie"] {
+  --seed-bg: #e2daf1;
+  --seed-ink: #593e74;
+  --seed-surface: #fcdeee;
+  --seed-accent: #b8fafa;
+  --seed-on-accent: #8b6bc7;
+}
+
+/*
+ * Wrapped in @layer base so it stays a low-priority reset. Tailwind v4 emits
+ * every utility inside @layer utilities; an UNLAYERED universal reset would
+ * outrank all of them (unlayered beats layered regardless of specificity) and
+ * silently zero out every margin, padding and box-sizing utility across the
+ * UI. Layering keeps the reset below those utilities, so component spacing
+ * survives.
+ */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  user-select: none;
+  cursor: default;
+}
+
+/*
+ * The keyboard focus ring. Layered for the same reason the reset above is:
+ * Tailwind v4 emits every utility inside @layer utilities, and an UNLAYERED
+ * rule outranks all of them whatever the specificity. Unlayered, this outline
+ * silently beat `focus:outline-none` on the two fields that ask for no ring —
+ * a text input ALWAYS matches :focus-visible while focused, so both drew a
+ * 2px accent box a pixel inside their own border (`outline-offset: -1px`) the
+ * moment anyone typed. On the default theme, whose accent seed is #d25e65,
+ * that box is red.
+ *
+ * @layer base keeps it a default rather than a decree: it still rings
+ * everything that has not opted out, and `outline-none` — a utility, so a
+ * higher layer — now switches it off where a field draws its own focus
+ * affordance instead. tokens.css is imported after tailwind.css, so within
+ * this layer these rules stay ahead of Tailwind's own base.
+ */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--primary-focus);
+    outline-offset: -1px;
+  }
+}

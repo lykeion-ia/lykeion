@@ -1,0 +1,239 @@
+/* App frame + sidebar: a dark canvas anchor with hairline separation. */
+
+.app {
+  display: flex;
+  height: 100%;
+  background: var(--canvas);
+  overflow: hidden;
+  /* Anchor the bottom-left rail-switch FABs. */
+  position: relative;
+}
+
+/*
+ * "Board corners": the routed page is a rounded, hairline-bordered sheet
+ * (--canvas) sitting flush inside a one-step-lighter frame (--surface-1).
+ * The frame shows only where the sheet's rounded corners cut away — the
+ * board-corner effect.
+ */
+.app-main {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-1);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Centered breadcrumb strip above the sheet (Project + Task pages only). Its
+   height drops the sheet's top edge to the sidebar's "Jump to" level. */
+.page-topbar {
+  flex-shrink: 0;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 16px;
+  font-size: 12px;
+  color: var(--ink-subtle);
+}
+
+.page-sheet {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  background: var(--canvas);
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Sidebar ---- */
+
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 10px 8px;
+  background: var(--canvas);
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 8px;
+  margin-bottom: 6px;
+}
+
+/* The single place the lavender accent appears as a fill: the brand mark. */
+.brand-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+.brand-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 8px;
+  margin-bottom: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--ink-subtle);
+  font: inherit;
+  font-size: 12px;
+}
+
+.sidebar-search:hover {
+  border-color: var(--hairline-strong);
+  color: var(--ink-muted);
+}
+
+.sidebar-search kbd {
+  margin-left: auto;
+}
+
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--ink-subtle);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.nav-item .icon {
+  color: var(--ink-tertiary);
+}
+
+.nav-item:hover {
+  background: var(--surface-1);
+  color: var(--ink-muted);
+}
+
+.nav-item[aria-current="page"] {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.nav-item[aria-current="page"] .icon {
+  color: var(--ink-muted);
+}
+
+.nav-badge {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--ink-subtle);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--hairline);
+  margin: 10px 8px;
+}
+
+.sidebar-eyebrow {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+  padding: 0 8px;
+  margin: 2px 0 4px;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+}
+
+/* ---- Rail-switch FABs (Folders / Document) ---- */
+
+/* Seated above the sidebar's Settings row (which stays pinned to the bottom),
+   so the FABs never sit below it. */
+.rail-fabs {
+  position: absolute;
+  left: 16px;
+  bottom: 46px;
+  z-index: 30;
+  display: flex;
+  gap: 8px;
+}
+
+.rail-fab {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-strong);
+  color: var(--ink-subtle);
+  box-shadow: 0 0 0 1px var(--hairline);
+  cursor: default;
+}
+
+.rail-fab:hover {
+  color: var(--ink);
+}
+
+/* Active side is filled — near-white on dark. */
+.rail-fab.is-active {
+  background: var(--ink);
+  border-color: transparent;
+  color: var(--canvas);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .nav-item,
+  .sidebar-search {
+    transition:
+      background-color 100ms ease,
+      color 100ms ease,
+      border-color 100ms ease;
+  }
+
+  .rail-fab {
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      border-color 120ms ease;
+  }
+}

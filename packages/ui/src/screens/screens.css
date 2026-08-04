@@ -1,0 +1,663 @@
+/* Screen chrome: headers, stage sections, inbox rows, stubs, hints. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.screen-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 20px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--canvas);
+}
+
+/* My Projects titles itself here rather than through `ScreenHeader`, because it
+   needs the truncation below for a long project name. The type must still be
+   the type every other section titles itself in: `screenTitleClass` in
+   `components/ui/ScreenHeader.tsx` is the authority, and this was 14px against
+   its 15px — one section quietly a size down from the other twelve. Keep the
+   two in step; there is no way for the compiler to do it across this boundary. */
+.screen-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--ink-subtle);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 0 7px;
+  flex-shrink: 0;
+}
+
+.screen-error,
+.screen-empty {
+  padding: 20px;
+  color: var(--ink-subtle);
+  font-size: 13px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Breadcrumbs (study + task headers). */
+.crumb {
+  color: var(--ink-subtle);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+a.crumb:hover {
+  color: var(--ink);
+}
+
+.crumb-sep {
+  color: var(--ink-tertiary);
+  flex-shrink: 0;
+}
+
+.crumb--stage {
+  color: var(--ink-muted);
+}
+
+.crumb--code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+/* The current (leaf) crumb — the study title on the Project page. */
+.crumb--current {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* Scientific-stage sections (and My Work's study groups). */
+.stage-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 20px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--hairline);
+  position: sticky;
+  top: 52px;
+  z-index: 1;
+}
+
+.stage-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.stage-label--title {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.stage-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-tertiary);
+}
+
+.stage-empty {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  color: var(--ink-tertiary);
+  font-size: 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* Inbox. */
+.unread-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ink-muted);
+  flex-shrink: 0;
+}
+
+.inbox-row {
+  color: var(--ink-subtle);
+}
+
+.inbox-row--unread .inbox-title {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.inbox-icon {
+  display: inline-flex;
+  color: var(--ink-tertiary);
+  flex-shrink: 0;
+}
+
+.inbox-icon--reviewer-flag {
+  color: var(--status-review);
+}
+
+.inbox-kind {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+  flex-shrink: 0;
+}
+
+/* Milestone stubs (Agents / Skills / Workflows / Runtimes / Settings). */
+.stub {
+  padding: 24px 20px;
+}
+
+.stub-panel {
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+.stub-eyebrow {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+.stub-body {
+  font-size: 13px;
+  color: var(--ink-subtle);
+  line-height: 1.6;
+}
+
+.stub-meta {
+  display: flex;
+  gap: 10px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 10px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.stub-meta-label {
+  color: var(--ink-tertiary);
+}
+
+.stub-meta-value {
+  font-family: var(--font-mono);
+  color: var(--ink-muted);
+}
+
+/* Keyboard hint bar. */
+.screen-hint {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 20px;
+  border-top: 1px solid var(--hairline);
+  color: var(--ink-tertiary);
+  font-size: 11px;
+}
+
+.hint-sep {
+  color: var(--ink-tertiary);
+}
+
+/* ============================================================
+   The Study page — a wide main column beside a rail of cards
+   ============================================================ */
+
+/* The page scrolls as one thing: the name, the composer, the work and the rail
+   move together, so the rail never slides against a frozen column. */
+.study-screen {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* One measure holds the whole page and centres it in the window, so the rail's
+   outer edge is set by the page rather than by however wide the screen is. The
+   two track widths are named here because the head, which sits outside the
+   grid, has to measure itself against the same columns. */
+.study-page {
+  --study-rail: 340px;
+  --study-gutter: 40px;
+  width: 100%;
+  max-width: 1160px;
+  margin-inline: auto;
+  padding: 36px 32px 72px;
+}
+
+/* The columns begin below the name, so the rail's top edge is level with the
+   CLI dock that opens the composer — the rail stands beside the work, not
+   beside the title. `align-items: start` lets it be as tall as its contents. */
+.study-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--study-rail);
+  align-items: start;
+  gap: var(--study-gutter);
+}
+
+.study-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* The name, and what can be done to the Study, on one row. The key is not
+   repeated here — the page was reached by it, so printing it again says
+   nothing. The head runs the page's full measure, across the rail's column
+   too, so the Study's name sits above everything the page holds rather than
+   beside one part.
+
+   The description is NOT here: it opens the main column instead, so that it
+   and the rail's panel begin on the same line. This padding is therefore the
+   one gap between the name and both columns' first row. */
+.study-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 18px;
+}
+
+/* An archived Study still opens, so its page says so rather than pretending
+   otherwise — the same quiet marker the Studies table uses. */
+.study-archived {
+  flex-shrink: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--surface-2);
+  padding: 2px 6px;
+  font-size: 10px;
+  color: var(--ink-tertiary);
+}
+
+/* Pin and the "…" menu, pushed to the far edge of the name's row. */
+.study-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.study-head-action {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-tertiary);
+  cursor: pointer;
+}
+
+.study-head-action:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+/* A pinned Study says so on the control that pinned it. */
+.study-head-action.is-on {
+  color: var(--ink);
+}
+
+.study-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  color: var(--ink);
+}
+
+/* The description opens the main column rather than the head, which does two
+   things at once: it starts on the rail panel's first line, and it wraps on
+   the same edge the composer and the Task rows do because it is now in their
+   column. That replaces the arithmetic cap this rule used to carry — the grid
+   track is the cap, so the two edges cannot drift apart when either track is
+   retuned. The bottom margin is the gap to the composer, which the head's
+   padding used to supply. */
+.study-description {
+  margin: 0 0 26px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-muted);
+}
+
+/* The composer opens the column, its CLI pill centred on the card beneath it
+   — the dock belongs to the composer, so it sits on the composer's axis. */
+.study-composer {
+  display: flex;
+  flex-direction: column;
+}
+
+.study-composer .cli-dock {
+  margin: 0 auto 10px;
+}
+
+/* Every Task the Study holds, in number order. */
+.study-tasks {
+  display: flex;
+  flex-direction: column;
+  padding: 26px 0 0;
+}
+
+.study-tasks-label {
+  margin: 0 0 2px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-tertiary);
+}
+
+/* One quiet Task line: glyph · title · when. No rule beneath it — the rhythm
+   separates the rows, so a list of them reads as prose rather than a table.
+   The row's *box* keeps the column's own edges — its fill begins and ends
+   where the title, the description and the composer do, so the section reads
+   as one block rather than a band hung outside the measure — while its
+   contents sit an 8px breath inside that fill, off the hover box's own edge. */
+.study-task {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 13.5px;
+}
+
+.study-task:hover {
+  background: var(--surface-1);
+}
+
+.study-task.is-active {
+  background: var(--surface-2);
+}
+
+.study-task-glyph {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--ink-tertiary);
+}
+
+.study-task-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+}
+
+/* The row's right end is one slot, not two: the time reads at rest and the
+   actions kebab takes its place under the pointer. Overlaying them — rather
+   than seating the kebab beside the time — keeps the title's measure fixed,
+   so no row jumps as the pointer travels down the list. */
+.study-task-row {
+  position: relative;
+}
+
+/* The open menu hangs out of its row and over the rows beneath it, which are
+   positioned siblings that would otherwise paint on top of it and swallow
+   every click meant for Pin or Delete. Lifting the row that owns the menu
+   above its neighbours is what puts those clicks back where they belong. */
+.study-task-row:hover,
+.study-task-row:focus-within {
+  z-index: 20;
+}
+
+.study-task-when {
+  flex-shrink: 0;
+  /* Never narrower than the control that replaces it, so the swap is in
+     place rather than a reflow. */
+  min-width: 22px;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--ink-tertiary);
+}
+
+/* Sits on the same 8px inset the row's contents keep, so the kebab lands
+   where the timestamp it replaces does rather than out on the fill's edge.
+   Centred by stretching the row's full height rather than by a transform: a
+   transform would make this a stacking context, and the menu hanging off it
+   could then never rise above the rows below. */
+.study-task-actions {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+}
+
+/* `:focus-within` covers three cases at once: the list's roving focus landing
+   on a row, a keyboard reaching the kebab, and the menu standing open — the
+   trigger keeps focus for as long as its popover lives, so an open menu can
+   never be left hanging under a faded-out button. */
+.study-task-row:hover .study-task-actions,
+.study-task-row:focus-within .study-task-actions {
+  opacity: 1;
+}
+
+.study-task-row:hover .study-task-when,
+.study-task-row:focus-within .study-task-when {
+  opacity: 0;
+}
+
+.study-task-kebab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-tertiary);
+  cursor: pointer;
+}
+
+.study-task-kebab:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+/* The in-place rename editor, sized to sit in the row it replaces. */
+.study-task-rename {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 8px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface-1);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
+}
+
+.study-tasks-empty {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 12.5px;
+  color: var(--ink-tertiary);
+}
+
+/* The rail: standing context, held in one panel whose top edge is level with
+   the Study's name. No rule divides it from the main column — the panel's own
+   edge is enough. */
+.study-rail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* One box around everything the Study accumulates, so the rail reads as a
+   single standing thing rather than a stack of loose cards. */
+.study-rail-panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.study-card {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 14px 16px;
+}
+
+/* Cards inside the panel are divided by a hairline, not by a gap. */
+.study-card + .study-card {
+  border-top: 1px solid var(--hairline);
+}
+
+.study-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.study-card-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.study-card-action {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--ink-tertiary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.study-card-action:hover {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.study-card-prose {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-muted);
+  white-space: pre-wrap;
+}
+
+.study-card-empty {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-tertiary);
+}
+
+.study-card-textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--hairline-strong, var(--hairline));
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+
+.study-card-textarea:focus {
+  outline: none;
+  border-color: var(--accent, var(--ink-tertiary));
+}
+
+.study-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.study-card-note {
+  font-size: 11px;
+  color: var(--ink-tertiary);
+  line-height: 1.5;
+  margin: 8px 0 0;
+}
+
+/* The six scientific stages and how many of the Study's Tasks sit at each. */
+.study-stage-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.study-stage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+  font-size: 12px;
+}
+
+.study-stage-label {
+  color: var(--ink-muted);
+}
+
+.study-stage-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-tertiary);
+}

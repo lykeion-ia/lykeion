@@ -1,0 +1,47 @@
+/*
+ * App-level supplements to the shared token sheet (tokens.css):
+ * semantic status colors (distinct from the lavender accent), shared
+ * metrics, and quiet scrollbars. No hex here may duplicate a token.
+ */
+:root {
+  /* Task-status indicators — the in-product semantic range. */
+  --status-todo: var(--ink-subtle);
+  --status-progress: #f2c94c;
+  --status-review: #9d7bd8;
+  --status-done: var(--success);
+  --priority-urgent: #fc7840;
+
+  /* Overlay scrim (semantic-overlay black at 60%). */
+  --scrim: rgba(0, 0, 0, 0.6);
+
+  /* Dense list metrics. */
+  --row-h: 36px;
+
+  /* Styling `::-webkit-scrollbar` at all opts this app out of macOS overlay
+     scrollbars, so every scroll box below pays this width out of its own
+     content box. A layout that centres a column inside a scroll box has to
+     know that number to stay centred against anything outside the box — see
+     `.conv-stream`/`.composer-dock` in screens/task.css. */
+  --scrollbar-w: 10px;
+}
+
+::selection {
+  background: var(--surface-4);
+  color: var(--ink);
+}
+
+::-webkit-scrollbar {
+  width: var(--scrollbar-w);
+  height: var(--scrollbar-w);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--hairline-strong);
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

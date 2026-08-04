@@ -1,0 +1,102 @@
+/* Command palette: modal combobox on a scrim, surface-2 lift. */
+
+.palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.palette {
+  width: min(560px, calc(100vw - 32px));
+  margin-top: 12vh;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+
+.palette-input {
+  width: 100%;
+  height: 46px;
+  padding: 0 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  outline: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.palette-input::placeholder {
+  color: var(--ink-tertiary);
+}
+
+.palette-list {
+  list-style: none;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.palette-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.palette-option[aria-selected="true"] {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.palette-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-hint {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+  flex-shrink: 0;
+}
+
+.palette-empty {
+  padding: 14px;
+  font-size: 12px;
+  color: var(--ink-tertiary);
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .palette {
+    animation: palette-in 120ms ease;
+  }
+
+  .palette-option {
+    transition: background-color 80ms ease;
+  }
+
+  @keyframes palette-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px) scale(0.99);
+    }
+  }
+}

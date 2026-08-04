@@ -1,0 +1,3500 @@
+/* The Task working surface: breadcrumb bar over three columns. */
+
+.task-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.task-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--hairline);
+  flex-shrink: 0;
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.task-columns {
+  flex: 1;
+  display: grid;
+  /* columns are set inline: [sidebar 224px?] main [rightpane 452px?] */
+  min-height: 0;
+}
+
+/* Main column: the breadcrumb over the active tab's body. */
+.task-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.task-main-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.task-main-body .conversation,
+.task-main-body .artifacts-panel {
+  flex: 1;
+}
+
+.task-rightpane {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--hairline);
+}
+
+/* Stretch the active panel to the pane's full height below the tab strip. */
+.task-rightpane .artifacts-panel,
+.task-rightpane .notebook-panel,
+.task-rightpane .artifact-pane {
+  flex: 1;
+  min-height: 0;
+}
+
+/* The single-artifact inspector (a Files card opened into the right pane). */
+.artifact-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.artifact-pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+/* Context rail. Extra bottom padding keeps its content clear of the FABs. */
+.context-rail {
+  border-right: 1px solid var(--hairline);
+  padding: 14px 14px 96px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.rail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rail-eyebrow {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+  margin-bottom: 6px;
+}
+
+.rail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  font-size: 12px;
+}
+
+.rail-label {
+  width: 64px;
+  flex-shrink: 0;
+  color: var(--ink-tertiary);
+  font-size: 11px;
+}
+
+.rail-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-muted);
+  min-width: 0;
+}
+
+.rail-value--empty {
+  color: var(--ink-tertiary);
+}
+
+.rail-note {
+  font-size: 11px;
+  color: var(--ink-tertiary);
+  line-height: 1.5;
+  border-top: 1px dashed var(--hairline);
+  padding-top: 10px;
+  margin-top: 8px;
+}
+
+/* Conversation column. */
+.conversation {
+  /* The measure the transcript and composer share — both centre a column of
+     this width so the input lines up directly under the messages. One knob
+     tunes the whole reading width. */
+  --conv-measure: 100ch;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The centred reading column. `.conv-stream` stays the full-width scroll box
+   (its scrollbar hugs the pane edge); this single child holds the flex stack of
+   messages and cards, capped and centred. `.msg--user`'s `align-self: flex-end`
+   now right-aligns the prompt to THIS column's edge, and `.msg--assistant`
+   fills it left-aligned — this app's centred-column layout. */
+.conv-column {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: var(--conv-measure);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* The in-flight turn's live region. It holds the same message stack a persisted
+   turn does — user bubble, stream, cards — so it must stack them the same way:
+   a flex column with `.conv-column`'s gap. Without this the wrapper is a plain
+   block and `.msg--user`'s `align-self: flex-end` has no flex parent to act on,
+   so the active turn's prompt drifts left while every landed turn sits right. */
+.conv-live {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.conv-header {
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.conv-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.conv-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  text-align: center;
+}
+
+.conv-empty-glyph {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface-1);
+  color: var(--ink-subtle);
+  display: grid;
+  place-items: center;
+  margin-bottom: 6px;
+}
+
+.conv-empty-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+
+.conv-empty-sub {
+  font-size: 12px;
+  color: var(--ink-tertiary);
+  max-width: 340px;
+  line-height: 1.5;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--hairline);
+  flex-shrink: 0;
+}
+
+.composer-input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.composer-input::placeholder {
+  color: var(--ink-tertiary);
+}
+
+.composer-input:disabled {
+  opacity: 0.7;
+}
+
+/* Button base — one shape; the variant carries the tone. */
+.btn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+}
+
+/* The one primary action — the only lavender button on the surface. */
+.btn--primary {
+  background: var(--primary);
+  color: var(--on-primary);
+  border: none;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+/* Neutral surface button — plan Reject, permission scopes. */
+.btn--neutral {
+  background: var(--surface-2);
+  color: var(--ink-muted);
+  border: 1px solid var(--hairline-strong);
+}
+
+.btn--neutral:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+/* Quiet destructive — Deny. */
+.btn--danger {
+  background: transparent;
+  color: var(--priority-urgent);
+  border: 1px solid var(--hairline-strong);
+}
+
+.btn--danger:hover:not(:disabled) {
+  border-color: var(--priority-urgent);
+}
+
+/* Provenance panel. */
+.provenance {
+  border-left: 1px solid var(--hairline);
+  background: var(--surface-1);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.prov-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+}
+
+.prov-eyebrow {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+.version-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stepper-btn {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  color: var(--ink-subtle);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.stepper-btn:disabled {
+  opacity: 0.5;
+}
+
+.stepper-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-subtle);
+  padding: 0 2px;
+}
+
+.prov-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--hairline);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.prov-tab {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--ink-subtle);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 6px 6px 7px;
+  white-space: nowrap;
+}
+
+.prov-tab:hover {
+  color: var(--ink-muted);
+}
+
+.prov-tab[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--ink-muted);
+}
+
+.prov-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.prov-desc {
+  font-size: 12px;
+  color: var(--ink-subtle);
+  line-height: 1.55;
+}
+
+.prov-empty {
+  border: 1px dashed var(--hairline-strong);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 14px;
+  color: var(--ink-tertiary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.prov-code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-subtle);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+/* Conversation stream — messages then the current interactive card. */
+.conv-stream {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* This app's scrollbar is styled, so it is NOT an overlay — it eats
+     `--scrollbar-w` of this box's width, and only once the transcript is long
+     enough to scroll. Left to itself that asymmetry drags the centred
+     `.conv-column` half a scrollbar to the left of the composer, which sits
+     outside this box: the two columns line up on a short Task and drift apart
+     the moment it gets long. `both-edges` reserves the gutter on BOTH sides,
+     always — so the column stays centred on the pane, and `.composer-dock`
+     mirrors the same reservation in padding to keep the two measures equal at
+     widths below `--conv-measure` too. */
+  scrollbar-gutter: stable both-edges;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.msg {
+  font-size: 13px;
+  color: var(--ink-muted);
+  line-height: 1.55;
+  max-width: var(--conv-measure, 62ch);
+}
+
+/* The agent's prose. Used to be `white-space: pre-wrap` over a raw string: one
+   bubble holds one WHOLE assistant message, and a whole message carries its
+   own newlines — a markdown list, a numbered plan, an indented code sample —
+   which the default `normal` would collapse to a single space and run
+   together. `AssistantMessage` (components/tasks/AssistantMessage.tsx) now
+   parses that same text as markdown instead, so a list is a real `<ul>`/`<li>`,
+   a fenced block a real `<pre><code>`, and each owns its own layout — the
+   `pre-wrap` hack is gone because the thing it stood in for now actually
+   exists. The rules below style what `AssistantMessage` can produce, from
+   `tokens.css` variables only.
+
+   This is NOT scoped to the Task transcript. `.msg--assistant` is also the
+   bubble `AssistantMessage` renders for TaskScreen.tsx and for
+   SubagentThread.tsx, which show the same whole messages from a different
+   surface — the rule reads a transcript the same way in all three places,
+   which is why the declaration is left unscoped: a change here reaches the
+   persisted transcript, the live tail, and nested subagent messages alike. */
+.msg--assistant :where(h1, h2, h3) {
+  margin: 12px 0 4px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+.msg--assistant :where(h1) {
+  font-size: 16px;
+}
+
+.msg--assistant :where(h2) {
+  font-size: 15px;
+}
+
+.msg--assistant :where(h3) {
+  font-size: 14px;
+}
+
+.msg--assistant :where(p, ul, ol, blockquote) {
+  margin: 6px 0;
+}
+
+.msg--assistant
+  :where(
+    h1:first-child,
+    h2:first-child,
+    h3:first-child,
+    p:first-child,
+    ul:first-child,
+    ol:first-child,
+    blockquote:first-child
+  ),
+.msg--assistant > .msg-table-wrap:first-child {
+  margin-top: 0;
+}
+
+.msg--assistant
+  :where(p:last-child, ul:last-child, ol:last-child, blockquote:last-child),
+.msg--assistant > .msg-table-wrap:last-child {
+  margin-bottom: 0;
+}
+
+.msg--assistant :where(ul, ol) {
+  padding-inline-start: 20px;
+}
+
+.msg--assistant :where(li) {
+  margin: 2px 0;
+}
+
+.msg--assistant :where(blockquote) {
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--hairline-strong);
+  color: var(--ink-muted);
+}
+
+.msg--assistant :where(code) {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.msg--assistant :where(table) {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.msg--assistant :where(th, td) {
+  padding: 4px 8px;
+  border: 1px solid var(--hairline);
+  text-align: left;
+}
+
+/* A wide GFM table scrolls inside its own box instead of widening the whole
+   conversation column — `AssistantMessage` wraps every `<table>` it renders
+   in this, so the block-spacing margin lives on the wrapper (the table's
+   actual sibling in the bubble), not on `table` itself. */
+.msg--assistant .msg-table-wrap {
+  margin: 6px 0;
+  overflow-x: auto;
+}
+
+/* The researcher's own turn — aligned to the trailing edge and tinted so it
+   reads distinctly from the agent's replies. `position: relative` anchors the
+   hover-revealed Edit button below. */
+.msg--user {
+  position: relative;
+  align-self: flex-end;
+  max-width: 52ch;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-strong);
+  color: var(--ink);
+}
+
+/* Edit — a pencil icon in the gutter just left of the (right-aligned) bubble,
+   vertically centred. Hidden until the bubble is hovered/focused-within, like
+   `.tsb-task-kebab`'s per-row actions, so a resting transcript stays
+   uncluttered. Refills the composer draft; it never touches the recorded
+   turn (see `TurnView`'s doc comment). Absent entirely while a run is live —
+   the Task surface omits `onEditPrompt` in that case. */
+.msg-edit-btn {
+  position: absolute;
+  top: 50%;
+  right: 100%;
+  transform: translateY(-50%);
+  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--ink-subtle);
+  cursor: pointer;
+  opacity: 0;
+  line-height: 0;
+}
+
+.msg--user:hover .msg-edit-btn,
+.msg-edit-btn:focus-visible {
+  opacity: 1;
+}
+
+.msg-edit-btn:hover {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+
+/* Cards (plan, permission) share one container. */
+.card {
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  background: var(--surface-1);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: var(--conv-measure, 62ch);
+}
+
+.card-eyebrow {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Plan card. */
+.plan-steps {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plan-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.plan-step.is-done {
+  color: var(--ink-subtle);
+}
+
+.plan-check {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface-2);
+  color: var(--status-done);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.plan-step.is-done .plan-check {
+  border-color: var(--status-done);
+}
+
+/* Permission card. */
+
+/* The headline: what is about to happen, as a question. */
+.perm-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.perm-detail {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+/* Attribution for the reason above — the agent's claim, not the app's. */
+.perm-detail-source {
+  font-size: 11px;
+  color: var(--ink-subtle);
+}
+
+/* The raw payload: a disclosure, open for shell code and folded otherwise. */
+.perm-payload > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink-muted);
+  /* The marker is the only affordance here; keep it, drop the focus outline
+     jump by letting the summary own its own focus ring. */
+  list-style-position: inside;
+}
+
+.perm-payload > summary:hover {
+  color: var(--ink);
+}
+
+.perm-payload[open] > summary {
+  margin-bottom: 6px;
+}
+
+.perm-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-subtle);
+}
+
+.perm-tool {
+  color: var(--ink-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.perm-actions {
+  margin-top: 2px;
+}
+
+/* The split Allow button: a primary action plus an attached chevron trigger
+   that only opens the scope menu — the two read as one control, not two
+   independent buttons. */
+.perm-allow-group {
+  position: relative;
+  display: inline-flex;
+}
+
+.perm-allow-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.perm-scope-trigger {
+  width: 26px;
+  padding: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid color-mix(in srgb, var(--on-primary) 35%, transparent);
+}
+
+.perm-scope-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 248px;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  padding: 5px;
+  z-index: 60;
+}
+
+.perm-scope-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.perm-scope-item:hover {
+  background: var(--surface-2);
+}
+
+.perm-scope-item.is-selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.perm-scope-item-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.perm-scope-item-desc {
+  font-size: 11px;
+  color: var(--ink-subtle);
+}
+
+/* Clarifying-question card. The agent asks the researcher to choose before
+   continuing; the turn is parked until answered. A bold question, then
+   full-width option rows separated by hairlines, each with a leading badge
+   (number, checkbox, or glyph) and a stacked label + description that WRAP
+   within the card (fixing the overflow the plain `.btn` fallback caused).
+   Mirrors the `.cli-row` anatomy and the `.plan-check` badge box. */
+.question-text {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+/* One hairline-divided list of rows, flush to the card padding. */
+.question-options {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A full-width, left-aligned row that wraps its content. Resets the native
+   <button>/<label> appearance so single-select buttons no longer inherit the
+   `.btn` nowrap + fixed height that ran the text off the card edge. */
+.question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 2px;
+  border: none;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.question-options > .question-option:first-child {
+  border-top: none;
+}
+
+button.question-option:hover,
+label.question-option:hover {
+  background: var(--surface-2);
+}
+
+/* Leading badge column: a numbered square for options, a bare glyph for the
+   special rows. Fixed size so every row's text starts on the same left edge. */
+.question-badge {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-tertiary);
+}
+
+.question-badge--num {
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--surface-2);
+}
+
+.question-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Allow the text to wrap rather than overflow the flex row. */
+  min-width: 0;
+}
+
+.question-option-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.question-option-desc {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--ink-subtle);
+}
+
+/* Multi-select: the checkbox is the row's leading control. */
+.question-check {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  accent-color: var(--primary);
+}
+
+/* Free-text row: pencil badge, a flush input, and the Skip/Send button. Not a
+   clickable row itself, so it takes no hover. */
+.question-option--custom {
+  align-items: center;
+  cursor: default;
+}
+
+.question-option--custom:hover {
+  background: transparent;
+}
+
+.question-custom-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  outline: none;
+}
+
+.question-custom-input::placeholder {
+  color: var(--ink-tertiary);
+}
+
+.question-send {
+  flex-shrink: 0;
+}
+
+/* Run status lines. */
+.run-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-subtle);
+}
+
+.run-line--failed {
+  color: var(--priority-urgent);
+}
+
+.run-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--status-progress);
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .run-dot {
+    animation: run-pulse 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes run-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Tool-step cards — one per tool call a turn took, drawn inline in the
+   conversation stream between the assistant's paragraphs. Same surface +
+   hairline language as the plan/permission cards above, at one step less
+   weight (they are transcript furniture, not something to act on): a static
+   always-visible row, never a disclosure. */
+.tool-step {
+  max-width: var(--conv-measure, 62ch);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-1);
+  overflow: hidden;
+  /* Never let the card be squeezed below its content. On reopen a lone step is
+     a DIRECT flex child of `.conv-column` (a height-capped `flex-direction:
+     column`), and `overflow: hidden` gives a flex item an automatic minimum
+     size of 0 — so the default `flex-shrink: 1` collapsed it to a sliver the
+     moment the transcript overflowed: the "tool step renders nothing on reopen"
+     bug. Live cards sit inside `.conv-live` (not `overflow: hidden`) and never
+     hit this, so the two are pinned to match. */
+  flex-shrink: 0;
+}
+
+/* A disclosure header: the whole row toggles the step's detail body. Reset the
+   button chrome and take the same pointer + hover the group header does, so the
+   two read as one affordance. */
+.tool-step-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-step-head:hover {
+  background: var(--surface-2);
+}
+
+/* The disclosure chevron: points right when closed, rotated to point down when
+   open. Shared by the group header and the "Show output" toggle so the two read
+   as the same affordance. */
+.tool-step-chevron {
+  flex-shrink: 0;
+  color: var(--ink-tertiary);
+  transition: transform 120ms ease;
+}
+
+.tool-step-chevron--open {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-step-chevron {
+    transition: none;
+  }
+}
+
+/* Status lives in the glyph, not in a fill: a transcript of twenty steps
+   would be unreadable if each one carried a tinted background. */
+.tool-step-glyph {
+  flex-shrink: 0;
+  width: 13px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--status-done);
+}
+
+.tool-step--blocked .tool-step-glyph {
+  color: var(--warn);
+}
+
+.tool-step--error .tool-step-glyph {
+  color: var(--priority-urgent);
+}
+
+.tool-step-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A step whose access left the study workspace. The call SUCCEEDED — this is
+   not an error or a blocked state (the glyph keeps telling that truth), so the
+   warning tone lives on its own marker and a hairline the same colour, never
+   on the status glyph. Warn, not danger: nothing failed; something happened
+   that the researcher never got the chance to approve. */
+.tool-step--outside {
+  border-color: var(--warn);
+}
+
+.tool-step-outside {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid var(--warn);
+  border-radius: 4px;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--warn);
+  cursor: help;
+}
+
+/* The right-hand summary yields first: it's the least important column, and
+   a long one must never squeeze the label out. */
+.tool-step-summary {
+  flex-shrink: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-step-body {
+  border-top: 1px solid var(--hairline);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The live pane of a step whose tool is STILL RUNNING — open while the card
+   is collapsed, because output arriving right now is the reason the card is
+   on screen at all. Tighter than an expanded body: it is a tail being
+   watched, not a record being read. */
+.tool-step-body--live {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.step-stdout {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-subtle);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+  /* The live output is the one thing here worth copying — opt back out of the
+     app-wide `user-select: none`. */
+  user-select: text;
+  cursor: text;
+}
+
+/* A running tool's stdout, still arriving: the same monospace block as the
+   Execution Log's code panes above, capped shorter — the researcher is
+   watching the last few lines, not reading a finished record. */
+.step-stdout {
+  max-height: 160px;
+}
+
+/* The opened detail of a tool step (see `ToolStepDetail`): the per-tool body
+   revealed under the row — a command over its STDOUT, an Edit's diff, a web
+   search's query over its results. Hairline-topped like the live pane, a
+   column of a code block / diff / results list and an optional output pane. */
+.tool-step-detail {
+  border-top: 1px solid var(--hairline);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* A labelled single-line field — `query   IS621 recombinase …`. */
+.tool-detail-field {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.tool-detail-key {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+.tool-detail-value {
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* The output pane, behind its own "Hide output"/"Show output" toggle — the
+   second level of disclosure. */
+.tool-output {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-output-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: -4px;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.tool-output-toggle:hover {
+  color: var(--ink);
+}
+
+.tool-output-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+.tool-output-pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-subtle);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+  user-select: text;
+  cursor: text;
+}
+
+/* A web search's results: a title over its muted URL. */
+.tool-results {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.tool-result {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  user-select: text;
+}
+
+.tool-result-title {
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.tool-result-url {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+  overflow-wrap: anywhere;
+}
+
+/* A run of consecutive steps: one outer card with a synthesized header, its
+   steps stacked hairline-separated inside so the group reads as a single
+   object rather than a pile of boxes. */
+.tool-step-group {
+  max-width: var(--conv-measure, 62ch);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-1);
+  overflow: hidden;
+  /* Held at full height for the same reason as `.tool-step` above: a run of
+     steps reopens as a direct flex child of `.conv-column`, and its
+     `overflow: hidden` would otherwise let the column squeeze it to nothing. */
+  flex-shrink: 0;
+}
+
+.tool-step-group-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-step-group-head:hover {
+  background: var(--surface-3);
+}
+
+/* Collapsed: the head is the group's only row, so it must not carry a hairline
+   under nothing. The open state keeps the border that separates it from the
+   body below. */
+.tool-step-group-head[aria-expanded="false"] {
+  border-bottom: 0;
+}
+
+.tool-step-group-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-step-group-summary {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+}
+
+.tool-step-group-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.tool-step-group-body .tool-step {
+  max-width: none;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.tool-step-group-body .tool-step + .tool-step {
+  border-top: 1px solid var(--hairline);
+}
+
+/* The in-flight tail of the current turn — the part that has not yet become a
+   whole message. It is drawn beneath the blocks it will become, and it is
+   never persisted: nothing here survives the turn.
+
+   `.live-text` carries no typography of its own — it wraps an
+   `<AssistantMessage live />`, which renders `.msg .msg--assistant` exactly
+   as the landed bubble does, so all size/colour/measure/line-height comes
+   from THAT, unscoped. Anything declared here too would just be inherited
+   past by the child's own rules, or worse (`white-space`, which inherits)
+   would apply to text the child never asked for. It exists as a structural
+   wrapper only: the `data-testid="live-text"` hook the live tests query,
+   and a seam for the Task surface to key React's reconciliation on while the
+   turn is in flight. */
+.live-text {
+  /* Intentionally empty of typography — see comment above. */
+}
+
+/* Thinking is NOT the answer, and must never be mistaken for it: its own
+   channel, set apart by a rule down the leading edge and an italic, dimmer,
+   narrower measure — this app's separation, and the reason the channel exists
+   at all. Nothing here is ever recorded. */
+.live-thinking {
+  max-width: 58ch;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--hairline-strong);
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--ink-tertiary);
+  white-space: pre-wrap;
+}
+
+/* Provenance — Messages tab. */
+.prov-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.prov-msg {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  line-height: 1.55;
+}
+
+.prov-subeyebrow {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+  margin: 4px 0 6px;
+}
+
+.prov-toolcall {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+/* Provenance — Execution Log tab. */
+.log-list,
+.artifact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.log-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 11.5px;
+}
+
+.log-ts {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+}
+
+.log-tool {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.log-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--hairline-strong);
+}
+
+.log-badge--ok {
+  color: var(--status-done);
+}
+
+.log-badge--error {
+  color: var(--priority-urgent);
+  border-color: var(--priority-urgent);
+}
+
+.log-result {
+  flex-basis: 100%;
+  color: var(--ink-subtle);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* Provenance — Code tab (artifacts). */
+.artifact-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+/* The artifact path is a button opening the viewer below. */
+.artifact-row.is-clickable {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.artifact-row.is-clickable:hover {
+  background: var(--surface-3);
+  border-color: var(--hairline-strong);
+}
+
+.artifact-row.is-selected {
+  background: var(--surface-3);
+  border-color: var(--hairline-strong);
+}
+
+.artifact-samples {
+  margin-top: 12px;
+}
+
+.artifact-samples .prov-subeyebrow {
+  margin-bottom: 6px;
+}
+
+.artifact-viewer-wrap {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+
+.artifact-glyph {
+  color: var(--ink-tertiary);
+  font-size: 11px;
+}
+
+.artifact-path {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+
+/* Provenance — Review tab (Reviewer findings). */
+.finding-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.finding-card {
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 10px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.finding-card.is-resolved {
+  background: var(--surface-1);
+  border-color: var(--hairline);
+}
+
+.finding-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Severity chip — reuses the semantic status range, never the accent. */
+.severity-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+}
+
+.severity-chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.severity-chip--high {
+  color: var(--priority-urgent);
+}
+
+.severity-chip--medium {
+  color: var(--status-progress);
+}
+
+.severity-chip--low {
+  color: var(--ink-subtle);
+}
+
+.finding-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.4;
+}
+
+.finding-claim {
+  font-size: 12px;
+  color: var(--ink-muted);
+  line-height: 1.5;
+  border-left: 2px solid var(--hairline-strong);
+  padding-left: 8px;
+}
+
+.finding-evidence {
+  font-size: 11.5px;
+  color: var(--ink-subtle);
+  line-height: 1.5;
+}
+
+.finding-evidence .finding-evidence-label {
+  color: var(--ink-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 9.5px;
+  font-weight: 600;
+  margin-right: 5px;
+}
+
+.finding-location {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+}
+
+.finding-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 1px;
+}
+
+.btn--tiny {
+  height: 24px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.finding-resolved {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--status-done);
+}
+
+.finding-card.is-resolved .finding-title,
+.finding-card.is-resolved .finding-claim {
+  color: var(--ink-tertiary);
+  text-decoration: line-through;
+}
+
+/* Review tab count badge on the tab label. */
+.prov-tab .tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--priority-urgent);
+  border: 1px solid var(--priority-urgent);
+  line-height: 1;
+}
+
+/* Done-gate notice in the context rail. */
+.rail-done {
+  margin-top: 8px;
+}
+
+.done-notice {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--priority-urgent);
+  border: 1px solid var(--priority-urgent);
+  border-radius: 6px;
+  padding: 7px 9px;
+  background: var(--surface-2);
+}
+
+/* Inline Reviewer callout in the conversation after a run. */
+.reviewer-callout {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--priority-urgent);
+  border: 1px solid var(--hairline-strong);
+  border-left: 2px solid var(--priority-urgent);
+  border-radius: 8px;
+  padding: 8px 11px;
+  background: var(--surface-1);
+  max-width: var(--conv-measure, 62ch);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .prov-tab,
+  .btn {
+    transition:
+      color 100ms ease,
+      background-color 100ms ease,
+      border-color 100ms ease;
+  }
+}
+
+/* Subagent sub-thread — collapsible block nested under a parent turn. */
+.subagent-thread {
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  background: var(--surface-1);
+  max-width: var(--conv-measure, 62ch);
+  overflow: hidden;
+}
+
+.subagent-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subagent-head:hover {
+  background: var(--surface-2);
+}
+
+.subagent-badge {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.subagent-name {
+  flex: 1;
+  font-weight: 500;
+}
+
+.subagent-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 12px 12px;
+  border-top: 1px solid var(--hairline);
+}
+
+.subagent-outputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.output-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-subtle);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+/* ============================================================
+   Composer dock — the composer under the thread
+   ============================================================ */
+
+/* The docked composer sits under an open thread — no rule between it and the
+   stream; the composer card's own border is the only edge in play. */
+.composer-dock {
+  flex-shrink: 0;
+  /* 18px of dock padding, plus the scrollbar gutter `.conv-stream` reserves on
+     each edge. The dock is outside that scroll box and so pays no gutter of its
+     own; adding it here gives the two boxes the same content width, which is
+     what makes `.composer-column` and `.conv-column` land on the same left and
+     right edges at every pane width. */
+  padding: 12px calc(18px + var(--scrollbar-w)) 16px;
+  position: relative;
+}
+
+/* Run strip: live "Step N of M · Reviewing · Notebook" above the composer. */
+.run-strip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  /* Same inset as `.conv-stream`'s content and the composer dock — gutter
+     included. The strip is a third box outside the scroll box, and it reads as
+     a status line ON the conversation, so it starts where the conversation
+     starts rather than at the pane edge. */
+  padding: 6px calc(18px + var(--scrollbar-w));
+  font-size: 12px;
+  color: var(--ink-subtle);
+  border-top: 1px solid var(--hairline);
+}
+
+.run-strip-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.run-strip-meter {
+  position: relative;
+  width: 92px;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+
+.run-strip-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: #3ea76a;
+  transition: width 0.3s ease;
+}
+
+.run-strip-step {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.run-strip-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-1);
+  color: var(--ink-subtle);
+}
+
+.run-strip-pill--review {
+  color: #e0a325;
+  border-color: color-mix(in srgb, #e0a325 40%, var(--hairline));
+}
+
+.run-strip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e0a325;
+  animation: nbp-pulse 1s ease-in-out infinite;
+}
+
+button.run-strip-notebook {
+  cursor: pointer;
+  margin-left: auto;
+  color: var(--ink);
+}
+
+button.run-strip-notebook:hover {
+  background: var(--surface-2);
+}
+
+.run-strip-notebook svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* "Jump to latest" — a floating chip that appears once the researcher has
+   scrolled away from the live tail (`useStickToBottom`'s `pinned` flips to
+   false); clicking it calls `jumpToLatest`, which re-pins and snaps back to
+   the bottom. Rendered as a DOM CHILD of `.composer-dock` (not a sibling) so
+   that element's `position: relative` is actually its containing block —
+   `bottom: 100%` then sits it flush above the composer, whatever height the
+   composer currently is, instead of anchoring to the viewport. */
+.jump-to-latest {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  z-index: 20;
+}
+
+.jump-to-latest:hover {
+  background: var(--surface-3);
+}
+
+/* Centre the composer to the same measure as `.conv-column`, so the input sits
+   directly under the message column. The dock itself stays full-width; only its
+   content re-centres. */
+.composer-column {
+  width: 100%;
+  max-width: var(--conv-measure);
+  margin-inline: auto;
+}
+
+/* The inline Study picker a send raises on an unfiled Task. It sits directly
+   above the composer, in the composer's own measure, so the question reads as
+   part of the send rather than as a separate surface interrupting it. */
+.composer-filing {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 14px;
+  background: var(--surface-1);
+}
+
+.composer-filing-label {
+  font-size: 12.5px;
+  color: var(--ink-subtle);
+}
+
+.composer-filing-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer-filing-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+/* Rich composer card — shared by hero and docked placements. */
+.composer-card {
+  background: var(--surface-1);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 14px;
+  padding: 12px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Anchors the mention menu, which floats ABOVE the composer so it never
+     pushes the toolbar around as the researcher types. */
+  position: relative;
+}
+
+/* `@` artifacts / `#` tasks / `/` skills — opens upward from the textarea. */
+.mention-menu {
+  position: absolute;
+  bottom: calc(100% - 8px);
+  left: 12px;
+  right: 12px;
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 20;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-pop, 0 8px 24px rgb(0 0 0 / 28%));
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+.mention-menu-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-subtle);
+  padding: 6px 8px 4px;
+}
+
+.mention-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.mention-item:hover,
+.mention-item.is-active {
+  background: var(--surface-2);
+}
+
+.mention-item-label {
+  font-size: 13px;
+}
+
+.mention-item-desc {
+  font-size: 11px;
+  color: var(--ink-subtle);
+}
+
+.composer-card--hero {
+  border-radius: 16px;
+  padding: 16px 16px 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+/* The composer's own empty state — no machine to run a send on — in the
+   same border/surface language as the CLI dock's "no agent CLIs" notice. */
+.composer-blocker {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-subtle);
+}
+
+.composer-textarea {
+  width: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+  max-height: 200px;
+}
+
+.composer-card--hero .composer-textarea {
+  font-size: 15px;
+}
+
+.composer-textarea::placeholder {
+  color: var(--ink-tertiary);
+}
+
+.composer-textarea:disabled {
+  opacity: 0.7;
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.composer-icon-btn {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--ink-subtle);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.composer-icon-btn:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--hairline-strong);
+}
+
+.composer-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.composer-send {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  border: none;
+  background: var(--primary);
+  color: var(--on-primary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.composer-send:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+.composer-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The split send button: primary Send + an attached caret that opens the
+   per-message send-mode menu ("Plan first"). Mirrors the .perm-allow-group
+   split-control pattern so the two read as one control, not two buttons. */
+.composer-send-group {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.composer-send--split {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.composer-send-caret {
+  width: 20px;
+  height: 32px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+  border-left: 1px solid color-mix(in srgb, var(--on-primary) 30%, transparent);
+  background: var(--primary);
+  color: var(--on-primary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.composer-send-caret:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+.composer-send-caret:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.composer-send-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 188px;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  padding: 4px;
+  z-index: 60;
+}
+
+.csend-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.csend-item:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.csend-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.csend-item-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.csend-item-desc {
+  font-size: 10px;
+  color: var(--ink-subtle);
+}
+
+/* Task sidebar (replaces the old context rail). */
+.task-sidebar {
+  flex: 1 1 auto;
+  background: var(--sidebar);
+  /* Match the app Rail's aside padding (px-2 pt-2.5) so the WorkspaceSwitcher —
+     the shared anchor the two panes swap around in the same slot — sits in the
+     exact same spot in both. */
+  padding: 10px 8px 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* The pane lives in a fixed-width (w-56) flex slot. Without min-width:0 its
+     automatic minimum is the min-content width — and a task title is
+     white-space: nowrap, so its full text width would push the whole sidebar
+     past the slot and over the conversation. Clamping here lets the title's
+     ellipsis do its job. */
+  min-width: 0;
+}
+
+.tsb-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Matches the app Rail's Search row exactly: same 10px top margin and the
+     same 32px row box (`railRowClass`'s h-8), so the two panes stay in step
+     across the swap. The 10px side padding is the Rail row's mx-0.5 + px-2. */
+  margin-top: 10px;
+  height: 32px;
+  padding: 0 10px;
+  flex-shrink: 0;
+}
+
+.tsb-project {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0;
+}
+
+.tsb-project:hover {
+  color: var(--accent);
+}
+
+.tsb-project svg {
+  flex: 0 0 auto;
+  color: var(--ink-subtle);
+}
+
+.tsb-project-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tsb-menu {
+  display: flex;
+  flex-direction: column;
+  /* No inter-row gap: the app Rail stacks New Task / Inbox / My Tasks flush on
+     the shared 32px grid, so the Task pane's New / Customize / Files must too —
+     a gap here drifts each row a pixel below its Rail counterpart across the
+     swap. */
+  gap: 0;
+  /* 4px top = the Rail's Search-row mb-1, so the first menu row (New) lands on
+     the same baseline as the Rail's New Task, and the two below it on Inbox and
+     My Tasks. The shared rail row carries its own mx-0.5, so this adds no side
+     padding. No bottom padding: the Rail runs straight from its last top item
+     (My Tasks) into the Workspace eyebrow with only the label's mt-2 between
+     them, so the Task pane's Files → Pinned/Tasks eyebrow must too — otherwise the
+     eyebrow lands a row lower than the Rail's across the swap. */
+  padding: 4px 0 0;
+  flex-shrink: 0;
+}
+
+/* The Study's own Task list — the pane's one scrolling region, everything
+   above and below it (project header, New/Customize/Files menu, footer)
+   stays fixed. Pinned and recent render as two labelled groups inside the
+   same list rather than as separate panels, since a Task is the only kind
+   of row the Study has to show here. */
+.tsb-tasks {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  /* No side padding: the rows carry the Rail's mx-0.5 themselves, so the
+     group labels' px-2.5 lands on the Rail's 18px content column. */
+  padding: 0 0 72px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tsb-tasks-empty {
+  font-size: 12px;
+  color: var(--ink-tertiary);
+  padding: 2px 8px;
+}
+
+/* The in-place rename input — sized and positioned to sit exactly where the
+   row's title was, so committing a rename doesn't shift the row. */
+.tsb-task-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 1px 2px;
+  padding: 7px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface-1);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.tsb-task {
+  position: relative;
+  /* The Rail row's mx-0.5. */
+  margin: 0 2px;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  background: transparent;
+}
+
+.tsb-task:hover,
+.tsb-task.is-active {
+  background: var(--surface-2);
+}
+
+/* The clickable label area — opens the task. Padding lives here (not on the
+   container) so the row's hover/active background still spans the full width. */
+.tsb-task-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.tsb-task-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ink-tertiary);
+}
+
+.tsb-task.is-active .tsb-task-dot {
+  background: var(--accent);
+}
+
+.tsb-task-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--ink-subtle);
+}
+
+.tsb-task:hover .tsb-task-title,
+.tsb-task.is-active .tsb-task-title {
+  color: var(--ink);
+}
+
+/* Per-task "…" actions — hidden until the row is hovered/active or the menu
+   is open, so a resting sidebar stays uncluttered. */
+.tsb-task-actions {
+  position: relative;
+  flex: 0 0 auto;
+  margin-right: 4px;
+}
+
+.tsb-task-kebab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-tertiary);
+  cursor: pointer;
+  opacity: 0;
+}
+
+/* `:focus-within` keeps the trigger visible while its menu is open — the
+   button holds focus for as long as the popover does, so the kebab cannot
+   fade out from under an open menu when the pointer leaves the row. */
+.tsb-task:hover .tsb-task-kebab,
+.tsb-task.is-active .tsb-task-kebab,
+.tsb-task-actions:focus-within .tsb-task-kebab {
+  opacity: 1;
+}
+
+.tsb-task-kebab:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+/* Inline Reviewer findings in the conversation thread (the Done-gate). */
+.conv-review {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: var(--conv-measure, 62ch);
+}
+
+/* ArtifactsPanel — the "Files" surface. */
+.artifacts-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--hairline);
+  background: var(--sidebar);
+}
+
+.art-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  flex-shrink: 0;
+}
+
+.art-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.art-title svg {
+  color: var(--ink-subtle);
+}
+
+.art-icon-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.art-icon-btn:hover {
+  background: var(--surface-1);
+}
+
+.art-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 8px;
+  flex-shrink: 0;
+}
+
+.art-search {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink-subtle);
+}
+
+.art-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.art-search-input::placeholder {
+  color: var(--ink-tertiary);
+}
+
+.art-count {
+  font-size: 12px;
+  color: var(--ink-subtle);
+  white-space: nowrap;
+}
+
+.art-view-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-1);
+}
+
+.art-view-btn {
+  width: 28px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-subtle);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.art-view-btn.is-active {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.art-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 24px;
+}
+
+.art-empty {
+  margin: 12px 16px;
+  padding: 16px;
+  border: 1px dashed var(--hairline-strong);
+  border-radius: 10px;
+  background: var(--surface-1);
+  color: var(--ink-tertiary);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.art-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+}
+
+.art-group-title {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.art-group-count {
+  font-size: 12px;
+  color: var(--ink-subtle);
+}
+
+.art-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 16px;
+}
+
+.art-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-1) 60%, transparent);
+  cursor: pointer;
+  text-align: left;
+}
+
+.art-card:hover {
+  border-color: var(--hairline-strong);
+}
+
+.art-card-preview {
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  color: var(--ink-subtle);
+}
+
+.art-card-foot {
+  border-top: 1px solid var(--hairline);
+  padding: 8px 10px;
+}
+
+.art-card-name {
+  font-size: 12px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.art-card-meta {
+  font-size: 11px;
+  color: var(--ink-subtle);
+}
+
+.art-list {
+  padding: 0 16px;
+}
+
+.art-list-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.art-list-glyph {
+  flex: 0 0 auto;
+  color: var(--ink-subtle);
+  display: grid;
+  place-items: center;
+}
+
+.art-list-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.art-list-size {
+  flex: 0 0 auto;
+  color: var(--ink-subtle);
+  font-size: 12px;
+}
+
+/* Task-settings popover (composer). */
+.composer-settings {
+  position: relative;
+}
+
+.composer-settings-btn {
+  position: relative;
+}
+
+.composer-settings-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.composer-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 188px;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  padding: 4px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+}
+
+.cpop-row,
+.cpop-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+}
+
+.cpop-select {
+  cursor: pointer;
+}
+
+.cpop-select:hover {
+  background: var(--surface-2);
+}
+
+.cpop-label {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.cpop-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--ink-tertiary);
+}
+
+.cpop-divider {
+  height: 1px;
+  background: var(--hairline);
+  margin: 4px 5px;
+}
+
+/* CLI switcher — the composer pill + detected-CLIs dropdown. */
+.cli-tile {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: #0a0a0a;
+}
+
+/* The brand glyph fills most of the chip — the tiny mono font-size only sizes
+   the 2-letter fallback, so the SVG mark needs its own (larger) size. */
+.cli-tile-icon {
+  width: 72%;
+  height: 72%;
+}
+
+.cli-tile--lg {
+  width: 23px;
+  height: 23px;
+  border-radius: 7px;
+  font-size: 11px;
+}
+
+.cli-switcher {
+  position: relative;
+}
+
+.cli-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px 0 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cli-pill:hover {
+  border-color: var(--accent);
+}
+
+.cli-pill--empty {
+  cursor: default;
+  color: var(--ink-tertiary);
+  font-weight: 400;
+}
+
+.cli-pill--empty:hover {
+  border-color: var(--hairline-strong);
+}
+
+.cli-pill-version {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-tertiary);
+}
+
+.cli-chevron {
+  color: var(--ink-subtle);
+  transition: transform 0.15s;
+}
+
+.cli-chevron[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+.cli-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 264px;
+  max-height: min(52vh, 320px);
+  overflow-y: auto;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  padding: 5px;
+  z-index: 60;
+}
+
+.cli-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px 7px;
+}
+
+.cli-menu-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+.cli-menu-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-tertiary);
+}
+
+.cli-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.cli-row:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.cli-row.is-selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.cli-row:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.cli-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.cli-row-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-row-desc {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--ink-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-row-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--ink-subtle);
+}
+
+.cli-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.cli-dot--on {
+  background: var(--success);
+}
+
+.cli-dot--off {
+  background: var(--ink-tertiary);
+}
+
+/* What keeps the dock inside the column it sits in. The row carries one tile
+   per CLI per machine, so it lengthens with every machine a member pairs and
+   is wider than the main column somewhere past the second one — and a `width:
+   fit-content` row that no longer fits renders straight across whatever stands
+   to its right.
+
+   The scroll lives here and not on `.cli-dock`, which the tiles magnify out
+   of: the raised tile stands about 7px above the pill's top edge, and a
+   scroll container on the pill itself would cut it off there. The padding is
+   that headroom (plus the pill's own shadow above it), and the matching
+   negative margin above keeps the pill on the exact line it sits on with one
+   machine, where nothing overflows and no scrollbar appears at all. Nothing
+   is added below, so the clip edge lands on `.cli-dock`'s own bottom margin —
+   which is where the composer's card already covers the shadow. */
+.cli-dock-scroll {
+  overflow-x: auto;
+  padding-top: 12px;
+  margin-top: -12px;
+}
+
+/* CLI dock — the magnifying tile row above the Study composer, which is the
+   one place a run's agent is chosen. The 16px gap is a BOTTOM margin,
+   separating the pill from the composer card directly beneath it. */
+.cli-dock {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  margin: 0 auto 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.cli-dock-selected {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px 0 4px;
+  margin: 0 2px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--hairline-strong);
+}
+
+.cli-dock-selected .cli-tile {
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  font-size: 9px;
+}
+
+.cli-dock-name {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* Shown beside `.cli-dock-name` only when the selected CLI's machine is not
+   the only one in play — see `CliDock`'s `machineNameFor`. */
+.cli-dock-machine {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.cli-dock-btn {
+  border: none;
+  background: transparent;
+  padding: 3px 4px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.cli-dock-btn:disabled {
+  cursor: default;
+}
+
+.cli-dock-tile {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  transition: transform 0.13s cubic-bezier(0.2, 0.8, 0.3, 1);
+  will-change: transform;
+}
+
+/* Fenced code blocks in an assistant message (`CodeBlock.tsx`) — same
+   surface + hairline language as the `.tool-step-*` cards above, at one
+   step less chrome (a head row for the language label and copy button,
+   then the code itself). A long line scrolls inside its own box
+   (`overflow-x`) rather than widening the bubble — the same reasoning as
+   `.msg-table-wrap`'s `overflow-x` for a wide table. */
+.code-block {
+  max-width: var(--conv-measure, 62ch);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.code-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+.code-block-lang {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.code-block-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  color: var(--ink-subtle);
+  cursor: pointer;
+}
+
+.code-block-copy:hover {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+
+/* The plain `<pre>` (before shiki resolves, or for a `live`/unsupported
+   block) and the highlighted `<div>` shiki upgrades it to both carry this
+   class, so sizing and scroll behavior never differ between the two —
+   only shiki's own inline theme colors layer on top of it. */
+.code-block-pre {
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-subtle);
+}
+
+/* The plain <pre> (before shiki resolves, or a live/unsupported block) IS the
+   scroll viewport, so its content carries the padding directly. */
+pre.code-block-pre {
+  padding: 8px 10px;
+}
+
+/* Shiki upgrades the block to a <div class="code-block-pre"> wrapping its own
+   themed <pre>. That inner <pre> must size to its CONTENT (`width:
+   max-content`), not the viewport: left as a plain block it sits at the
+   viewport width, so a long line overflows it while its dark theme background
+   stops at the viewport edge — the command spilling onto the light card (the
+   reported bug). Sized to content, the dark background spans every line and
+   `.code-block-pre`'s `overflow-x` scrolls it; `min-width: 100%` keeps a short
+   block full-width, and the padding lives here so it sits inside the dark
+   background rather than around it. */
+.code-block-pre > pre {
+  margin: 0;
+  min-width: 100%;
+  width: max-content;
+  box-sizing: border-box;
+  padding: 8px 10px;
+}
+
+/* Undo `.msg--assistant :where(code)`'s inline-code chip styling (padding,
+   background, radius) for the code sitting inside a fenced block — that
+   rule targets every `code` in the bubble, including this one, by design
+   (`:where()` carries zero specificity precisely so a more specific rule
+   like this one can opt back out). */
+.code-block-pre code {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* ============================================================
+   Right-pane tab strip (Files | Notebook) + the Notebook panel
+   ============================================================ */
+
+.rightpane-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--hairline);
+  flex: 0 0 auto;
+}
+
+.rightpane-tab {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-subtle);
+  padding: 4px 10px;
+  border-radius: 7px;
+}
+
+.rightpane-tab:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.rightpane-tab.is-active {
+  background: var(--surface-2);
+  color: var(--ink);
+  font-weight: 550;
+}
+
+.rightpane-close {
+  margin-left: auto;
+}
+
+/* --- Notebook panel --- */
+
+.notebook-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nbp-envtabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  flex: 0 0 auto;
+}
+
+.nbp-envtab {
+  appearance: none;
+  border: 1px solid var(--hairline);
+  border-bottom: none;
+  background: var(--surface-1);
+  cursor: default;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-subtle);
+  padding: 4px 12px;
+  border-radius: 7px 7px 0 0;
+}
+
+.nbp-envtab.is-active {
+  color: var(--ink);
+  background: var(--surface-2);
+  font-weight: 550;
+}
+
+/* The scrolling stack of executed cells. */
+.nbp-cells {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nbp-empty {
+  color: var(--ink-subtle);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 8px 2px;
+}
+
+.nbp-cell {
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--surface-1);
+}
+
+.nbp-cell--agent {
+  border-left: 2px solid color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.nbp-cell--err {
+  border-color: color-mix(in srgb, #d64545 40%, var(--hairline));
+}
+
+.nbp-cell-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+.nbp-gutter {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-subtle);
+}
+
+.nbp-cell-by {
+  font-size: 11px;
+  color: var(--ink-subtle);
+  margin-left: auto;
+  text-transform: lowercase;
+}
+
+.nbp-output-wrap {
+  border-top: 1px solid var(--hairline);
+}
+
+.nbp-output-summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--ink-subtle);
+  padding: 4px 10px;
+  user-select: none;
+}
+
+.nbp-outputs {
+  padding: 4px 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nbp-out {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.nbp-error {
+  color: #d64545;
+}
+
+.nbp-image img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+/* Live-kernel strip. */
+.nbp-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-2);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+/* Live-activity meter: a thin track with a fill that rests when idle and
+   sweeps left-to-right while the kernel is busy. */
+.nbp-meter {
+  position: relative;
+  width: 44px;
+  height: 4px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+
+.nbp-meter-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+  background: var(--ink-subtle);
+}
+
+/* Idle: a short, calm resting fill. */
+.nbp-meter--idle .nbp-meter-fill {
+  right: 70%;
+  background: #3ea76a;
+}
+
+/* Busy: an indeterminate sweep. */
+.nbp-meter--busy .nbp-meter-fill {
+  width: 40%;
+  background: #e0a325;
+  animation: nbp-sweep 1.1s ease-in-out infinite;
+}
+
+/* Starting: a full, pulsing bar. */
+.nbp-meter--starting .nbp-meter-fill {
+  background: #3b82f6;
+  animation: nbp-pulse 1s ease-in-out infinite;
+}
+
+/* Dead: a full, still red bar. */
+.nbp-meter--dead .nbp-meter-fill {
+  background: #d64545;
+}
+
+@keyframes nbp-sweep {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+@keyframes nbp-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.nbp-strip-label {
+  color: var(--ink);
+}
+
+.nbp-strip-state {
+  color: var(--ink-subtle);
+  text-transform: capitalize;
+}
+
+.nbp-strip-count {
+  font-family: var(--font-mono);
+  color: var(--ink-subtle);
+}
+
+.nbp-restart {
+  margin-left: auto;
+  appearance: none;
+  border: 1px solid var(--hairline);
+  background: var(--surface-1);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  padding: 3px 10px;
+  border-radius: 7px;
+}
+
+.nbp-restart:hover {
+  background: var(--surface-3);
+}
+
+/* REPL console. */
+.nbp-repl {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--hairline);
+  flex: 0 0 auto;
+}
+
+.nbp-greeting {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--ink-subtle);
+  line-height: 1.4;
+}
+
+.nbp-repl-error {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #d64545;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.nbp-prompt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.nbp-caret {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink-subtle);
+  padding-top: 8px;
+}
+
+.nbp-input {
+  flex: 1 1 auto;
+  resize: vertical;
+  min-height: 34px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink);
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+
+.nbp-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--ink) 35%, var(--hairline));
+}
+
+.nbp-run {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--surface-1);
+  background: var(--ink);
+  padding: 7px 14px;
+  border-radius: 8px;
+}
+
+.nbp-run:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Setup state. */
+.nbp-setup {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.nbp-setup-lead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-subtle);
+}
+
+.nbp-setup-btn {
+  align-self: flex-start;
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--surface-1);
+  background: var(--ink);
+  padding: 8px 16px;
+  border-radius: 8px;
+}
+
+.nbp-setup-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.nbp-setup-log {
+  margin: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-subtle);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}

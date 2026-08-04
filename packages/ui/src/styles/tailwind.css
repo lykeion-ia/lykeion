@@ -1,0 +1,74 @@
+/*
+ * Tailwind v4 theme bridge. Maps utility token names onto Lykeion's CSS
+ * variables (tokens.css). `@theme inline` makes each utility reference the
+ * variable directly, so Lykeion's tokens.css stays the single source of
+ * truth. Imported ONLY by main.tsx.
+ */
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  /* Surfaces + ink (utility names → Lykeion vars) */
+  --color-canvas: var(--canvas);
+  --color-sidebar: var(--sidebar);
+  --color-lane: var(--lane);
+  --color-surface: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-fg: var(--ink);
+  --color-fg-muted: var(--ink-muted);
+  --color-fg-subtle: var(--ink-subtle);
+  --color-fg-tertiary: var(--ink-tertiary);
+  --color-line: var(--hairline);
+  --color-line-soft: var(--line-soft);
+  --color-line-strong: var(--hairline-strong);
+
+  /* Accent (Sky) + semantics */
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-focus: var(--accent-focus);
+  --color-iris: var(--iris);
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-danger-bg: var(--danger-bg);
+  --color-danger-fg: var(--danger-fg);
+
+  /* shadcn-bridge names (a few components use these class names) */
+  --color-background: var(--canvas);
+  --color-foreground: var(--ink);
+  --color-card: var(--surface-1);
+  --color-popover: var(--surface-2);
+  --color-primary: var(--accent);
+  --color-secondary: var(--surface-2);
+  --color-muted: var(--surface-1);
+  --color-muted-foreground: var(--ink-subtle);
+  --color-destructive: var(--danger);
+  --color-border: var(--hairline);
+  --color-input: var(--hairline);
+  --color-ring: var(--accent-focus);
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+}
+
+@layer base {
+  *,
+  ::after,
+  ::before {
+    border-color: var(--hairline);
+  }
+  body {
+    font-size: 14px;
+    letter-spacing: -0.05px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+}

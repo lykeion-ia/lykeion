@@ -1,0 +1,19 @@
+{
+  "name": "@lykeion/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Typed data contract for the Lykeion UI, with a deterministic in-memory implementation.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./conformance": "./src/conformance.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3",
+    "vitest": "^3.2.0"
+  }
+}

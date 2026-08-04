@@ -1,0 +1,23 @@
+{
+  "name": "lykeion",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.27.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck",
+    "server": "pnpm --filter @lykeion/ui build && pnpm --filter @lykeion/server start",
+    "dev:lab": "pnpm --filter @lykeion/ui dev:lab",
+    "daemon": "pnpm --filter @lykeion/daemon start"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
