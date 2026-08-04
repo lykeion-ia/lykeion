@@ -38,3 +38,18 @@ State is held in memory for the session — a reload starts over.
 | `pnpm -r test` | Run the test suite |
 | `pnpm -r typecheck` | Type-check every package |
 | `pnpm run build` | Production build |
+
+## License
+
+Copyright © 2026 Domenico Diego Marono.
+
+Lykeion is free software under the [GNU Affero General Public License, version
+3](LICENSE). You may run it, read it, change it, and pass it on. What the
+licence asks in return is that those freedoms travel with the code: if you
+distribute a modified Lykeion — or run one where other people can reach it over
+a network — its users have to be able to get the source of the version they are
+using.
+
+That covers everyone who wants to run Lykeion for their own lab. If you want to
+build on it under terms the AGPL does not grant, a separate commercial licence
+is available: <diegomarono13@gmail.com>.

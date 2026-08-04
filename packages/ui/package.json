@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Lykeion application UI \u2014 React + TypeScript, dark keyboard-first workbench.",
+  "license": "AGPL-3.0-only",
   "scripts": {
     "dev": "vite",
     "dev:lab": "vite --mode lab",

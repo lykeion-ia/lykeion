@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Typed data contract for the Lykeion UI, with a deterministic in-memory implementation.",
+  "license": "AGPL-3.0-only",
   "exports": {
     ".": "./src/index.ts",
     "./conformance": "./src/conformance.ts"

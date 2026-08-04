@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "The per-machine process that pairs with a lab and reports what it can run.",
+  "license": "AGPL-3.0-only",
   "scripts": {
     "build": "esbuild src/main.ts --bundle --platform=node --format=esm --outfile=dist/main.js",
     "start": "pnpm build && node dist/main.js",
