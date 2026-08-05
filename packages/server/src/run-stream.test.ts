@@ -9,10 +9,11 @@ import { readConfig } from "./config";
 import { openStore } from "./store/sqlite";
 import { migrate } from "./store/migrations";
 import { createChannel } from "./channel";
-import { createRunRelay } from "./run-relay";
+import { createRunRelay, type RunRelay } from "./run-relay";
 import { createRequestListener } from "./http";
 import { apiFor, signUpOwner } from "./test-support/server-api";
 import type { Store } from "./store/store";
+import { recordRunFrames } from "./store/sessions";
 
 const dirs: string[] = [];
 const servers: Array<{ close(): Promise<void> }> = [];
@@ -28,11 +29,18 @@ afterEach(async () => {
  *  `change_log` straight out of the store instead of only through whatever
  *  the wire contract returns — the same thing `api/sessions.test.ts` builds
  *  its own harness around, for the same reason. */
-function freshLabServer(): Promise<{ base: string; store: Store; close(): Promise<void> }> {
-  const dir = mkdtempSync(join(tmpdir(), "lykeion-run-stream-"));
-  dirs.push(dir);
+function freshLabServer(existingDir?: string): Promise<{
+  base: string;
+  dataDir: string;
+  store: Store;
+  relay: RunRelay;
+  raceNextSnapshotRead(callback: () => void): void;
+  close(): Promise<void>;
+}> {
+  const dir = existingDir ?? mkdtempSync(join(tmpdir(), "lykeion-run-stream-"));
+  if (existingDir === undefined) dirs.push(dir);
   const uiDir = join(dir, "ui");
-  mkdirSync(uiDir);
+  mkdirSync(uiDir, { recursive: true });
   const indexHtml = "<!doctype html><head></head><body></body>";
   writeFileSync(join(uiDir, "index.html"), indexHtml);
 
@@ -40,10 +48,34 @@ function freshLabServer(): Promise<{ base: string; store: Store; close(): Promis
   migrate(store);
   const channel = createChannel(store, 1000);
   const relay = createRunRelay();
+  let afterSnapshotRead: (() => void) | undefined;
+  const routedStore: Store = {
+    all: (sql, params) => store.all(sql, params),
+    get(sql, params) {
+      const row = store.get(sql, params);
+      if (afterSnapshotRead && sql.includes("t.last_frame_seq") && sql.includes("WHERE t.id = ?")) {
+        const callback = afterSnapshotRead;
+        afterSnapshotRead = undefined;
+        callback();
+      }
+      return row;
+    },
+    run: (sql, params) => store.run(sql, params),
+    tx: (fn) => store.tx(fn),
+    close: () => store.close(),
+  };
   const openStreams = new Set<() => void>();
   const config = { ...readConfig({}), host: "127.0.0.1", port: 0, dataDir: dir, uiDir };
 
-  const listener = createRequestListener({ store, config, secure: false, indexHtml, channel, openStreams, runs: relay });
+  const listener = createRequestListener({
+    store: routedStore,
+    config,
+    secure: false,
+    indexHtml,
+    channel,
+    openStreams,
+    runs: relay,
+  });
   const server = createHttpServer(listener);
 
   return new Promise((resolve, reject) => {
@@ -54,7 +86,12 @@ function freshLabServer(): Promise<{ base: string; store: Store; close(): Promis
       const port = typeof address === "object" && address ? address.port : 0;
       resolve({
         base: `http://127.0.0.1:${port}`,
+        dataDir: dir,
         store,
+        relay,
+        raceNextSnapshotRead(callback) {
+          afterSnapshotRead = callback;
+        },
         close: () =>
           new Promise<void>((res) => {
             for (const end of openStreams) end();
@@ -115,7 +152,10 @@ async function pairClaudeMachine(base: string, ownerApi: LykeionApi): Promise<st
 
 interface RunStreamLab {
   base: string;
+  dataDir: string;
+  raceNextSnapshotRead(callback: () => void): void;
   store: Store;
+  relay: RunRelay;
   /** The owner's session cookie — the one who paired the machine the run
    *  happened on, and so the one every passing test opens the stream as. */
   ownerCookie: string;
@@ -126,6 +166,7 @@ interface RunStreamLab {
    *  daemon would. */
   token: string;
   runId: string;
+  taskId: string;
 }
 
 /** A lab with an owner, a member, a machine the owner paired and reported,
@@ -151,7 +192,18 @@ async function labWithRunInFlight(): Promise<RunStreamLab> {
     options: { planMode: false, agent: "claude" },
   });
 
-  return { base: server.base, store: server.store, ownerCookie, memberCookie, token, runId };
+  return {
+    base: server.base,
+    dataDir: server.dataDir,
+    raceNextSnapshotRead: server.raceNextSnapshotRead,
+    store: server.store,
+    relay: server.relay,
+    ownerCookie,
+    memberCookie,
+    token,
+    runId,
+    taskId: task.id,
+  };
 }
 
 /** POSTs a batch of run frames to `/daemon/run/events`, bearing the paired
@@ -227,13 +279,44 @@ async function until(predicate: () => boolean, timeoutMs = 2000): Promise<void> 
   }
 }
 
-it("fans a frame a machine posted out to a subscribed browser", async () => {
+it("starts a fresh stream with an authoritative snapshot before later frames", async () => {
   const lab = await labWithRunInFlight();
   const seen: RunEventFrame[] = [];
   await openRunStream(lab, lab.runId, undefined, (f) => seen.push(f));
-  await postFrames(lab, [{ seq: 1, event: { event: "assistant-text", text: "hi", partial: true } }]);
   await until(() => seen.length === 1);
-  expect(seen[0]!.event).toEqual({ event: "assistant-text", text: "hi", partial: true });
+  expect(seen[0]).toEqual(expect.objectContaining({
+    seq: 0,
+    event: expect.objectContaining({
+      event: "snapshot",
+      snapshot: expect.objectContaining({
+        runId: lab.runId,
+        state: { state: "planning" },
+        lastEventSeq: 0,
+      }),
+    }),
+  }));
+
+  await postFrames(lab, [
+    { seq: 1, event: { event: "assistant-text", text: "hi", partial: true } },
+    { seq: 2, event: { event: "live", live: { text: "hi" } } },
+  ]);
+  await until(() => seen.length === 3);
+  expect(seen[1]!.event).toEqual({ event: "assistant-text", text: "hi", partial: true });
+
+  const reloaded: RunEventFrame[] = [];
+  await openRunStream(lab, lab.runId, undefined, (frame) => reloaded.push(frame));
+  await until(() => reloaded.length === 1);
+  expect(reloaded[0]).toEqual(expect.objectContaining({
+    seq: 2,
+    event: expect.objectContaining({
+      event: "snapshot",
+      snapshot: expect.objectContaining({
+        stream: [],
+        live: { text: "hi" },
+        lastEventSeq: 2,
+      }),
+    }),
+  }));
 });
 
 it("replays from a cursor so a reload mid-turn catches up", async () => {
@@ -245,9 +328,15 @@ it("replays from a cursor so a reload mid-turn catches up", async () => {
   const seen: RunEventFrame[] = [];
   await openRunStream(lab, lab.runId, 1, (f) => seen.push(f));
   await until(() => seen.length === 1);
-  // Only what it missed — a replay that repeats what the browser already
-  // rendered would duplicate the prose on screen.
-  expect(seen.map((f) => f.seq)).toEqual([2]);
+  expect(seen).toEqual([
+    expect.objectContaining({
+      seq: 2,
+      event: expect.objectContaining({
+        event: "snapshot",
+        snapshot: expect.objectContaining({ lastEventSeq: 2 }),
+      }),
+    }),
+  ]);
 });
 
 it("resumes from Last-Event-ID, the header a reconnecting browser sends — not just the query parameter", async () => {
@@ -265,7 +354,150 @@ it("resumes from Last-Event-ID, the header a reconnecting browser sends — not 
     "last-event-id": "1",
   });
   await until(() => seen.length === 1);
-  expect(seen.map((f) => f.seq)).toEqual([2]);
+  expect(seen).toEqual([
+    expect.objectContaining({
+      seq: 2,
+      event: expect.objectContaining({
+        event: "snapshot",
+        snapshot: expect.objectContaining({ lastEventSeq: 2 }),
+      }),
+    }),
+  ]);
+});
+
+it("starts a resumed stream with one authoritative snapshot and never republishes a retried frame", async () => {
+  const lab = await labWithRunInFlight();
+  await postFrames(lab, [
+    { seq: 1, event: { event: "assistant-text", text: "one", partial: false } },
+  ]);
+  const seen: RunEventFrame[] = [];
+  await openRunStream(lab, lab.runId, 0, (frame) => seen.push(frame));
+  await until(() => seen.length === 1);
+
+  await postFrames(lab, [
+    { seq: 1, event: { event: "assistant-text", text: "one", partial: false } },
+    { seq: 2, event: { event: "assistant-text", text: "two", partial: false } },
+  ]);
+  await until(() => seen.length === 2);
+  expect(seen.map((frame) => ({ seq: frame.seq, event: frame.event.event }))).toEqual([
+    { seq: 1, event: "snapshot" },
+    { seq: 2, event: "assistant-text" },
+  ]);
+});
+
+it("resumes from the durable snapshot after the relay replay window has rolled over", async () => {
+  const lab = await labWithRunInFlight();
+  const frames: RunEventFrame[] = Array.from({ length: 501 }, (_, index) => ({
+    seq: index + 1,
+    event: { event: "assistant-text", text: `${index + 1},`, partial: true },
+  }));
+  await postFrames(lab, frames);
+
+  const seen: RunEventFrame[] = [];
+  await openRunStream(lab, lab.runId, 0, (frame) => seen.push(frame));
+  await until(() => seen.length === 1);
+  expect(seen[0]).toEqual(expect.objectContaining({
+    seq: 501,
+    event: expect.objectContaining({
+      event: "snapshot",
+      snapshot: expect.objectContaining({ lastEventSeq: 501 }),
+    }),
+  }));
+});
+
+it("gates a fresh stream before the snapshot read so racing frames survive relay rollover", async () => {
+  const lab = await labWithRunInFlight();
+  await postFrames(lab, [
+    { seq: 1, event: { event: "assistant-text", text: "before", partial: false } },
+  ]);
+  const racingFrames: RunEventFrame[] = Array.from({ length: 501 }, (_, index) => ({
+    seq: index + 2,
+    event: { event: "assistant-text", text: `${index + 2},`, partial: true },
+  }));
+  lab.raceNextSnapshotRead(() => {
+    const accepted = recordRunFrames(lab.store, lab.runId, racingFrames, 1_800_000_010);
+    lab.relay.publish(lab.runId, accepted);
+  });
+
+  const seen: RunEventFrame[] = [];
+  await openRunStream(lab, lab.runId, undefined, (frame) => seen.push(frame));
+  await until(() => seen.length === 502);
+  expect(seen[0]).toEqual(expect.objectContaining({
+    seq: 1,
+    event: expect.objectContaining({ event: "snapshot" }),
+  }));
+  expect(seen.slice(1).map((frame) => frame.seq)).toEqual(
+    Array.from({ length: 501 }, (_, index) => index + 2),
+  );
+});
+
+it("maps a daemon frame sequence gap to conflict without publishing it", async () => {
+  const lab = await labWithRunInFlight();
+  await postFrames(lab, [
+    { seq: 1, event: { event: "assistant-text", text: "one", partial: false } },
+  ]);
+  const seen: RunEventFrame[] = [];
+  await openRunStream(lab, lab.runId, undefined, (frame) => seen.push(frame));
+  await until(() => seen.length === 1);
+
+  const response = await fetch(`${lab.base}/daemon/run/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify({
+      runId: lab.runId,
+      frames: [{ seq: 3, event: { event: "assistant-text", text: "gap", partial: false } }],
+    }),
+  });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({
+    error: `frame sequence gap for ${lab.runId}: expected 2, received 3`,
+  });
+  expect(seen).toHaveLength(1);
+});
+
+it("recovers an active run after a server rebuild and supplies a terminal snapshot when completion wins reattachment", async () => {
+  const lab = await labWithRunInFlight();
+  await postFrames(lab, [
+    { seq: 1, event: { event: "assistant-text", text: "before restart", partial: false } },
+  ]);
+
+  const original = servers.pop()!;
+  await original.close();
+  const rebuilt = await freshLabServer(lab.dataDir);
+  servers.push(rebuilt);
+  const rebuiltLab = { ...lab, base: rebuilt.base, store: rebuilt.store };
+  const ownerApi = apiFor(rebuilt.base, lab.ownerCookie);
+  const [resumed] = await ownerApi.resumeRuns(lab.taskId);
+  expect(resumed.snapshot).toEqual(expect.objectContaining({
+    runId: lab.runId,
+    lastEventSeq: 1,
+    stream: [{ kind: "text", text: "before restart" }],
+  }));
+
+  await postFrames(rebuiltLab, [
+    { seq: 2, event: { event: "completed", state: { state: "completed" } } },
+  ]);
+  const seen: RunEventFrame[] = [];
+  let closed = false;
+  await openRunStream(
+    rebuiltLab,
+    lab.runId,
+    resumed.snapshot.lastEventSeq,
+    (frame) => seen.push(frame),
+    () => (closed = true),
+  );
+  await until(() => closed);
+  expect(seen).toEqual([
+    expect.objectContaining({
+      seq: 2,
+      event: expect.objectContaining({
+        event: "snapshot",
+        snapshot: expect.objectContaining({ state: { state: "completed" }, lastEventSeq: 2 }),
+      }),
+    }),
+  ]);
+  expect(await ownerApi.resumeRuns(lab.taskId)).toEqual([]);
+  expect((await ownerApi.getTask(lab.taskId)).turns.map((turn) => turn.runId)).toEqual([lab.runId]);
 });
 
 it("writes a log entry into turn_steps as it arrives, not at the end", async () => {
@@ -294,9 +526,15 @@ it("ends the turn and closes the stream on a completed frame", async () => {
   const turn = lab.store.get(`SELECT status, ended_ts FROM turns WHERE id = ?`, [lab.runId])!;
   expect(turn.status).toBe("ok");
   expect(turn.ended_ts).not.toBeNull();
+  const refreshed = await apiFor(lab.base, lab.ownerCookie).getTask(lab.taskId);
+  expect(refreshed.task).toMatchObject({
+    status: "in-review",
+    runCount: 1,
+    lastRunStatus: "ok",
+  });
 });
 
-it("gives a browser opening a finished run its whole history and a close signal", async () => {
+it("gives a fresh browser opening a finished run one terminal snapshot and a close signal", async () => {
   // A run's viewer arriving after it settled is the ordinary case, not a
   // rare one — nobody has to be watching at the exact moment a turn ends
   // for a later visit to still work.
@@ -309,7 +547,19 @@ it("gives a browser opening a finished run its whole history and a close signal"
   let closed = false;
   await openRunStream(lab, lab.runId, undefined, (f) => seen.push(f), () => (closed = true));
   await until(() => closed);
-  expect(seen.map((f) => f.seq)).toEqual([1, 2]);
+  expect(seen).toEqual([
+    expect.objectContaining({
+      seq: 2,
+      event: expect.objectContaining({
+        event: "snapshot",
+        snapshot: expect.objectContaining({
+          state: { state: "completed" },
+          stream: [{ kind: "text", text: "hi" }],
+          lastEventSeq: 2,
+        }),
+      }),
+    }),
+  ]);
 });
 
 it("refuses a run stream to somebody who does not own the machine", async () => {

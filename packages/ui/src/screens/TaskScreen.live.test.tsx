@@ -40,16 +40,37 @@ const ROUTE = "#/studies/s_cmp/tasks/t_3";
  *  assertion below lands at a chosen point INSIDE the turn. */
 function scriptedApi() {
   const subs = new Set<(e: RunEvent) => void>();
+  let runNumber = 0;
   const api: LykeionApi = {
     ...createInMemoryApi(),
-    async startRun(): Promise<RunHandle> {
+    async startRun(input): Promise<RunHandle> {
+      const runId = `run-live-${++runNumber}`;
       return {
-        runId: "run-live",
+        // A real API never reuses a run id. Keeping the fixture faithful is
+        // load-bearing now that concurrent sibling blocks are keyed by it.
+        runId,
         onEvent(cb) {
           subs.add(cb);
+          queueMicrotask(() =>
+            cb({
+              event: "snapshot",
+              snapshot: {
+                runId,
+                sequence: runNumber + 2,
+                prompt: input.prompt,
+                agent: input.options.agent ?? "default",
+                state: { state: "planning" },
+                stream: [],
+                live: {},
+                reviewing: false,
+                lastEventSeq: 0,
+              },
+            }),
+          );
           return () => subs.delete(cb);
         },
         submit() {},
+        detach() {},
         // What `teardown()` calls: a closed handle delivers nothing more.
         close() {
           subs.clear();

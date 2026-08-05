@@ -1,4 +1,4 @@
-import type { Store } from "./store";
+import type { SqlValue, Store } from "./store";
 
 export interface Migration {
   version: number;
@@ -396,6 +396,196 @@ export const MIGRATIONS: Migration[] = [
             `INSERT INTO turn_items (id, turn_id, kind, step_id, seq)
              VALUES (?, ?, 'step', ?, ?)`,
             [`item_${seq}`, turn.id, step.id, seq],
+          );
+        }
+      }
+    },
+  },
+  {
+    version: 10,
+    up(store) {
+      // Daemon frames start at one. Zero therefore names the initial turn
+      // before any frame has been accepted and gives ingestion an exact
+      // next sequence to require after a restart.
+      store.run(`ALTER TABLE turns ADD COLUMN last_frame_seq INTEGER NOT NULL DEFAULT 0`);
+      // Recovery JSON is explicitly versioned so a later shape can migrate
+      // old rows rather than asking readers to guess which fields existed.
+      // Existing rows retain the default until the later recovery-policy
+      // migration can evaluate active turns after every prerequisite column
+      // exists. Settled rows keep it as harmless historical data.
+      store.run(
+        `ALTER TABLE turns ADD COLUMN recovery_snapshot TEXT NOT NULL DEFAULT
+         '{"version":1,"state":{"state":"planning"},"stream":[],"live":{},"reviewing":false}'`,
+      );
+    },
+  },
+  {
+    version: 11,
+    up(store) {
+      // Provenance is optional on the wire: NULL means an older step made no
+      // claim, while 1 preserves the explicit fact that access escaped the
+      // Study workspace. False is represented by absence, as on the contract.
+      store.run(`ALTER TABLE turn_steps ADD COLUMN outside_workspace INTEGER`);
+    },
+  },
+  {
+    version: 12,
+    up(store) {
+      const streamFor = (turnId: SqlValue): Array<Record<string, unknown>> => {
+        const stream: Array<Record<string, unknown>> = [];
+        let joiningPartial = false;
+        for (const item of store.all(
+          `SELECT i.kind, i.text, i.partial,
+                  s.ts, s.tool_use_id, s.tool, s.title, s.input, s.decision, s.result, s.is_error,
+                  s.outside_workspace
+             FROM turn_items i
+             LEFT JOIN turn_steps s ON s.id = i.step_id
+            WHERE i.turn_id = ?
+            ORDER BY i.seq ASC`,
+          [turnId],
+        )) {
+          if (item.kind === "text") {
+            if (item.partial === 1 && joiningPartial) {
+              const previous = stream.at(-1);
+              if (previous?.kind === "text")
+                previous.text = `${previous.text as string}${item.text as string}`;
+            } else {
+              stream.push({ kind: "text", text: item.text as string });
+            }
+            joiningPartial = item.partial === 1;
+            continue;
+          }
+
+          joiningPartial = false;
+          stream.push({
+            kind: "step",
+            entry: {
+              ts: item.ts as number,
+              toolUseId: item.tool_use_id as string,
+              tool: item.tool as string,
+              ...(item.title === null ? {} : { title: item.title as string }),
+              input: JSON.parse(item.input as string) as unknown,
+              decision: item.decision as string,
+              ...(item.result === null ? {} : { result: item.result as string }),
+              isError: item.is_error === 1,
+              ...(item.outside_workspace === 1 ? { outsideWorkspace: true } : {}),
+            },
+          });
+        }
+        return stream;
+      };
+
+      // Servers through v9 had no durable daemon-frame cursor or recoverable
+      // control snapshot. An active turn crossing that upgrade boundary
+      // cannot safely continue: accepting its next non-one sequence would
+      // conceal missing frames, while resetting it to planning would conceal
+      // any pending gate. Preserve the complete transcript and provenance,
+      // but terminally fail the execution and end its session.
+      const failedAt = Math.floor(Date.now() / 1000);
+      const reason = "This turn was active during a server upgrade and could not be safely resumed.";
+      const legacySettledTurns = store.all(
+        `SELECT id, status, task_id FROM turns
+          WHERE ended_ts IS NOT NULL
+            AND last_frame_seq = 0
+          ORDER BY seq ASC`,
+      );
+      const legacyActiveTurns = store.all(
+        `SELECT id, session_id, task_id FROM turns
+          WHERE ended_ts IS NULL
+            AND last_frame_seq = 0
+          ORDER BY seq ASC`,
+      );
+      const activeTaskIds = new Set(legacyActiveTurns.map((turn) => turn.task_id as string));
+      for (const turn of legacyActiveTurns) {
+        const stream = streamFor(turn.id);
+
+        store.run(
+          `UPDATE turns
+              SET ended_ts = ?, status = 'failed', recovery_snapshot = ?
+            WHERE id = ?`,
+          [
+            failedAt,
+            JSON.stringify({
+              version: 1,
+              state: { state: "failed", reason },
+              stream,
+              live: {},
+              reviewing: false,
+            }),
+            turn.id,
+          ],
+        );
+        store.run(
+          `UPDATE sessions SET ended_ts = ? WHERE id = ? AND ended_ts IS NULL`,
+          [failedAt, turn.session_id],
+        );
+      }
+
+      // The same default planning snapshot also sits on every pre-v10 turn
+      // that was already settled. Repair only that recovery projection so a
+      // direct terminal run stream closes immediately; settlement timestamps,
+      // sessions, and Task rollups are already authoritative and unchanged.
+      const legacyFailureReason =
+        "This failed turn predates durable recovery state; its transcript was preserved.";
+      for (const turn of legacySettledTurns) {
+        const status = turn.status as string;
+        const state =
+          status === "ok"
+            ? { state: "completed" }
+            : status === "cancelled" || status === "cancelled-unacknowledged"
+              ? {
+                  state: "cancelled",
+                  ...(status === "cancelled-unacknowledged" ? { unacknowledged: true } : {}),
+                }
+              : { state: "failed", reason: legacyFailureReason };
+        store.run(`UPDATE turns SET recovery_snapshot = ? WHERE id = ?`, [
+          JSON.stringify({
+            version: 1,
+            state,
+            stream: streamFor(turn.id),
+            live: {},
+            reviewing: false,
+          }),
+          turn.id,
+        ]);
+      }
+
+      // Task rollups did not exist for every turn written before this
+      // migration, including v10/v11 rows whose durable frame cursor is above
+      // zero. Recompute them once from the authoritative settled set. Only a
+      // Task whose active turn was terminalized above receives a fresh
+      // updated_ts; repairing already-settled history must not make an old
+      // Task look new. Deliberately leave Task status untouched: the schema
+      // cannot distinguish the historical default `todo` from a researcher
+      // intentionally resetting a completed Task to `todo` later.
+      const touchedTaskIds = new Set(
+        store
+          .all(`SELECT DISTINCT task_id FROM turns WHERE ended_ts IS NOT NULL`)
+          .map((turn) => turn.task_id as string),
+      );
+      for (const taskId of touchedTaskIds) {
+        const settled = store.get(
+          `SELECT COUNT(*) AS run_count FROM turns
+            WHERE task_id = ? AND ended_ts IS NOT NULL`,
+          [taskId],
+        )!;
+        const latestStatus = store.get(
+          `SELECT status FROM turns
+            WHERE task_id = ? AND ended_ts IS NOT NULL
+            ORDER BY seq DESC LIMIT 1`,
+          [taskId],
+        )?.status as string | undefined;
+        if (activeTaskIds.has(taskId)) {
+          store.run(
+            `UPDATE tasks
+                SET run_count = ?, last_run_status = ?, updated_ts = ?
+              WHERE id = ?`,
+            [settled.run_count, latestStatus === "ok" ? "ok" : "failed", failedAt, taskId],
+          );
+        } else {
+          store.run(
+            `UPDATE tasks SET run_count = ?, last_run_status = ? WHERE id = ?`,
+            [settled.run_count, latestStatus === "ok" ? "ok" : "failed", taskId],
           );
         }
       }

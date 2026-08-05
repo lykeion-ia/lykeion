@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEvent } from "@lykeion/api";
@@ -21,6 +21,10 @@ afterEach(async () => {
   // environment for whatever runs next in this same file to trip over.
   delete process.env.LYKEION_STUB_SCRIPT;
   delete process.env.LYKEION_STUB_EXIT_MARKER;
+  delete process.env.LYKEION_STUB_EXIT_DELAY_MS;
+  delete process.env.LYKEION_STUB_SESSION_NEW_MARKER;
+  delete process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS;
+  delete process.env.LYKEION_STUB_PROMPT_MARKER;
 });
 
 /** A lab that holds a command stream open and records what comes back. */
@@ -101,6 +105,156 @@ it("says which runs it holds as soon as it connects", async () => {
   subsystem(lab.base, data);
   await until(() => lab.live.length > 0, "a live report");
   expect(lab.live[0]).toEqual([]);
+});
+
+it("retires a local run the rebuilt server reports already terminal", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ wait: "cancel", timeoutMs: 10_000 }]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const promptMarker = join(data, "prompt-called");
+  process.env.LYKEION_STUB_PROMPT_MARKER = promptMarker;
+  process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS = "250";
+  const liveReports: string[][] = [];
+  let commandConnections = 0;
+  let finalStream: import("node:http").ServerResponse | undefined;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      commandConnections += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (commandConnections === 1) {
+        res.write(
+          `data: ${JSON.stringify({
+            seq: 1,
+            command: {
+              type: "start-run",
+              runId: "run_migrated_terminal",
+              studyId: "s_cmp",
+              sessionId: "se_migrated_terminal",
+              agent: "claude",
+              prompt: "must be retired",
+              grants: [],
+            },
+          })}\n\n`,
+        );
+        res.end();
+      } else if (commandConnections === 2) {
+        res.end();
+      } else {
+        finalStream = res;
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as { runIds?: string[] };
+      res.writeHead(200, { "content-type": "application/json" });
+      if (req.url === "/daemon/run/live") {
+        const report = parsed.runIds ?? [];
+        liveReports.push(report);
+        res.end(JSON.stringify(
+          liveReports.length === 2
+            ? { retireRunIds: ["run_migrated_terminal"] }
+            : {},
+        ));
+      } else {
+        res.end("{}");
+      }
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  subsystem(`http://127.0.0.1:${port}`, data);
+
+  await until(() => liveReports.length >= 3, "the post-retirement live report");
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  expect(liveReports[1]).toContain("run_migrated_terminal");
+  expect(liveReports[2]).toEqual([]);
+  expect(existsSync(promptMarker)).toBe(false);
+  finalStream?.end();
+});
+
+it("closes a retired active child before releasing its same-session successor", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ wait: "cancel", timeoutMs: 10_000 }]);
+  process.env.LYKEION_STUB_EXIT_DELAY_MS = "500";
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const sessions = join(data, "sessions-started");
+  const prompts = join(data, "prompts-started");
+  const exited = join(data, "old-child-exited");
+  process.env.LYKEION_STUB_SESSION_NEW_MARKER = sessions;
+  process.env.LYKEION_STUB_PROMPT_MARKER = prompts;
+  process.env.LYKEION_STUB_EXIT_MARKER = exited;
+
+  let commandConnections = 0;
+  let firstStream: import("node:http").ServerResponse | undefined;
+  let finalStream: import("node:http").ServerResponse | undefined;
+  let liveReports = 0;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      commandConnections += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (commandConnections === 1) {
+        for (const [index, runId] of ["run_retired_active", "run_successor"].entries()) {
+          res.write(
+            `data: ${JSON.stringify({
+              seq: index + 1,
+              command: {
+                type: "start-run",
+                runId,
+                studyId: "s_cmp",
+                sessionId: "se_shared_retirement",
+                agent: "claude",
+                prompt: runId,
+                grants: [],
+              },
+            })}\n\n`,
+          );
+        }
+        firstStream = res;
+      } else {
+        finalStream = res;
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      if (req.url === "/daemon/run/live") {
+        liveReports += 1;
+        res.end(JSON.stringify(
+          liveReports === 2 ? { retireRunIds: ["run_retired_active"] } : {},
+        ));
+      } else {
+        res.end("{}");
+      }
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  subsystem(`http://127.0.0.1:${port}`, data);
+
+  await until(() => existsSync(prompts), "the first turn to become active");
+  firstStream?.end();
+  await until(
+    () =>
+      existsSync(sessions) &&
+      readFileSync(sessions, "utf8").trim().split("\n").filter(Boolean).length >= 2,
+    "the successor to begin its session",
+  );
+  expect(existsSync(exited)).toBe(true);
+  finalStream?.end();
 });
 
 it("takes a start-run command and posts the turn's events back", async () => {
@@ -344,6 +498,76 @@ it("does not act on a start-run command a second time when a reconnect replays i
   // The reconnect itself carries a cursor: the seq of the last command this
   // daemon handled (1, from the first connection), not a blank slate.
   expect(commandUrls[1]).toContain("cursor=1");
+});
+
+it("resets its command cursor when an upgraded server first reports a relay generation", async () => {
+  const events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }> = [];
+  const commandCursors: Array<string | null> = [];
+  let liveReports = 0;
+  let secondStream: import("node:http").ServerResponse | undefined;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      const cursor = new URL(req.url, "http://127.0.0.1").searchParams.get("cursor");
+      commandCursors.push(cursor);
+      const command = commandCursors.length === 1
+        ? { type: "decision", runId: "run_already_seen", decision: { action: "cancel" } }
+        : {
+            type: "start-run",
+            runId: "run_after_server_restart",
+            studyId: "s_cmp",
+            sessionId: "se_after_server_restart",
+            agent: "claude",
+            prompt: "delivered from rebuilt relay",
+            grants: [],
+          };
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      // Each relay process starts its own sequence at one. Honour the daemon's
+      // cursor exactly as the real route does: without a generation reset,
+      // the rebuilt relay's first command is filtered out forever.
+      if (cursor === null || Number(cursor) < 1)
+        res.write(`data: ${JSON.stringify({ seq: 1, command })}\n\n`);
+      if (commandCursors.length === 1) res.end();
+      else secondStream = res;
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as {
+        runId?: string;
+        frames?: Array<{ seq: number; event: RunEvent }>;
+      };
+      if (req.url === "/daemon/run/events")
+        events.push({ runId: parsed.runId!, frames: parsed.frames! });
+      res.writeHead(200, { "content-type": "application/json" });
+      if (req.url === "/daemon/run/live") {
+        liveReports += 1;
+        // The first response models the old server, which did not expose a
+        // generation. The second is the upgraded/restarted relay, whose
+        // process-local command sequence begins at one again.
+        res.end(JSON.stringify(liveReports === 1 ? {} : { generation: "relay-b" }));
+      } else {
+        res.end("{}");
+      }
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(`http://127.0.0.1:${port}`, data);
+
+  await until(
+    () => events.some((post) => post.runId === "run_after_server_restart"),
+    "the rebuilt relay's first command",
+  );
+  expect(commandCursors.slice(0, 2)).toEqual([null, null]);
+  secondStream?.end();
 });
 
 it("stops calling the lab once it says this machine has been removed", async () => {
@@ -702,6 +926,245 @@ it("fails a turn when the adapter dies, with its stderr as the reason", async ()
   expect(done.event.state.reason).toMatch(/adapter blew up/);
 });
 
+it("retries the exact numbered event batch after a transient lab outage before sending later frames", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { emit: "agent_message_chunk", text: "after the outage" },
+  ]);
+  const attempts: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }> = [];
+  let commandStream: import("node:http").ServerResponse | undefined;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      commandStream = res;
+      res.write(
+        `event: command\ndata: ${JSON.stringify({
+          seq: 1,
+          command: {
+            type: "start-run",
+            runId: "run_retry",
+            studyId: "s_cmp",
+            sessionId: "se_retry",
+            agent: "claude",
+            prompt: "go",
+            grants: [],
+          },
+        })}\n\n`,
+      );
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as {
+        runId?: string;
+        frames?: Array<{ seq: number; event: RunEvent }>;
+      };
+      if (req.url === "/daemon/run/events") {
+        attempts.push({ runId: parsed.runId!, frames: parsed.frames! });
+        if (attempts.length === 1) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "temporary outage" }));
+          return;
+        }
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(`http://127.0.0.1:${port}`, data);
+
+  await until(
+    () =>
+      attempts.slice(1).some((attempt) =>
+        attempt.frames.some((frame) => frame.event.event === "completed"),
+      ),
+    "the retried run to complete",
+  );
+
+  expect(commandStream).toBeDefined();
+  expect(attempts[1]).toEqual(attempts[0]);
+  const acknowledged = attempts.slice(1).flatMap((attempt) => attempt.frames);
+  expect(acknowledged.map((frame) => frame.seq)).toEqual(
+    Array.from({ length: acknowledged.length }, (_, index) => index + 1),
+  );
+});
+
+it("treats a frame-sequence conflict as an explicit failed resynchronization and reports the run missing", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { ask: "permission", toolCallId: "blocked", title: "Write /tmp/conflict" },
+  ]);
+  const liveReports: string[][] = [];
+  const acceptedLiveReports: string[][] = [];
+  let liveCalls = 0;
+  let eventPosts = 0;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(
+        `event: command\ndata: ${JSON.stringify({
+          seq: 1,
+          command: {
+            type: "start-run",
+            runId: "run_conflict",
+            studyId: "s_cmp",
+            sessionId: "se_conflict",
+            agent: "claude",
+            prompt: "go",
+            grants: [],
+          },
+        })}\n\n`,
+      );
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as { runIds?: string[] };
+      if (req.url === "/daemon/run/events") {
+        eventPosts += 1;
+        res.writeHead(409, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "expected frame 4, received 1" }));
+        return;
+      }
+      if (req.url === "/daemon/run/live") {
+        const report = parsed.runIds ?? [];
+        liveReports.push(report);
+        liveCalls += 1;
+        // The initial report opens the command stream. Fail the first report
+        // caused by the 409 itself: durable settlement must wait for a later
+        // acknowledged retry, not merely for one best-effort attempt.
+        if (liveCalls === 2) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "temporary reconciliation outage" }));
+          return;
+        }
+        acceptedLiveReports.push(report);
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const run = subsystem(`http://127.0.0.1:${port}`, data);
+
+  await until(() => run.lastFailure() !== undefined, "a sequence conflict failure");
+  await until(
+    () => acceptedLiveReports.some((report) => report.length === 0) && liveCalls >= 3,
+    "an acknowledged missing-run resynchronization retry",
+  );
+  expect(run.lastFailure()).toMatch(/out of sync.*expected frame 4, received 1/i);
+  expect(eventPosts).toBe(1);
+  expect(liveReports[1]).toEqual([]);
+  expect(liveReports[2]).toEqual([]);
+});
+
+it("reports again when another sequence conflict lands during an in-flight reconciliation", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { ask: "permission", toolCallId: "blocked", title: "Write /tmp/conflict" },
+  ]);
+  const liveReports: string[][] = [];
+  let eventRequests = 0;
+  let secondConflict: import("node:http").ServerResponse | undefined;
+  let firstReconciliation: import("node:http").ServerResponse | undefined;
+  let overlapScheduled = false;
+  const finishOverlap = () => {
+    if (!secondConflict || !firstReconciliation || overlapScheduled) return;
+    overlapScheduled = true;
+    secondConflict.writeHead(409, { "content-type": "application/json" });
+    secondConflict.end(JSON.stringify({ error: "second sequence conflict" }));
+    setTimeout(() => {
+      firstReconciliation?.writeHead(200, { "content-type": "application/json" });
+      firstReconciliation?.end("{}");
+      firstReconciliation = undefined;
+    }, 100);
+  };
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const [index, runId] of ["run_conflict_a", "run_conflict_b"].entries()) {
+        res.write(
+          `data: ${JSON.stringify({
+            seq: index + 1,
+            command: {
+              type: "start-run",
+              runId,
+              studyId: "s_cmp",
+              sessionId: `se_${runId}`,
+              agent: "claude",
+              prompt: "go",
+              grants: [],
+            },
+          })}\n\n`,
+        );
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as { runIds?: string[] };
+      if (req.url === "/daemon/run/events") {
+        eventRequests += 1;
+        if (eventRequests === 1) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "first sequence conflict" }));
+        } else {
+          secondConflict = res;
+          finishOverlap();
+        }
+        return;
+      }
+      if (req.url === "/daemon/run/live") {
+        liveReports.push(parsed.runIds ?? []);
+        if (liveReports.length === 2) {
+          firstReconciliation = res;
+          finishOverlap();
+        } else {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end("{}");
+        }
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(`http://127.0.0.1:${port}`, data);
+
+  await until(
+    () => liveReports.length >= 3 && liveReports.at(-1)?.length === 0,
+    "a reconciliation including the conflict that landed during its predecessor",
+  );
+  expect(liveReports[1]).toHaveLength(1);
+  expect(liveReports[2]).toEqual([]);
+});
+
 /** A lab that opens the command stream normally — handing over one start-run
  *  right away — and answers every other daemon call at once, except
  *  `/daemon/run/events`: that request is simply never answered. What a
@@ -810,7 +1273,194 @@ it("gives a run still queued behind another its own honest ending when stop is c
   expect(completedFor("run_second")?.event.state.state).toBe("failed");
 });
 
-it("surfaces a run's own ending through lastFailure when the lab never accepts it, rather than swallowing it silently", async () => {
+it("cancels a queued same-session run durably without ever invoking its prompt", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { ask: "permission", toolCallId: "first-only", title: "Write /tmp/first" },
+  ]);
+  const lab = await stubLab([
+    {
+      type: "start-run",
+      runId: "run_first",
+      studyId: "s_cmp",
+      sessionId: "se_queue_cancel",
+      agent: "claude",
+      prompt: "first",
+      grants: [],
+    },
+    {
+      type: "start-run",
+      runId: "run_second",
+      studyId: "s_cmp",
+      sessionId: "se_queue_cancel",
+      agent: "claude",
+      prompt: "must never run",
+      grants: [],
+    },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(lab.base, data);
+
+  await until(
+    () => lab.events.some((post) =>
+      post.runId === "run_first" &&
+      post.frames.some((frame) => frame.event.event === "permission-card"),
+    ),
+    "the first queued turn to block",
+  );
+  lab.send({
+    type: "decision",
+    runId: "run_second",
+    decision: { action: "cancel" },
+  });
+  await until(
+    () => lab.events.some((post) =>
+      post.runId === "run_second" &&
+      post.frames.some((frame) => frame.event.event === "completed"),
+    ),
+    "the queued turn's cancelled ending",
+  );
+
+  const secondFrames = lab.events
+    .filter((post) => post.runId === "run_second")
+    .flatMap((post) => post.frames);
+  expect(secondFrames).toEqual([
+    { seq: 1, event: { event: "completed", state: { state: "cancelled" } } },
+  ]);
+
+  lab.send({
+    type: "decision",
+    runId: "run_first",
+    decision: { action: "cancel" },
+  });
+  await until(
+    () => lab.events.some((post) =>
+      post.runId === "run_first" &&
+      post.frames.some((frame) => frame.event.event === "completed"),
+    ),
+    "the first turn to stop",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(
+    lab.events
+      .filter((post) => post.runId === "run_second")
+      .flatMap((post) => post.frames),
+  ).toEqual(secondFrames);
+});
+
+it("cancels and reaps stuck initialization before a same-session successor starts", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const initializing = join(data, "session-new-started");
+  const exited = join(data, "initializing-adapter-exited");
+  process.env.LYKEION_STUB_SESSION_NEW_MARKER = initializing;
+  process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS = "3000";
+  process.env.LYKEION_STUB_EXIT_MARKER = exited;
+  const lab = await stubLab([
+    {
+      type: "start-run",
+      runId: "run_cancel_during_init",
+      studyId: "s_cmp",
+      sessionId: "se_cancel_during_init",
+      agent: "claude",
+      prompt: "must never reach session/prompt",
+      grants: [],
+    },
+  ]);
+  subsystem(lab.base, data);
+
+  await until(() => existsSync(initializing), "session initialization to begin");
+  const cancelStarted = Date.now();
+  lab.send({
+    type: "decision",
+    runId: "run_cancel_during_init",
+    decision: { action: "cancel" },
+  });
+  lab.send({
+    type: "start-run",
+    runId: "run_after_cancelled_init",
+    studyId: "s_cmp",
+    sessionId: "se_cancel_during_init",
+    agent: "claude",
+    prompt: "start only after the old child exits",
+    grants: [],
+  });
+  await until(
+    () => lab.events.some((post) =>
+      post.runId === "run_cancel_during_init" &&
+      post.frames.some((frame) => frame.event.event === "completed"),
+    ),
+    "the initialization-race cancellation",
+  );
+  await until(
+    () =>
+      readFileSync(initializing, "utf8").trim().split("\n").filter(Boolean).length >= 2,
+    "the same-session successor to begin initialization",
+  );
+
+  expect(Date.now() - cancelStarted).toBeLessThan(1500);
+  expect(existsSync(exited)).toBe(true);
+  expect(
+    lab.events
+      .filter((post) => post.runId === "run_cancel_during_init")
+      .flatMap((post) => post.frames),
+  ).toEqual([
+    { seq: 1, event: { event: "completed", state: { state: "cancelled" } } },
+  ]);
+});
+
+it("aborts and reaps a session whose initialization stays stuck after stop", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const initializing = join(data, "session-new-started");
+  const prompted = join(data, "prompt-started");
+  const exited = join(data, "adapter-exited");
+  process.env.LYKEION_STUB_SESSION_NEW_MARKER = initializing;
+  // Longer than stop's own bounded final-flush window: a timeout that merely
+  // returns while leaving the subprocess alive fails the exit-marker check.
+  process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS = "3000";
+  process.env.LYKEION_STUB_PROMPT_MARKER = prompted;
+  process.env.LYKEION_STUB_EXIT_MARKER = exited;
+  const lab = await stubLab([
+    {
+      type: "start-run",
+      runId: "run_stop_during_init",
+      studyId: "s_cmp",
+      sessionId: "se_stop_during_init",
+      agent: "claude",
+      prompt: "must never start after shutdown",
+      grants: [],
+    },
+  ]);
+  const run = subsystem(lab.base, data);
+
+  await until(() => existsSync(initializing), "session initialization to begin");
+  const stopStarted = Date.now();
+  await run.stop();
+
+  expect(Date.now() - stopStarted).toBeLessThan(1500);
+  expect(existsSync(prompted)).toBe(false);
+  expect(existsSync(exited)).toBe(true);
+  expect(
+    lab.events
+      .filter((post) => post.runId === "run_stop_during_init")
+      .flatMap((post) => post.frames),
+  ).toEqual([
+    {
+      seq: 1,
+      event: {
+        event: "completed",
+        state: {
+          state: "failed",
+          reason: "this machine stopped before this run's turn could begin",
+        },
+      },
+    },
+  ]);
+});
+
+it("bounds shutdown while retaining and retrying an event batch the lab never accepts", async () => {
+  const attempts: Array<Array<{ seq: number; event: RunEvent }>> = [];
   const server = createServer((req, res) => {
     if (req.url?.startsWith("/daemon/commands")) {
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -834,6 +1484,10 @@ it("surfaces a run's own ending through lastFailure when the lab never accepts i
     req.on("data", (c: Buffer) => (body += c.toString("utf8")));
     req.on("end", () => {
       if (req.url === "/daemon/run/events") {
+        const parsed = JSON.parse(body || "{}") as {
+          frames?: Array<{ seq: number; event: RunEvent }>;
+        };
+        attempts.push(parsed.frames ?? []);
         res.writeHead(500, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: "nope" }));
       }
@@ -852,8 +1506,12 @@ it("surfaces a run's own ending through lastFailure when the lab never accepts i
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
   const r = subsystem(base, data);
-  await until(() => r.lastFailure() !== undefined, "the ending's own delivery failure");
-  expect(r.lastFailure()).toMatch(/could not be delivered/);
+  await until(() => attempts.length >= 2, "the retained batch to be retried");
+  expect(attempts[1]).toEqual(attempts[0]);
+
+  const started = Date.now();
+  await r.stop();
+  expect(Date.now() - started).toBeLessThan(2_750);
 });
 
 it("reports a live session's own working directory, so a sweep never removes it out from under a running adapter", async () => {

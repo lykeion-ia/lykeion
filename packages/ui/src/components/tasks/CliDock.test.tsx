@@ -63,7 +63,7 @@ describe("CliDock", () => {
     ).toBeEnabled();
   });
 
-  it("keeps two machines' same-named CLI apart rather than colliding on a bare id", () => {
+  it("renders one tile per CLI id across paired machines", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const onSelect = vi.fn();
     const laptopClaude = cli({ id: "claude", name: "Claude Code", runtimeId: "rt_laptop" });
@@ -81,17 +81,76 @@ describe("CliDock", () => {
     // React never warns about duplicate keys when every child's key is
     // actually unique.
     expect(errorSpy).not.toHaveBeenCalled();
-    // Exactly one of the two is the expanded selected pill…
+    // One CLI kind is one dock entry, even when more than one paired machine
+    // reports it.
     expect(document.querySelectorAll(".cli-dock-selected")).toHaveLength(1);
-    // …and it names the machine `selectedId` actually pointed at.
+    expect(document.querySelectorAll(".cli-dock-btn")).toHaveLength(0);
+    // The first equally healthy candidate remains the representative.
     expect(document.querySelector(".cli-dock-machine")).toHaveTextContent(
       "laptop",
     );
-    // …while the other renders as its own selectable, un-selected button.
-    const btn = screen.getByRole("button", { name: /claude code on workstation/i });
-    expect(btn).toBeEnabled();
-    btn.click();
-    expect(onSelect).toHaveBeenCalledWith(cliIdentity(workClaude));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("uses the session-ready machine as the single representative", () => {
+    const laptopClaude = cli({
+      id: "claude",
+      name: "Claude Code",
+      runtimeId: "rt_laptop",
+      available: true,
+      sessionReady: false,
+      sessionReadyReason: "adapter is unavailable",
+    });
+    const workClaude = cli({
+      id: "claude",
+      name: "Claude Code",
+      runtimeId: "rt_work",
+      sessionReady: true,
+    });
+
+    render(
+      <CliDock
+        clis={[laptopClaude, workClaude]}
+        selectedId={null}
+        onSelect={() => {}}
+        machineNames={{ rt_laptop: "laptop", rt_work: "workstation" }}
+      />,
+    );
+
+    expect(document.querySelectorAll(".cli-dock-selected")).toHaveLength(1);
+    expect(document.querySelectorAll(".cli-dock-btn")).toHaveLength(0);
+    expect(document.querySelector(".cli-dock-machine")).toHaveTextContent(
+      "workstation",
+    );
+  });
+
+  it("keeps the selected CLI kind when its representative machine changes", () => {
+    const laptopClaude = cli({
+      id: "claude",
+      name: "Claude Code",
+      runtimeId: "rt_laptop",
+      sessionReady: false,
+    });
+    const workClaude = cli({
+      id: "claude",
+      name: "Claude Code",
+      runtimeId: "rt_work",
+      sessionReady: true,
+    });
+    const codex = cli({ id: "codex", name: "Codex", runtimeId: "rt_work" });
+
+    render(
+      <CliDock
+        clis={[codex, laptopClaude, workClaude]}
+        selectedId={cliIdentity(laptopClaude)}
+        onSelect={() => {}}
+        machineNames={{ rt_laptop: "laptop", rt_work: "workstation" }}
+      />,
+    );
+
+    expect(document.querySelector(".cli-dock-selected")).toHaveTextContent(
+      "Claude Code",
+    );
   });
 
   it("names the machine on each tile once the CLIs span more than one runtime, and says why an unready one cannot run", () => {

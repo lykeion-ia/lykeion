@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createFetchTransport, createHttpApi, type Transport } from "./http";
 import { isLykeionError } from "./errors";
-import type { RunEvent, RunEventFrame } from "./run";
+import type { ActiveRunSnapshot, RunEvent, RunEventFrame } from "./run";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -78,9 +78,156 @@ it("close() detaches the stream and cancels an unfinished run, the same guarante
   handle.onEvent(() => {});
 
   handle.close();
+  handle.submit({ action: "approve-plan" });
 
   expect(detached).toHaveBeenCalledTimes(1);
-  expect(sent.at(-1)).toEqual(["submitRunDecision", "run_1", { action: "cancel" }]);
+  expect(sent.filter(([method]) => method === "submitRunDecision")).toEqual([
+    ["submitRunDecision", "run_1", { action: "cancel" }],
+  ]);
+});
+
+it("detach() releases the stream without cancelling the unfinished run", async () => {
+  const detached = vi.fn();
+  const sent: unknown[][] = [];
+  const api = createHttpApi({
+    request: (method, args) => {
+      sent.push([method, ...args]);
+      return Promise.resolve(method === "startRun" ? { runId: "run_1" } : undefined);
+    },
+    openEvents: () => () => {},
+    openRun: () => detached,
+  });
+  const handle = await api.startRun({
+    studyId: "s", taskId: "t", prompt: "go", options: { planMode: false },
+  });
+  handle.onEvent(() => {});
+
+  (handle as { detach?: () => void }).detach?.();
+
+  expect(detached).toHaveBeenCalledTimes(1);
+  expect(sent.filter(([method]) => method === "submitRunDecision")).toEqual([]);
+});
+
+it("detach() can reopen the run stream from the latest observed frame while close remains permanent", async () => {
+  const opened: Array<{
+    cursor: number | undefined;
+    onFrame: (frame: RunEventFrame) => void;
+    detach: ReturnType<typeof vi.fn>;
+  }> = [];
+  const sent: unknown[][] = [];
+  const api = createHttpApi({
+    request: (method, args) => {
+      sent.push([method, ...args]);
+      return Promise.resolve(method === "startRun" ? { runId: "run_reopen" } : undefined);
+    },
+    openEvents: () => () => {},
+    openRun: (_runId, cursor, onFrame) => {
+      const detach = vi.fn();
+      opened.push({ cursor, onFrame, detach });
+      return detach;
+    },
+  });
+  const handle = await api.startRun({
+    studyId: "s",
+    taskId: "t",
+    prompt: "go",
+    options: { planMode: false },
+  });
+
+  const first: RunEvent[] = [];
+  handle.onEvent((event) => first.push(event));
+  opened[0]!.onFrame({
+    seq: 4,
+    event: { event: "assistant-text", text: "before detach", partial: true },
+  });
+  handle.detach();
+
+  const second: RunEvent[] = [];
+  handle.onEvent((event) => second.push(event));
+  expect(opened.map(({ cursor }) => cursor)).toEqual([undefined, 4]);
+  expect(opened[0]!.detach).toHaveBeenCalledTimes(1);
+  expect(sent.filter(([method]) => method === "submitRunDecision")).toEqual([]);
+
+  opened[1]!.onFrame({
+    seq: 5,
+    event: { event: "assistant-text", text: "after detach", partial: true },
+  });
+  expect(first).toHaveLength(1);
+  expect(second).toEqual([
+    { event: "assistant-text", text: "after detach", partial: true },
+  ]);
+
+  handle.close();
+  expect(opened[1]!.detach).toHaveBeenCalledTimes(1);
+  expect(sent.filter(([method]) => method === "submitRunDecision")).toEqual([
+    ["submitRunDecision", "run_reopen", { action: "cancel" }],
+  ]);
+  handle.onEvent(() => {});
+  expect(opened).toHaveLength(2);
+});
+
+it("closing after a terminal frame releases observation without submitting a stale cancel", async () => {
+  let onFrame: ((frame: RunEventFrame) => void) | undefined;
+  const sent: unknown[][] = [];
+  const api = createHttpApi({
+    request: (method, args) => {
+      sent.push([method, ...args]);
+      return Promise.resolve(method === "startRun" ? { runId: "run_done" } : undefined);
+    },
+    openEvents: () => () => {},
+    openRun: (_runId, _cursor, receive) => {
+      onFrame = receive;
+      return () => {};
+    },
+  });
+  const handle = await api.startRun({
+    studyId: "s", taskId: "t", prompt: "go", options: { planMode: false },
+  });
+  handle.onEvent(() => {});
+  onFrame?.({ seq: 1, event: { event: "completed", state: { state: "completed" } } });
+
+  handle.close();
+
+  expect(sent.filter(([method]) => method === "submitRunDecision")).toEqual([]);
+});
+
+it("reconstructs resumed handles from JSON and opens each stream after its snapshot cursor", async () => {
+  const snapshot: ActiveRunSnapshot = {
+    runId: "run_1",
+    sequence: 3,
+    prompt: "continue",
+    agent: "claude",
+    state: { state: "executing", plan: { steps: [], raw: "" } },
+    stream: [{ kind: "text", text: "already durable" }],
+    live: { text: "working" },
+    reviewing: false,
+    lastEventSeq: 7,
+  };
+  const opened: Array<{ runId: string; cursor: number | undefined }> = [];
+  const detached = vi.fn();
+  const sent: unknown[][] = [];
+  const api = createHttpApi({
+    request: (method, args) => {
+      sent.push([method, ...args]);
+      return Promise.resolve(method === "resumeRuns" ? [{ runId: "run_1", snapshot }] : undefined);
+    },
+    openEvents: () => () => {},
+    openRun: (runId, cursor) => {
+      opened.push({ runId, cursor });
+      return detached;
+    },
+  });
+
+  const [resumed] = await api.resumeRuns("task_1");
+  expect(resumed.snapshot).toEqual(snapshot);
+  resumed.onEvent(() => {});
+  expect(opened).toEqual([{ runId: "run_1", cursor: 7 }]);
+
+  resumed.submit({ action: "approve-plan" });
+  expect(sent.at(-1)).toEqual(["submitRunDecision", "run_1", { action: "approve-plan" }]);
+  resumed.detach();
+  expect(detached).toHaveBeenCalledTimes(1);
+  expect(sent.filter(([method]) => method === "submitRunDecision")).toHaveLength(1);
 });
 
 it("does not open a second stream for a second onEvent subscriber", async () => {
@@ -109,7 +256,7 @@ it("implements every method the contract declares", () => {
   const api = createHttpApi(transportReturning(null));
   const missing = Object.entries(api).filter(([, v]) => typeof v !== "function");
   expect(missing).toEqual([]);
-  expect(Object.keys(api)).toHaveLength(64);
+  expect(Object.keys(api)).toHaveLength(65);
 });
 
 it("propagates a contract failure as a LykeionError", async () => {

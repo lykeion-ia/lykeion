@@ -18,6 +18,23 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+function initialSnapshot(runId: string, prompt = "do it"): RunEvent {
+  return {
+    event: "snapshot",
+    snapshot: {
+      runId,
+      sequence: 1,
+      prompt,
+      agent: "default",
+      state: { state: "planning" },
+      stream: [],
+      live: {},
+      reviewing: false,
+      lastEventSeq: 0,
+    },
+  };
+}
+
 /**
  * A `startRun` that never resolves on its own — the caller gets `resolve`
  * back and decides when the late handle arrives, so a test can drive Stop
@@ -29,15 +46,20 @@ function deferredApi(): {
   api: LykeionApi;
   resolveStart: () => void;
   closeCount: () => number;
+  detachCount: () => number;
 } {
   let resolve: (() => void) | null = null;
   let closes = 0;
+  let detaches = 0;
   const handle: RunHandle = {
     runId: "run-deferred",
     onEvent() {
       return () => {};
     },
     submit() {},
+    detach() {
+      detaches += 1;
+    },
     close() {
       closes += 1;
     },
@@ -53,6 +75,7 @@ function deferredApi(): {
     api,
     resolveStart: () => resolve?.(),
     closeCount: () => closes,
+    detachCount: () => detaches,
   };
 }
 
@@ -67,7 +90,10 @@ function stalledApi(): { api: LykeionApi; submitted: string[] } {
     runId: "run-stalled",
     onEvent(cb: (e: RunEvent) => void) {
       setTimeout(
-        () => cb({ event: "state", state: { state: "executing", plan } }),
+        () => {
+          cb(initialSnapshot("run-stalled"));
+          cb({ event: "state", state: { state: "executing", plan } });
+        },
         0,
       );
       return () => {};
@@ -75,6 +101,7 @@ function stalledApi(): { api: LykeionApi; submitted: string[] } {
     submit(d) {
       submitted.push(d.action);
     },
+    detach() {},
     close() {},
   };
   const api = {
@@ -98,6 +125,7 @@ function Probe() {
     <div>
       <span data-testid="state">{run.state?.state ?? "none"}</span>
       <span data-testid="running">{String(run.running)}</span>
+      <span data-testid="starting">{String(run.starting)}</span>
       <span data-testid="reviewing">{String(run.reviewing)}</span>
       <span data-testid="unacknowledged">
         {String(
@@ -151,11 +179,13 @@ function drivenApi(): { api: LykeionApi; emit: (e: RunEvent) => void } {
     runId: "run-driven",
     onEvent(fn: (e: RunEvent) => void) {
       cb = fn;
+      queueMicrotask(() => fn(initialSnapshot("run-driven")));
       return () => {
         cb = null;
       };
     },
     submit() {},
+    detach() {},
     close() {},
   };
   const api = {
@@ -185,11 +215,13 @@ function multiSubApi(): {
     runId: "run-multi",
     onEvent(cb: (e: RunEvent) => void) {
       subs.add(cb);
+      queueMicrotask(() => cb(initialSnapshot("run-multi")));
       return () => subs.delete(cb);
     },
     submit(d) {
       submitted.push(d.action);
     },
+    detach() {},
     close() {
       closes += 1;
     },
@@ -226,35 +258,27 @@ it("Stop releases a stalled run so the surface is never bricked", async () => {
   expect(submitted).toContain("cancel");
 });
 
-it("Stop during an in-flight startRun discards the late handle instead of reattaching it", async () => {
-  // A stop that silently fails to stick: `running` (and Stop) is live from
-  // the moment `start` sets state to "planning", well before `startRun`'s
-  // own round-trip has resolved and attached a handle. Pressing Stop in
-  // that window must still stick — the late handle arriving afterward must
-  // never quietly resume the turn it was told to stop.
+it("unmount during an in-flight startRun detaches the late handle without cancelling", async () => {
+  // While the request is awaiting a handle there is no run id to stop. The
+  // composer is disabled by `starting`; navigation invalidates the response,
+  // and its eventual observer is detached without sending a cancellation.
   const user = userEvent.setup();
-  const { api, resolveStart, closeCount } = deferredApi();
-  render(<Harness api={api} />);
+  const { api, resolveStart, closeCount, detachCount } = deferredApi();
+  const view = render(<Harness api={api} />);
 
   await user.click(screen.getByRole("button", { name: "start" }));
-  expect(screen.getByTestId("state")).toHaveTextContent("planning");
-  expect(screen.getByTestId("running")).toHaveTextContent("true");
-
-  await user.click(screen.getByRole("button", { name: "stop" }));
-  expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
+  expect(screen.getByTestId("starting")).toHaveTextContent("true");
+  expect(screen.getByTestId("state")).toHaveTextContent("none");
   expect(screen.getByTestId("running")).toHaveTextContent("false");
+  view.unmount();
 
-  // The round-trip finally resolves, late — after the stop.
+  // The round-trip finally resolves after the observer surface is gone.
   await act(async () => {
     resolveStart();
   });
 
-  // Discarded, not attached: the surface stays stopped, not silently
-  // resumed, and the late handle is closed (which, for a real handle, also
-  // sends its own cancel — see http.ts's close()).
-  expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
-  expect(screen.getByTestId("running")).toHaveTextContent("false");
-  expect(closeCount()).toBe(1);
+  expect(detachCount()).toBe(1);
+  expect(closeCount()).toBe(0);
 });
 
 it("warns instead of silently hanging when an event tag drifts", async () => {
@@ -262,13 +286,14 @@ it("warns instead of silently hanging when an event tag drifts", async () => {
   const handle: RunHandle = {
     runId: "run-drift",
     onEvent(cb: (e: RunEvent) => void) {
-      setTimeout(
-        () => cb({ event: "totally-unknown" } as unknown as RunEvent),
-        0,
-      );
+      setTimeout(() => {
+        cb(initialSnapshot("run-drift"));
+        cb({ event: "totally-unknown" } as unknown as RunEvent);
+      }, 0);
       return () => {};
     },
     submit() {},
+    detach() {},
     close() {},
   };
   const api = {
@@ -333,6 +358,26 @@ it("streams partial prose via the live tail, then paints ONE bubble", async () =
   const bubbles = screen.getAllByTestId("bubble");
   expect(bubbles).toHaveLength(1);
   expect(bubbles[0]).toHaveTextContent("Strong candidates");
+});
+
+it("does not duplicate finalized prose when completion promotes the matching live tail", async () => {
+  const user = userEvent.setup();
+  const { api, emit } = drivenApi();
+  render(<Harness api={api} />);
+
+  await user.click(screen.getByRole("button", { name: "start" }));
+  await act(() => new Promise((r) => setTimeout(r, 0)));
+  await act(async () => {
+    emit({ event: "assistant-text", text: "final answer", partial: false });
+    emit({ event: "live", live: { text: "final answer" } });
+    emit({ event: "completed", state: { state: "completed" } });
+  });
+
+  expect(screen.getAllByTestId("bubble")).toHaveLength(1);
+  expect(screen.getByTestId("live-stream")).toHaveTextContent(
+    "text:final answer",
+  );
+  expect(screen.queryByTestId("live-text")).not.toBeInTheDocument();
 });
 
 it("merges tool updates by identity without moving the live card", async () => {
@@ -471,7 +516,7 @@ describe("cancel's late-completion watch", () => {
 
     expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
     expect(screen.getByTestId("unacknowledged")).toHaveTextContent("false");
-    expect(closeCount()).toBe(1);
+    expect(closeCount()).toBe(0);
   });
 
   it("flags the turn unacknowledged when the late completed frame says so", async () => {
@@ -536,7 +581,7 @@ describe("cancel's late-completion watch", () => {
     expect(screen.getByTestId("state")).toHaveTextContent("failed");
   });
 
-  it("releases a stopped turn's late-completion watch when a new turn supersedes it", async () => {
+  it("does not close a stopped turn when another turn starts", async () => {
     const { api, closeCount } = multiSubApi();
     render(<Harness api={api} />);
 
@@ -548,17 +593,15 @@ describe("cancel's late-completion watch", () => {
     // completed frame for the stopped turn has arrived.
     expect(closeCount()).toBe(0);
 
-    // A new turn starts before the old one's own ending ever arrives.
+    // A new turn starts before the old one's own ending ever arrives. It is a
+    // sibling now, not a reason to cancel/close the older turn.
     fireEvent.click(screen.getByRole("button", { name: "start" }));
     await act(() => new Promise((r) => setTimeout(r, 0)));
-    // Starting over released the old watch AT ONCE, synchronously with the
-    // new turn superseding it, rather than leaving it open forever waiting
-    // on a completed frame this surface has already moved past.
-    expect(closeCount()).toBe(1);
+    expect(closeCount()).toBe(0);
     expect(screen.getByTestId("unacknowledged")).toHaveTextContent("false");
   });
 
-  it("still unsubscribes and closes when the implementation delivers the completed frame synchronously on subscribe", async () => {
+  it("accepts a completed frame delivered synchronously on subscribe", async () => {
     // Neither of this codebase's own RunHandles do this today, but the
     // contract's `onEvent` doc never rules it out — and delivering it
     // synchronously, inside the very `handle.onEvent` call the watcher
@@ -570,15 +613,16 @@ describe("cancel's late-completion watch", () => {
       runId: "run-sync",
       onEvent(cb) {
         subscribeCount += 1;
-        // The second subscriber is `cancel`'s own late-completion watcher —
-        // fire its frame before this call has even returned an unsubscribe
-        // function for it to hold.
-        if (subscribeCount === 2) cb({ event: "completed", state: { state: "cancelled" } });
+        if (subscribeCount === 1) {
+          cb(initialSnapshot("run-sync"));
+          cb({ event: "completed", state: { state: "completed" } });
+        }
         return () => {
           unsubscribeCalls += 1;
         };
       },
       submit() {},
+      detach() {},
       close() {
         closes += 1;
       },
@@ -588,18 +632,13 @@ describe("cancel's late-completion watch", () => {
       listMembers: () => Promise.resolve([]),
     } as unknown as LykeionApi;
 
-    render(<Harness api={api} />);
+    const view = render(<Harness api={api} />);
     fireEvent.click(screen.getByRole("button", { name: "start" }));
     await act(() => new Promise((r) => setTimeout(r, 0)));
-    fireEvent.click(screen.getByRole("button", { name: "stop" }));
-
-    // Both subscriptions unsubscribed: the render-driving one (`cancel`
-    // always releases that directly) AND the watcher's own — the one an
-    // un-guarded assignment ordering would leave dangling, since its
-    // synchronously-delivered frame runs `finishWatch` before `onEvent` has
-    // even returned the function `finishWatch` would otherwise call.
-    expect(unsubscribeCalls).toBe(2);
-    expect(closes).toBe(1);
+    expect(screen.getByTestId("state")).toHaveTextContent("completed");
+    view.unmount();
+    expect(unsubscribeCalls).toBe(1);
+    expect(closes).toBe(0);
   });
 });
 

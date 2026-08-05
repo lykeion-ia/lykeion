@@ -14,6 +14,7 @@ import { usePromise } from "../hooks/usePromise";
 import { useRuntimeBlocker } from "../hooks/useRuntimeBlocker";
 import { useStickToBottom } from "../hooks/useStickToBottom";
 import { useTaskRun } from "../hooks/useTaskRun";
+import type { ManagedRun } from "../hooks/useRun";
 import { StatusIcon } from "../components/StatusIcon";
 import { CloseIcon } from "../components/icons";
 import { Composer } from "../components/tasks/Composer";
@@ -71,6 +72,144 @@ type LiveRunState = keyof typeof RUN_LINE_LABEL;
  * the FIRST send writes the real one — see `titleFromFirstSend`.
  */
 const NEW_TASK_TITLE = "New task";
+
+/** One run owns one complete piece of live chrome. Keeping this boundary
+ * keyed by `runId` prevents a sibling's provider, gate, stdout or Stop action
+ * from leaking into the block beside it. */
+function LiveRunBlock({
+  run,
+  provider,
+  onEditPrompt,
+  onOpenNotebook,
+}: {
+  run: ManagedRun;
+  provider: string;
+  onEditPrompt?: (prompt: string) => void;
+  onOpenNotebook?: () => void;
+}) {
+  const landedStream = run.run?.stream;
+  const stream =
+    landedStream && landedStream.length > 0 ? landedStream : run.stream;
+  const stdoutFor = (toolUseId?: string) =>
+    toolUseId
+      ? run.live.toolStdout?.find((output) => output.toolUseId === toolUseId)
+          ?.text
+      : undefined;
+  const planPending = run.state.state === "awaiting-plan-approval";
+  const card = run.pendingCard;
+  const question = run.pendingQuestion;
+
+  return (
+    <div
+      className="conv-live live-turn"
+      aria-live="polite"
+      aria-atomic="false"
+      role="log"
+      data-testid="live-turn"
+      data-run-id={run.runId}
+    >
+      <div className="live-turn-head">
+        <span className="live-turn-provider" data-testid="run-provider">
+          {provider}
+        </span>
+        {run.running && (
+          <button
+            type="button"
+            className="btn live-turn-stop"
+            onClick={run.cancel}
+          >
+            Stop
+          </button>
+        )}
+      </div>
+
+      <UserBubble
+        prompt={run.prompt}
+        onEdit={run.running ? undefined : onEditPrompt}
+      />
+      <StreamView
+        stream={stream}
+        stdoutFor={landedStream ? undefined : stdoutFor}
+      />
+
+      {run.live.thinking ? (
+        <div className="live-thinking" data-testid="live-thinking">
+          {run.live.thinking}
+        </div>
+      ) : null}
+      {run.live.text ? (
+        <div className="live-text" data-testid="live-text">
+          <AssistantMessage text={run.live.text} live />
+        </div>
+      ) : null}
+
+      {run.plan && (
+        <PlanCard
+          plan={run.plan}
+          pending={planPending}
+          onApprove={run.approvePlan}
+          onReject={() => run.rejectPlan()}
+        />
+      )}
+
+      {run.state.state === "awaiting-permission" && card && (
+        <PermissionCard
+          request={card}
+          onAllow={(scope) =>
+            run.decide(card.id, { decision: "allow", scope })
+          }
+          onDeny={() => run.decide(card.id, { decision: "deny" })}
+        />
+      )}
+
+      {run.state.state === "awaiting-question" && question && (
+        <QuestionCard
+          request={question}
+          onAnswer={(selected) =>
+            run.answerQuestion(question.requestId, selected)
+          }
+        />
+      )}
+
+      <RunStrip
+        plan={run.plan}
+        reviewing={run.reviewing}
+        onOpenNotebook={onOpenNotebook}
+      />
+
+      {run.state.state in RUN_LINE_LABEL && (
+        <div className="run-line" role="status" data-testid="run-line">
+          <span className="run-dot" aria-hidden="true" />
+          {RUN_LINE_LABEL[run.state.state as LiveRunState]}
+        </div>
+      )}
+      {run.state.state === "completed" && (
+        <div className="run-line run-line--done">
+          <StatusIcon status="done" />
+          Run complete
+        </div>
+      )}
+      {run.state.state === "failed" && (
+        <div className="run-line run-line--failed">
+          Run failed — {run.state.reason}
+        </div>
+      )}
+      {run.state.state === "cancelled" && (
+        <div
+          className={
+            run.state.unacknowledged
+              ? "run-line run-line--unacknowledged"
+              : "run-line run-line--cancelled"
+          }
+        >
+          {run.state.unacknowledged
+            ? "The agent has not confirmed it stopped — it may still be running."
+            : "Run stopped"}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * The Task surface — one Task, which is one chat. The left pane lists the
@@ -156,8 +295,15 @@ export function TaskScreen({
   // Study's task list cannot answer for it and `getTask` is the only read that
   // can. `taskNonce` re-reads it after a write of our own (mark done, filing).
   const [taskNonce, setTaskNonce] = useState(0);
+  const taskReadAuthority = useRef(0);
   const taskQuery = usePromise(
-    () => api.getTask(taskId),
+    async () => {
+      const authorityAtStart = taskReadAuthority.current;
+      return {
+        detail: await api.getTask(taskId),
+        authorityAtStart,
+      };
+    },
     [api, taskId, taskNonce],
   );
 
@@ -171,16 +317,26 @@ export function TaskScreen({
   // the one before it.
   const [heldTask, setHeldTask] = useState<Task | null>(null);
   const [heldStudy, setHeldStudy] = useState<Study | null>(null);
+  const retainAuthoritativeTask = useCallback((next: Task) => {
+    taskReadAuthority.current += 1;
+    setHeldTask(next);
+  }, []);
   useEffect(() => {
-    const read = taskQuery.data?.task;
-    if (read) setHeldTask(read);
+    const read = taskQuery.data;
+    if (!read || read.authorityAtStart !== taskReadAuthority.current) return;
+    setHeldTask(read.detail.task);
   }, [taskQuery.data]);
   useEffect(() => {
     const read = studyQuery.data?.study;
     if (read) setHeldStudy(read);
   }, [studyQuery.data]);
+  // The retained record may come from useTaskRun's newer reconciliation read
+  // while this screen's independent query still carries the pre-completion
+  // status. Its authority counter invalidates screen reads that were already
+  // in flight, independent of coarse/equal server timestamps.
   const task =
-    taskQuery.data?.task ?? (heldTask?.id === taskId ? heldTask : undefined);
+    (heldTask?.id === taskId ? heldTask : undefined) ??
+    taskQuery.data?.detail.task;
   const study =
     studyQuery.data?.study ??
     (heldStudy !== null && heldStudy.id === studyId ? heldStudy : undefined);
@@ -195,30 +351,41 @@ export function TaskScreen({
   // and the live run — all owned by the hook, not this screen.
   const {
     history,
+    terminalStatusByRunId,
     viewTurns,
-    addViewTurn,
     run: runState,
     pendingPrompt,
-  } = useTaskRun(runStudyId, taskId, refreshTasks);
+    recoveryReady,
+    recoveryError,
+    retryRecovery,
+  } = useTaskRun(runStudyId, taskId, refreshTasks, retainAuthoritativeTask);
 
   // Follow the live reply to the bottom while pinned. The signature must grow
   // on every token so streaming prose (and thinking, and tool stdout) keeps
   // the transcript pinned to the tail — see `useStickToBottom`'s jsdoc for
   // the pin rule. Never fights a researcher who has scrolled up to read
   // something older.
-  const landedLen = runState.run?.stream?.length ?? 0;
-  const turnStreamLen = landedLen > 0 ? landedLen : runState.liveStream.length;
-  const liveStdoutLen = (runState.live.toolStdout ?? []).reduce(
-    (n, s) => n + s.text.length,
-    0,
-  );
+  const liveSignature = runState.runs
+    .map((run) => {
+      const landedLen = run.run?.stream?.length ?? 0;
+      const streamLen = landedLen > 0 ? landedLen : run.stream.length;
+      const stdoutLen = (run.live.toolStdout ?? []).reduce(
+        (total, output) => total + output.text.length,
+        0,
+      );
+      return [
+        run.runId,
+        streamLen,
+        run.live.text?.length ?? 0,
+        run.live.thinking?.length ?? 0,
+        stdoutLen,
+      ].join(":");
+    })
+    .join("|");
   const stickDep = [
     history.length,
     viewTurns.length,
-    turnStreamLen,
-    runState.live.text?.length ?? 0,
-    runState.live.thinking?.length ?? 0,
-    liveStdoutLen,
+    liveSignature,
   ].join("|");
   const stick = useStickToBottom<HTMLDivElement>(stickDep);
 
@@ -228,6 +395,10 @@ export function TaskScreen({
   // `inputRef` lets Edit focus the textarea after refilling it.
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    if (!runState.startError) return;
+    setDraft((current) => current || runState.startError?.prompt || "");
+  }, [runState.startError]);
 
   // The right-hand inspector: the Study's live Notebook, this Task's
   // artifacts, and one opened artifact. Manual toggle — it never steals the
@@ -274,7 +445,10 @@ export function TaskScreen({
     planMode: boolean;
   } | null>(null);
 
-  const runRecord = runState.run;
+  const settledKey = runState.runs
+    .filter((run) => run.settled)
+    .map((run) => run.runId)
+    .join("|");
   useEffect(() => {
     // The Reviewer works inside a Study's workspace, so an unfiled Task has
     // nothing to have been flagged on — and nothing to ask about.
@@ -295,7 +469,7 @@ export function TaskScreen({
       cancelled = true;
     };
     // Reload when the Task changes or a run lands (findings may appear).
-  }, [api, studyId, taskId, runRecord]);
+  }, [api, studyId, taskId, settledKey]);
 
   // Reset per-Task view state whenever the Task changes. Keyed on the Task
   // alone, deliberately not on the Study: the one time a Task's Study changes
@@ -325,7 +499,7 @@ export function TaskScreen({
   const taskTitle =
     task?.title ??
     history[0]?.prompt ??
-    runState.prompt ??
+    runState.runs[0]?.prompt ??
     pendingPrompt ??
     NEW_TASK_TITLE;
 
@@ -360,33 +534,6 @@ export function TaskScreen({
         setDoneError(err instanceof Error ? err.message : String(err)),
     );
   }, [api, taskId, refreshTasks]);
-
-  // Graduate the current finished turn (if any) into `viewTurns`, so it stays
-  // on screen once the live surface moves on to the next `send`.
-  const graduateFinishedTurn = useCallback(() => {
-    if (!runState.state) return;
-    addViewTurn({
-      prompt: runState.prompt ?? "",
-      messages: [...runState.messages],
-      // The landed record where there is one; otherwise what the turn
-      // accumulated live. A turn the researcher STOPPED lands no record
-      // here, and its cards are as much a part of the transcript as any
-      // other — dropping them would undo, one send later, exactly what
-      // keeping `liveStream` out of `teardown()` protects.
-      stream:
-        runState.run?.stream ??
-        (runState.liveStream.length > 0 ? runState.liveStream : undefined),
-      status: runState.state?.state === "failed" ? "failed" : "ok",
-      runId: runState.run?.runId,
-    });
-  }, [
-    addViewTurn,
-    runState.state,
-    runState.prompt,
-    runState.messages,
-    runState.run,
-    runState.liveStream,
-  ]);
 
   /**
    * Name a chat after the message that started it.
@@ -427,15 +574,17 @@ export function TaskScreen({
   const start = runState.start;
   const startTurn = useCallback(
     (text: string, planMode: boolean) => {
-      graduateFinishedTurn();
       // The composer's draft is owned here — clear it on send the same way
       // `Composer`'s own internal state would.
       setDraft("");
+      // Done was optimism for the previous body of work. A real new turn on
+      // this same mounted Task reopens it; if start later fails, the retained
+      // durable Task still supplies Done rather than this local flag.
+      setMarkedDone(false);
       titleFromFirstSend(text);
       start(text, { planMode, agent: effectiveCliId, model: effectiveModel });
     },
     [
-      graduateFinishedTurn,
       titleFromFirstSend,
       start,
       effectiveCliId,
@@ -450,7 +599,7 @@ export function TaskScreen({
    * the researcher has to satisfy before any of it.
    */
   const send = (text: string, opts?: { planMode?: boolean }) => {
-    if (runState.running) return;
+    if (!recoveryReady || runState.starting) return;
     const planMode = opts?.planMode ?? false;
     if (task && task.studyId === undefined) {
       setFiling({ prompt: text, planMode });
@@ -681,7 +830,7 @@ export function TaskScreen({
     ];
   }, [history, tasks, taskId, skills.data]);
 
-  // This chat's artifacts — the live run's first, then every persisted turn's,
+  // This chat's artifacts — live/terminal blocks first, then persisted turns,
   // newest first, deduped by path. The live run is listed separately because
   // the hook holds the turn still on screen OUT of the persisted transcript,
   // so a run that just produced a file would otherwise not show it until the
@@ -695,8 +844,10 @@ export function TaskScreen({
     ) => {
       for (const a of list ?? []) if (!into.has(a.path)) into.set(a.path, toFileItem(a));
     };
-    add(code, runRecord?.code);
-    add(outputs, runRecord?.outputs);
+    for (const run of [...runState.runs].reverse()) {
+      add(code, run.run?.code);
+      add(outputs, run.run?.outputs);
+    }
     for (const turn of [...history].reverse()) {
       add(code, turn.code);
       add(outputs, turn.outputs);
@@ -706,7 +857,7 @@ export function TaskScreen({
     if (outputs.size)
       groups.push({ title: "Outputs", items: [...outputs.values()] });
     return groups;
-  }, [history, runRecord]);
+  }, [history, runState.runs]);
 
   const loadError = taskQuery.error ?? studyQuery.error;
   if (loadError) {
@@ -727,55 +878,23 @@ export function TaskScreen({
   // A successful Mark Done wins over both.
   const liveStatus: TaskStatus = markedDone
     ? "done"
-    : runState.run
+    : runState.runs.some(
+          (run) => run.run !== null || run.state.state === "completed",
+        )
       ? "in-review"
       : task.status;
-  const showMarkDone = liveStatus === "in-review";
-
-  const state = runState.state;
-  const card = runState.pendingCard;
-  const question = runState.pendingQuestion;
-  // Once the live turn lands, its recorded stream replaces the one accumulated
-  // live. Both are `TurnItem[]` and both render through `blocksOf`, so the
-  // switch changes nothing on screen except that the landed one is the record:
-  // it carries each step's merged result, and it is what a reopen will replay.
-  //
-  // The presence of the landed stream is the ONLY gate: the run's final state
-  // must not change the presentation. The run is recorded unconditionally, so
-  // a soft failure (a denied permission, a rejected plan) lands as `Failed`
-  // WITH a stream; gating on `completed` too made such a turn render prose live
-  // and then flip to cards the moment it graduated on the next send — and again
-  // on reopen from the persisted transcript.
-  const landedStream = runState.run?.stream;
-  const turnStream =
-    landedStream && landedStream.length > 0
-      ? landedStream
-      : runState.liveStream;
-  // The in-flight tail beneath the blocks: whatever has NOT yet become a whole
-  // message or a merged result. `{}` (the turn's last snapshot, and the whole
-  // of it for an adapter that streams no deltas) draws nothing at all.
-  const live = runState.live;
-  /**
-   * One running step's live output, matched to its own card by `toolUseId`.
-   *
-   * The id match is load-bearing, not decoration: tools run concurrently, so
-   * `toolStdout` is a keyed list and taking "the" buffer would print one
-   * tool's output under another tool's label.
-   */
-  const stdoutFor = (toolUseId?: string) =>
-    toolUseId
-      ? live.toolStdout?.find((s) => s.toolUseId === toolUseId)?.text
-      : undefined;
-
-  const planPending =
-    state !== null && state.state === "awaiting-plan-approval";
+  const anyRunning = runState.runs.some((run) => run.running);
+  // Finishing any live sibling can still update this Task. Keep Done out of
+  // reach until all of them settle; the stores also preserve a later Done as
+  // the authoritative write if another client creates this race directly.
+  const showMarkDone = liveStatus === "in-review" && !anyRunning;
 
   // Refill the composer with a past prompt and hand focus back to it — see
   // `UserBubble`'s `onEdit` doc comment for what Edit does and does NOT do.
   // Undefined while a run is live: `undefined` renders no Edit button at all,
   // rather than a button that would fight the (disabled) composer for the
   // researcher's next move.
-  const editPrompt = runState.running
+  const editPrompt = anyRunning
     ? undefined
     : (text: string) => {
         setDraft(text);
@@ -802,6 +921,27 @@ export function TaskScreen({
           setRightPaneOpen(true);
         };
 
+  const providerFor = (agent: string): string => {
+    const cli = clis.find(
+      (candidate) =>
+        candidate.id === agent ||
+        `${candidate.runtimeId}:${candidate.id}` === agent,
+    );
+    return cli?.name ?? (agent === "default" ? "Default agent" : agent);
+  };
+  const liveTurns = runState.runs.map((run) => ({
+    runId: run.runId,
+    sequence: run.sequence,
+    content: (
+      <LiveRunBlock
+        run={run}
+        provider={providerFor(run.agent)}
+        onEditPrompt={editPrompt}
+        onOpenNotebook={openNotebook}
+      />
+    ),
+  }));
+
   const composer = (
     <>
       {filing && (
@@ -810,15 +950,31 @@ export function TaskScreen({
           onCancel={() => setFiling(null)}
         />
       )}
+      {runState.startError && (
+        <div className="composer-start-error" role="alert">
+          Could not start the run — {runState.startError.message}
+        </div>
+      )}
+      {recoveryError && (
+        <div className="composer-start-error" role="alert">
+          Could not recover active runs — {recoveryError}{" "}
+          <button
+            type="button"
+            onClick={retryRecovery}
+            disabled={runState.recovering}
+          >
+            {runState.recovering ? "Retrying recovery" : "Retry recovery"}
+          </button>
+        </div>
+      )}
       {/* No `placeholder`: `Composer`'s own default is already the docked
           string, and every trigger it names is live here. */}
       <Composer
         variant="docked"
         onSend={send}
-        disabled={runState.running}
+        disabled={!recoveryReady || runState.starting}
         blocker={blocker}
-        running={runState.running}
-        onStop={runState.cancel}
+        running={false}
         switcher={switcher}
         draft={draft}
         onDraftChange={setDraft}
@@ -905,124 +1061,10 @@ export function TaskScreen({
                   <TaskTranscript
                     history={history}
                     viewTurns={viewTurns}
+                    liveTurns={liveTurns}
+                    terminalStatusByRunId={terminalStatusByRunId}
                     onEditPrompt={editPrompt}
                   />
-
-                  {/* Scoped to ONLY the in-flight turn — never `.conv-stream`
-                      itself, which would re-announce the whole transcript
-                      every time the Task is reopened. */}
-                  <div
-                    className="conv-live"
-                    aria-live="polite"
-                    aria-atomic="false"
-                    role="log"
-                    data-testid="live-region"
-                  >
-                    {state !== null && (
-                      <>
-                        <UserBubble
-                          prompt={runState.prompt ?? ""}
-                          onEdit={runState.running ? undefined : editPrompt}
-                        />
-                        <StreamView
-                          stream={turnStream}
-                          stdoutFor={landedStream ? undefined : stdoutFor}
-                        />
-
-                        {/* The in-flight tail, under the blocks it will
-                        become. Thinking is its OWN channel — never merged
-                        into prose, never persisted; the two stay apart
-                        because reasoning is not the answer. */}
-                        {live.thinking ? (
-                          <div
-                            className="live-thinking"
-                            data-testid="live-thinking"
-                          >
-                            {live.thinking}
-                          </div>
-                        ) : null}
-                        {live.text ? (
-                          <div className="live-text" data-testid="live-text">
-                            <AssistantMessage text={live.text} live />
-                          </div>
-                        ) : null}
-
-                        {runState.plan && (
-                          <PlanCard
-                            plan={runState.plan}
-                            pending={planPending}
-                            onApprove={runState.approvePlan}
-                            onReject={() => runState.rejectPlan()}
-                          />
-                        )}
-
-                        {state.state === "awaiting-permission" && card && (
-                          <PermissionCard
-                            request={card}
-                            onAllow={(scope) =>
-                              runState.decide(card.id, {
-                                decision: "allow",
-                                scope,
-                              })
-                            }
-                            onDeny={() =>
-                              runState.decide(card.id, { decision: "deny" })
-                            }
-                          />
-                        )}
-
-                        {state.state === "awaiting-question" && question && (
-                          <QuestionCard
-                            request={question}
-                            onAnswer={(selected) =>
-                              runState.answerQuestion(
-                                question.requestId,
-                                selected,
-                              )
-                            }
-                          />
-                        )}
-
-                        {state.state in RUN_LINE_LABEL && (
-                          <div
-                            className="run-line"
-                            role="status"
-                            data-testid="run-line"
-                          >
-                            <span className="run-dot" aria-hidden="true" />
-                            {RUN_LINE_LABEL[state.state as LiveRunState]}
-                          </div>
-                        )}
-
-                        {state.state === "completed" && (
-                          <div className="run-line run-line--done">
-                            <StatusIcon status="done" />
-                            Run complete
-                          </div>
-                        )}
-
-                        {state.state === "failed" && (
-                          <div className="run-line run-line--failed">
-                            Run failed — {state.reason}
-                          </div>
-                        )}
-
-                        {state.state === "cancelled" && (
-                          <div
-                            className={
-                              state.unacknowledged
-                                ? "run-line run-line--unacknowledged"
-                                : "run-line run-line--cancelled"
-                            }
-                          >
-                            {state.unacknowledged
-                              ? "The agent has not confirmed it stopped — it may still be running."
-                              : "Run stopped"}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
 
                   {findings.length > 0 && (
                     <div className="conv-review">
@@ -1038,15 +1080,6 @@ export function TaskScreen({
                   )}
                 </div>
               </div>
-
-              {/* Live plan progress — `Step N of M`, the Reviewing pill, and
-                  the Notebook pill that opens the inspector on the live
-                  kernel. */}
-              <RunStrip
-                plan={runState.plan}
-                reviewing={runState.reviewing}
-                onOpenNotebook={openNotebook}
-              />
 
               <div className="composer-dock">
                 {!stick.pinned && (

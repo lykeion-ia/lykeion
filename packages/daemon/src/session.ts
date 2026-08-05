@@ -106,6 +106,10 @@ export async function startSession(options: {
   onEvent: (event: RunEvent) => void;
   onGrant: (grant: StandingGrant) => void;
   env?: NodeJS.ProcessEnv;
+  /** Cancels ACP initialization and reaps the subprocess before this promise
+   *  settles. Once initialization succeeds, lifecycle ownership transfers to
+   *  the returned LiveSession and callers close it normally. */
+  signal?: AbortSignal;
   /** Overrides `DEFAULT_CANCEL_GRACE_MS` — a test's own way to make a stop's
    *  grace period something shorter than real seconds. Production never
    *  passes this. */
@@ -117,6 +121,12 @@ export async function startSession(options: {
     cwd,
     env: options.env,
   });
+  let aborting: Promise<void> | undefined;
+  const abortInitialization = () => {
+    aborting ??= connection.close();
+  };
+  if (options.signal?.aborted) abortInitialization();
+  else options.signal?.addEventListener("abort", abortInitialization, { once: true });
 
   // Session-scoped grants: what "this session" on a card means. Held here and
   // nowhere else, so they go when the session does.
@@ -163,6 +173,7 @@ export async function startSession(options: {
   // every later call names it, exactly as an adapter that checks it expects.
   let sessionId = "session";
   try {
+    if (options.signal?.aborted) throw new Error("session initialization was cancelled");
     await connection.request("initialize", {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
@@ -171,8 +182,14 @@ export async function startSession(options: {
     sessionId = (created as { sessionId?: string }).sessionId ?? sessionId;
   } catch (err) {
     const tail = connection.stderrTail().trim();
-    await connection.close();
+    await (aborting ?? connection.close());
     throw new Error(tail || (err instanceof Error ? err.message : String(err)));
+  } finally {
+    options.signal?.removeEventListener("abort", abortInitialization);
+  }
+  if (options.signal?.aborted) {
+    await (aborting ?? connection.close());
+    throw new Error("session initialization was cancelled");
   }
 
   connection.onNotify("session/update", (raw) => {
@@ -351,6 +368,17 @@ export async function startSession(options: {
     return entry;
   };
 
+  // A permission card is a transient execution gate. Once its decision is
+  // recorded, publish the resumed state before releasing the ACP request so
+  // a persisted recovery snapshot cannot keep offering an already-spent
+  // decision after a reload.
+  const leavePermissionGate = (): void => {
+    onEvent({
+      event: "state",
+      state: plan ? { state: "executing", plan } : { state: "planning" },
+    });
+  };
+
   /** Settles every card still open when the turn ends underneath it. A card
    *  nobody answered is not consent, so the ACP request it is holding open
    *  is refused; and since the adapter that raised it may already be gone or
@@ -505,6 +533,7 @@ export async function startSession(options: {
 
       if (decision.decision.decision === "deny") {
         if (card) emitStep(recordDecision(card, "denied"));
+        leavePermissionGate();
         resolve("reject-once");
         return;
       }
@@ -520,6 +549,7 @@ export async function startSession(options: {
               "a grant for every Study needs the lab's grant store, which this lab does not have yet",
             ),
           );
+        leavePermissionGate();
         resolve("reject-once");
         return;
       }
@@ -537,6 +567,7 @@ export async function startSession(options: {
                 : "allowed-study",
           ),
         );
+      leavePermissionGate();
       resolve("allow-once");
     },
     cancel() {

@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it, beforeEach } from "vitest";
-import { render, screen, within, cleanup } from "@testing-library/react";
+import { render, screen, within, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
@@ -66,9 +66,42 @@ describe("Task run surface", () => {
     await user.click(await screen.findByRole("button", { name: "Reject" }));
 
     // The run ends and no permission card is ever offered.
-    expect(await screen.findByText(/Run failed/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText(/Run failed/i)).toBeInTheDocument(),
+    );
     expect(
       screen.queryByRole("button", { name: "Deny" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("clears optimistic Done when new work starts on the same mounted Task", async () => {
+    const user = userEvent.setup();
+    const api = createInMemoryApi();
+    for (const finding of await api.reviewFindings("s_cmp", "t_3")) {
+      await api.resolveFinding("s_cmp", "t_3", finding.id);
+    }
+    window.location.hash = CMP3;
+    render(<App api={api} />);
+
+    await user.click(await screen.findByRole("button", { name: "Mark Done" }));
+    await waitFor(async () =>
+      expect((await api.getTask("t_3")).task.status).toBe("done"),
+    );
+
+    await user.type(
+      screen.getByLabelText("Message the agent"),
+      "start genuinely new work",
+    );
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Allow for this conversation" }),
+    );
+
+    await waitFor(async () =>
+      expect((await api.getTask("t_3")).task.status).toBe("in-review"),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Mark Done" }),
+    ).toBeInTheDocument();
   });
 });

@@ -237,6 +237,8 @@ export interface RunSummary {
 /** One turn of a Task — a single run's user prompt + assistant replies. */
 export interface TaskTurn {
   runId: string;
+  /** Durable insertion order of this turn within the workspace. */
+  sequence: number;
   ts: number;
   /** The researcher's prompt for this turn. */
   prompt: string;
@@ -311,8 +313,10 @@ export interface ToolStdout {
  * skipped when it's empty, so the final snapshot of a turn — the one that
  * tells a consumer nothing is in flight anymore — carries no keys at all.
  *
- * Nothing here is persisted: `thinking` and `toolStdout` are dropped when the
- * turn ends, and `TurnItem` keeps exactly two kinds.
+ * Persisted only inside an active run's recovery snapshot so a reload can
+ * reconstruct what is still in flight. It is cleared at completion and never
+ * becomes part of settled transcript history; `TurnItem` keeps exactly two
+ * durable kinds.
  */
 export interface LiveTurn {
   /** Partial assistant prose, accumulating. */
@@ -323,8 +327,27 @@ export interface LiveTurn {
   toolStdout?: ToolStdout[];
 }
 
+/** Everything a fresh client needs to reconstruct one run already in flight. */
+export interface ActiveRunSnapshot {
+  runId: string;
+  /** Durable turn order, independent of timestamps that may tie. */
+  sequence: number;
+  prompt: string;
+  agent: string;
+  state: TurnState;
+  /** Absent until the run has a researcher-facing or synthesized plan. */
+  plan?: Plan;
+  /** Authoritative prose/tool transcript in arrival order. */
+  stream: TurnItem[];
+  live: LiveTurn;
+  reviewing: boolean;
+  /** Last daemon frame durably folded into this snapshot. */
+  lastEventSeq: number;
+}
+
 /** An event streamed from a running turn. */
 export type RunEvent =
+  | { event: "snapshot"; snapshot: ActiveRunSnapshot }
   | { event: "state"; state: TurnState }
   | { event: "assistant-text"; text: string; partial: boolean }
   | { event: "plan-proposed"; plan: Plan }
@@ -381,7 +404,15 @@ export interface RunHandle {
   /** Subscribe; returns an unsubscribe fn. Replays no past events. */
   onEvent(cb: (e: RunEvent) => void): () => void;
   submit(decision: RunDecision): void;
+  /** Release local observation while leaving an unfinished run running. */
+  detach(): void;
+  /** Cancel an unfinished run and release local observation. */
   close(): void;
+}
+
+/** A reconstructed run: authoritative state plus the ordinary live handle. */
+export interface ResumedRun extends RunHandle {
+  snapshot: ActiveRunSnapshot;
 }
 
 /** Re-export so `TaskStatus`/`Stage`/`Priority` are reachable from here. */

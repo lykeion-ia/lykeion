@@ -167,6 +167,31 @@ it("raises a permission card and does not answer it by itself", async () => {
   await until(() => settled(events));
 });
 
+it("leaves the permission gate as soon as the researcher answers it", async () => {
+  const { s, events } = await session([
+    { ask: "permission", toolCallId: "t1", title: "Write out.csv" },
+    { sleep: 500 },
+  ]);
+  s.prompt("go");
+  await until(() => events.some((event) => event.event === "permission-card"));
+  const card = events.find((event) => event.event === "permission-card") as {
+    request: { id: string };
+  };
+
+  s.decide({
+    action: "permission",
+    requestId: card.request.id,
+    decision: { decision: "allow", scope: "once" },
+  });
+
+  await until(() =>
+    events.some(
+      (event) => event.event === "state" && event.state.state === "planning",
+    ),
+  );
+  expect(settled(events)).toBe(false);
+});
+
 it("never asks about a folder the Study already granted", async () => {
   // The standing grant is the whole point: a researcher who said "this
   // Study" once must not be asked the same question next session.

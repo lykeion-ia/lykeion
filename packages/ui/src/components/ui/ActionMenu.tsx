@@ -86,12 +86,10 @@ function ItemBody({
 /** A row that owns a second level instead of an action. */
 function SubmenuRow({
   item,
-  align,
   width,
   close,
 }: {
   item: ActionMenuItem;
-  align: "start" | "end";
   width: string;
   close: () => void;
 }) {
@@ -173,22 +171,21 @@ function SubmenuRow({
         <div
           ref={flyoutRef}
           role="menu"
-          // Opens away from the parent panel's anchored edge, so a menu
-          // already pinned to the right of its trigger grows leftward rather
-          // than off the window. Flush against that edge on purpose — a gap
-          // here is dead space the pointer has to cross, and crossing it
-          // leaves the row that owns the flyout. Capped and scrollable: the
-          // destination list is as long as the lab has Studies.
+          // Opens to the right of its parent row. `align` anchors the first
+          // panel to its trigger; it does not reverse the submenu direction.
+          // Flush against that edge on purpose — a gap here is dead space the
+          // pointer has to cross, and crossing it leaves the row that owns the
+          // flyout. Capped and scrollable: the destination list is as long as
+          // the lab has Studies.
           className={cn(
             "absolute top-0 max-h-64 overflow-y-auto",
             PANEL,
             width,
-            align === "end" ? "right-full" : "left-full",
+            "left-full",
           )}
         >
           <MenuList
             items={item.submenu ?? []}
-            align={align}
             width={width}
             close={close}
           />
@@ -201,12 +198,10 @@ function SubmenuRow({
 /** One level of rows. Used for the panel itself and for every flyout. */
 function MenuList({
   items,
-  align,
   width,
   close,
 }: {
   items: ActionMenuItem[];
-  align: "start" | "end";
   width: string;
   close: () => void;
 }) {
@@ -216,7 +211,7 @@ function MenuList({
         <div key={item.id}>
           {item.separatorBefore && <div className="mx-[5px] my-1 h-px bg-line" />}
           {item.submenu && item.submenu.length > 0 ? (
-            <SubmenuRow item={item} align={align} width={width} close={close} />
+            <SubmenuRow item={item} width={width} close={close} />
           ) : (
             <button
               type="button"
@@ -285,7 +280,6 @@ export function ActionMenu({
         >
           <MenuList
             items={items}
-            align={align}
             width={width}
             close={() => setOpen(false)}
           />

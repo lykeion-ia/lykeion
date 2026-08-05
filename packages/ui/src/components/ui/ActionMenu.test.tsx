@@ -57,6 +57,7 @@ it("marks a destructive item so it does not read like the rest", async () => {
 function renderWithSubmenu(onSelect: () => void) {
   return render(
     <ActionMenu
+      align="end"
       items={[
         {
           id: "move",
@@ -115,4 +116,15 @@ it("opens a submenu from the keyboard, so the flyout is not hover-only", async (
 
   await user.keyboard("{Enter}");
   expect(onSelect).toHaveBeenCalledTimes(1);
+});
+
+it("opens an end-aligned menu's submenu to the right", async () => {
+  const user = userEvent.setup();
+  renderWithSubmenu(vi.fn());
+  await user.click(screen.getByRole("button", { name: "Open" }));
+  await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+
+  const [, submenu] = screen.getAllByRole("menu");
+  expect(submenu.className).toContain("left-full");
+  expect(submenu.className).not.toContain("right-full");
 });

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type {
+  ActiveRunSnapshot,
   ExecutionLogEntry,
   LiveTurn,
   PermissionDecision,
-  Plan,
   PermissionRequest,
+  Plan,
   QuestionRequest,
   RunDecision,
   RunEvent,
@@ -16,8 +17,8 @@ import type {
 import { useApi } from "../api/ApiContext";
 
 /** Options `start` accepts: opt into plan mode (default off — a plain send is
- *  a normal run), pick the agent/model, and optionally show a different
- *  `displayPrompt` than the text actually sent to the core. */
+ * a normal run), pick the agent/model, and optionally show a different prompt
+ * than the text sent to the core. */
 interface StartOptions {
   planMode?: boolean;
   agent?: string | null;
@@ -25,89 +26,84 @@ interface StartOptions {
   displayPrompt?: string;
 }
 
-/** Everything the Task surface needs to drive and render one live run. */
-export interface UseRun {
-  /** The current turn state, or `null` before any run has started. */
-  state: TurnState | null;
-  /** Assistant messages, in arrival order. */
-  messages: string[];
-  /** The researcher's own message for the current run — the DISPLAYED
-   *  prompt, rendered as the user's turn in the stream. Equal to the sent
-   *  prompt unless `start` was called with `displayPrompt` (e.g. a stitched
-   *  subagent hand-back sent to the agent but not shown to the researcher).
-   *  `null` before any send. */
-  prompt: string | null;
-  /** The proposed plan (kept visible through execution), or `null`. */
+/** One independently rendered and controlled Task turn. */
+export interface ManagedRun {
+  runId: string;
+  sequence: number;
+  prompt: string;
+  /** The provider recorded when this turn started, never the current composer choice. */
+  agent: string;
+  state: TurnState;
   plan: Plan | null;
-  /** The permission card awaiting a decision, or `null`. */
-  pendingCard: PermissionRequest | null;
-  /** The clarifying question awaiting an answer, or `null`. */
-  pendingQuestion: QuestionRequest | null;
-  /** The authoritative execution log, in arrival order. */
-  log: ExecutionLogEntry[];
-  /**
-   * The CURRENT turn's ordered stream — the same `TurnItem[]` shape the landed
-   * record carries, accumulated live from the ordered events (prose messages
-   * and tool steps, in arrival order). It exists so the live turn renders
-   * through the very same `blocksOf` a reopened one does, instead of a second
-   * renderer that can drift from it.
-   *
-   * Cleared when a new run starts and on `reset` — NEVER in `teardown`, which
-   * `cancel` calls synchronously: clearing it there wipes every card the
-   * instant the researcher presses Stop.
-   */
-  liveStream: TurnItem[];
-  /**
-   * The in-flight tail: partial prose, thinking, and each running tool's
-   * stdout. Each snapshot REPLACES its predecessor (never merged, never
-   * appended) — the core sends whole state, and the last snapshot of a turn is
-   * `{}`, which is what tells this surface to stop drawing a tail.
-   *
-   * An adapter with `caps.partial_text: false` sends no `live` events at all,
-   * so this simply stays `{}` and the turn renders as whole blocks.
-   */
+  stream: TurnItem[];
   live: LiveTurn;
-  /** The completed run record, once it lands. */
   run: RunRecord | null;
-  /** True while a run is in flight (not yet completed or failed). */
   running: boolean;
-  /** True while the Reviewer is checking a just-finished turn — a live phase
-   *  between the last step and the run fully landing (task runs only). Drives
-   *  the run strip's "Reviewing" pill. */
   reviewing: boolean;
-  /**
-   * Kick off a run. `planMode` (default `false`) is the per-message send mode:
-   * the default plain send is a NORMAL run — the agent executes directly under
-   * a synthesized approved plan; passing `true` (the composer's "Plan first")
-   * gates the run through plan → approve → execute.
-   *
-   * `prompt` is always what's sent to the core (and recorded as the run's
-   * command) — never altered. `opts.displayPrompt`, when given, is what's
-   * shown in the researcher's own message bubble instead; this lets a caller
-   * stitch extra context (e.g. a subagent hand-back) into what the agent
-   * receives without that context leaking into the researcher's visible
-   * message. Omit it and the displayed prompt is just `prompt`, unchanged.
-   */
-  start: (prompt: string, opts?: StartOptions) => void;
+  /** True only once the core has supplied a terminal frame/snapshot. */
+  settled: boolean;
+  messages: string[];
+  log: ExecutionLogEntry[];
+  pendingCard: PermissionRequest | null;
+  pendingQuestion: QuestionRequest | null;
   approvePlan: () => void;
   rejectPlan: (reason?: string) => void;
   decide: (requestId: string, decision: PermissionDecision) => void;
-  /** Answer a clarifying question. An empty `selected` is a deliberate skip. */
   answerQuestion: (requestId: string, selected: string[]) => void;
   cancel: () => void;
-  /** Clear the surface back to the empty (pre-run) state. */
-  reset: () => void;
 }
 
-/** The plan a turn state carries, if any. Exported so other live-run
- *  subscriptions (e.g. a delegated subagent's child run) can mirror this
- *  canonical `RunEvent` → state mapping instead of re-deriving it. */
+/** A start that failed before the core assigned a run id. */
+export interface RunStartError {
+  message: string;
+  prompt: string;
+}
+
+/**
+ * The Task run manager. `runs` is the source of truth: every active or
+ * not-yet-reconciled terminal turn has its own keyed entry and actions.
+ *
+ * The singleton fields below remain as a compatibility projection of the
+ * newest entry for callers outside the Task surface while they migrate. They
+ * never collapse or remove siblings from `runs`.
+ */
+export interface UseRun {
+  runs: ManagedRun[];
+  /** Only the `startRun` request itself holds this flag; active siblings do not. */
+  starting: boolean;
+  startError: RunStartError | null;
+  /** A recoverable failure to discover/reattach the Task's active runs. */
+  recoveryError: string | null;
+  /** True only while a resume attempt is currently in flight. */
+  recovering: boolean;
+  /** Attach every recoverable run for this Task. Resolves false when stale. */
+  resume: () => Promise<boolean>;
+  /** Remove blocks whose matching settled turns have been read successfully. */
+  reconcile: (persistedRunIds: ReadonlySet<string>) => void;
+  start: (prompt: string, opts?: StartOptions) => void;
+  reset: () => void;
+
+  state: TurnState | null;
+  messages: string[];
+  prompt: string | null;
+  plan: Plan | null;
+  pendingCard: PermissionRequest | null;
+  pendingQuestion: QuestionRequest | null;
+  log: ExecutionLogEntry[];
+  liveStream: TurnItem[];
+  live: LiveTurn;
+  run: RunRecord | null;
+  running: boolean;
+  reviewing: boolean;
+  approvePlan: () => void;
+  rejectPlan: (reason?: string) => void;
+  decide: (requestId: string, decision: PermissionDecision) => void;
+  answerQuestion: (requestId: string, selected: string[]) => void;
+  cancel: () => void;
+}
+
+/** The plan a turn state carries, if any. */
 export function planOf(s: TurnState): Plan | null {
-  // A normal (non-plan) run executes under a SYNTHESIZED empty plan — the core
-  // approves a step-less default plan so the approval machine still guards
-  // every permission card. That empty plan is not a researcher-facing plan
-  // and must never render a card: only a plan that carries steps is one the
-  // researcher approved or is being asked to.
   const withSteps = (p: Plan | undefined): Plan | null =>
     p && p.steps.length > 0 ? p : null;
   switch (s.state) {
@@ -115,33 +111,208 @@ export function planOf(s: TurnState): Plan | null {
     case "executing":
       return withSteps(s.plan);
     case "awaiting-permission":
-      // A gate raised during `Planning` (before any plan exists) serialises
-      // without `plan` at all — fall back to `null` rather than `undefined`
-      // so callers can keep using `p ?? <prior plan>` uniformly.
       return withSteps(s.plan);
     default:
       return null;
   }
 }
 
-/** Whether a turn state is one nothing further will happen to — the run is
- *  over, however it ended. The one place that answers this, so a stopped
- *  turn's state counts exactly the way a completed or failed one already
- *  does everywhere this question is asked. */
 function isTerminal(state: TurnState["state"]): boolean {
   return state === "completed" || state === "failed" || state === "cancelled";
 }
 
+interface RunEntry {
+  runId: string;
+  sequence: number;
+  prompt: string;
+  agent: string;
+  state: TurnState;
+  plan: Plan | null;
+  stream: TurnItem[];
+  live: LiveTurn;
+  run: RunRecord | null;
+  reviewing: boolean;
+  settled: boolean;
+}
+
+type RunEntries = Record<string, RunEntry>;
+
+type RunAction =
+  | { type: "clear" }
+  | { type: "attach"; entry: RunEntry }
+  | { type: "event"; runId: string; event: RunEvent }
+  | { type: "cancel"; runId: string }
+  | { type: "remove"; runIds: ReadonlySet<string> };
+
+function entryFromSnapshot(snapshot: ActiveRunSnapshot): RunEntry {
+  return {
+    runId: snapshot.runId,
+    sequence: snapshot.sequence,
+    prompt: snapshot.prompt,
+    agent: snapshot.agent,
+    state: snapshot.state,
+    plan: snapshot.plan ?? planOf(snapshot.state),
+    stream: snapshot.stream,
+    live: snapshot.live,
+    run: null,
+    reviewing: snapshot.reviewing,
+    settled: isTerminal(snapshot.state.state),
+  };
+}
+
+function mergeStep(stream: TurnItem[], entry: ExecutionLogEntry): TurnItem[] {
+  const index = stream.findIndex(
+    (item) => item.kind === "step" && item.entry.toolUseId === entry.toolUseId,
+  );
+  if (index === -1) return [...stream, { kind: "step", entry }];
+  const next = [...stream];
+  next[index] = { kind: "step", entry };
+  return next;
+}
+
+function promoteLiveText(stream: TurnItem[], live: LiveTurn): TurnItem[] {
+  const text = live.text;
+  if (!text) return stream;
+  const last = stream[stream.length - 1];
+  if (last?.kind === "text" && last.text === text) return stream;
+  return [...stream, { kind: "text", text }];
+}
+
+function applyEvent(entry: RunEntry, event: RunEvent): RunEntry {
+  switch (event.event) {
+    case "snapshot":
+      // A recovery snapshot is an authoritative REPLACEMENT, including empty
+      // live channels and a shortened/rebuilt stream.
+      return entryFromSnapshot(event.snapshot);
+    case "state": {
+      const nextPlan = planOf(event.state);
+      return {
+        ...entry,
+        state: event.state,
+        plan: nextPlan ?? entry.plan,
+      };
+    }
+    case "assistant-text":
+      // Partial text is already represented by the replace-only live tail.
+      return event.partial
+        ? entry
+        : {
+            ...entry,
+            stream: [...entry.stream, { kind: "text", text: event.text }],
+          };
+    case "plan-proposed":
+      return { ...entry, plan: event.plan };
+    case "permission-card":
+      return {
+        ...entry,
+        state: {
+          state: "awaiting-permission",
+          ...(entry.plan ? { plan: entry.plan } : {}),
+          request: event.request,
+        },
+      };
+    case "question-asked":
+      return {
+        ...entry,
+        state: {
+          state: "awaiting-question",
+          ...(entry.plan ? { plan: entry.plan } : {}),
+          request: event.request,
+        },
+      };
+    case "log-entry":
+      return { ...entry, stream: mergeStep(entry.stream, event.entry) };
+    case "live":
+      return { ...entry, live: event.live };
+    case "reviewing":
+      return { ...entry, reviewing: true };
+    case "completed": {
+      // ACP may finish after sending only partial assistant-text frames. Their
+      // assembled prose lives solely in the replace-only live tail, so land it
+      // at the end before clearing that tail. An identical final text frame is
+      // already the last stream item and must remain a single message.
+      const stream = promoteLiveText(entry.stream, entry.live);
+      const landedRun = event.run ?? entry.run;
+      const run = landedRun
+        ? {
+            ...landedRun,
+            stream: promoteLiveText(landedRun.stream ?? entry.stream, entry.live),
+          }
+        : null;
+      return {
+        ...entry,
+        stream,
+        state: event.state,
+        live: {},
+        reviewing: false,
+        settled: true,
+        run,
+      };
+    }
+    default:
+      console.warn("[useRun] unhandled run event — tag drift?", event);
+      return entry;
+  }
+}
+
+function reducer(state: RunEntries, action: RunAction): RunEntries {
+  switch (action.type) {
+    case "clear":
+      return {};
+    case "attach":
+      return { ...state, [action.entry.runId]: action.entry };
+    case "event": {
+      const current = state[action.runId];
+      if (!current) {
+        if (action.event.event !== "snapshot") return state;
+        return {
+          ...state,
+          [action.runId]: entryFromSnapshot(action.event.snapshot),
+        };
+      }
+      const next = applyEvent(current, action.event);
+      if (next === current) return state;
+      return { ...state, [action.runId]: next };
+    }
+    case "cancel": {
+      const current = state[action.runId];
+      if (!current || isTerminal(current.state.state)) return state;
+      return {
+        ...state,
+        [action.runId]: {
+          ...current,
+          state: { state: "cancelled" },
+          live: {},
+          reviewing: false,
+          // Local Stop releases the surface immediately, but persistence is
+          // not confirmed until the terminal frame arrives.
+          settled: false,
+        },
+      };
+    }
+    case "remove": {
+      let changed = false;
+      const next = { ...state };
+      for (const runId of action.runIds) {
+        if (!(runId in next)) continue;
+        delete next[runId];
+        changed = true;
+      }
+      return changed ? next : state;
+    }
+  }
+}
+
+interface AttachedHandle {
+  handle: RunHandle;
+  unsubscribe: () => void;
+  /** False only for a fresh handle still awaiting its first server snapshot. */
+  authoritative: boolean;
+}
+
 /**
- * Manage a live run for one Task. A Task is a chat, so the Task is the only
- * owner a run can have. Calls `api.startRun`, subscribes to its event stream,
- * and folds each event into React state. Decisions go back through the
- * handle; the handle is closed on unmount and whenever the Task changes, so a
- * stale run can never bleed into the next surface.
- *
- * `studyId` is absent for an unfiled Task: it has no workspace, artifacts or
- * kernel, so there is nothing for a run to happen in. `start` says so by
- * refusing — the Task surface files the Task before it ever calls this.
+ * Own every live run for one Task. Handles are observer resources: Task
+ * changes and unmounts always `detach()`, never `close()`/cancel.
  */
 export function useRun(
   studyId: string | undefined,
@@ -149,167 +320,112 @@ export function useRun(
 ): UseRun {
   const api = useApi();
   const { taskId } = owner;
+  const [entries, dispatch] = useReducer(reducer, {});
+  const [pendingStarts, setPendingStarts] = useState(0);
+  const [startError, setStartError] = useState<RunStartError | null>(null);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const [recovering, setRecovering] = useState(false);
+  const controls = useRef(new Map<string, AttachedHandle>());
+  const epoch = useRef(0);
+  const recoveryAttempt = useRef(0);
 
-  const [state, setState] = useState<TurnState | null>(null);
-  const [messages, setMessages] = useState<string[]>([]);
-  const [prompt, setPrompt] = useState<string | null>(null);
-  const [plan, setPlan] = useState<Plan | null>(null);
-  const [pendingCard, setPendingCard] = useState<PermissionRequest | null>(
-    null,
-  );
-  const [pendingQuestion, setPendingQuestion] =
-    useState<QuestionRequest | null>(null);
-  const [log, setLog] = useState<ExecutionLogEntry[]>([]);
-  const [liveStream, setLiveStream] = useState<TurnItem[]>([]);
-  const [live, setLive] = useState<LiveTurn>({});
-  const [run, setRun] = useState<RunRecord | null>(null);
-  const [reviewing, setReviewing] = useState(false);
-
-  const handleRef = useRef<RunHandle | null>(null);
-  const unsubRef = useRef<(() => void) | null>(null);
-  // Bumped on every start/teardown so a slow `startRun` promise from a
-  // superseded run never attaches its listener.
-  const token = useRef(0);
-  // Releases whatever `cancel`'s own late-completion watch (below) is still
-  // holding — its own subscription on a handle `cancel` deliberately did NOT
-  // close yet, kept open so a genuine `completed` frame arriving after the
-  // daemon's own grace on the stop can still reach this surface. Set only
-  // while a watch is in flight; `teardown` calls it so a superseding
-  // start/reset/unmount can never leave that watch running past the surface
-  // it was watching for.
-  const graceCleanupRef = useRef<(() => void) | null>(null);
-
-  const teardown = useCallback(() => {
-    token.current += 1;
-    graceCleanupRef.current?.();
-    graceCleanupRef.current = null;
-    unsubRef.current?.();
-    unsubRef.current = null;
-    handleRef.current?.close();
-    handleRef.current = null;
+  const release = useCallback((runId: string) => {
+    const attached = controls.current.get(runId);
+    if (!attached) return;
+    controls.current.delete(runId);
+    attached.unsubscribe();
+    attached.handle.detach();
   }, []);
 
-  const onEvent = useCallback((e: RunEvent) => {
-    switch (e.event) {
-      case "state": {
-        setState(e.state);
-        const p = planOf(e.state);
-        if (p) setPlan(p);
-        setPendingCard(
-          e.state.state === "awaiting-permission" ? e.state.request : null,
-        );
-        setPendingQuestion(
-          e.state.state === "awaiting-question" ? e.state.request : null,
-        );
-        break;
-      }
-      case "assistant-text":
-        // Append ONLY whole messages. A partial fragment (`e.partial`) is
-        // already rendered from the `live` snapshot's `text` tail — appending it
-        // here too would paint one bubble per chunk AND duplicate the tail.
-        // The core re-emits the reassembled whole message with
-        // `partial: false` at the seam that ends the fragment run.
-        if (!e.partial) {
-          setMessages((m) => [...m, e.text]);
-          setLiveStream((s) => [...s, { kind: "text", text: e.text }]);
+  const detachAll = useCallback(() => {
+    for (const runId of [...controls.current.keys()]) release(runId);
+  }, [release]);
+
+  const attach = useCallback(
+    (handle: RunHandle, entry?: RunEntry) => {
+      const existing = controls.current.get(handle.runId);
+      if (existing) {
+        if (entry && !existing.authoritative) {
+          // Recovery authority replaces a fresh observer that has not yet
+          // received its snapshot. Keeping that observer would allow its late
+          // provisional stream to overwrite the recovered gate again.
+          release(handle.runId);
+        } else {
+          // Once the retained observer has delivered a snapshot, its reducer
+          // state may already include frames newer than a duplicate recovery
+          // response captured earlier. Keep that state and detach only the
+          // duplicate observer; dispatching its snapshot would rewind the run.
+          if (existing.handle !== handle) handle.detach();
+          return;
         }
-        break;
-      case "plan-proposed":
-        setPlan(e.plan);
-        break;
-      case "permission-card":
-        setPendingCard(e.request);
-        break;
-      case "question-asked":
-        setPendingQuestion(e.request);
-        break;
-      case "log-entry":
-        // The first frame creates the card at its arrival position. Later
-        // frames for the same ACP identity replace that card in place with a
-        // permission decision, result, or error without duplicating or moving
-        // it around prose that arrived in between.
-        setLog((log) => {
-          const index = log.findIndex((entry) => entry.toolUseId === e.entry.toolUseId);
-          if (index === -1) return [...log, e.entry];
-          const next = [...log];
-          next[index] = e.entry;
-          return next;
-        });
-        setLiveStream((stream) => {
-          const index = stream.findIndex(
-            (item) => item.kind === "step" && item.entry.toolUseId === e.entry.toolUseId,
-          );
-          if (index === -1) return [...stream, { kind: "step", entry: e.entry }];
-          const next = [...stream];
-          next[index] = { kind: "step", entry: e.entry };
-          return next;
-        });
-        break;
-      case "live":
-        // A snapshot REPLACES its predecessor — never merge or append.
-        setLive(e.live);
-        break;
-      case "reviewing":
-        // The turn finished executing; the Reviewer is now checking it. Cleared
-        // when the run lands (`completed`), or on reset/new turn.
-        setReviewing(true);
-        break;
-      case "completed":
-        setState(e.state);
-        setReviewing(false);
-        setPendingCard(null);
-        setPendingQuestion(null);
-        // The tail belongs to a turn that is over: whatever was in flight has
-        // already become a recorded message or a merged result. `liveStream`
-        // stays — the run's own `stream` takes over where it exists, and where
-        // it doesn't (a stream cut short) it is all the surface has.
-        setLive({});
-        if (e.run) setRun(e.run);
-        // The run is over — drop the event subscription so a finished run
-        // stops receiving the global run-event fan-out.
-        unsubRef.current?.();
-        unsubRef.current = null;
-        break;
-      default:
-        // The core's event tags must match the TS `RunEvent` union exactly.
-        // Without this arm a drifted tag is swallowed silently and the surface
-        // hangs at its last state ("Running…" forever) with no diagnostic.
-        console.warn("[useRun] unhandled run event — tag drift?", e);
-        break;
+      }
+
+      if (entry) dispatch({ type: "attach", entry });
+      // Install the control before subscribing because RunHandle permits an
+      // implementation to deliver its current frame synchronously from
+      // onEvent(). The wrapper lets release() win that race without leaking
+      // the unsubscribe function returned a moment later.
+      let unsubscribe: (() => void) | null = null;
+      controls.current.set(handle.runId, {
+        handle,
+        unsubscribe: () => unsubscribe?.(),
+        authoritative: entry !== undefined,
+      });
+      const subscribed = handle.onEvent((event) => {
+        if (event.event === "snapshot") {
+          const attached = controls.current.get(handle.runId);
+          if (attached?.handle === handle) attached.authoritative = true;
+        }
+        dispatch({ type: "event", runId: handle.runId, event });
+        if (
+          event.event === "completed" ||
+          (event.event === "snapshot" &&
+            isTerminal(event.snapshot.state.state))
+        )
+          release(handle.runId);
+      });
+      unsubscribe = subscribed;
+      if (!controls.current.has(handle.runId)) subscribed();
+    },
+    [release],
+  );
+
+  const resume = useCallback(async (): Promise<boolean> => {
+    const mine = epoch.current;
+    const attempt = ++recoveryAttempt.current;
+    setRecoveryError(null);
+    setRecovering(true);
+    let resumed;
+    try {
+      resumed = await api.resumeRuns(taskId);
+    } catch (error: unknown) {
+      if (mine !== epoch.current || attempt !== recoveryAttempt.current)
+        return false;
+      setRecoveryError(
+        error instanceof Error ? error.message : String(error),
+      );
+      setRecovering(false);
+      return false;
     }
-  }, []);
+    if (mine !== epoch.current || attempt !== recoveryAttempt.current) {
+      for (const handle of resumed) handle.detach();
+      return false;
+    }
+    for (const handle of resumed) attach(handle, entryFromSnapshot(handle.snapshot));
+    setRecoveryError(null);
+    setRecovering(false);
+    return true;
+  }, [api, taskId, attach]);
 
   const start = useCallback(
     (prompt: string, opts?: StartOptions) => {
       const trimmed = prompt.trim();
-      if (!trimmed) return;
-      // No Study, no workspace to run in. The Task surface files an unfiled
-      // Task on the first send and starts the turn once the Study has landed,
-      // so reaching here without one means the send raced its own filing —
-      // and starting anyway would run the turn nowhere.
-      if (studyId === undefined) return;
+      if (!trimmed || studyId === undefined) return;
+      const mine = epoch.current;
+      setPendingStarts((count) => count + 1);
+      setStartError(null);
 
-      teardown();
-      setState({ state: "planning" });
-      setMessages([]);
-      // The DISPLAYED prompt may differ from what's sent below (e.g. a
-      // stitched subagent hand-back) — see the `displayPrompt` doc above.
-      setPrompt((opts?.displayPrompt ?? prompt).trim());
-      setPlan(null);
-      setPendingCard(null);
-      setPendingQuestion(null);
-      setLog([]);
-      // A new turn starts empty: the previous turn's cards and its tail must
-      // not bleed into this one. This — not `teardown` — is where the live
-      // state is dropped, so a stopped turn keeps what it drew until the
-      // researcher actually moves on.
-      setLiveStream([]);
-      setLive({});
-      setRun(null);
-      setReviewing(false);
-
-      const mine = token.current;
-      api
+      void api
         .startRun({
           studyId,
           taskId,
@@ -321,169 +437,189 @@ export function useRun(
           },
         })
         .then((handle) => {
-          if (mine !== token.current) {
-            handle.close();
+          if (mine !== epoch.current) {
+            handle.detach();
             return;
           }
-          handleRef.current = handle;
-          unsubRef.current = handle.onEvent(onEvent);
+          // Fresh streams are snapshot-first, exactly like resumed streams.
+          // Until that authoritative frame arrives there is no durable
+          // sequence (or server-confirmed prompt/agent/state) to render.
+          attach(handle);
         })
-        .catch((err: unknown) => {
-          if (mine !== token.current) return;
-          setState({
-            state: "failed",
-            reason: err instanceof Error ? err.message : String(err),
+        .catch((error: unknown) => {
+          if (mine !== epoch.current) return;
+          setStartError({
+            message: error instanceof Error ? error.message : String(error),
+            prompt: (opts?.displayPrompt ?? prompt).trim(),
           });
+        })
+        .finally(() => {
+          if (mine === epoch.current)
+            setPendingStarts((count) => Math.max(0, count - 1));
         });
     },
-    [api, studyId, taskId, onEvent, teardown],
+    [api, studyId, taskId, attach],
   );
 
-  const submit = useCallback((decision: RunDecision) => {
-    handleRef.current?.submit(decision);
+  const submit = useCallback((runId: string, decision: RunDecision) => {
+    controls.current.get(runId)?.handle.submit(decision);
   }, []);
 
-  const approvePlan = useCallback(
-    () => submit({ action: "approve-plan" }),
+  const cancelById = useCallback(
+    (runId: string) => {
+      submit(runId, { action: "cancel" });
+      dispatch({ type: "cancel", runId });
+    },
     [submit],
   );
+
+  const reconcile = useCallback(
+    (persistedRunIds: ReadonlySet<string>) => {
+      for (const runId of persistedRunIds) release(runId);
+      dispatch({ type: "remove", runIds: persistedRunIds });
+    },
+    [release],
+  );
+
+  const reset = useCallback(() => {
+    epoch.current += 1;
+    recoveryAttempt.current += 1;
+    detachAll();
+    dispatch({ type: "clear" });
+    setPendingStarts(0);
+    setStartError(null);
+    setRecoveryError(null);
+    setRecovering(false);
+  }, [detachAll]);
+
+  // Task identity owns the observer lifetime. StrictMode's simulated cleanup
+  // takes the same path as navigation: detach every handle and invalidate any
+  // response that has not arrived yet, without cancelling a run.
+  useEffect(() => {
+    epoch.current += 1;
+    recoveryAttempt.current += 1;
+    const mine = epoch.current;
+    detachAll();
+    dispatch({ type: "clear" });
+    setPendingStarts(0);
+    setStartError(null);
+    setRecoveryError(null);
+    setRecovering(false);
+    return () => {
+      if (epoch.current === mine) epoch.current += 1;
+      detachAll();
+    };
+  }, [studyId, taskId, detachAll]);
+
+  const runs = useMemo<ManagedRun[]>(
+    () =>
+      Object.values(entries)
+        .sort((a, b) => a.sequence - b.sequence)
+        .map((entry) => ({
+          runId: entry.runId,
+          sequence: entry.sequence,
+          prompt: entry.prompt,
+          agent: entry.agent,
+          state: entry.state,
+          plan: entry.plan,
+          stream: entry.stream,
+          live: entry.live,
+          run: entry.run,
+          running: !isTerminal(entry.state.state),
+          reviewing: entry.reviewing,
+          settled: entry.settled,
+          messages: entry.stream
+            .filter((item): item is Extract<TurnItem, { kind: "text" }> => item.kind === "text")
+            .map((item) => item.text),
+          log: entry.stream
+            .filter((item): item is Extract<TurnItem, { kind: "step" }> => item.kind === "step")
+            .map((item) => item.entry),
+          pendingCard:
+            entry.state.state === "awaiting-permission"
+              ? entry.state.request
+              : null,
+          pendingQuestion:
+            entry.state.state === "awaiting-question"
+              ? entry.state.request
+              : null,
+          approvePlan: () => submit(entry.runId, { action: "approve-plan" }),
+          rejectPlan: (reason?: string) =>
+            submit(entry.runId, { action: "reject-plan", reason }),
+          decide: (requestId: string, decision: PermissionDecision) =>
+            submit(entry.runId, { action: "permission", requestId, decision }),
+          answerQuestion: (requestId: string, selected: string[]) =>
+            submit(entry.runId, {
+              action: "answer-question",
+              requestId,
+              answer: { selected },
+            }),
+          cancel: () => cancelById(entry.runId),
+        })),
+    [entries, submit, cancelById],
+  );
+
+  const latest = runs[runs.length - 1];
+  const cancel = useCallback(() => {
+    const runId = runs[runs.length - 1]?.runId;
+    if (runId) cancelById(runId);
+  }, [runs, cancelById]);
+  const approvePlan = useCallback(() => {
+    const runId = runs[runs.length - 1]?.runId;
+    if (runId) submit(runId, { action: "approve-plan" });
+  }, [runs, submit]);
   const rejectPlan = useCallback(
-    (reason?: string) => submit({ action: "reject-plan", reason }),
-    [submit],
+    (reason?: string) => {
+      const runId = runs[runs.length - 1]?.runId;
+      if (runId) submit(runId, { action: "reject-plan", reason });
+    },
+    [runs, submit],
   );
   const decide = useCallback(
-    (requestId: string, decision: PermissionDecision) =>
-      submit({ action: "permission", requestId, decision }),
-    [submit],
+    (requestId: string, decision: PermissionDecision) => {
+      const runId = runs[runs.length - 1]?.runId;
+      if (runId) submit(runId, { action: "permission", requestId, decision });
+    },
+    [runs, submit],
   );
   const answerQuestion = useCallback(
-    (requestId: string, selected: string[]) =>
-      submit({ action: "answer-question", requestId, answer: { selected } }),
-    [submit],
+    (requestId: string, selected: string[]) => {
+      const runId = runs[runs.length - 1]?.runId;
+      if (runId)
+        submit(runId, {
+          action: "answer-question",
+          requestId,
+          answer: { selected },
+        });
+    },
+    [runs, submit],
   );
-  // Stop a run and ALWAYS release the surface AT ONCE. The cancel is
-  // submitted so the core can end the turn its own way, but we also tear the
-  // stream down and end the turn locally: a run whose events stop arriving
-  // (dead stream, hung CLI, dropped tag) would otherwise pin `running` true
-  // forever, which disables the composer and silently swallows every later
-  // send — bricking the chat until a reload.
-  //
-  // The handle itself is not closed on the spot, though: a SECOND
-  // subscription, registered on the same handle (the render-driving one
-  // above is already gone), keeps watching for the turn's own genuine
-  // `completed` frame and adopts whatever `state` it carries once it
-  // arrives — including `unacknowledged: true`, when the daemon's own grace
-  // period on the stop ran out with the agent never confirming it (see
-  // `daemon/session.ts`'s `cancelTurn`, which is where that judgment is
-  // made — not here; this surface only ever reports what actually arrives).
-  // `teardown` releases this watch early if a later start/reset/unmount
-  // supersedes it before a `completed` frame ever does.
-  const cancel = useCallback(() => {
-    // Bumped directly here, since `cancel` does not route through
-    // `teardown`: `start`'s own in-flight `startRun` promise reads this
-    // token when it resolves, and a Stop pressed before that round-trip
-    // settles must make the late handle it hands back read as superseded —
-    // discarded via the `mine !== token.current` guard in `start` — rather
-    // than silently attached and resubscribed after the researcher already
-    // stopped the turn.
-    token.current += 1;
-    const handle = handleRef.current;
-    handleRef.current = null;
-    handle?.submit({ action: "cancel" });
-
-    unsubRef.current?.();
-    unsubRef.current = null;
-    setState((s) => (s === null || isTerminal(s.state) ? s : { state: "cancelled" }));
-    setPendingCard(null);
-    setPendingQuestion(null);
-
-    if (!handle || graceCleanupRef.current) return;
-    // Two guards, not one, against a completed frame an implementation
-    // delivers SYNCHRONOUSLY — inside the `handle.onEvent` call below,
-    // before it has returned `unwatch`'s own value at all. `settled` records
-    // that this already happened; the `if (settled) unwatch?.()` line right
-    // after the subscribe call is what actually reaches the now-assigned
-    // `unwatch` and releases it in that case — `finishWatch`'s own
-    // `unwatch?.()`, reached first, could only no-op that time, since
-    // `unwatch` was still `null` the moment such a callback fires.
-    let settled = false;
-    let unwatch: (() => void) | null = null;
-    const finishWatch = () => {
-      graceCleanupRef.current = null;
-      settled = true;
-      unwatch?.();
-      handle.close();
-    };
-    // Set before subscribing, not after: a synchronously-delivered completed
-    // frame (below) runs `finishWatch` — which clears this — before this
-    // line would otherwise get a chance to. Set first, so that clearing is
-    // the one that sticks either way.
-    graceCleanupRef.current = finishWatch;
-    unwatch = handle.onEvent((e) => {
-      if (e.event !== "completed") return;
-      finishWatch();
-      setState(e.state);
-      if (e.run) setRun(e.run);
-    });
-    if (settled) unwatch?.();
-  }, []);
-
-  // Tear the live run down and clear the surface — the "New" affordance. Any
-  // in-flight run is closed (best-effort cancel) by teardown.
-  const reset = useCallback(() => {
-    teardown();
-    setState(null);
-    setMessages([]);
-    setPrompt(null);
-    setPlan(null);
-    setPendingCard(null);
-    setPendingQuestion(null);
-    setLog([]);
-    setLiveStream([]);
-    setLive({});
-    setRun(null);
-    setReviewing(false);
-  }, [teardown]);
-
-  // Reset the visible surface whenever the Task changes.
-  useEffect(() => {
-    setState(null);
-    setMessages([]);
-    setPrompt(null);
-    setPlan(null);
-    setPendingCard(null);
-    setPendingQuestion(null);
-    setLog([]);
-    setLiveStream([]);
-    setLive({});
-    setRun(null);
-    setReviewing(false);
-  }, [studyId, taskId]);
-
-  // Tear down the live run on unmount / Task change.
-  useEffect(() => teardown, [studyId, taskId, teardown]);
-
-  const running = state !== null && !isTerminal(state.state);
 
   return {
-    state,
-    messages,
-    prompt,
-    plan,
-    pendingCard,
-    pendingQuestion,
-    log,
-    liveStream,
-    live,
-    run,
-    running,
-    reviewing,
+    runs,
+    starting: pendingStarts > 0,
+    startError,
+    recoveryError,
+    recovering,
+    resume,
+    reconcile,
     start,
+    reset,
+    state: latest?.state ?? null,
+    messages: latest?.messages ?? [],
+    prompt: latest?.prompt ?? null,
+    plan: latest?.plan ?? null,
+    pendingCard: latest?.pendingCard ?? null,
+    pendingQuestion: latest?.pendingQuestion ?? null,
+    log: latest?.log ?? [],
+    liveStream: latest?.stream ?? [],
+    live: latest?.live ?? {},
+    run: latest?.run ?? null,
+    running: latest?.running ?? false,
+    reviewing: latest?.reviewing ?? false,
     approvePlan,
     rejectPlan,
     decide,
     answerQuestion,
     cancel,
-    reset,
   };
 }

@@ -11,6 +11,7 @@ import {
   type CoreInfo,
   type Invite,
   type Member,
+  type RunHandle,
   type User,
 } from "./index";
 import * as areaExports from "./conformance";
@@ -19,6 +20,7 @@ import { ALL_AREAS, runContractConformance } from "./conformance";
 describe("UI ↔ core contract", () => {
   it("maps every command to its snake_case name", () => {
     expect(Commands.coreInfo).toBe("core_info");
+    expect(Commands.resumeRuns).toBe("resume_runs");
     for (const name of Object.values(Commands)) {
       expect(name).toMatch(/^[a-z][a-z0-9_]*$/);
     }
@@ -353,6 +355,38 @@ describe("in-memory run simulation", () => {
     });
   }
 
+  it("starts every fresh handle with its authoritative run snapshot", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = createInMemoryApi();
+      const [study] = await api.listStudies();
+      const task = (await api.getStudy(study.id)).tasks[0];
+      const handle = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "snapshot first",
+        options: { planMode: false },
+      });
+      const events: import("./run").RunEvent[] = [];
+      handle.onEvent((event) => events.push(event));
+
+      expect(events[0]).toEqual({
+        event: "snapshot",
+        snapshot: expect.objectContaining({
+          runId: handle.runId,
+          prompt: "snapshot first",
+          state: { state: "planning" },
+          lastEventSeq: 0,
+        }),
+      });
+
+      handle.close();
+      await vi.runAllTimersAsync();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("plan → approve → allow yields a completed run with an artifact", async () => {
     const events = await collect(true, true);
     const done = events.find((e) => e.event === "completed");
@@ -363,6 +397,355 @@ describe("in-memory run simulation", () => {
     // A card was shown and an execution-log entry recorded.
     expect(events.some((e) => e.event === "permission-card")).toBe(true);
     expect(events.some((e) => e.event === "log-entry")).toBe(true);
+  });
+
+  it("detach is observer-only: an immediate detach can resubscribe and still complete", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = createInMemoryApi();
+      const [study] = await api.listStudies();
+      const task = (await api.getStudy(study.id)).tasks[0];
+      const handle = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "run it",
+        options: { planMode: false },
+      });
+      handle.detach();
+
+      const events: import("./run").RunEvent[] = [];
+      handle.onEvent((event) => {
+        events.push(event);
+        if (event.event === "permission-card") {
+          handle.submit({
+            action: "permission",
+            requestId: event.request.id,
+            decision: { decision: "allow", scope: "once" },
+          });
+        }
+      });
+      await vi.runAllTimersAsync();
+
+      expect(events.some((event) => event.event === "permission-card")).toBe(true);
+      expect(events.some((event) => event.event === "completed")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("detaching a fresh handle leaves an overlapping resumed observer attached", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = createInMemoryApi();
+      const [study] = await api.listStudies();
+      const task = (await api.getStudy(study.id)).tasks[0];
+      const fresh = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "overlapping observers",
+        options: { planMode: false },
+      });
+      const [resumed] = await api.resumeRuns(task.id);
+      const events: import("./run").RunEvent[] = [];
+      resumed.onEvent((event) => {
+        events.push(event);
+        if (event.event === "permission-card") {
+          resumed.submit({
+            action: "permission",
+            requestId: event.request.id,
+            decision: { decision: "allow", scope: "once" },
+          });
+        }
+      });
+
+      fresh.detach();
+      await vi.runAllTimersAsync();
+
+      expect(events.some((event) => event.event === "permission-card")).toBe(true);
+      expect(events.some((event) => event.event === "completed")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closing a fresh handle still delivers terminal cancellation to a resumed observer", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = createInMemoryApi();
+      const [study] = await api.listStudies();
+      const task = (await api.getStudy(study.id)).tasks[0];
+      const fresh = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "shared cancellation",
+        options: { planMode: false },
+      });
+      const [resumed] = await api.resumeRuns(task.id);
+      const events: import("./run").RunEvent[] = [];
+      resumed.onEvent((event) => events.push(event));
+
+      fresh.close();
+      fresh.close();
+      const afterClose: import("./run").RunEvent[] = [];
+      fresh.onEvent((event) => afterClose.push(event));
+      await vi.runAllTimersAsync();
+
+      expect(afterClose).toEqual([]);
+      expect(events).toContainEqual({
+        event: "completed",
+        state: { state: "cancelled" },
+        run: expect.objectContaining({ status: "cancelled" }),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resumed observers advance their cursor before detach and resubscribe", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = createInMemoryApi();
+      const [study] = await api.listStudies();
+      const task = (await api.getStudy(study.id)).tasks[0];
+      const fresh = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "cursor ownership",
+        options: { planMode: false },
+      });
+      const [resumed] = await api.resumeRuns(task.id);
+      const first: import("./run").RunEvent[] = [];
+      resumed.onEvent((event) => first.push(event));
+      await vi.runAllTimersAsync();
+      expect(first.some((event) => event.event === "permission-card")).toBe(true);
+
+      resumed.detach();
+      const replayed: import("./run").RunEvent[] = [];
+      resumed.onEvent((event) => replayed.push(event));
+      expect(replayed).toEqual([]);
+
+      resumed.close();
+      fresh.detach();
+      await vi.runAllTimersAsync();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops synchronous replay when a resumed observer detaches from its first frame", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = createInMemoryApi();
+      const [study] = await api.listStudies();
+      const task = (await api.getStudy(study.id)).tasks[0];
+      const fresh = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "detach during replay",
+        options: { planMode: false },
+      });
+      const [resumed] = await api.resumeRuns(task.id);
+
+      // Let the source buffer several frames while this resumed handle still
+      // holds its original cursor, but before it owns an observer.
+      await vi.advanceTimersByTimeAsync(0);
+
+      const seen: import("./run").RunEvent[] = [];
+      resumed.onEvent((event) => {
+        seen.push(event);
+        resumed.detach();
+      });
+
+      expect(seen).toHaveLength(1);
+      fresh.close();
+      await vi.runAllTimersAsync();
+      expect(seen).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles concurrent turns in start sequence order when the second finishes first", async () => {
+    const api = createInMemoryApi(emptySeed());
+    const study = await api.createStudy({ title: "Concurrent", key: "CON" });
+    const task = await api.createTask({
+      studyId: study.id,
+      stage: "methods",
+      title: "keep turn order",
+    });
+    const first = await api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "first turn",
+      options: { planMode: false },
+    });
+    const second = await api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "second turn",
+      options: { planMode: false },
+    });
+
+    let secondRequestId = "";
+    const completionOrder: string[] = [];
+    let firstReady!: () => void;
+    let secondReady!: () => void;
+    let firstFinished!: () => void;
+    let secondFinished!: () => void;
+    const firstPermission = new Promise<void>((resolve) => (firstReady = resolve));
+    const secondPermission = new Promise<void>((resolve) => (secondReady = resolve));
+    const firstDone = new Promise<void>((resolve) => (firstFinished = resolve));
+    const secondDone = new Promise<void>((resolve) => (secondFinished = resolve));
+
+    first.onEvent((event) => {
+      if (event.event === "permission-card") {
+        firstReady();
+      }
+      if (event.event === "completed") {
+        completionOrder.push("first turn");
+        firstFinished();
+      }
+    });
+    second.onEvent((event) => {
+      if (event.event === "permission-card") {
+        secondRequestId = event.request.id;
+        secondReady();
+      }
+      if (event.event === "completed") {
+        completionOrder.push("second turn");
+        secondFinished();
+      }
+    });
+
+    await Promise.all([firstPermission, secondPermission]);
+    second.submit({
+      action: "permission",
+      requestId: secondRequestId,
+      decision: { decision: "allow", scope: "once" },
+    });
+    await secondDone;
+    first.submit({ action: "cancel" });
+    await firstDone;
+
+    expect(completionOrder).toEqual(["second turn", "first turn"]);
+    const detail = await api.getTask(task.id);
+    expect(
+      detail.turns.map((turn) => ({
+        prompt: turn.prompt,
+        sequence: turn.sequence,
+        status: turn.status,
+      })),
+    ).toEqual([
+      { prompt: "first turn", sequence: 1, status: "failed" },
+      { prompt: "second turn", sequence: 2, status: "ok" },
+    ]);
+    expect(detail.task.lastRunStatus).toBe("ok");
+  });
+
+  it("keeps an explicit Done written between sibling completions, then reopens for a new run", async () => {
+    const api = createInMemoryApi(emptySeed());
+    const study = await api.createStudy({ title: "Done race", key: "DONE" });
+    const task = await api.createTask({
+      studyId: study.id,
+      stage: "methods",
+      title: "preserve explicit done",
+    });
+    const first = await api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "first sibling",
+      options: { planMode: false },
+    });
+    const second = await api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "second sibling",
+      options: { planMode: false },
+    });
+
+    const permissionFor = (handle: RunHandle) =>
+      new Promise<string>((resolve) => {
+        handle.onEvent((event) => {
+          if (event.event === "permission-card") resolve(event.request.id);
+        });
+      });
+    const completionFor = (handle: RunHandle) =>
+      new Promise<void>((resolve) => {
+        handle.onEvent((event) => {
+          if (event.event === "completed") resolve();
+        });
+      });
+    const firstPermission = permissionFor(first);
+    const secondPermission = permissionFor(second);
+    const firstDone = completionFor(first);
+    const secondDone = completionFor(second);
+    first.submit({
+      action: "permission",
+      requestId: await firstPermission,
+      decision: { decision: "allow", scope: "once" },
+    });
+    await firstDone;
+    await api.updateTask(task.id, { status: "done" });
+    second.submit({
+      action: "permission",
+      requestId: await secondPermission,
+      decision: { decision: "allow", scope: "once" },
+    });
+    await secondDone;
+    expect((await api.getTask(task.id)).task.status).toBe("done");
+
+    const third = await api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "new work after done",
+      options: { planMode: false },
+    });
+    const thirdPermission = permissionFor(third);
+    const thirdDone = completionFor(third);
+    third.submit({
+      action: "permission",
+      requestId: await thirdPermission,
+      decision: { decision: "allow", scope: "once" },
+    });
+    await thirdDone;
+    expect((await api.getTask(task.id)).task.status).toBe("in-review");
+  });
+
+  it("an immediate close settles the turn without leaving a resumable ghost", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = createInMemoryApi(emptySeed());
+      const study = await api.createStudy({ title: "Close", key: "CLS" });
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "close before start",
+      });
+      const handle = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "do not start",
+        options: { planMode: false },
+      });
+      const seen: import("./run").RunEvent[] = [];
+      handle.onEvent((event) => seen.push(event));
+
+      handle.close();
+      await vi.runAllTimersAsync();
+
+      expect(seen).toEqual([
+        expect.objectContaining({
+          event: "snapshot",
+          snapshot: expect.objectContaining({ runId: handle.runId }),
+        }),
+      ]);
+      expect(await api.resumeRuns(task.id)).toEqual([]);
+      expect((await api.getTask(task.id)).turns.map((turn) => turn.runId)).toEqual([
+        handle.runId,
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejecting the plan fails the run before any card", async () => {
@@ -1048,6 +1431,86 @@ describe("subagent delegation (in-memory)", () => {
     // not a chat of its own.
     expect((await api.getStudy(study.id)).tasks.length).toBe(before);
   });
+
+  it("reserves a delegated child's sequence before it can finish ahead of its live parent", async () => {
+    const api = createInMemoryApi(emptySeed());
+    const study = await api.createStudy({ title: "Chronology", key: "CHR" });
+    const task = await api.createTask({
+      studyId: study.id,
+      stage: "methods",
+      title: "interleave parent and child",
+    });
+    const finish = async (handle: RunHandle) => {
+      let requestId = "";
+      await new Promise<void>((resolve) => {
+        handle.onEvent((event) => {
+          if (event.event === "permission-card") {
+            requestId = event.request.id;
+            handle.submit({
+              action: "permission",
+              requestId,
+              decision: { decision: "allow", scope: "once" },
+            });
+          }
+          if (event.event === "completed") resolve();
+        });
+      });
+    };
+
+    const baseline = await api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "baseline turn",
+      options: { planMode: false },
+    });
+    await finish(baseline);
+
+    const parent = await api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "live parent",
+      options: { planMode: false },
+    });
+    let parentPermission = "";
+    let parentFinished!: () => void;
+    const parentDone = new Promise<void>((resolve) => (parentFinished = resolve));
+    await new Promise<void>((resolve) => {
+      parent.onEvent((event) => {
+        if (event.event === "permission-card") {
+          parentPermission = event.request.id;
+          resolve();
+        }
+        if (event.event === "completed") parentFinished();
+      });
+    });
+    const [liveParent] = await api.resumeRuns(task.id);
+    expect(liveParent.snapshot.sequence).toBe(2);
+
+    const child = await api.delegateSubagent({
+      studyId: study.id,
+      taskId: task.id,
+      parentRunId: parent.runId,
+      persona: {
+        name: "Statistician",
+        description: "Checks the analysis",
+        systemPrompt: "Check the analysis.",
+        tools: ["Read"],
+      },
+      task: "finish before the parent",
+      options: { planMode: false },
+    });
+    await finish(child);
+
+    const childTurn = (await api.getTask(task.id)).turns.find(
+      (turn) => turn.runId === child.runId,
+    );
+    expect(childTurn?.sequence).toBe(3);
+    expect(childTurn!.sequence).toBeGreaterThan(liveParent.snapshot.sequence);
+
+    parent.submit({ action: "cancel" });
+    await parentDone;
+    expect(parentPermission).not.toBe("");
+  });
 });
 
 describe("assignees", () => {
@@ -1421,7 +1884,8 @@ it("runs every area the suite defines against somebody", () => {
         name !== "runContractConformance" &&
         name !== "rolesConformance" &&
         name !== "unknownRunConformance" &&
-        name !== "runDecisionConformance",
+        name !== "runDecisionConformance" &&
+        name !== "runResumeConformance",
     )
     .map(([, fn]) => fn);
   expect(exported).toHaveLength(ALL_AREAS.length);

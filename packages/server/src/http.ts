@@ -11,13 +11,22 @@ import { handleDaemonRoute, resolveMachine } from "./routes/daemon-routes";
 import { readCookie, resolveActor, SESSION_COOKIE } from "./auth";
 import { createWorkspaceApi } from "./api/index";
 import { changeRecorder } from "./api/changes";
-import { isLykeionError, type RunEventFrame } from "@lykeion/api";
+import { isLykeionError, type ActiveRunSnapshot, type RunEventFrame } from "@lykeion/api";
 import { dispatch, rpcMethods } from "./rpc";
 import type { Store } from "./store/store";
 import { createChannel, type Channel, type Send } from "./channel";
 import { createRunRelay, type RunCommand, type RunRelay } from "./run-relay";
 import { failDroppedRuns } from "./run-recovery";
-import { addGrant, recordRunFrames, runtimeForTurn, runtimeOwnerForTurn, sessionForTurn } from "./store/sessions";
+import {
+  activeRunIdsForRuntime,
+  addGrant,
+  recordRunFrames,
+  RunFrameSequenceGapError,
+  runSnapshot,
+  runtimeForTurn,
+  runtimeOwnerForTurn,
+  sessionForTurn,
+} from "./store/sessions";
 
 const MAX_BODY = 1024 * 1024;
 
@@ -296,9 +305,24 @@ export function createRequestListener(deps: {
           const machine = resolveMachine(store, req.headers.authorization);
           if (!machine) return sendJson(res, 401, { error: "no such machine" });
           const rawRunIds = (body as { runIds?: unknown } | null)?.runIds;
+          const reportedGeneration = (body as { generation?: unknown } | null)?.generation;
+          const reportedCommandCursor = (body as { commandCursor?: unknown } | null)?.commandCursor;
           const runIds = Array.isArray(rawRunIds)
             ? rawRunIds.filter((id): id is string => typeof id === "string")
             : [];
+          const acknowledgedCommandSeq =
+            reportedGeneration === runs.generation &&
+            typeof reportedCommandCursor === "number" &&
+            Number.isSafeInteger(reportedCommandCursor) &&
+            reportedCommandCursor >= 0
+              ? reportedCommandCursor
+              : undefined;
+          // A cursor has meaning only inside the relay generation that
+          // numbered it. Missing/mismatched generation means a new daemon or
+          // server process, not "same relay, acknowledged through zero".
+          // Reconcile can still protect a start the surviving relay knows was
+          // never delivered, but must fail one the previous daemon received
+          // and then lost instead of replaying provider work into its restart.
           // Run ids are sequential and guessable — `run_<seq>` off one
           // workspace-wide counter — so a machine's own valid bearer token
           // proves only that some paired machine is calling, not that every
@@ -320,10 +344,30 @@ export function createRequestListener(deps: {
           const reported = runIds.map((runId) => ({ runId, owner: runtimeForTurn(store, runId) }));
           if (reported.some(({ owner }) => owner !== undefined && owner !== machine.runtimeId))
             return sendJson(res, 403, { error: "this machine does not own every run it reported" });
-          const owned = reported.filter(({ owner }) => owner !== undefined).map(({ runId }) => runId);
-          const dropped = runs.reconcile(machine.runtimeId, owned);
+          const durableActive = activeRunIdsForRuntime(store, machine.runtimeId);
+          const durableActiveSet = new Set(durableActive);
+          const retireRunIds = reported
+            .filter(
+              ({ owner, runId }) =>
+                owner === undefined ||
+                (owner === machine.runtimeId && !durableActiveSet.has(runId)),
+            )
+            .map(({ runId }) => runId);
+          const ownedActive = reported
+            .filter(({ owner, runId }) => owner !== undefined && durableActiveSet.has(runId))
+            .map(({ runId }) => runId);
+          const dropped = runs.reconcile(
+            machine.runtimeId,
+            ownedActive,
+            durableActive,
+            acknowledgedCommandSeq,
+          );
           failDroppedRuns(store, runs, machine.runtimeId, dropped, now());
-          return sendJson(res, 200, { ok: true });
+          return sendJson(res, 200, {
+            ok: true,
+            generation: runs.generation,
+            ...(retireRunIds.length === 0 ? {} : { retireRunIds }),
+          });
         }
         if (path === "/daemon/run/events") {
           const machine = resolveMachine(store, req.headers.authorization);
@@ -351,8 +395,15 @@ export function createRequestListener(deps: {
           // straight back out must already find it there, and a batch that
           // fails partway through must not leave part of it durable while
           // none of it was ever published to a browser watching live.
-          store.tx(() => recordRunFrames(store, runId, frames, now()));
-          runs.publish(runId, frames);
+          let accepted: RunEventFrame[];
+          try {
+            accepted = store.tx(() => recordRunFrames(store, runId, frames, now()));
+          } catch (error) {
+            if (error instanceof RunFrameSequenceGapError)
+              return sendJson(res, 409, { error: error.message });
+            throw error;
+          }
+          runs.publish(runId, accepted);
           return sendJson(res, 200, { ok: true });
         }
         if (path === "/daemon/run/grant") {
@@ -485,32 +536,12 @@ export function createRequestListener(deps: {
         });
         res.flushHeaders();
 
-        // A run's whole transcript lives in this stream — there is no
-        // earlier call, the way `/rpc/` is for `/events`, that already
-        // handed a fresh page the run's history. So an absent cursor means
-        // "replay everything this run's buffer still holds," the same as an
-        // explicit cursor of `0`, not "nothing until the next frame" — what
-        // an absent cursor means on every other stream in this file. A
-        // browser opening a run's page for the first time, whether the run
-        // is still going or finished before it ever arrived, is the
-        // ordinary case here, not a reload, so `Number(null)` already
-        // reading as `0` is exactly the default this route wants.
-        //
-        // `Last-Event-ID` takes priority over the query parameter, the same
-        // way `/events` reads it below: it is what the browser's own
-        // `EventSource` resends on an unprompted reconnect, and a route that
-        // only read the query parameter would answer that reconnect with a
-        // full replay — duplicating every line of prose already on screen —
-        // instead of resuming where the connection actually left off.
-        const header = req.headers["last-event-id"];
-        const fromHeader = typeof header === "string" && header !== "" ? Number(header) : NaN;
-        const rawQuery = url.searchParams.get("cursor");
-        const fromQuery = rawQuery === null ? NaN : Number(rawQuery);
-        const cursor = Number.isInteger(fromHeader)
-          ? fromHeader
-          : Number.isInteger(fromQuery)
-            ? fromQuery
-            : 0;
+        // Every connection, first or resumed, begins from the latest durable
+        // snapshot. A browser-held cursor can describe only what that one
+        // browser saw; it is never more authoritative than the transactionally
+        // persisted frame cursor, and replaying the relay directly on a fresh
+        // connection would make fresh and resumed clients observe different
+        // histories for the same run.
 
         let detach: (() => void) | undefined;
         let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -530,7 +561,13 @@ export function createRequestListener(deps: {
           } catch {
             return end();
           }
-          if (frame.event.event !== "completed") return;
+          const terminalSnapshot =
+            frame.event.event === "snapshot" &&
+            (frame.event.snapshot.state.state === "completed" ||
+              frame.event.snapshot.state.state === "failed" ||
+              frame.event.snapshot.state.state === "cancelled");
+          if (frame.event.event !== "completed" && !terminalSnapshot) return;
+          if (terminalSnapshot) runs.markEnded(runId);
           settled = true;
           try {
             res.write(`event: end\ndata: {}\n\n`);
@@ -543,15 +580,40 @@ export function createRequestListener(deps: {
 
         openStreams.add(end);
         req.on("close", end);
-        detach = runs.subscribe(runId, cursor, send);
-        // A cursor's replay can itself reach the run's `completed` frame
-        // synchronously, inside the call above — before `detach` here has
-        // even been assigned, so `end`'s own `detach?.()` was a no-op the
-        // one time it mattered. Finish what it started now that `detach`
-        // exists: without this, a browser opening an already-finished run's
-        // page would sit in that run's subscriber set forever, and a buffer
-        // with a subscriber still attached is never eligible to age out.
-        if (settled) detach();
+        // Subscribe without replay before reading storage. Frames persisted
+        // and published while the authoritative snapshot is being read sit
+        // behind this gate; once the snapshot cursor is known, only frames
+        // strictly after it are released. The same ordering applies to a
+        // fresh stream: its initial snapshot and first live frame cannot race.
+        const queued: RunEventFrame[] = [];
+        let gated = true;
+        detach = runs.subscribe(runId, undefined, (frame) => {
+          if (gated) queued.push(frame);
+          else send(frame);
+        });
+        const stored = runSnapshot(store, runId);
+        if (!stored) {
+          end();
+          return;
+        }
+        const {
+          sessionId: _sessionId,
+          runtimeId: _runtimeId,
+          openedBy: _openedBy,
+          ...publicSnapshot
+        } = stored;
+        const snapshot: ActiveRunSnapshot = publicSnapshot;
+        send({
+          seq: snapshot.lastEventSeq,
+          event: { event: "snapshot", snapshot },
+        });
+        if (!settled) {
+          gated = false;
+          for (const frame of queued) {
+            if (frame.seq > snapshot.lastEventSeq) send(frame);
+            if (settled) break;
+          }
+        }
         if (res.writableEnded) return;
 
         heartbeat = setInterval(() => {

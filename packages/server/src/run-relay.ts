@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { RunDecision, RunEventFrame } from "@lykeion/api";
 import type { StandingGrant } from "./store/sessions";
 
@@ -75,6 +76,10 @@ interface RunBuffer {
 }
 
 export interface RunRelay {
+  /** Identifies this one relay process. A daemon that reconnects to a new
+   *  generation must discard its old command cursor because command
+   *  sequences are process-local and restart from one. */
+  readonly generation: string;
   /** Queues one command for a runtime, assigning it the next seq in that
    *  runtime's own sequence, and delivers it at once to whatever is
    *  currently attached — which is also the moment a `start-run` among them
@@ -89,10 +94,16 @@ export interface RunRelay {
    *  detaches it — a no-op once a later `attach` for the same runtime has
    *  already taken its place. */
   attach(runtimeId: string, send: (seq: number, c: RunCommand) => void): () => void;
-  /** Reconciles what a runtime reports holding against what this relay
-   *  believes it holds, replacing the belief with the report and returning
-   *  the run ids that were believed live but are absent from it. */
-  reconcile(runtimeId: string, liveRunIds: string[]): string[];
+  /** Reconciles what a runtime reports holding against both this relay's
+   *  process-local belief and durable active rows. A queued `start-run` that
+   *  has not reached a command stream yet is excluded from the comparison:
+   *  the reporting daemon cannot have lost work it was never handed. */
+  reconcile(
+    runtimeId: string,
+    liveRunIds: string[],
+    durableRunIds?: string[],
+    acknowledgedCommandSeq?: number,
+  ): string[];
   /** Appends a run's event frames to its ring buffer and forwards them to
    *  every current subscriber. A `completed` frame retires the run from its
    *  runtime's live set, drops that run's now-unneeded commands from the
@@ -107,6 +118,11 @@ export interface RunRelay {
    *  that unsubscribes — which, for a run that has already finished, makes
    *  its buffer eligible to age out once nothing else is still attached. */
   subscribe(runId: string, cursor: number | undefined, send: (f: RunEventFrame) => void): () => void;
+  /** Marks a buffer terminal when durability, rather than this relay process,
+   *  supplied the ending (for example a settled snapshot after restart).
+   *  This keeps an empty buffer created by that reader eligible for the same
+   *  bounded retirement policy as one ended by `publish`. */
+  markEnded(runId: string): void;
   /** The run ids a runtime is currently believed to be holding. */
   liveFor(runtimeId: string): string[];
   /** The seq a caller synthesizing a frame this relay did not itself number
@@ -120,6 +136,7 @@ export interface RunRelay {
 }
 
 export function createRunRelay(): RunRelay {
+  const generation = randomUUID();
   const runtimes = new Map<string, RuntimeQueue>();
   const runs = new Map<string, RunBuffer>();
   /** Which runtime a still-live run belongs to, so a `completed` frame
@@ -169,6 +186,7 @@ export function createRunRelay(): RunRelay {
   }
 
   return {
+    generation,
     enqueue(runtimeId, command) {
       const queue = queueFor(runtimeId);
       queue.seq += 1;
@@ -201,10 +219,33 @@ export function createRunRelay(): RunRelay {
       };
     },
 
-    reconcile(runtimeId, liveRunIds) {
+    reconcile(
+      runtimeId,
+      liveRunIds,
+      durableRunIds = [],
+      acknowledgedCommandSeq = Number.POSITIVE_INFINITY,
+    ) {
       const queue = queueFor(runtimeId);
       const reported = new Set(liveRunIds);
-      const dropped = [...queue.live].filter((runId) => !reported.has(runId));
+      const unacknowledgedStarts = new Set(
+        queue.commands
+          .filter(
+            ({ seq, command }) =>
+              command.type === "start-run" &&
+              (!queue.live.has(command.runId) || seq > acknowledgedCommandSeq),
+          )
+          .map(({ command }) => command.runId),
+      );
+      const expected = new Set([...queue.live, ...durableRunIds]);
+      const dropped = [...expected].filter(
+        (runId) => !reported.has(runId) && !unacknowledgedStarts.has(runId),
+      );
+      // A rebuilt relay learns active runs from the daemon rather than from
+      // locally enqueued start commands. Restore the same reverse binding a
+      // start command would have established so a later terminal frame can
+      // retire the live id and every resumed decision/cancel for that run.
+      for (const runId of expected) runtimeOfRun.set(runId, runtimeId);
+      for (const runId of reported) runtimeOfRun.set(runId, runtimeId);
       queue.live = reported;
       return dropped;
     },
@@ -250,6 +291,12 @@ export function createRunRelay(): RunRelay {
         buffer.subscribers.delete(send);
         retireIfDone(runId, buffer);
       };
+    },
+
+    markEnded(runId) {
+      const buffer = bufferFor(runId);
+      buffer.ended = true;
+      retireIfDone(runId, buffer);
     },
 
     liveFor(runtimeId) {

@@ -1,19 +1,24 @@
-import { LykeionError, type LykeionApi } from "@lykeion/api";
+import { LykeionError, type ActiveRunSnapshot, type LykeionApi } from "@lykeion/api";
 import type { Deps } from "./index";
 import type { Store } from "../store/store";
 import { healthFor } from "../runtime-health";
 import {
   openSession,
+  activeRunSnapshotsForTask,
   liveSessionFor,
   recordTurn,
   listGrants,
   runtimeForTurn,
   runtimeOwnerForTurn,
+  runSnapshot,
   turnsForTask,
 } from "../store/sessions";
 import type { RunCommand } from "../run-relay";
 
-export type SessionsApi = Pick<LykeionApi, "startRun" | "submitRunDecision" | "runHistory">;
+export type SessionsApi = Pick<
+  LykeionApi,
+  "startRun" | "resumeRuns" | "submitRunDecision" | "runHistory"
+>;
 
 interface ResolvedRuntime {
   runtimeId: string;
@@ -21,6 +26,10 @@ interface ResolvedRuntime {
   name: string;
   lastSeenTs: number;
   agent: string;
+}
+
+function turnIsActive(store: Store, runId: string): boolean {
+  return store.get(`SELECT ended_ts FROM turns WHERE id = ?`, [runId])?.ended_ts === null;
 }
 
 /**
@@ -114,6 +123,15 @@ export function sessionsApi(deps: Deps): SessionsApi {
           prompt: input.prompt,
           startedTs: ts,
         });
+        // A new run deliberately reopens a Task that was already Done. This
+        // makes it safe for finishTurn to preserve a newer Done written while
+        // an older sibling was still live.
+        store.run(
+          `UPDATE tasks
+              SET status = 'in-progress', updated_ts = ?
+            WHERE id = ? AND status = 'done'`,
+          [ts, input.taskId],
+        );
         return { runId, sessionId };
       });
 
@@ -128,6 +146,14 @@ export function sessionsApi(deps: Deps): SessionsApi {
         ...(grants.length > 0 ? { grants } : {}),
       };
       runs.enqueue(resolved.runtimeId, command);
+      const subscriptions = new Set<() => void>();
+      let closed = false;
+      let terminal = false;
+
+      const detach = () => {
+        for (const unsubscribe of subscriptions) unsubscribe();
+        subscriptions.clear();
+      };
 
       return {
         runId,
@@ -138,13 +164,59 @@ export function sessionsApi(deps: Deps): SessionsApi {
         // process, holding the object `startRun` actually returned, rather
         // than whatever survived a round trip through JSON.
         onEvent(cb) {
-          return runs.subscribe(runId, undefined, (frame) => cb(frame.event));
+          if (closed) return () => {};
+          const stored = runSnapshot(store, runId);
+          if (!stored) throw new LykeionError("not-found", `no such run: ${runId}`);
+          const {
+            sessionId: _sessionId,
+            runtimeId: _runtimeId,
+            openedBy: _openedBy,
+            ...snapshot
+          } = stored;
+          const pending: Array<Parameters<typeof cb>[0]> = [];
+          let snapshotDelivered = false;
+          let subscribed = true;
+          let unsubscribe: (() => void) | undefined;
+          const release = () => {
+            if (!subscribed) return;
+            subscribed = false;
+            subscriptions.delete(release);
+            unsubscribe?.();
+          };
+          // Own the observer before entering the relay: its buffered replay
+          // is synchronous, and user callbacks may detach/close re-entrantly.
+          subscriptions.add(release);
+          try {
+            unsubscribe = runs.subscribe(runId, snapshot.lastEventSeq, (frame) => {
+              if (!subscribed || closed) return;
+              if (frame.event.event === "completed") terminal = true;
+              if (!snapshotDelivered) pending.push(frame.event);
+              else cb(frame.event);
+            });
+            if (!subscribed) unsubscribe();
+            cb({ event: "snapshot", snapshot });
+            snapshotDelivered = true;
+            for (const event of pending) {
+              if (!subscribed || closed) break;
+              cb(event);
+            }
+          } catch (error) {
+            release();
+            throw error;
+          }
+          return release;
         },
         submit(decision) {
+          if (closed || terminal || !turnIsActive(store, runId)) return;
           runs.enqueue(resolved.runtimeId, { type: "decision", runId, decision });
         },
+        detach,
         close() {
-          runs.enqueue(resolved.runtimeId, { type: "cancel", runId });
+          if (closed) return;
+          closed = true;
+          detach();
+          if (!terminal && turnIsActive(store, runId))
+            runs.enqueue(resolved.runtimeId, { type: "cancel", runId });
         },
       };
     },
@@ -164,6 +236,71 @@ export function sessionsApi(deps: Deps): SessionsApi {
       }));
     },
 
+    async resumeRuns(taskId) {
+      return activeRunSnapshotsForTask(store, taskId)
+        .filter((stored) => runtimeOwnerForTurn(store, stored.runId) === actor.userId)
+        .map((stored) => {
+          const { sessionId: _sessionId, runtimeId, openedBy: _openedBy, ...publicSnapshot } = stored;
+          const snapshot: ActiveRunSnapshot = publicSnapshot;
+          const subscriptions = new Set<() => void>();
+          let cursor = snapshot.lastEventSeq;
+          let closed = false;
+          let terminal = false;
+          const detach = () => {
+            for (const unsubscribe of subscriptions) unsubscribe();
+            subscriptions.clear();
+          };
+          return {
+            runId: snapshot.runId,
+            snapshot,
+            onEvent(cb) {
+              if (closed) return () => {};
+              let subscribed = true;
+              let unsubscribe: (() => void) | undefined;
+              const release = () => {
+                if (!subscribed) return;
+                subscribed = false;
+                subscriptions.delete(release);
+                unsubscribe?.();
+              };
+              // Relay replay is synchronous. Register this release before it
+              // begins so detach/close from the first replayed frame owns the
+              // subscription, then remove the inner observer once available.
+              subscriptions.add(release);
+              try {
+                unsubscribe = runs.subscribe(
+                  snapshot.runId,
+                  cursor,
+                  (frame) => {
+                    if (!subscribed || closed) return;
+                    cursor = Math.max(cursor, frame.seq);
+                    if (frame.event.event === "completed") terminal = true;
+                    cb(frame.event);
+                  },
+                );
+              } catch (error) {
+                release();
+                throw error;
+              }
+              if (!subscribed) unsubscribe();
+              return release;
+            },
+            submit(decision) {
+              if (closed || terminal || !turnIsActive(store, snapshot.runId)) return;
+              runs.enqueue(runtimeId, { type: "decision", runId: snapshot.runId, decision });
+            },
+            detach,
+            close() {
+              if (closed) return;
+              closed = true;
+              detach();
+              if (!terminal && turnIsActive(store, snapshot.runId))
+                runs.enqueue(runtimeId, { type: "cancel", runId: snapshot.runId });
+            },
+          };
+        });
+    },
+
     async submitRunDecision(runId, decision) {
       // One check, not two: an id nobody holds a turn for and an id whose
       // turn belongs to somebody else's machine answer identically. Run ids
@@ -175,6 +312,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
           "forbidden",
           `run ${runId} does not belong to a machine you own`,
         );
+      if (!turnIsActive(store, runId)) return;
       // Refused by name here, on the way in, rather than narrowed to
       // something the researcher did not ask for: a "global" scope means
       // every Study this lab holds, and the grant store this lab keeps is

@@ -1,5 +1,13 @@
-import type { RunEventFrame, TaskTurn, TurnItem } from "@lykeion/api";
-import type { Store } from "./store";
+import type {
+  ActiveRunSnapshot,
+  LiveTurn,
+  Plan,
+  RunEventFrame,
+  TaskTurn,
+  TurnItem,
+  TurnState,
+} from "@lykeion/api";
+import type { Row, Store } from "./store";
 import { nextSeq } from "./migrations";
 
 /** A folder a Study's owner has granted standing access to on one runtime.
@@ -8,6 +16,53 @@ import { nextSeq } from "./migrations";
 export interface StandingGrant {
   path: string;
   mode: "read" | "write";
+}
+
+interface RecoverySnapshotV1 {
+  version: 1;
+  state: TurnState;
+  plan?: Plan;
+  stream: TurnItem[];
+  live: LiveTurn;
+  reviewing: boolean;
+}
+
+export class RunFrameSequenceGapError extends Error {}
+
+/** An authoritative run snapshot plus the durable session ownership Task 2
+ *  needs to authorize and reconnect its transport. */
+export interface StoredRunSnapshot extends ActiveRunSnapshot {
+  sessionId: string;
+  runtimeId: string;
+  openedBy: string;
+}
+
+const INITIAL_RECOVERY: RecoverySnapshotV1 = {
+  version: 1,
+  state: { state: "planning" },
+  stream: [],
+  live: {},
+  reviewing: false,
+};
+
+function parseRecovery(raw: string): RecoverySnapshotV1 {
+  const parsed = JSON.parse(raw) as Partial<RecoverySnapshotV1>;
+  if (parsed.version !== 1)
+    throw new Error(`unsupported turn recovery snapshot version: ${String(parsed.version)}`);
+  return parsed as RecoverySnapshotV1;
+}
+
+function planCarriedBy(state: TurnState): Plan | undefined {
+  switch (state.state) {
+    case "awaiting-plan-approval":
+    case "executing":
+      return state.plan;
+    case "awaiting-permission":
+    case "awaiting-question":
+      return state.plan;
+    default:
+      return undefined;
+  }
 }
 
 /** Opens a fresh session and returns its id. */
@@ -130,9 +185,19 @@ export function recordTurn(
   const seq = nextSeq(store);
   const id = `run_${seq}`;
   store.run(
-    `INSERT INTO turns (id, session_id, task_id, prompt, started_ts, status, seq)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, params.sessionId, params.taskId, params.prompt, params.startedTs, "running", seq],
+    `INSERT INTO turns
+       (id, session_id, task_id, prompt, started_ts, status, seq, last_frame_seq, recovery_snapshot)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+    [
+      id,
+      params.sessionId,
+      params.taskId,
+      params.prompt,
+      params.startedTs,
+      "running",
+      seq,
+      JSON.stringify(INITIAL_RECOVERY),
+    ],
   );
   return id;
 }
@@ -153,11 +218,36 @@ export function finishTurn(
   turnId: string,
   params: { endedTs: number; status: TurnStatus },
 ): void {
-  store.run(`UPDATE turns SET ended_ts = ?, status = ? WHERE id = ?`, [
-    params.endedTs,
-    params.status,
-    turnId,
-  ]);
+  store.tx(() => {
+    const turn = store.get(`SELECT task_id, ended_ts FROM turns WHERE id = ?`, [turnId]);
+    if (!turn || turn.ended_ts !== null) return;
+    store.run(`UPDATE turns SET ended_ts = ?, status = ? WHERE id = ?`, [
+      params.endedTs,
+      params.status,
+      turnId,
+    ]);
+    const latestSettled = store.get(
+      `SELECT status
+         FROM turns
+        WHERE task_id = ? AND ended_ts IS NOT NULL
+        ORDER BY seq DESC
+        LIMIT 1`,
+      [turn.task_id],
+    );
+    const taskRunStatus = latestSettled?.status === "ok" ? "ok" : "failed";
+    store.run(
+      `UPDATE tasks
+          SET run_count = run_count + 1,
+              last_run_status = ?,
+              updated_ts = ?,
+              status = CASE
+                WHEN ? = 'ok' AND status <> 'done' THEN 'in-review'
+                ELSE status
+              END
+        WHERE id = ?`,
+      [taskRunStatus, params.endedTs, params.status, turn.task_id],
+    );
+  });
 }
 
 /** Ends the logical session a turn belongs to. The ACP subprocess may still
@@ -188,10 +278,11 @@ export function appendStep(
     decision: string;
     result?: string;
     isError: boolean;
+    outsideWorkspace?: boolean;
   },
 ): string {
   const existing = store.get(
-    `SELECT id, title, result FROM turn_steps
+    `SELECT id, title, result, outside_workspace FROM turn_steps
       WHERE turn_id = ? AND tool_use_id = ?
       ORDER BY seq ASC LIMIT 1`,
     [params.turnId, params.toolUseId],
@@ -199,7 +290,8 @@ export function appendStep(
   if (existing) {
     store.run(
       `UPDATE turn_steps
-          SET ts = ?, tool = ?, title = ?, input = ?, decision = ?, result = ?, is_error = ?
+          SET ts = ?, tool = ?, title = ?, input = ?, decision = ?, result = ?, is_error = ?,
+              outside_workspace = ?
         WHERE id = ?`,
       [
         params.ts,
@@ -209,6 +301,11 @@ export function appendStep(
         params.decision,
         params.result ?? existing.result,
         params.isError ? 1 : 0,
+        params.outsideWorkspace === undefined
+          ? existing.outside_workspace
+          : params.outsideWorkspace
+            ? 1
+            : null,
         existing.id,
       ],
     );
@@ -228,8 +325,9 @@ export function appendStep(
   const id = `step_${seq}`;
   store.run(
     `INSERT INTO turn_steps
-       (id, turn_id, ts, tool_use_id, tool, title, input, decision, result, is_error, seq)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, turn_id, ts, tool_use_id, tool, title, input, decision, result, is_error,
+        outside_workspace, seq)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       params.turnId,
@@ -241,6 +339,7 @@ export function appendStep(
       params.decision,
       params.result ?? null,
       params.isError ? 1 : 0,
+      params.outsideWorkspace ? 1 : null,
       seq,
     ],
   );
@@ -267,48 +366,249 @@ export function appendTurnText(store: Store, turnId: string, text: string, parti
   );
 }
 
-/**
- * Persists what a run's frames carry durably, in arrival order, as they
- * arrive rather than once the turn is over: an `assistant-text` event onto
- * the turn's accumulated prose, a `log-entry` into its transcript, and a
- * `completed` event onto the turn's own status and end time — `failed` when
- * the state it settled into is `failed`, `cancelled` (or
- * `cancelled-unacknowledged`, when the agent never confirmed the stop) when
- * it is `cancelled`, `ok` otherwise. Every other event kind is fanned out
- * live by the caller and carries nothing durable of its own.
- */
-export function recordRunFrames(store: Store, turnId: string, frames: RunEventFrame[], nowTs: number): void {
-  for (const { event } of frames) {
-    if (event.event === "assistant-text") {
-      appendTurnText(store, turnId, event.text, event.partial);
-    } else if (event.event === "log-entry") {
-      appendStep(store, {
-        turnId,
-        ts: event.entry.ts,
-        toolUseId: event.entry.toolUseId,
-        tool: event.entry.tool,
-        ...(event.entry.title !== undefined ? { title: event.entry.title } : {}),
-        input: event.entry.input,
-        decision: event.entry.decision,
-        ...(event.entry.result !== undefined ? { result: event.entry.result } : {}),
-        isError: event.entry.isError,
-      });
-    } else if (event.event === "completed") {
-      finishTurn(store, turnId, {
-        endedTs: nowTs,
-        status:
-          event.state.state === "failed"
-            ? "failed"
-            : event.state.state === "cancelled"
-              ? event.state.unacknowledged
-                ? "cancelled-unacknowledged"
-                : "cancelled"
-              : "ok",
-      });
-      if (event.state.state === "cancelled" && event.state.unacknowledged)
-        endSessionForTurn(store, turnId, nowTs);
+function turnStream(store: Store, turnId: string, includePartial = true): TurnItem[] {
+  const stream: TurnItem[] = [];
+  let joiningPartial = false;
+  const items = store.all(
+    `SELECT i.kind, i.text, i.partial,
+            s.ts, s.tool_use_id, s.tool, s.title, s.input, s.decision, s.result, s.is_error,
+            s.outside_workspace
+       FROM turn_items i
+       LEFT JOIN turn_steps s ON s.id = i.step_id
+      WHERE i.turn_id = ?
+      ORDER BY i.seq ASC`,
+    [turnId],
+  );
+  for (const item of items) {
+    if (item.kind === "text") {
+      if (item.partial === 1 && !includePartial) continue;
+      if (item.partial === 1 && joiningPartial) {
+        const current = stream.at(-1);
+        if (current?.kind === "text") current.text += item.text as string;
+      } else {
+        stream.push({ kind: "text", text: item.text as string });
+      }
+      joiningPartial = item.partial === 1;
+      continue;
     }
+    joiningPartial = false;
+    stream.push({
+      kind: "step",
+      entry: {
+        ts: item.ts as number,
+        toolUseId: item.tool_use_id as string,
+        tool: item.tool as string,
+        ...(item.title === null ? {} : { title: item.title as string }),
+        input: JSON.parse(item.input as string) as unknown,
+        decision: item.decision as string,
+        ...(item.result === null ? {} : { result: item.result as string }),
+        isError: item.is_error === 1,
+        ...(item.outside_workspace === 1 ? { outsideWorkspace: true } : {}),
+      },
+    });
   }
+  return stream;
+}
+
+/**
+ * Folds a contiguous daemon-frame batch into the turn's transcript and
+ * versioned recovery snapshot. Already-recorded frames are idempotent;
+ * missing sequence numbers are rejected before any new frame is written.
+ * The batch is one transaction, and a completion's terminal recovery state
+ * is stored before the turn receives its ended timestamp and final status.
+ */
+export function recordRunFrames(
+  store: Store,
+  turnId: string,
+  frames: RunEventFrame[],
+  nowTs: number,
+): RunEventFrame[] {
+  const row = store.get(
+    `SELECT ended_ts, last_frame_seq, recovery_snapshot FROM turns WHERE id = ?`,
+    [turnId],
+  );
+  if (!row) throw new Error(`no such turn: ${turnId}`);
+  if (row.ended_ts !== null) return [];
+
+  let expected = (row.last_frame_seq as number) + 1;
+  const accepted: RunEventFrame[] = [];
+  let terminalAccepted = false;
+  for (const frame of frames) {
+    if (terminalAccepted) break;
+    // A daemon retries an unacknowledged batch verbatim. Frames already
+    // folded into the row — including a repeat inside this batch — are a
+    // no-op, not a second transcript append.
+    if (frame.seq < expected) continue;
+    if (frame.seq > expected)
+      throw new RunFrameSequenceGapError(
+        `frame sequence gap for ${turnId}: expected ${expected}, received ${frame.seq}`,
+      );
+    accepted.push(frame);
+    expected += 1;
+    terminalAccepted = frame.event.event === "completed";
+  }
+  if (accepted.length === 0) return [];
+
+  store.tx(() => {
+    let recovery = parseRecovery(row.recovery_snapshot as string);
+    for (const frame of accepted) {
+      const { event } = frame;
+      switch (event.event) {
+        case "snapshot":
+          recovery = {
+            version: 1,
+            state: event.snapshot.state,
+            ...(event.snapshot.plan === undefined ? {} : { plan: event.snapshot.plan }),
+            stream: event.snapshot.stream,
+            live: event.snapshot.live,
+            reviewing: event.snapshot.reviewing,
+          };
+          break;
+        case "state": {
+          recovery.state = event.state;
+          const plan = planCarriedBy(event.state);
+          if (plan !== undefined) recovery.plan = plan;
+          break;
+        }
+        case "assistant-text":
+          appendTurnText(store, turnId, event.text, event.partial);
+          recovery.stream = turnStream(store, turnId, false);
+          break;
+        case "plan-proposed":
+          recovery.plan = event.plan;
+          break;
+        case "permission-card":
+          recovery.state = {
+            state: "awaiting-permission",
+            ...(recovery.plan === undefined ? {} : { plan: recovery.plan }),
+            request: event.request,
+          };
+          break;
+        case "question-asked":
+          recovery.state = {
+            state: "awaiting-question",
+            ...(recovery.plan === undefined ? {} : { plan: recovery.plan }),
+            request: event.request,
+          };
+          break;
+        case "log-entry":
+          appendStep(store, {
+            turnId,
+            ts: event.entry.ts,
+            toolUseId: event.entry.toolUseId,
+            tool: event.entry.tool,
+            ...(event.entry.title !== undefined ? { title: event.entry.title } : {}),
+            input: event.entry.input,
+            decision: event.entry.decision,
+            ...(event.entry.result !== undefined ? { result: event.entry.result } : {}),
+            isError: event.entry.isError,
+            ...(event.entry.outsideWorkspace === undefined
+              ? {}
+              : { outsideWorkspace: event.entry.outsideWorkspace }),
+          });
+          recovery.stream = turnStream(store, turnId, false);
+          break;
+        case "live":
+          recovery.live = event.live;
+          break;
+        case "reviewing":
+          recovery.reviewing = true;
+          break;
+        case "completed":
+          recovery.state = event.state;
+          recovery.stream = turnStream(store, turnId);
+          recovery.live = {};
+          recovery.reviewing = false;
+          break;
+      }
+
+      // This write precedes settlement below deliberately. A trigger, reader,
+      // or restarted process can never observe an ended row whose terminal
+      // recovery state and frame cursor still describe the preceding frame.
+      store.run(
+        `UPDATE turns SET last_frame_seq = ?, recovery_snapshot = ? WHERE id = ?`,
+        [frame.seq, JSON.stringify(recovery), turnId],
+      );
+
+      if (event.event === "completed") {
+        finishTurn(store, turnId, {
+          endedTs: nowTs,
+          status:
+            event.state.state === "failed"
+              ? "failed"
+              : event.state.state === "cancelled"
+                ? event.state.unacknowledged
+                  ? "cancelled-unacknowledged"
+                  : "cancelled"
+                : "ok",
+        });
+        if (event.state.state === "cancelled" && event.state.unacknowledged)
+          endSessionForTurn(store, turnId, nowTs);
+      }
+    }
+  });
+  return accepted;
+}
+
+function storedRunSnapshot(row: Row): StoredRunSnapshot {
+  const recovery = parseRecovery(row.recovery_snapshot as string);
+  return {
+    runId: row.id as string,
+    sequence: row.seq as number,
+    prompt: row.prompt as string,
+    agent: row.agent as string,
+    state: recovery.state,
+    ...(recovery.plan === undefined ? {} : { plan: recovery.plan }),
+    stream: recovery.stream,
+    live: recovery.live,
+    reviewing: recovery.reviewing,
+    lastEventSeq: row.last_frame_seq as number,
+    sessionId: row.session_id as string,
+    runtimeId: row.runtime_id as string,
+    openedBy: row.opened_by as string,
+  };
+}
+
+/** The authoritative durable snapshot for one run, active or settled. */
+export function runSnapshot(store: Store, runId: string): StoredRunSnapshot | undefined {
+  const row = store.get(
+    `SELECT t.id, t.seq, t.prompt, t.last_frame_seq, t.recovery_snapshot, t.session_id,
+            s.agent, s.runtime_id, s.opened_by
+       FROM turns t
+       JOIN sessions s ON s.id = t.session_id
+      WHERE t.id = ?`,
+    [runId],
+  );
+  return row ? storedRunSnapshot(row) : undefined;
+}
+
+/** Every still-active turn on a Task in durable turn order. */
+export function activeRunSnapshotsForTask(store: Store, taskId: string): StoredRunSnapshot[] {
+  return store
+    .all(
+      `SELECT t.id, t.seq, t.prompt, t.last_frame_seq, t.recovery_snapshot, t.session_id,
+              s.agent, s.runtime_id, s.opened_by
+         FROM turns t
+         JOIN sessions s ON s.id = t.session_id
+        WHERE t.task_id = ? AND t.ended_ts IS NULL
+        ORDER BY t.seq ASC`,
+      [taskId],
+    )
+    .map(storedRunSnapshot);
+}
+
+/** Every durable active run owned by one runtime, in turn order. */
+export function activeRunIdsForRuntime(store: Store, runtimeId: string): string[] {
+  return store
+    .all(
+      `SELECT t.id
+         FROM turns t
+         JOIN sessions s ON s.id = t.session_id
+        WHERE s.runtime_id = ? AND t.ended_ts IS NULL
+        ORDER BY t.seq ASC`,
+      [runtimeId],
+    )
+    .map((row) => row.id as string);
 }
 
 /** Every durable, settled turn on a Task in transcript order, including its
@@ -316,52 +616,17 @@ export function recordRunFrames(store: Store, turnId: string, frames: RunEventFr
 export function taskTurnsForTask(store: Store, taskId: string): TaskTurn[] {
   return store
     .all(
-      `SELECT id, prompt, started_ts, status, text FROM turns
+      `SELECT id, seq, prompt, started_ts, status, text FROM turns
         WHERE task_id = ? AND ended_ts IS NOT NULL
         ORDER BY seq ASC`,
       [taskId],
     )
     .map((row) => {
       const text = row.text as string;
-      const stream: TurnItem[] = [];
-      let joiningPartial = false;
-      const items = store.all(
-        `SELECT i.kind, i.text, i.partial,
-                s.ts, s.tool_use_id, s.tool, s.title, s.input, s.decision, s.result, s.is_error
-           FROM turn_items i
-           LEFT JOIN turn_steps s ON s.id = i.step_id
-          WHERE i.turn_id = ?
-          ORDER BY i.seq ASC`,
-        [row.id as string],
-      );
-      for (const item of items) {
-        if (item.kind === "text") {
-          if (item.partial === 1 && joiningPartial) {
-            const current = stream.at(-1);
-            if (current?.kind === "text") current.text += item.text as string;
-          } else {
-            stream.push({ kind: "text", text: item.text as string });
-          }
-          joiningPartial = item.partial === 1;
-          continue;
-        }
-        joiningPartial = false;
-        stream.push({
-          kind: "step",
-          entry: {
-            ts: item.ts as number,
-            toolUseId: item.tool_use_id as string,
-            tool: item.tool as string,
-            ...(item.title === null ? {} : { title: item.title as string }),
-            input: JSON.parse(item.input as string) as unknown,
-            decision: item.decision as string,
-            ...(item.result === null ? {} : { result: item.result as string }),
-            isError: item.is_error === 1,
-          },
-        });
-      }
+      const stream = turnStream(store, row.id as string);
       return {
         runId: row.id as string,
+        sequence: row.seq as number,
         ts: row.started_ts as number,
         prompt: row.prompt as string,
         messages: text === "" ? [] : [text],

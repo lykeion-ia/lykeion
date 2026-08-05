@@ -92,6 +92,27 @@ it("evicts the oldest unwatched completed run once more than the retention limit
   expect(newest).toHaveLength(1);
 });
 
+it("bounds empty buffers ended by durable terminal snapshots after a relay restart", () => {
+  const relay = createRunRelay();
+  for (let i = 0; i < 201; i++) {
+    relay.publish(`run_${i}`, [
+      { seq: 1, event: { event: "assistant-text", text: `${i}`, partial: false } },
+    ]);
+    const release = relay.subscribe(`run_${i}`, undefined, () => {});
+    relay.markEnded(`run_${i}`);
+    release();
+  }
+
+  const oldest: RunEventFrame[] = [];
+  relay.subscribe("run_0", 0, (frame) => oldest.push(frame));
+  expect(oldest).toEqual([]);
+  const newest: RunEventFrame[] = [];
+  relay.subscribe("run_200", 0, (frame) => newest.push(frame));
+  expect(newest).toEqual([
+    { seq: 1, event: { event: "assistant-text", text: "200", partial: false } },
+  ]);
+});
+
 it("retires a completed run from its runtime's live set", () => {
   const relay = createRunRelay();
   relay.attach("rt_1", () => {});
@@ -110,7 +131,7 @@ it("does not count a run as live until its start-run has actually reached a conn
   const relay = createRunRelay();
   relay.enqueue("rt_1", { type: "start-run", runId: "run_1" });
   expect(relay.liveFor("rt_1")).toEqual([]);
-  expect(relay.reconcile("rt_1", [])).toEqual([]);
+  expect(relay.reconcile("rt_1", [], ["run_1"], undefined)).toEqual([]);
 });
 
 it("counts a run as live once a fresh attach replays its still-queued start-run", () => {
@@ -125,6 +146,26 @@ it("counts a run as live immediately when a subscriber is already attached to re
   relay.attach("rt_1", () => {});
   relay.enqueue("rt_1", { type: "start-run", runId: "run_1" });
   expect(relay.liveFor("rt_1")).toEqual(["run_1"]);
+});
+
+it("binds reconciled live runs to their runtime so completion clears resumed controls", () => {
+  const relay = createRunRelay();
+  relay.reconcile("rt_1", ["run_1"]);
+  relay.enqueue("rt_1", {
+    type: "decision",
+    runId: "run_1",
+    decision: { action: "approve-plan" },
+  });
+  relay.enqueue("rt_1", { type: "cancel", runId: "run_1" });
+
+  relay.publish("run_1", [
+    { seq: 1, event: { event: "completed", state: { state: "completed" } } },
+  ]);
+
+  expect(relay.liveFor("rt_1")).toEqual([]);
+  const replayed: string[] = [];
+  relay.attach("rt_1", (_seq, command) => replayed.push(command.type));
+  expect(replayed).toEqual([]);
 });
 
 it("starts a run's own sequence at 1 before it has produced anything", () => {

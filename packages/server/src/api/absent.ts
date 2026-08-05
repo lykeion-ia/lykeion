@@ -122,6 +122,9 @@ export function absentApi(
     async delegateSubagent(_input) {
       throw new LykeionError("unsupported", NO_RUNTIME);
     },
+    async resumeRuns(_taskId) {
+      return [];
+    },
     async readArtifact(_studyId, _path) {
       throw new LykeionError(
         "unsupported",

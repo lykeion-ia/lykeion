@@ -1,93 +1,120 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { TaskTurn } from "@lykeion/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Task, TaskDetail, TaskTurn, TurnState } from "@lykeion/api";
 import { useApi } from "../api/ApiContext";
 import { useRun, type UseRun } from "./useRun";
 import type { ViewTurn } from "../components/tasks/TaskTranscript";
 import { takeRun, type PendingRun } from "../lib/pending-run";
 
-/** What the Task surface needs to show and drive its transcript: the
- *  persisted turns, the turns finished in this view but not yet read back
- *  from the record, and the live run itself. */
+/** What the Task surface needs to show and drive its transcript. */
 export interface UseTaskRun {
-  /** Persisted turns, excluding any turn still rendering live. */
   history: TaskTurn[];
-  /** Turns completed in this view but not yet read back from the record. */
+  /** UI-only terminal detail that the persisted TaskTurn schema cannot carry. */
+  terminalStatusByRunId: Readonly<Record<string, CancelledTurnState>>;
   viewTurns: ViewTurn[];
-  /** Append a turn finished in this view, before the record catches up. */
   addViewTurn: (turn: ViewTurn) => void;
-  /** The live run: state, stream, plan, permission and question cards. */
+  /** Keyed live-run manager, including independently actionable blocks. */
   run: UseRun;
-  /** Re-read the persisted transcript now. */
   refresh: () => void;
-  /** The handed-off prompt that has not started yet, for a title to fall
-   *  back to before the deferred start fires. Null once it has. */
   pendingPrompt: string | null;
+  /** False until active-run discovery has succeeded for the current Task. */
+  recoveryReady: boolean;
+  recoveryError: string | null;
+  retryRecovery: () => void;
+}
+
+type CancelledTurnState = Extract<TurnState, { state: "cancelled" }>;
+
+function persistedIds(detail: TaskDetail): Set<string> {
+  return new Set(detail.turns.map((turn) => turn.runId));
 }
 
 /**
- * Owns a Task's transcript and the run that drives it: the persisted turns
- * for `taskId` (empty for a Task nobody has spoken in yet), the turns
- * finished in this view but not yet read back from the record, and the live
- * run itself — including a run handed off from the Study composer, which this
- * hook auto-starts. The Task surface renders this state; it doesn't compute
- * any of it.
- *
- * `studyId` is absent for an unfiled Task. The transcript is read by task id
- * either way; only the run needs a Study, and `useRun` refuses to start
- * without one.
+ * Own a Task's settled transcript and every live run. Recovery deliberately
+ * happens before the history read: subscriptions are attached first, then a
+ * settled read is allowed to replace any run that completed in that window.
  */
 export function useTaskRun(
   studyId: string | undefined,
   taskId: string,
   onTasksChanged?: () => void,
+  onTaskRefreshed?: (task: Task) => void,
 ): UseTaskRun {
   const api = useApi();
   const runState = useRun(studyId, { taskId });
-
   const [history, setHistory] = useState<TaskTurn[]>([]);
+  const [terminalStatusByRunId, setTerminalStatusByRunId] = useState<
+    Record<string, CancelledTurnState>
+  >({});
+  const runsRef = useRef(runState.runs);
+  runsRef.current = runState.runs;
   const [viewTurns, setViewTurns] = useState<ViewTurn[]>([]);
+  const [hydrated, setHydrated] = useState(false);
   const addViewTurn = useCallback(
-    (turn: ViewTurn) => setViewTurns((ts) => [...ts, turn]),
+    (turn: ViewTurn) => setViewTurns((turns) => [...turns, turn]),
     [],
   );
 
-  // Load the persisted transcript. A Task created from the New Task form has
-  // no turns at all, which is an ordinary state — an empty transcript, not a
-  // failed load.
+  const applyHistory = useCallback(
+    (detail: TaskDetail) => {
+      const ids = persistedIds(detail);
+      const cancelled = runsRef.current.flatMap((run) =>
+        ids.has(run.runId) && run.state.state === "cancelled"
+          ? [{ runId: run.runId, state: run.state }]
+          : [],
+      );
+      if (cancelled.length > 0) {
+        setTerminalStatusByRunId((current) => {
+          const next = { ...current };
+          for (const run of cancelled) next[run.runId] = run.state;
+          return next;
+        });
+      }
+      // Retain the Task record from the same authoritative read before the
+      // matching optimistic completion block is removed.
+      onTaskRefreshed?.(detail.task);
+      runState.reconcile(ids);
+      setHistory(detail.turns);
+      setViewTurns((turns) =>
+        turns.filter((turn) => !turn.runId || !ids.has(turn.runId)),
+      );
+    },
+    [runState.reconcile, onTaskRefreshed],
+  );
+
+  // Resume and subscribe first. The subsequent transcript is authoritative
+  // for any run that settled while those observers were being attached.
+  const resume = runState.resume;
+  const [recoveryAttempt, setRecoveryAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
     setHistory([]);
     setViewTurns([]);
-    api.getTask(taskId).then(
-      (d) => {
-        if (!cancelled) setHistory(d.turns);
-      },
-      () => {
+    setTerminalStatusByRunId({});
+    setHydrated(false);
+    void (async () => {
+      const current = await resume();
+      if (!current || cancelled) return;
+      try {
+        const detail = await api.getTask(taskId);
+        if (cancelled) return;
+        applyHistory(detail);
+      } catch {
         if (!cancelled) setHistory([]);
-      },
-    );
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [api, taskId]);
+  }, [api, taskId, resume, applyHistory, recoveryAttempt]);
+  const retryRecovery = useCallback(() => {
+    setRecoveryAttempt((attempt) => attempt + 1);
+  }, []);
 
-  // Auto-start the pending run handed off from the Study composer.
-  //
-  // Two hazards meet here, and the fix has to clear BOTH. `takeRun` is one-shot,
-  // so React StrictMode's dev double-mount (mount → simulated unmount →
-  // remount) would let the DISCARDED first mount consume the prompt and leave
-  // the settled remount with nothing — hence the ref latch, which holds the run
-  // across the two invocations. But `useRun` tears down on unmount, so the
-  // discarded mount's run is killed anyway; a latch that merely survives makes
-  // the remount start the SAME prompt a second time. That second start is a
-  // whole second agent turn — it spawns its own agent process, and `start`'s
-  // own `teardown()` kills the first mid-flight, leaving a half-run turn in the
-  // Task's transcript that no reopen can make sense of.
-  //
-  // So the start is DEFERRED by a macrotask and cancelled in cleanup: the
-  // discarded mount schedules a start and then withdraws it, and only the
-  // settled mount's start ever fires. The latch clears as it fires, so no
-  // later re-run of this effect can replay a prompt that has already run.
+  // Auto-start a pending Study-composer handoff. Deferral keeps React
+  // StrictMode's discarded mount from consuming and starting the one-shot
+  // handoff before the settled mount exists.
   const start = runState.start;
   const handoffRef = useRef<{ taskId: string; run: PendingRun | null }>({
     taskId: "",
@@ -99,6 +126,7 @@ export function useTaskRun(
     }
     const pending = handoffRef.current.run;
     if (!pending) return;
+    if (!hydrated) return;
     const timer = setTimeout(() => {
       handoffRef.current.run = null;
       start(pending.prompt, {
@@ -108,72 +136,95 @@ export function useTaskRun(
       });
     }, 0);
     return () => clearTimeout(timer);
-  }, [taskId, start]);
+  }, [taskId, start, hydrated]);
 
-  // A landed run advanced this Task — refresh the sidebar list AND the
-  // persisted transcript.
-  //
-  // Refetching the transcript is what keeps the view the researcher is looking at
-  // and the record a later open will replay from being two different things.
-  // Without it the just-finished turn lives ONLY in this mount's ephemeral state
-  // (`viewTurns` / the live block), so the first read of the persisted transcript
-  // happened on some later remount — and any disagreement between the two showed
-  // up as a transcript that changed when the conversation was reopened.
-  //
-  // Nothing is rendered twice, from either direction: the turn still on the live
-  // surface is held OUT of the refetched transcript (it keeps rendering live,
-  // with its run chrome, until the next send graduates it), and any turn the
-  // transcript now carries is dropped from `viewTurns`. A turn that landed no
-  // record — a stopped one — has no `runId`, can never be in the transcript, and
-  // is therefore never pruned.
-  const runRecord = runState.run;
+  // One completion can finish while siblings remain live. Refresh once for
+  // that run, and remove only blocks whose `runId` is actually present in the
+  // successful read. A failed read changes nothing, leaving the terminal
+  // block as the researcher's only copy.
+  const completionRefreshes = useRef<{
+    taskId: string;
+    seen: Set<string>;
+    pending: Set<string>;
+    running: boolean;
+  }>({ taskId, seen: new Set(), pending: new Set(), running: false });
+  if (completionRefreshes.current.taskId !== taskId) {
+    completionRefreshes.current = {
+      taskId,
+      seen: new Set(),
+      pending: new Set(),
+      running: false,
+    };
+  }
+  const settledRunIds = useMemo(
+    () => runState.runs.filter((run) => run.settled).map((run) => run.runId),
+    [runState.runs],
+  );
+  const settledKey = settledRunIds.join("|");
+  const flushCompletionRefreshes = useCallback(async () => {
+    const queue = completionRefreshes.current;
+    if (queue.running) return;
+    queue.running = true;
+    try {
+      while (
+        completionRefreshes.current === queue &&
+        queue.pending.size > 0
+      ) {
+        queue.pending.clear();
+        onTasksChanged?.();
+        let detail: TaskDetail;
+        try {
+          detail = await api.getTask(taskId);
+        } catch {
+          // The corresponding terminal blocks remain. A later sibling gets
+          // its own queued attempt rather than reviving this failed batch.
+          continue;
+        }
+        if (completionRefreshes.current !== queue) return;
+        applyHistory(detail);
+      }
+    } finally {
+      if (completionRefreshes.current === queue) queue.running = false;
+    }
+  }, [api, taskId, onTasksChanged, applyHistory]);
   useEffect(() => {
-    if (!runRecord) return;
-    onTasksChanged?.();
-    let cancelled = false;
-    const liveRunId = runRecord.runId;
+    if (!hydrated) return;
+    const queue = completionRefreshes.current;
+    for (const runId of settledRunIds) {
+      if (queue.seen.has(runId)) continue;
+      queue.seen.add(runId);
+      queue.pending.add(runId);
+    }
+    void flushCompletionRefreshes();
+  }, [hydrated, settledKey, settledRunIds, flushCompletionRefreshes]);
+
+  const refresh = useCallback(() => {
+    const generation = completionRefreshes.current;
     api.getTask(taskId).then(
-      (d) => {
-        if (cancelled) return;
-        setHistory(d.turns.filter((t) => t.runId !== liveRunId));
-        const persisted = new Set(d.turns.map((t) => t.runId));
-        setViewTurns((ts) =>
-          ts.filter((t) => !t.runId || !persisted.has(t.runId)),
-        );
+      (detail) => {
+        // Task changes replace the queue object, so an older Task's manual
+        // read cannot overwrite the current Task after resolving late.
+        if (completionRefreshes.current !== generation) return;
+        applyHistory(detail);
       },
       () => {
-        // Keep the ephemeral copy: it is all the researcher has if the record
-        // cannot be read back.
+        // An on-demand refresh is also non-destructive on failure.
       },
     );
-    return () => {
-      cancelled = true;
-    };
-  }, [runRecord, onTasksChanged, api, taskId]);
+  }, [api, taskId, applyHistory]);
 
-  // Re-read the persisted transcript on demand — for a caller that wants the
-  // record reflected without waiting on a run of its own to land here.
-  const refresh = useCallback(() => {
-    api.getTask(taskId).then(
-      (d) => setHistory(d.turns),
-      () => setHistory([]),
-    );
-  }, [api, taskId]);
-
-  // Read straight off the latch, not through state: the latch is a ref
-  // precisely so writing it never forces a render (see the hand-off effect's
-  // comment above), and mirroring its value into state here would reinstate
-  // that hazard from the read side. A render already in flight for any other
-  // reason picks up whatever the ref holds at that instant, same as the latch
-  // itself always has.
   const pendingPrompt = handoffRef.current.run?.prompt ?? null;
 
   return {
     history,
+    terminalStatusByRunId,
     viewTurns,
     addViewTurn,
     run: runState,
     refresh,
     pendingPrompt,
+    recoveryReady: hydrated,
+    recoveryError: runState.recoveryError,
+    retryRecovery,
   };
 }

@@ -27,9 +27,26 @@ function scriptedApi() {
         runId: "run-live",
         onEvent(cb) {
           subs.add(cb);
+          queueMicrotask(() =>
+            cb({
+              event: "snapshot",
+              snapshot: {
+                runId: "run-live",
+                sequence: 3,
+                prompt: "which candidates responded?",
+                agent: "default",
+                state: { state: "planning" },
+                stream: [],
+                live: {},
+                reviewing: false,
+                lastEventSeq: 0,
+              },
+            }),
+          );
           return () => subs.delete(cb);
         },
         submit() {},
+        detach() {},
         close() {
           subs.clear();
         },

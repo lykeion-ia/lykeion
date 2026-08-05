@@ -340,3 +340,69 @@ it(
   },
   60_000,
 );
+
+it(
+  "detaches and resubscribes the same HTTP handle without losing frames or cancelling the run",
+  async () => {
+    const lab = await realServerOnLoopback();
+    const owner = await signInAsOwner(lab);
+    const daemon = await pairAndServe(lab, owner.api, {
+      env: {
+        LYKEION_STUB_SCRIPT: JSON.stringify([
+          { emit: "agent_message_chunk", text: "before " },
+          { sleep: 600 },
+          { emit: "agent_message_chunk", text: "during " },
+          { sleep: 1_500 },
+          { emit: "agent_message_chunk", text: "after" },
+        ]),
+      },
+    });
+
+    await until(
+      () => machineIsSessionReady(owner.api, daemon.name),
+      "the daemon to report claude as session-ready",
+      20_000,
+    );
+    const study = await owner.api.createStudy({ key: "CMP", title: "Comparative" });
+    const task = await owner.api.createTask({ studyId: study.id, stage: "background", title: "run me" });
+    const handle = await owner.api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "keep running while this tab detaches",
+      options: { planMode: false, agent: "claude" },
+    });
+
+    const beforeDetach: RunEvent[] = [];
+    handle.onEvent((event) => beforeDetach.push(event));
+    await until(
+      () => beforeDetach.some((event) => event.event === "assistant-text" && event.text === "before "),
+      "the first chunk before detaching",
+      20_000,
+    );
+    handle.detach();
+
+    await until(async () => {
+      const resumed = await owner.api.resumeRuns(task.id);
+      const snapshot = resumed[0]?.snapshot;
+      for (const run of resumed) run.detach();
+      return snapshot?.live.text?.includes("during ") ?? false;
+    }, "the detached chunk to become durable", 20_000);
+
+    const afterReattach: RunEvent[] = [];
+    handle.onEvent((event) => afterReattach.push(event));
+    await until(
+      () => afterReattach.some((event) => event.event === "completed"),
+      "the reattached run to complete",
+      20_000,
+    );
+
+    const snapshot = afterReattach.find((event) => event.event === "snapshot");
+    expect(snapshot).toEqual(expect.objectContaining({
+      event: "snapshot",
+      snapshot: expect.objectContaining({ live: { text: expect.stringContaining("during ") } }),
+    }));
+    expect(afterReattach).toContainEqual({ event: "assistant-text", text: "after", partial: true });
+    expect((await owner.api.runHistory(task.id))[0]?.status).toBe("ok");
+  },
+  60_000,
+);

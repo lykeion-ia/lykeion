@@ -40,6 +40,7 @@ const ROUTE = `#/studies/s_cmp/tasks/${TASK}`;
 /** One persisted turn — the historic transcript a reopened Task replays. */
 const HISTORIC_TURN: TaskTurn = {
   runId: "run-historic",
+  sequence: 1,
   ts: 1,
   prompt: "what's in the dataset?",
   messages: ["It has 42 rows."],
@@ -64,9 +65,26 @@ function scriptedApi() {
         runId: "run-live",
         onEvent(cb) {
           subs.add(cb);
+          queueMicrotask(() =>
+            cb({
+              event: "snapshot",
+              snapshot: {
+                runId: "run-live",
+                sequence: 2,
+                prompt: "and now?",
+                agent: "default",
+                state: { state: "planning" },
+                stream: [],
+                live: {},
+                reviewing: false,
+                lastEventSeq: 0,
+              },
+            }),
+          );
           return () => subs.delete(cb);
         },
         submit() {},
+        detach() {},
         close() {
           subs.clear();
         },
@@ -124,7 +142,7 @@ describe("the live region is scoped to the in-flight turn", () => {
     emit({ event: "live", live: { text: "Strong candidates" } });
     await screen.findByTestId("live-text");
 
-    const live = screen.getByTestId("live-region");
+    const live = screen.getByTestId("live-turn");
     expect(live).toHaveAttribute("aria-live", "polite");
     expect(live).toHaveAttribute("aria-atomic", "false");
     expect(live).toHaveAttribute("role", "log");

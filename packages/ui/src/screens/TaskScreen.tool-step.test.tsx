@@ -41,6 +41,21 @@ import App from "../App";
 const TASK = "t_3";
 const ROUTE = `#/studies/s_cmp/tasks/${TASK}`;
 
+const freshSnapshot = (runId: string, prompt: string): RunEvent => ({
+  event: "snapshot",
+  snapshot: {
+    runId,
+    sequence: 3,
+    prompt,
+    agent: "default",
+    state: { state: "planning" },
+    stream: [],
+    live: {},
+    reviewing: false,
+    lastEventSeq: 0,
+  },
+});
+
 /** The in-memory API with one scripted transcript for this Task. */
 const apiWithTurns = (turns: TaskTurn[]): LykeionApi => {
   const base = createInMemoryApi();
@@ -55,6 +70,7 @@ const apiWithTurns = (turns: TaskTurn[]): LykeionApi => {
 
 const STREAM_TURN: TaskTurn = {
   runId: "run-stream",
+  sequence: 1,
   ts: 1,
   prompt: "how big is the dataset?",
   messages: ["The dataset has 42 rows."],
@@ -82,6 +98,7 @@ const STREAM_TURN: TaskTurn = {
  *  path (`ToolStepGroup` draws a synthesized header + step count). */
 const GROUP_TURN: TaskTurn = {
   runId: "run-group",
+  sequence: 1,
   ts: 1,
   prompt: "count both files",
   messages: ["Both commands ran."],
@@ -128,6 +145,7 @@ const apiWithFailedLandedRun = (): LykeionApi => ({
   ...createInMemoryApi(),
   async startRun(): Promise<RunHandle> {
     const emitAll = (cb: (e: RunEvent) => void) => {
+      cb(freshSnapshot("run-failed", "write the results"));
       cb({ event: "state", state: { state: "planning" } });
       cb({
         event: "assistant-text",
@@ -169,6 +187,7 @@ const apiWithFailedLandedRun = (): LykeionApi => ({
         return () => clearTimeout(timer);
       },
       submit() {},
+      detach() {},
       close() {},
     };
   },
@@ -183,6 +202,7 @@ const apiWithFailedLandedRun = (): LykeionApi => ({
  */
 const CANCELLED_TURN: TaskTurn = {
   runId: "run-cancelled",
+  sequence: 1,
   ts: 1,
   prompt: "write the results",
   messages: ["Stopped."],
@@ -211,6 +231,7 @@ const CANCELLED_TURN: TaskTurn = {
  *  in-memory simulation reproduces. */
 const PARAGRAPHS_TURN: TaskTurn = {
   runId: "run-paragraphs",
+  sequence: 1,
   ts: 1,
   prompt: "how big is it?",
   messages: ["Here's what I found:", "- 42 rows"],
@@ -225,6 +246,7 @@ const PARAGRAPHS_TURN: TaskTurn = {
 
 const LEGACY_TURN: TaskTurn = {
   runId: "run-legacy",
+  sequence: 1,
   ts: 1,
   prompt: "summarize the notes",
   messages: ["No tools were needed here."],
@@ -310,14 +332,14 @@ describe("Task transcript — tool-step cards", () => {
         name: "Allow for this conversation",
       }),
     );
-    await screen.findByText("Run complete");
-
     // Exact, not "> 0": the scripted run takes exactly two tool steps — the
     // CLI's own ungated plan-file write (outside the workspace, never gated)
     // and the gated Write — so a third card here would mean a step rendered
     // twice.
     const conversation = screen.getByTestId("conversation");
-    expect(within(conversation).getAllByTestId("tool-step")).toHaveLength(2);
+    await waitFor(() =>
+      expect(within(conversation).getAllByTestId("tool-step")).toHaveLength(2),
+    );
 
     // The ungated one SAYS it left the workspace — the researcher never got a
     // card for it, so this marker is the only place it ever surfaces.
@@ -469,6 +491,7 @@ describe("assistant prose — one bubble per whole message", () => {
     // whitespace hack required, and `task.css` no longer declares one.
     const EMBEDDED_LIST_TURN: TaskTurn = {
       runId: "run-embedded-list",
+      sequence: 1,
       ts: 1,
       prompt: "how big is it?",
       messages: ["Here's what I found:\n- 42 rows\n- 3 exceptions"],
@@ -577,11 +600,13 @@ describe("Task transcript refresh on landing", () => {
       },
       async startRun(): Promise<RunHandle> {
         const emitAll = (cb: (e: RunEvent) => void) => {
+          cb(freshSnapshot(record.runId, "count the kinases"));
           cb({ event: "state", state: { state: "planning" } });
           cb({ event: "log-entry", entry: LANDED_STEP });
           cb({ event: "assistant-text", text: "There are 518.", partial: false });
           persisted.push({
             runId: record.runId,
+            sequence: 1,
             ts: 1,
             prompt: "count the kinases",
             messages: ["There are 518."],
@@ -599,6 +624,7 @@ describe("Task transcript refresh on landing", () => {
             return () => clearTimeout(timer);
           },
           submit() {},
+          detach() {},
           close() {},
         };
       },
@@ -649,6 +675,7 @@ describe("Task transcript refresh on landing", () => {
       },
       async startRun(): Promise<RunHandle> {
         const emitAll = (cb: (e: RunEvent) => void) => {
+          cb(freshSnapshot("run-stopped", "count the kinases"));
           cb({ event: "state", state: { state: "planning" } });
           cb({ event: "log-entry", entry: LANDED_STEP });
           cb({
@@ -663,6 +690,7 @@ describe("Task transcript refresh on landing", () => {
             return () => clearTimeout(timer);
           },
           submit() {},
+          detach() {},
           close() {},
         };
       },
@@ -694,6 +722,7 @@ describe("Task run strip", () => {
       ...createInMemoryApi(),
       async startRun(): Promise<RunHandle> {
         const emitAll = (cb: (e: RunEvent) => void) => {
+          cb(freshSnapshot("run-strip", "design the screen"));
           // An executing plan whose second step the agent reports in progress.
           cb({
             event: "state",
@@ -717,6 +746,7 @@ describe("Task run strip", () => {
             return () => clearTimeout(timer);
           },
           submit() {},
+          detach() {},
           close() {},
         };
       },
@@ -768,6 +798,7 @@ describe("Task run strip", () => {
 describe("Task inspector pane", () => {
   const TURN_WITH_ARTIFACTS: TaskTurn = {
     runId: "run-art",
+    sequence: 1,
     ts: 1,
     prompt: "build the kinome set",
     messages: ["Done."],

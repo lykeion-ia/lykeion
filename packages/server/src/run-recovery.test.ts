@@ -13,6 +13,7 @@ import { createRunRelay, type RunCommand, type RunRelay } from "./run-relay";
 import { createRequestListener } from "./http";
 import { apiFor, signUpOwner } from "./test-support/server-api";
 import type { Store } from "./store/store";
+import { failDroppedRuns } from "./run-recovery";
 
 /**
  * A machine that restarts, or simply drops its command-stream connection and
@@ -33,16 +34,17 @@ afterEach(async () => {
 
 interface RawServer {
   base: string;
+  dataDir: string;
   store: Store;
   relay: RunRelay;
   close(): Promise<void>;
 }
 
-function freshLabServer(): Promise<RawServer> {
-  const dir = mkdtempSync(join(tmpdir(), "lykeion-recovery-"));
-  dirs.push(dir);
+function freshLabServer(existingDir?: string): Promise<RawServer> {
+  const dir = existingDir ?? mkdtempSync(join(tmpdir(), "lykeion-recovery-"));
+  if (existingDir === undefined) dirs.push(dir);
   const uiDir = join(dir, "ui");
-  mkdirSync(uiDir);
+  mkdirSync(uiDir, { recursive: true });
   const indexHtml = "<!doctype html><head></head><body></body>";
   writeFileSync(join(uiDir, "index.html"), indexHtml);
 
@@ -64,6 +66,7 @@ function freshLabServer(): Promise<RawServer> {
       const port = typeof address === "object" && address ? address.port : 0;
       resolve({
         base: `http://127.0.0.1:${port}`,
+        dataDir: dir,
         store,
         relay,
         close: () =>
@@ -118,6 +121,7 @@ async function pairClaudeMachine(
 
 interface RecoveryLab {
   base: string;
+  dataDir: string;
   store: Store;
   relay: RunRelay;
   ownerApi: LykeionApi;
@@ -157,6 +161,7 @@ async function labWithRunInFlight(): Promise<RecoveryLab> {
 
   return {
     base: server.base,
+    dataDir: server.dataDir,
     store: server.store,
     relay: server.relay,
     ownerApi,
@@ -168,11 +173,20 @@ async function labWithRunInFlight(): Promise<RecoveryLab> {
   };
 }
 
-async function postLive(lab: RecoveryLab, runIds: string[], token = lab.token): Promise<Response> {
+async function postLive(
+  lab: RecoveryLab,
+  runIds: string[],
+  token = lab.token,
+  commandCursor = 1,
+): Promise<Response> {
   return fetch(`${lab.base}/daemon/run/live`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-    body: JSON.stringify({ runIds }),
+    body: JSON.stringify({
+      runIds,
+      generation: lab.relay.generation,
+      commandCursor,
+    }),
   });
 }
 
@@ -182,6 +196,38 @@ it("fails nothing when a command stream reconnects with its runs intact", async 
   expect(res.status).toBe(200);
   expect(lab.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status).toBe("running");
   expect(lab.relay.liveFor(lab.runtimeId)).toEqual([lab.runId]);
+});
+
+it("does not fail a start command written to a dropped stream before the daemon acknowledged it", async () => {
+  const lab = await labWithRunInFlight();
+  const res = await postLive(lab, [], lab.token, 0);
+  expect(res.status).toBe(200);
+  expect(lab.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status).toBe("running");
+});
+
+it("fails a delivered run when a restarted daemon has no matching generation or cursor", async () => {
+  const lab = await labWithRunInFlight();
+  const res = await fetch(`${lab.base}/daemon/run/live`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${lab.token}`,
+    },
+    // A new daemon process has no in-memory relay generation or command
+    // cursor. The surviving server relay already knows this start was
+    // delivered, so treating the missing cursor as an acknowledged zero
+    // would protect and then replay provider work the old daemon lost.
+    body: JSON.stringify({ runIds: [] }),
+  });
+
+  expect(res.status).toBe(200);
+  expect(lab.store.get(
+    `SELECT status, ended_ts FROM turns WHERE id = ?`,
+    [lab.runId],
+  )).toMatchObject({ status: "failed", ended_ts: expect.any(Number) });
+  const replayed: RunCommand[] = [];
+  lab.relay.attach(lab.runtimeId, (_seq, command) => replayed.push(command));
+  expect(replayed).toEqual([]);
 });
 
 it("fails a run the machine no longer holds after a restart, and runHistory reports it", async () => {
@@ -196,6 +242,109 @@ it("fails a run the machine no longer holds after a restart, and runHistory repo
 
   const history = await lab.ownerApi.runHistory(lab.taskId);
   expect(history.find((h) => h.runId === lab.runId)?.status).toBe("failed");
+});
+
+it("fails a durable active run missing after both the daemon and server relay restart", async () => {
+  const lab = await labWithRunInFlight();
+
+  const original = servers.pop()!;
+  await original.close();
+  const rebuilt = await freshLabServer(lab.dataDir);
+  servers.push(rebuilt);
+  const rebuiltLab: RecoveryLab = {
+    ...lab,
+    base: rebuilt.base,
+    store: rebuilt.store,
+    relay: rebuilt.relay,
+  };
+
+  const res = await postLive(rebuiltLab, []);
+  expect(res.status).toBe(200);
+  expect(rebuilt.store.get(
+    `SELECT status, ended_ts FROM turns WHERE id = ?`,
+    [lab.runId],
+  )).toMatchObject({ status: "failed", ended_ts: expect.any(Number) });
+  expect(rebuilt.relay.liveFor(lab.runtimeId)).toEqual([]);
+});
+
+it("seeds a rebuilt relay from a retained durable active run in the daemon report", async () => {
+  const lab = await labWithRunInFlight();
+
+  const original = servers.pop()!;
+  await original.close();
+  const rebuilt = await freshLabServer(lab.dataDir);
+  servers.push(rebuilt);
+  const rebuiltLab: RecoveryLab = {
+    ...lab,
+    base: rebuilt.base,
+    store: rebuilt.store,
+    relay: rebuilt.relay,
+  };
+
+  const res = await postLive(rebuiltLab, [lab.runId]);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ ok: true, generation: rebuilt.relay.generation });
+  expect(rebuilt.relay.generation).not.toBe(lab.relay.generation);
+  expect(rebuilt.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status).toBe("running");
+  expect(rebuilt.relay.liveFor(lab.runtimeId)).toEqual([lab.runId]);
+});
+
+it("does not seed a rebuilt relay with a terminal run the daemon reports stale", async () => {
+  const lab = await labWithRunInFlight();
+  const completed = await fetch(`${lab.base}/daemon/run/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify({
+      runId: lab.runId,
+      frames: [{ seq: 1, event: { event: "completed", state: { state: "completed" } } }],
+    }),
+  });
+  expect(completed.status).toBe(200);
+
+  const original = servers.pop()!;
+  await original.close();
+  const rebuilt = await freshLabServer(lab.dataDir);
+  servers.push(rebuilt);
+  const rebuiltLab: RecoveryLab = {
+    ...lab,
+    base: rebuilt.base,
+    store: rebuilt.store,
+    relay: rebuilt.relay,
+  };
+
+  const res = await postLive(rebuiltLab, [lab.runId]);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({
+    ok: true,
+    generation: rebuilt.relay.generation,
+    retireRunIds: [lab.runId],
+  });
+  expect(rebuilt.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status).toBe("ok");
+  expect(rebuilt.relay.liveFor(lab.runtimeId)).toEqual([]);
+});
+
+it("continues the durable frame sequence when a rebuilt relay fails a dropped run", async () => {
+  const lab = await labWithRunInFlight();
+  const posted = await fetch(`${lab.base}/daemon/run/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify({
+      runId: lab.runId,
+      frames: [{ seq: 1, event: { event: "assistant-text", text: "before", partial: false } }],
+    }),
+  });
+  expect(posted.status).toBe(200);
+
+  const rebuiltRelay = createRunRelay();
+  const seen: RunEventFrame[] = [];
+  rebuiltRelay.subscribe(lab.runId, undefined, (frame) => seen.push(frame));
+  failDroppedRuns(lab.store, rebuiltRelay, lab.runtimeId, [lab.runId], 1_800_000_010);
+
+  expect(lab.store.get(`SELECT status, last_frame_seq FROM turns WHERE id = ?`, [lab.runId])).toEqual({
+    status: "failed",
+    last_frame_seq: 2,
+  });
+  expect(seen.map((frame) => frame.seq)).toEqual([2]);
 });
 
 it("names the machine that went away in the reason a live subscriber sees", async () => {
@@ -280,6 +429,7 @@ it("does not lock a machine out of its command stream over a reported run id tha
   const lab = await labWithRunInFlight();
   const res = await postLive(lab, [lab.runId, "run_does_not_exist"]);
   expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ retireRunIds: ["run_does_not_exist"] });
   expect(lab.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status).toBe("running");
   // The nonexistent id never reaches the relay's own belief of what this
   // runtime holds — dropped before `reconcile` sees it, not merely ignored

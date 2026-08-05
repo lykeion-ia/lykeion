@@ -994,6 +994,55 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
       expect(completed.event).toBe("completed");
     });
 
+    it("detach is observer-only: the same handle can resubscribe and still complete", async () => {
+      const api = await makeApi();
+      const study = await api.createStudy({ title: "Detach and resume", key: "DAR" });
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "Keep running while nobody observes",
+      });
+      const handle = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "Keep running while nobody observes",
+        options: { planMode: false },
+      });
+
+      handle.detach();
+      const completed = await new Promise<RunEvent>((resolve) => {
+        handle.onEvent((event) => {
+          switch (event.event) {
+            case "plan-proposed":
+              handle.submit({ action: "approve-plan" });
+              break;
+            case "permission-card":
+              handle.submit({
+                action: "permission",
+                requestId: event.request.id,
+                decision: { decision: "allow", scope: "once" },
+              });
+              break;
+            case "question-asked":
+              handle.submit({
+                action: "answer-question",
+                requestId: event.request.requestId,
+                answer: { selected: [] },
+              });
+              break;
+            case "completed":
+              resolve(event);
+              break;
+            default:
+              break;
+          }
+        });
+      });
+      handle.close();
+
+      expect(completed.event).toBe("completed");
+    });
+
     it("stopping a run lands it cancelled, not a failure with an invented reason", async () => {
       // A researcher's stop is not a decline of anything a plan or
       // permission gate raised, and must not read as one: `cancelled` is its
@@ -1844,6 +1893,47 @@ export function runDecisionConformance(makeLab: () => Promise<ConformanceLab>): 
   });
 }
 
+/** Active runs are discoverable only to the actor whose runtime owns them,
+ *  and keep the Task's durable turn order even when more than one is live. */
+export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): void {
+  describe("resumeRuns discovers every owned active turn", () => {
+    it("returns concurrent runs in sequence order and reveals none to another actor", async () => {
+      const { owner, member } = await makeLab();
+      const study = await owner.createStudy({ title: "Resume", key: "RSM" });
+      const task = await owner.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "keep both turns",
+      });
+      const first = await owner.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "first",
+        options: { planMode: false },
+      });
+      const second = await owner.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "second",
+        options: { planMode: false },
+      });
+
+      const resumed = await owner.resumeRuns(task.id);
+      expect(resumed.map((run) => run.runId)).toEqual([first.runId, second.runId]);
+      expect(resumed.map((run) => run.snapshot.sequence)).toEqual([
+        resumed[0]!.snapshot.sequence,
+        resumed[0]!.snapshot.sequence + 1,
+      ]);
+      expect(resumed.map((run) => run.snapshot.prompt)).toEqual(["first", "second"]);
+      expect(await member.resumeRuns(task.id)).toEqual([]);
+
+      first.detach();
+      second.detach();
+      for (const run of resumed) run.detach();
+    });
+  });
+}
+
 /** Everything an implementation can satisfy with nothing but storage. */
 const AREAS = [
   identityConformance,
@@ -1899,6 +1989,7 @@ export function runContractConformance(
     // always run, the same way `rolesConformance` always is.
     unknownRunConformance(options.makeLab);
     runDecisionConformance(options.makeRunLab ?? options.makeLab);
+    runResumeConformance(options.makeRunLab ?? options.makeLab);
   });
 }
 

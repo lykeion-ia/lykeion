@@ -57,6 +57,7 @@ export const Commands = {
   markConversationRead: "mark_conversation_read",
   myWork: "my_work",
   startRun: "start_run",
+  resumeRuns: "resume_runs",
   delegateSubagent: "delegate_subagent",
   submitRunDecision: "submit_run_decision",
   reviewFindings: "review_findings",

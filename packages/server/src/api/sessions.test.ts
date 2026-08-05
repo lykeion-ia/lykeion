@@ -102,6 +102,7 @@ async function pairClaudeMachine(
   base: string,
   ownerApi: LykeionApi,
   machineName: string,
+  cliId = "claude",
 ): Promise<{ runtimeId: string; token: string }> {
   const { verifier, challenge } = secretPair();
   const { code } = await ownerApi.pairMachine({
@@ -124,7 +125,7 @@ async function pairClaudeMachine(
       platform: "macos-aarch64",
       daemonVersion: "0.1.0",
       capabilities: [],
-      clis: [{ id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true }],
+      clis: [{ id: cliId, name: cliId, command: cliId, version: "2.1.220", available: true }],
     }),
   });
   return { runtimeId, token };
@@ -254,6 +255,26 @@ it("reuses the Task's live session for a second turn on the same agent", async (
   expect(second.runId).not.toBe(first.runId);
   expect(lab.store.all(`SELECT id FROM sessions`)).toHaveLength(1);
   expect(lab.store.all(`SELECT id FROM turns`)).toHaveLength(2);
+});
+
+it("resumes every owned active turn in durable order and reveals none to another member", async () => {
+  const lab = await labWithPairedMachine();
+  const first = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "first",
+    options: { planMode: false, agent: "claude" },
+  });
+  const second = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "second",
+    options: { planMode: false, agent: "claude" },
+  });
+
+  const resumed = await lab.ownerApi.resumeRuns(lab.taskId);
+  expect(resumed.map((run) => ({ runId: run.runId, prompt: run.snapshot.prompt }))).toEqual([
+    { runId: first.runId, prompt: "first" },
+    { runId: second.runId, prompt: "second" },
+  ]);
+  expect(resumed[1]!.snapshot.sequence).toBe(resumed[0]!.snapshot.sequence + 1);
+  expect(await lab.memberApi.resumeRuns(lab.taskId)).toEqual([]);
 });
 
 it("refuses a run on a machine that is not the caller's", async () => {
@@ -426,6 +447,65 @@ it("accepts run events posted by the machine that actually owns the run", async 
   expect(seen).toEqual([{ seq: 1, event: { event: "assistant-text", text: "hi", partial: false } }]);
 });
 
+it("derives lastRunStatus from transcript sequence when concurrent turns settle out of order", async () => {
+  const lab = await labWithPairedMachine();
+  const first = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "first",
+    options: { planMode: false, agent: "claude" },
+  });
+  const second = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "second",
+    options: { planMode: false, agent: "claude" },
+  });
+  const postCompletion = (runId: string, state: Record<string, unknown>) =>
+    fetch(`${lab.base}/daemon/run/events`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+      body: JSON.stringify({ runId, frames: [{ seq: 1, event: { event: "completed", state } }] }),
+    });
+
+  expect((await postCompletion(second.runId, { state: "completed" })).status).toBe(200);
+  expect((await postCompletion(first.runId, { state: "failed", reason: "older failed late" })).status)
+    .toBe(200);
+
+  const detail = await lab.ownerApi.getTask(lab.taskId);
+  expect(detail.turns.map((turn) => turn.status)).toEqual(["failed", "ok"]);
+  expect(detail.task.lastRunStatus).toBe("ok");
+});
+
+it("preserves Done across an older sibling completion and reopens it for later new work", async () => {
+  const lab = await labWithPairedMachine();
+  const first = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "first sibling",
+    options: { planMode: false, agent: "claude" },
+  });
+  const second = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "second sibling",
+    options: { planMode: false, agent: "claude" },
+  });
+  const postSuccess = (runId: string) =>
+    fetch(`${lab.base}/daemon/run/events`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+      body: JSON.stringify({
+        runId,
+        frames: [{ seq: 1, event: { event: "completed", state: { state: "completed" } } }],
+      }),
+    });
+
+  expect((await postSuccess(first.runId)).status).toBe(200);
+  await lab.ownerApi.updateTask(lab.taskId, { status: "done" });
+  expect((await postSuccess(second.runId)).status).toBe(200);
+  expect((await lab.ownerApi.getTask(lab.taskId)).task.status).toBe("done");
+
+  const third = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "new work after done",
+    options: { planMode: false, agent: "claude" },
+  });
+  expect((await postSuccess(third.runId)).status).toBe(200);
+  expect((await lab.ownerApi.getTask(lab.taskId)).task.status).toBe("in-review");
+});
+
 it("reopens a completed turn with prose and execution steps in their durable arrival order", async () => {
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
@@ -464,6 +544,7 @@ it("reopens a completed turn with prose and execution steps in their durable arr
   expect(reopened.turns).toEqual([
     {
       runId,
+      sequence: lab.store.get(`SELECT seq FROM turns WHERE id = ?`, [runId])!.seq,
       ts: 1_800_000_000,
       prompt: "inspect counts",
       messages: ["Before the read.After the read."],
@@ -657,7 +738,18 @@ it("wires the returned handle's onEvent/submit/close to the relay for an in-proc
   const seen: RunEvent[] = [];
   const unsubscribe = handle.onEvent((e) => seen.push(e));
   lab.relay.publish(handle.runId, [{ seq: 1, event: { event: "assistant-text", text: "hi", partial: false } }]);
-  expect(seen).toEqual([{ event: "assistant-text", text: "hi", partial: false }]);
+  expect(seen).toEqual([
+    {
+      event: "snapshot",
+      snapshot: expect.objectContaining({
+        runId: handle.runId,
+        prompt: "go",
+        state: { state: "planning" },
+        lastEventSeq: 0,
+      }),
+    },
+    { event: "assistant-text", text: "hi", partial: false },
+  ]);
   unsubscribe();
 
   // `attach` replays the start-run this same `startRun` call already
@@ -671,6 +763,152 @@ it("wires the returned handle's onEvent/submit/close to the relay for an in-proc
   ).toEqual([
     { type: "decision", runId: handle.runId },
     { type: "cancel", runId: handle.runId },
+  ]);
+});
+
+it("stops a fresh handle's queued replay when its callback detaches", async () => {
+  const lab = await labWithPairedMachine();
+  const channel = createChannel(lab.store, 1000);
+  const deps: Deps = {
+    store: lab.store,
+    actor: { userId: lab.ownerId, role: "owner" },
+    now: () => 1_800_000_010,
+    config: readConfig({}),
+    channel,
+    runs: lab.relay,
+    changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
+  };
+  const handle = await sessionsApi(deps).startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "detach while replaying",
+    options: { planMode: false, agent: "claude" },
+  });
+  lab.relay.publish(handle.runId, [
+    { seq: 1, event: { event: "assistant-text", text: "first", partial: false } },
+    { seq: 2, event: { event: "assistant-text", text: "second", partial: false } },
+  ]);
+
+  const seen: RunEvent[] = [];
+  handle.onEvent((event) => {
+    seen.push(event);
+    if (event.event === "assistant-text") handle.detach();
+  });
+  lab.relay.publish(handle.runId, [
+    { seq: 3, event: { event: "assistant-text", text: "later", partial: false } },
+  ]);
+
+  expect(seen).toEqual([
+    { event: "snapshot", snapshot: expect.objectContaining({ runId: handle.runId }) },
+    { event: "assistant-text", text: "first", partial: false },
+  ]);
+});
+
+it("resumed in-process handles use their durable cursor, route decisions per runtime, detach, and cancel on close", async () => {
+  const lab = await labWithPairedMachine();
+  const codex = await pairClaudeMachine(lab.base, lab.ownerApi, "ana-codex", "codex");
+  const first = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "claude turn",
+    options: { planMode: false, agent: "claude" },
+  });
+  const second = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "codex turn",
+    options: { planMode: false, agent: "codex" },
+  });
+  const firstFrame: RunEventFrame = {
+    seq: 1,
+    event: { event: "assistant-text", text: "durable", partial: false },
+  };
+  const posted = await fetch(`${lab.base}/daemon/run/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify({ runId: first.runId, frames: [firstFrame] }),
+  });
+  expect(posted.status).toBe(200);
+
+  const channel = createChannel(lab.store, 1000);
+  const deps: Deps = {
+    store: lab.store,
+    actor: { userId: lab.ownerId, role: "owner" },
+    now: () => 1_800_000_010,
+    config: readConfig({}),
+    channel,
+    runs: lab.relay,
+    changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
+  };
+  const resumed = await sessionsApi(deps).resumeRuns(lab.taskId);
+  expect(resumed.map((run) => run.runId)).toEqual([first.runId, second.runId]);
+
+  const seen: RunEvent[] = [];
+  resumed[0]!.onEvent((event) => seen.push(event));
+  expect(seen).toEqual([]);
+  lab.relay.publish(first.runId, [
+    { seq: 2, event: { event: "assistant-text", text: "later", partial: false } },
+  ]);
+  expect(seen).toEqual([{ event: "assistant-text", text: "later", partial: false }]);
+  resumed[0]!.detach();
+  lab.relay.publish(first.runId, [
+    { seq: 3, event: { event: "assistant-text", text: "detached", partial: false } },
+  ]);
+  expect(seen).toHaveLength(1);
+  const replayedAfterDetach: RunEvent[] = [];
+  resumed[0]!.onEvent((event) => replayedAfterDetach.push(event));
+  expect(replayedAfterDetach).toEqual([
+    { event: "assistant-text", text: "detached", partial: false },
+  ]);
+
+  const claudeCommands: RunCommand[] = [];
+  const codexCommands: RunCommand[] = [];
+  lab.relay.attach(lab.runtimeId, (_seq, command) => claudeCommands.push(command));
+  lab.relay.attach(codex.runtimeId, (_seq, command) => codexCommands.push(command));
+  claudeCommands.length = 0;
+  codexCommands.length = 0;
+  resumed[0]!.submit({ action: "approve-plan" });
+  resumed[1]!.submit({ action: "reject-plan", reason: "stop" });
+  resumed[1]!.close();
+  resumed[1]!.close();
+  const afterClose: RunEvent[] = [];
+  resumed[1]!.onEvent((event) => afterClose.push(event));
+  expect(claudeCommands).toEqual([
+    { type: "decision", runId: first.runId, decision: { action: "approve-plan" } },
+  ]);
+  expect(codexCommands).toEqual([
+    { type: "decision", runId: second.runId, decision: { action: "reject-plan", reason: "stop" } },
+    { type: "cancel", runId: second.runId },
+  ]);
+  expect(afterClose).toEqual([]);
+});
+
+it("stops synchronous replay when a resumed handle closes from its first frame", async () => {
+  const lab = await labWithPairedMachine();
+  const started = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "close while replaying",
+    options: { planMode: false, agent: "claude" },
+  });
+  lab.relay.publish(started.runId, [
+    { seq: 1, event: { event: "assistant-text", text: "first", partial: false } },
+    { seq: 2, event: { event: "assistant-text", text: "second", partial: false } },
+  ]);
+  const channel = createChannel(lab.store, 1000);
+  const api = sessionsApi({
+    store: lab.store,
+    actor: { userId: lab.ownerId, role: "owner" },
+    now: () => 1_800_000_010,
+    config: readConfig({}),
+    channel,
+    runs: lab.relay,
+    changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
+  });
+  const [resumed] = await api.resumeRuns(lab.taskId);
+  const seen: RunEvent[] = [];
+  resumed!.onEvent((event) => {
+    seen.push(event);
+    resumed!.close();
+  });
+  lab.relay.publish(started.runId, [
+    { seq: 3, event: { event: "assistant-text", text: "later", partial: false } },
+  ]);
+
+  expect(seen).toEqual([
+    { event: "assistant-text", text: "first", partial: false },
   ]);
 });
 
@@ -692,6 +930,41 @@ it("delivers a decision submitted through submitRunDecision to the run's runtime
   expect(commands.filter((c) => c.type === "decision")).toEqual([
     { type: "decision", runId, decision: { action: "cancel" } },
   ]);
+});
+
+it("does not queue handle or RPC commands after a run is already terminal", async () => {
+  const lab = await labWithPairedMachine();
+  const channel = createChannel(lab.store, 1000);
+  const api = sessionsApi({
+    store: lab.store,
+    actor: { userId: lab.ownerId, role: "owner" },
+    now: () => 1_800_000_010,
+    config: readConfig({}),
+    channel,
+    runs: lab.relay,
+    changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
+  });
+  const handle = await api.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "already done",
+    options: { planMode: false, agent: "claude" },
+  });
+  const posted = await fetch(`${lab.base}/daemon/run/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify({
+      runId: handle.runId,
+      frames: [{ seq: 1, event: { event: "completed", state: { state: "cancelled" } } }],
+    }),
+  });
+  expect(posted.status).toBe(200);
+
+  const commands: RunCommand[] = [];
+  lab.relay.attach(lab.runtimeId, (_seq, command) => commands.push(command));
+  handle.submit({ action: "cancel" });
+  handle.close();
+  handle.close();
+  await api.submitRunDecision(handle.runId, { action: "cancel" });
+  expect(commands).toEqual([]);
 });
 
 it("refuses a decision on a run whose machine the caller does not own", async () => {

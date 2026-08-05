@@ -51,9 +51,26 @@ function scriptedApi() {
         runId: `run-${idx}`,
         onEvent(cb) {
           mySubs.add(cb);
+          queueMicrotask(() =>
+            cb({
+              event: "snapshot",
+              snapshot: {
+                runId: `run-${idx}`,
+                sequence: idx + 1,
+                prompt: input.prompt,
+                agent: input.options.agent ?? "default",
+                state: { state: "planning" },
+                stream: [],
+                live: {},
+                reviewing: false,
+                lastEventSeq: 0,
+              },
+            }),
+          );
           return () => mySubs.delete(cb);
         },
         submit() {},
+        detach() {},
         close() {
           mySubs.clear();
         },
@@ -85,6 +102,7 @@ beforeEach(cleanup);
 describe("edit refills the composer without touching the transcript", () => {
   const HISTORIC: TaskTurn = {
     runId: "run-historic",
+    sequence: 1,
     ts: 1,
     prompt: "what's in the dataset?",
     messages: ["It has 42 rows."],
@@ -140,6 +158,7 @@ describe("edit refills the composer without touching the transcript", () => {
 describe("edit stays off the surface while a run is live", () => {
   const HISTORIC: TaskTurn = {
     runId: "run-historic",
+    sequence: 1,
     ts: 1,
     prompt: "what's in the dataset?",
     messages: ["It has 42 rows."],

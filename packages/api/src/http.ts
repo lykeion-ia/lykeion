@@ -1,6 +1,6 @@
 import { LykeionError, type ErrorCode } from "./errors";
 import type { LykeionApi } from "./api";
-import type { RunEvent, RunEventFrame, RunHandle } from "./run";
+import type { ActiveRunSnapshot, ResumedRun, RunEvent, RunEventFrame, RunHandle } from "./run";
 
 /** One change the workspace has recorded, as it arrives on the channel. */
 export interface ChangeEvent {
@@ -53,47 +53,91 @@ export interface Transport {
  * cannot survive a trip through JSON, so this is what turns a bare id back
  * into something with `onEvent`/`submit`/`close`, entirely client-side.
  */
-function buildRunHandle(transport: Transport, runId: string): RunHandle {
+function buildRunHandle(
+  transport: Transport,
+  runId: string,
+  cursor?: number,
+): RunHandle {
   const subs = new Set<(e: RunEvent) => void>();
-  let detach: (() => void) | undefined;
+  let detachStream: (() => void) | undefined;
+  let latestCursor = cursor;
+  let streamGeneration = 0;
   let closed = false;
+  let terminal = false;
 
   return {
     runId,
     onEvent(cb) {
+      if (closed) return () => {};
       subs.add(cb);
       // Opened on the first subscriber, never before — the same moment the
       // in-memory and in-process server handles start delivering. A
       // subscriber that joins later sees only what arrives after it joined;
       // nothing here replays what an earlier one already got.
-      if (!detach && !closed) {
-        detach = transport.openRun(
+      if (!detachStream) {
+        const generation = streamGeneration + 1;
+        streamGeneration = generation;
+        let endedSynchronously = false;
+        const opened = transport.openRun(
           runId,
-          undefined,
+          latestCursor,
           (frame) => {
+            if (generation !== streamGeneration || closed) return;
+            if (latestCursor === undefined || frame.seq > latestCursor)
+              latestCursor = frame.seq;
+            if (
+              frame.event.event === "completed" ||
+              (frame.event.event === "snapshot" &&
+                (frame.event.snapshot.state.state === "completed" ||
+                  frame.event.snapshot.state.state === "failed" ||
+                  frame.event.snapshot.state.state === "cancelled"))
+            )
+              terminal = true;
             for (const sub of subs) sub(frame.event);
           },
           () => {
-            detach = undefined;
+            if (generation !== streamGeneration) return;
+            endedSynchronously = true;
+            detachStream = undefined;
           },
         );
+        // A transport is allowed to deliver synchronously. In particular, a
+        // terminal snapshot can make the subscriber detach before `openRun`
+        // returns its cleanup; never resurrect that already-released stream.
+        if (
+          endedSynchronously ||
+          generation !== streamGeneration ||
+          closed ||
+          subs.size === 0
+        )
+          opened();
+        else detachStream = opened;
       }
       return () => subs.delete(cb);
     },
     submit(decision) {
+      if (closed) return;
       void transport.request("submitRunDecision", [runId, decision]);
+    },
+    detach() {
+      streamGeneration += 1;
+      detachStream?.();
+      detachStream = undefined;
+      subs.clear();
     },
     close() {
       if (closed) return;
       closed = true;
-      detach?.();
-      detach = undefined;
+      streamGeneration += 1;
+      detachStream?.();
+      detachStream = undefined;
       subs.clear();
       // Releasing the subscription also ends an unfinished run — the same
       // guarantee the in-process handle keeps by enqueuing this exact
       // decision itself, rather than leaving a turn nobody is watching
       // running forever on whatever machine it landed on.
-      void transport.request("submitRunDecision", [runId, { action: "cancel" }]);
+      if (!terminal)
+        void transport.request("submitRunDecision", [runId, { action: "cancel" }]);
     },
   };
 }
@@ -138,6 +182,16 @@ export function createHttpApi(transport: Transport): LykeionApi {
     async startRun(input) {
       const { runId } = (await transport.request("startRun", [input])) as { runId: string };
       return buildRunHandle(transport, runId);
+    },
+    async resumeRuns(taskId) {
+      const resumed = (await transport.request("resumeRuns", [taskId])) as Array<{
+        runId: string;
+        snapshot: ActiveRunSnapshot;
+      }>;
+      return resumed.map(({ runId, snapshot }): ResumedRun => ({
+        ...buildRunHandle(transport, runId, snapshot.lastEventSeq),
+        snapshot,
+      }));
     },
     submitRunDecision: call("submitRunDecision"),
     delegateSubagent: call("delegateSubagent"),

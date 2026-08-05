@@ -26,6 +26,7 @@ import type {
 } from "./conversation";
 import type {
   DelegateSubagentInput,
+  ResumedRun,
   RunDecision,
   RunHandle,
   RunSummary,
@@ -336,6 +337,9 @@ export interface LykeionApi {
    * answer plan/permission prompts with `submit`.
    */
   startRun(input: StartRunInput): Promise<RunHandle>;
+
+  /** Reconstruct every active turn on a Task owned by one of my runtimes. */
+  resumeRuns(taskId: string): Promise<ResumedRun[]>;
 
   /**
    * Answer or stop a run addressed by its id alone. This is the same

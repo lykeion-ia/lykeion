@@ -51,6 +51,11 @@ export async function exchangeCode(
  */
 export class LabRefused extends Error {}
 
+/** A daemon frame batch cannot be accepted at the server's durable cursor.
+ * Retrying the same batch forever cannot repair this: the run has to leave
+ * the daemon's live set so `/daemon/run/live` can settle it explicitly. */
+export class LabFrameConflict extends Error {}
+
 /** The body `report` sends: what the daemon found on this machine, in the
  *  shape the lab's `/daemon/report` route reads. */
 export interface DaemonReport {
@@ -93,7 +98,7 @@ async function callLab(
   token: string,
   body: unknown,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<Response> {
   let res: Response;
   try {
     res = await fetch(new URL(path, lab), {
@@ -119,27 +124,32 @@ async function callLab(
       `${lab} answered ${path} with status 401, but not as the lab — something in front of it is asking for a sign-in`,
     );
   }
+  if (res.status === 409) {
+    const parsed = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new LabFrameConflict(parsed.error ?? `${lab} answered ${path} with status 409`);
+  }
   if (!res.ok) {
     const parsed = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(parsed.error ?? `${lab} answered ${path} with status ${res.status}`);
   }
+  return res;
 }
 
 /** Tells the lab what this machine can run. Sent once right after pairing,
  *  and again whenever a re-probe finds the set has changed. */
-export function report(
+export async function report(
   lab: string,
   token: string,
   body: DaemonReport,
   signal?: AbortSignal,
 ): Promise<void> {
-  return callLab(lab, "/daemon/report", token, body, signal);
+  await callLab(lab, "/daemon/report", token, body, signal);
 }
 
 /** Tells the lab this machine is still here. Carries nothing beyond the
  *  bearer token that already names which machine is calling. */
-export function heartbeat(lab: string, token: string, signal?: AbortSignal): Promise<void> {
-  return callLab(lab, "/daemon/heartbeat", token, {}, signal);
+export async function heartbeat(lab: string, token: string, signal?: AbortSignal): Promise<void> {
+  await callLab(lab, "/daemon/heartbeat", token, {}, signal);
 }
 
 /** Doubled with every failed attempt, `attempt` counting from 1. */
@@ -261,38 +271,60 @@ export async function openCommands(
 /** Posts the events one run produced since the last post, numbered by this
  *  daemon — the only producer there is, so a retry can never mint a
  *  duplicate. */
-export function postRunEvents(
+export async function postRunEvents(
   lab: string,
   token: string,
   runId: string,
   frames: Array<{ seq: number; event: RunEvent }>,
   signal: AbortSignal,
 ): Promise<void> {
-  return callLab(lab, "/daemon/run/events", token, { runId, frames }, signal);
+  await callLab(lab, "/daemon/run/events", token, { runId, frames }, signal);
 }
 
 /** Tells the lab a card answered "for the Study" was granted, so the lab's
  *  own `folder_grants` remembers it — what lets a later run on this Study
  *  never raise the same card again. */
-export function postRunGrant(
+export async function postRunGrant(
   lab: string,
   token: string,
   runId: string,
   grant: StandingGrant,
   signal: AbortSignal,
 ): Promise<void> {
-  return callLab(lab, "/daemon/run/grant", token, { runId, path: grant.path, mode: grant.mode }, signal);
+  await callLab(lab, "/daemon/run/grant", token, { runId, path: grant.path, mode: grant.mode }, signal);
 }
 
 /** Tells the lab which runs this daemon currently holds — sent as soon as
  *  the command stream (re)connects, so a lab that lost the connection knows
  *  what survived on this end without waiting for those runs to produce
  *  events of their own. */
-export function postRunLive(
+export async function postRunLive(
   lab: string,
   token: string,
   runIds: string[],
+  generation: string | undefined,
+  commandCursor: number | undefined,
   signal: AbortSignal,
-): Promise<void> {
-  return callLab(lab, "/daemon/run/live", token, { runIds }, signal);
+): Promise<{ generation?: string; retireRunIds: string[] }> {
+  const res = await callLab(
+    lab,
+    "/daemon/run/live",
+    token,
+    {
+      runIds,
+      ...(generation === undefined ? {} : { generation }),
+      ...(commandCursor === undefined ? {} : { commandCursor }),
+    },
+    signal,
+  );
+  const body = (await res.json().catch(() => ({}))) as {
+    generation?: unknown;
+    retireRunIds?: unknown;
+  };
+  return {
+    ...(typeof body.generation === "string" ? { generation: body.generation } : {}),
+    retireRunIds: Array.isArray(body.retireRunIds)
+      ? body.retireRunIds.filter((runId): runId is string => typeof runId === "string")
+      : [],
+  };
 }

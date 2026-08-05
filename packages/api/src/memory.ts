@@ -46,6 +46,7 @@ import type { Invite, Member, Role, User } from "./account";
 import type { Usage } from "./usage";
 import type { WorkspaceSettings } from "./settings";
 import type {
+  ActiveRunSnapshot,
   DelegateSubagentInput,
   ExecutionLogEntry,
   Plan,
@@ -53,6 +54,7 @@ import type {
   QuestionRequest,
   RunDecision,
   RunEvent,
+  RunEventFrame,
   RunHandle,
   RunRecord,
   StartRunInput,
@@ -60,6 +62,11 @@ import type {
   TaskTurn,
   TurnItem,
 } from "./run";
+
+interface SimulatedRun extends RunHandle {
+  onEventFrom(cursor: number, cb: (event: RunEvent) => void): () => void;
+  onFrameFrom(cursor: number, cb: (frame: RunEventFrame) => void): () => void;
+}
 
 interface Seed {
   studies: Study[];
@@ -917,13 +924,41 @@ export function createInMemoryLab(
   // `RunHandle` `startRun`/`delegateSubagent` returned — the same seam a
   // wire transport is built on, where a `RunHandle`'s methods never survive
   // the trip and only its `runId` does.
-  const runs = new Map<string, RunHandle>();
+  const runs = new Map<string, SimulatedRun>();
   // The actor who started each run, keyed the same way — the in-memory
   // analogue of the server's "only the machine's owner may decide": this lab
   // has no machine for a run to belong to, but a run still belongs to
   // whoever started it, and `submitRunDecision` holds every other actor to
   // that the same way the server holds a colleague's un-owned machine to it.
   const runStarters = new Map<string, string>();
+  const activeRuns = new Map<
+    string,
+    {
+      taskId: string;
+      ownerId: string;
+      handle: SimulatedRun;
+      source: SimulatedRun;
+      snapshot: ActiveRunSnapshot;
+    }
+  >();
+  // Delegated turns are not resumable top-level runs, but they still occupy
+  // the same durable transcript sequence. Reserve that position at start so
+  // completing ahead of a live parent cannot reuse the parent's number.
+  const delegatedSequences = new Map<
+    string,
+    { taskId: string; sequence: number }
+  >();
+  const nextTurnSequence = (taskId: string): number =>
+    Math.max(
+      0,
+      ...(transcripts.get(taskId) ?? []).map((turn) => turn.sequence),
+      ...[...activeRuns.values()]
+        .filter((run) => run.taskId === taskId)
+        .map((run) => run.snapshot.sequence),
+      ...[...delegatedSequences.values()]
+        .filter((run) => run.taskId === taskId)
+        .map((run) => run.sequence),
+    ) + 1;
   // Every write is stamped from here. The value is strictly increasing, so no
   // two writes in an instance ever tie and none can tie a seeded timestamp;
   // and it is never behind `options.now`, so with a real clock a write records
@@ -1019,13 +1054,15 @@ export function createInMemoryLab(
     status: "ok" | "failed",
     run: RunRecord | undefined,
     messages: string[],
-    meta?: { parentRunId?: string; subagent?: string },
+    meta?: { parentRunId?: string; subagent?: string; sequence?: number },
   ) => {
     const task = tasks.find((t) => t.id === input.taskId);
     if (!task) return;
     const ts = tick();
+    const turns = transcripts.get(task.id) ?? [];
     const turn: TaskTurn = {
       runId: run?.runId ?? `run_${counter++}`,
+      sequence: meta?.sequence ?? turns.length + 1,
       ts,
       prompt: input.prompt,
       messages,
@@ -1035,12 +1072,14 @@ export function createInMemoryLab(
       outputs: run?.outputs ?? [],
       ...meta,
     };
-    const turns = transcripts.get(task.id) ?? [];
     turns.push(turn);
+    turns.sort((a, b) => a.sequence - b.sequence);
     transcripts.set(task.id, turns);
     task.runCount = turns.length;
     task.updatedTs = ts;
-    task.lastRunStatus = status;
+    // Concurrent turns can finish out of order. The roll-up describes the
+    // latest transcript turn, not whichever promise happened to settle last.
+    task.lastRunStatus = turns[turns.length - 1]!.status;
   };
 
   // Replay the seeded transcripts turn by turn. Going through `appendTurn` is
@@ -1502,6 +1541,16 @@ export function createInMemoryLab(
       return [];
     },
     async startRun(input: StartRunInput) {
+      // Starting genuinely new work after an explicit Done reopens the Task.
+      // This boundary lets completion preserve a later Done written while a
+      // sibling was already running without making Done permanent forever.
+      const startingTask = tasks.find((task) => task.id === input.taskId);
+      if (startingTask?.status === "done") {
+        startingTask.status = "in-progress";
+        startingTask.updatedTs = tick();
+      }
+      const sequence = nextTurnSequence(input.taskId);
+      let handle: SimulatedRun;
       const onComplete = (
         status: "ok" | "failed",
         run: RunRecord | undefined,
@@ -1512,17 +1561,240 @@ export function createInMemoryLab(
         // waiting to be checked.
         if (status === "ok") {
           const task = tasks.find((t) => t.id === input.taskId);
-          if (task) {
+          // A user may mark the Task Done after this run began while another
+          // sibling is still live. That explicit write is newer authority
+          // than this older completion and must not be regressed.
+          if (task && task.status !== "done") {
             task.status = "in-review";
             task.updatedTs = tick();
           }
         }
-        appendTurn(input, status, run, messages);
+        appendTurn(input, status, run, messages, { sequence });
+        activeRuns.delete(handle.runId);
       };
-      const handle = simulateRun(input, onComplete);
+      let active: {
+        taskId: string;
+        ownerId: string;
+        handle: SimulatedRun;
+        source: SimulatedRun;
+        snapshot: ActiveRunSnapshot;
+      };
+      let terminal = false;
+      const simulated = simulateRun(input, onComplete, (frame) => {
+        const previous = active.snapshot;
+        const event = frame.event;
+        let stream = previous.stream;
+        let state = previous.state;
+        let plan = previous.plan;
+        let live = previous.live;
+        let reviewing = previous.reviewing;
+        switch (event.event) {
+          case "snapshot":
+            active.snapshot = clone(event.snapshot);
+            return;
+          case "state":
+            state = event.state;
+            if (
+              event.state.state === "awaiting-plan-approval" ||
+              event.state.state === "executing" ||
+              event.state.state === "awaiting-permission" ||
+              event.state.state === "awaiting-question"
+            ) plan = event.state.plan;
+            break;
+          case "assistant-text": {
+            stream = clone(stream);
+            const last = stream[stream.length - 1];
+            if (event.partial && last?.kind === "text") last.text += event.text;
+            else stream.push({ kind: "text", text: event.text });
+            break;
+          }
+          case "plan-proposed":
+            plan = event.plan;
+            break;
+          case "permission-card":
+            state = {
+              state: "awaiting-permission",
+              ...(plan === undefined ? {} : { plan }),
+              request: event.request,
+            };
+            break;
+          case "question-asked":
+            state = {
+              state: "awaiting-question",
+              ...(plan === undefined ? {} : { plan }),
+              request: event.request,
+            };
+            break;
+          case "log-entry": {
+            stream = clone(stream);
+            const existing = stream.findIndex(
+              (item) => item.kind === "step" && item.entry.toolUseId === event.entry.toolUseId,
+            );
+            const item: TurnItem = { kind: "step", entry: event.entry };
+            if (existing === -1) stream.push(item);
+            else stream[existing] = item;
+            break;
+          }
+          case "live":
+            live = event.live;
+            break;
+          case "reviewing":
+            reviewing = true;
+            break;
+          case "completed":
+            terminal = true;
+            state = event.state;
+            live = {};
+            reviewing = false;
+            break;
+        }
+        active.snapshot = {
+          ...previous,
+          state,
+          ...(plan === undefined ? {} : { plan }),
+          stream,
+          live,
+          reviewing,
+          lastEventSeq: frame.seq,
+        };
+      });
+      const subscriptions = new Set<() => void>();
+      const ownSubscription = (unsubscribe: () => void): (() => void) => {
+        let subscribed = true;
+        const release = () => {
+          if (!subscribed) return;
+          subscribed = false;
+          subscriptions.delete(release);
+          unsubscribe();
+        };
+        subscriptions.add(release);
+        return release;
+      };
+      const detach = () => {
+        for (const unsubscribe of subscriptions) unsubscribe();
+        subscriptions.clear();
+      };
+      let closed = false;
+      handle = {
+        runId: simulated.runId,
+        onEvent(cb) {
+          if (closed) return () => {};
+          // Fresh HTTP streams and resumed handles both establish authority
+          // with a snapshot before incremental events. Keep the browser core
+          // on that same contract: UI code must never invent a durable turn
+          // sequence merely because this implementation is in-process.
+          const unsubscribe = ownSubscription(simulated.onEvent(cb));
+          cb({ event: "snapshot", snapshot: clone(active.snapshot) });
+          return unsubscribe;
+        },
+        onEventFrom(cursor, cb) {
+          if (closed) return () => {};
+          return ownSubscription(simulated.onEventFrom(cursor, cb));
+        },
+        onFrameFrom(cursor, cb) {
+          if (closed) return () => {};
+          return ownSubscription(simulated.onFrameFrom(cursor, cb));
+        },
+        submit(decision) {
+          if (closed || terminal) return;
+          simulated.submit(decision);
+        },
+        detach() {
+          detach();
+        },
+        close() {
+          if (closed) return;
+          closed = true;
+          // Closing this handle cancels the shared run, but it owns only its
+          // own observers. A resumed sibling must remain attached long enough
+          // to receive the resulting terminal cancellation.
+          detach();
+          if (!terminal) simulated.submit({ action: "cancel" });
+        },
+      };
+      active = {
+        taskId: input.taskId,
+        ownerId: me,
+        handle,
+        source: simulated,
+        snapshot: {
+          runId: handle.runId,
+          sequence,
+          prompt: input.prompt,
+          agent: input.options.agent ?? "simulated",
+          state: { state: "planning" },
+          stream: [],
+          live: {},
+          reviewing: false,
+          lastEventSeq: 0,
+        },
+      };
       runs.set(handle.runId, handle);
       runStarters.set(handle.runId, me);
+      activeRuns.set(handle.runId, active);
       return handle;
+    },
+    async resumeRuns(taskId: string) {
+      return [...activeRuns.values()]
+        .filter((run) => run.taskId === taskId && run.ownerId === me)
+        .sort((a, b) => a.snapshot.sequence - b.snapshot.sequence)
+        .map((run) => {
+          const snapshot = clone(run.snapshot);
+          const subscriptions = new Set<() => void>();
+          let cursor = snapshot.lastEventSeq;
+          let terminal = false;
+          let closed = false;
+          const detach = () => {
+            for (const unsubscribe of subscriptions) unsubscribe();
+            subscriptions.clear();
+          };
+          return {
+            runId: run.handle.runId,
+            snapshot,
+            onEvent(cb: (event: RunEvent) => void) {
+              if (closed) return () => {};
+              let subscribed = true;
+              let unsubscribe: (() => void) | undefined;
+              const release = () => {
+                if (!subscribed) return;
+                subscribed = false;
+                subscriptions.delete(release);
+                unsubscribe?.();
+              };
+              // Register ownership before asking the source to replay. Its
+              // replay is synchronous, so a callback may detach/close before
+              // `onFrameFrom` returns its inner unsubscribe.
+              subscriptions.add(release);
+              try {
+                unsubscribe = run.source.onFrameFrom(cursor, (frame) => {
+                  if (!subscribed || closed) return;
+                  cursor = Math.max(cursor, frame.seq);
+                  if (frame.event.event === "completed") terminal = true;
+                  cb(frame.event);
+                });
+              } catch (error) {
+                release();
+                throw error;
+              }
+              // A detach during replay could not call an unsubscribe that did
+              // not exist yet. Tear down the source immediately now that it
+              // does, so later live frames cannot resurrect this observer.
+              if (!subscribed) unsubscribe();
+              return release;
+            },
+            submit(decision: RunDecision) {
+              if (closed || terminal) return;
+              run.source.submit(decision);
+            },
+            detach,
+            close() {
+              if (closed) return;
+              closed = true;
+              detach();
+              if (!terminal) run.source.submit({ action: "cancel" });
+            },
+          };
+        });
     },
     async submitRunDecision(runId: string, decision: RunDecision) {
       // One check, not two: an id nobody holds a run for and an id whose run
@@ -1548,12 +1820,14 @@ export function createInMemoryLab(
       runs.get(runId)!.submit(decision);
     },
     async delegateSubagent(input: DelegateSubagentInput) {
+      const sequence = nextTurnSequence(input.taskId);
       const runInput: StartRunInput = {
         studyId: input.studyId,
         taskId: input.taskId,
         prompt: input.task,
         options: input.options,
       };
+      let handle: SimulatedRun;
       const onComplete = (
         status: "ok" | "failed",
         run: RunRecord | undefined,
@@ -1566,9 +1840,12 @@ export function createInMemoryLab(
         appendTurn(runInput, status, run, messages, {
           parentRunId: input.parentRunId,
           subagent: input.persona.name,
+          sequence,
         });
+        delegatedSequences.delete(handle.runId);
       };
-      const handle = simulateRun(runInput, onComplete);
+      handle = simulateRun(runInput, onComplete);
+      delegatedSequences.set(handle.runId, { taskId: input.taskId, sequence });
       runs.set(handle.runId, handle);
       runStarters.set(handle.runId, me);
       return handle;
@@ -1828,11 +2105,16 @@ function simulateRun(
     run: RunRecord | undefined,
     messages: string[],
   ) => void,
-): RunHandle {
+  onFrame?: (frame: RunEventFrame) => void,
+): SimulatedRun {
   const runId = `run-sim-${input.taskId}-${simRunSeq++}`;
-  const subs = new Set<(e: RunEvent) => void>();
+  const subs = new Set<(frame: RunEventFrame) => void>();
+  const frames: RunEventFrame[] = [];
   const emit = (e: RunEvent) => {
-    for (const cb of subs) cb(e);
+    const frame = { seq: frames.length + 1, event: e };
+    frames.push(frame);
+    onFrame?.(frame);
+    for (const cb of subs) cb(frame);
   };
   // Assistant prose is collected so a reopened Task can render its replies.
   const messages: string[] = [];
@@ -1878,7 +2160,6 @@ function simulateRun(
       if (early) res(early);
       else pending = res;
     });
-  let started = false;
   let closed = false;
 
   const plan: Plan = {
@@ -2154,16 +2435,40 @@ function simulateRun(
     onComplete("ok", run, messages);
   }
 
+  // A run's lifecycle belongs to the run, not to whether a browser currently
+  // observes it. The next tick still lets the first subscriber attach before
+  // scripted events begin, while detach can never keep the work from starting.
+  setTimeout(() => {
+    if (closed) {
+      // `close()` can win before the deferred driver starts. That is still a
+      // cancelled turn, not a run the active registry must retain forever.
+      // The handle has already released its subscribers, so this terminal
+      // bookkeeping lands durably without delivering into a closed observer.
+      const run = record("cancelled", 0);
+      liveIdle();
+      emit({ event: "completed", state: { state: "cancelled" }, run });
+      onComplete("failed", run, messages);
+      return;
+    }
+    void drive();
+  }, 0);
+
   return {
     runId,
     onEvent(cb) {
+      const send = (frame: RunEventFrame) => cb(frame.event);
+      subs.add(send);
+      return () => subs.delete(send);
+    },
+    onEventFrom(cursor, cb) {
+      for (const frame of frames) if (frame.seq > cursor) cb(frame.event);
+      const send = (frame: RunEventFrame) => cb(frame.event);
+      subs.add(send);
+      return () => subs.delete(send);
+    },
+    onFrameFrom(cursor, cb) {
+      for (const frame of frames) if (frame.seq > cursor) cb(frame);
       subs.add(cb);
-      if (!started) {
-        started = true;
-        setTimeout(() => {
-          if (!closed) void drive();
-        }, 0);
-      }
       return () => subs.delete(cb);
     },
     submit(decision) {
@@ -2171,6 +2476,9 @@ function simulateRun(
       pending = null;
       if (resolve) resolve(decision);
       else queued.push(decision);
+    },
+    detach() {
+      subs.clear();
     },
     close() {
       closed = true;

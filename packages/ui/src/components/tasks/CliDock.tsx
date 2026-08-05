@@ -5,11 +5,9 @@ import { cliBrand } from "../../lib/cli-brand";
 /**
  * A CLI's identity within the dock. A member can pair more than one
  * machine, and CLI detection is per-machine, so the same `id` (e.g.
- * "claude") can legitimately appear twice — once per machine it was found
- * on. `id` alone is therefore not unique across `clis`; this composite is.
- * Exported so a caller holding the dock's selection in its own state builds
- * and reads the same identity rather than a bare `id` that cannot tell two
- * machines' entries apart.
+ * "claude") can arrive once per machine. The dock renders one representative
+ * per id, but its selected representative still needs a machine-stable key.
+ * Exported so callers build and read that identity consistently.
  */
 export function cliIdentity(c: Pick<AgentCli, "id" | "runtimeId">): string {
   return `${c.runtimeId}:${c.id}`;
@@ -43,6 +41,14 @@ export function CliDock({
   machineNames?: Record<string, string>;
 }) {
   const tiles = useRef(new Map<string, HTMLElement>());
+  const rank = (cli: AgentCli) =>
+    cli.sessionReady ? 2 : cli.available ? 1 : 0;
+  const representatives = new Map<string, AgentCli>();
+  for (const cli of clis) {
+    const current = representatives.get(cli.id);
+    if (!current || rank(cli) > rank(current)) representatives.set(cli.id, cli);
+  }
+  const visibleClis = [...representatives.values()];
   const multiMachine = new Set(clis.map((c) => c.runtimeId)).size > 1;
   const machineNameFor = (runtimeId: string): string | undefined =>
     multiMachine ? machineNames?.[runtimeId] : undefined;
@@ -74,7 +80,7 @@ export function CliDock({
   // CLI detection always returns all known agents (each with a readiness
   // flag), so "nothing runnable" arrives as all-unready, not as an empty
   // array — show a hint instead of a wall of dimmed tiles.
-  if (!clis.some((c) => c.sessionReady)) {
+  if (!visibleClis.some((c) => c.sessionReady)) {
     return (
       <div className="cli-dock cli-dock--empty" role="status">
         No agent CLIs detected — install Claude Code, Copilot, Cursor, …
@@ -82,21 +88,22 @@ export function CliDock({
     );
   }
 
+  const selectedCliId = selectedId?.slice(selectedId.indexOf(":") + 1);
   const selected =
-    clis.find((c) => cliIdentity(c) === selectedId) ??
-    clis.find((c) => c.sessionReady) ??
-    clis[0];
+    visibleClis.find((c) => cliIdentity(c) === selectedId) ??
+    visibleClis.find((c) => c.id === selectedCliId) ??
+    visibleClis.find((c) => c.sessionReady) ??
+    visibleClis[0];
   const selectedIdentity = cliIdentity(selected);
 
   return (
-    // The row holds one tile per CLI per machine, so its width climbs with
-    // every machine a member pairs and passes the column it sits in. The
-    // scrolling belongs to this wrapper rather than to the pill: the tiles
-    // magnify out of `.cli-dock`'s own box, which a scroll container placed
-    // on the pill would cut them off at.
+    // The row holds one tile per CLI kind. It can still outgrow a narrow
+    // composer, so scrolling belongs to this wrapper rather than to the pill:
+    // the tiles magnify out of `.cli-dock`'s own box, which a scroll container
+    // placed on the pill would cut off.
     <div className="cli-dock-scroll">
       <div className="cli-dock" onMouseMove={onMove} onMouseLeave={onLeave}>
-        {clis.map((c) => {
+        {visibleClis.map((c) => {
           const identity = cliIdentity(c);
           const machine = machineNameFor(c.runtimeId);
           const b = cliBrand(c.id, c.name);

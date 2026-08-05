@@ -229,7 +229,12 @@ it("opens another request when the one it is holding runs out of time", async ()
   // this is that nobody has to ask — the daemon notices on its own, with no
   // request arriving to prompt it.
   const expired: string[] = [];
-  const session = await pairing({ ttlSeconds: 0.05, onRequestExpired: (link) => expired.push(link) });
+  // Leave enough of the replacement request's lease for this assertion to
+  // reach the loopback server even while the monorepo test gate is busy.
+  // With a 50 ms lease, the replacement could legitimately expire before
+  // fetch was scheduled, making this a scheduler test instead of a pairing
+  // test.
+  const session = await pairing({ ttlSeconds: 0.5, onRequestExpired: (link) => expired.push(link) });
   const abandoned = { challenge: session.challenge, state: session.state, link: `${session.base}/?nonce=${session.nonce}` };
 
   await waitFor(() => expired.length === 1);

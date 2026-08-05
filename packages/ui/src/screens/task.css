@@ -176,6 +176,43 @@
   gap: 12px;
 }
 
+/* A task may have several in-flight turns at once. Keep each one as a quiet,
+   self-contained transcript block so provider identity, gates, progress and
+   Stop never read as controls for a neighbouring run. */
+.live-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-block: 4px 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.live-turn-head {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.live-turn-provider {
+  color: var(--ink-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.live-turn-stop {
+  padding: 3px 9px;
+  color: var(--priority-urgent);
+}
+
+.live-turn .run-strip {
+  width: 100%;
+  padding-inline: 0;
+}
+
 .conv-header {
   padding: 14px 18px 12px;
   border-bottom: 1px solid var(--hairline);
@@ -1906,6 +1943,16 @@ button.run-strip-notebook:hover {
   width: 100%;
   max-width: var(--conv-measure);
   margin-inline: auto;
+}
+
+.composer-start-error {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--priority-urgent) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--priority-urgent) 8%, transparent);
+  color: var(--priority-urgent);
+  font-size: 12px;
 }
 
 /* The inline Study picker a send raises on an unfiled Task. It sits directly

@@ -23,7 +23,7 @@ const TASK = "t_3";
 beforeEach(cleanup);
 
 describe("re-reading the open Task", () => {
-  it("keeps the transcript and the live region across a mark-done", async () => {
+  it("keeps the transcript across a mark-done", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
     // Clear the Done-gate first: this is about the re-read that FOLLOWS a
@@ -36,7 +36,6 @@ describe("re-reading the open Task", () => {
     render(<App api={api} />);
 
     const stream = await screen.findByTestId("conv-stream");
-    const live = screen.getByTestId("live-region");
     const turn = await screen.findByText(
       /Motion-correct the deprivation cohort/i,
     );
@@ -50,7 +49,6 @@ describe("re-reading the open Task", () => {
     // The very same nodes, not equal-looking replacements: an unmount would
     // hand back new ones, and take the researcher's scroll position with it.
     expect(screen.getByTestId("conv-stream")).toBe(stream);
-    expect(screen.getByTestId("live-region")).toBe(live);
     expect(
       screen.getByText(/Motion-correct the deprivation cohort/i),
     ).toBe(turn);

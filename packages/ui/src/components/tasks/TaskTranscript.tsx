@@ -1,12 +1,16 @@
-import { Fragment } from "react";
-import type { TaskTurn, TurnItem } from "@lykeion/api";
+import { Fragment, type ReactNode } from "react";
+import type { TaskTurn, TurnItem, TurnState } from "@lykeion/api";
 import { PencilIcon } from "../icons";
 import { blocksOf, ToolStepGroup } from "./ToolStep";
 import { AssistantMessage } from "./AssistantMessage";
 import { SubagentThread } from "./SubagentThread";
 
+type CancelledTurnState = Extract<TurnState, { state: "cancelled" }>;
+
 /** A turn completed in the current view (before the persisted transcript refresh). */
 export interface ViewTurn {
+  /** Durable position when known; legacy ephemeral turns fall back to arrival order. */
+  sequence?: number;
   prompt: string;
   messages: string[];
   /**
@@ -26,6 +30,13 @@ export interface ViewTurn {
    * since the transcript will never contain it.
    */
   runId?: string;
+}
+
+/** One keyed live block supplied by the Task surface for chronological merge. */
+export interface LiveTranscriptTurn {
+  runId: string;
+  sequence: number;
+  content: ReactNode;
 }
 
 /**
@@ -138,11 +149,15 @@ function TurnView({
   prompt,
   messages,
   stream,
+  status,
+  cancelled,
   onEditPrompt,
 }: {
   prompt: string;
   messages: string[];
   stream?: TurnItem[];
+  status?: "ok" | "failed";
+  cancelled?: CancelledTurnState;
   onEditPrompt?: (text: string) => void;
 }) {
   return (
@@ -152,6 +167,22 @@ function TurnView({
         <StreamView stream={stream} />
       ) : (
         messages.map((text, i) => <AssistantMessage text={text} key={i} />)
+      )}
+      {status === "failed" && !cancelled && (
+        <div className="run-line run-line--failed">Run failed</div>
+      )}
+      {cancelled && (
+        <div
+          className={
+            cancelled.unacknowledged
+              ? "run-line run-line--unacknowledged"
+              : "run-line run-line--cancelled"
+          }
+        >
+          {cancelled.unacknowledged
+            ? "The agent has not confirmed it stopped — it may still be running."
+            : "Run stopped"}
+        </div>
       )}
     </>
   );
@@ -172,43 +203,95 @@ function TurnView({
 export function TaskTranscript({
   history,
   viewTurns,
+  liveTurns = [],
+  terminalStatusByRunId = {},
   onEditPrompt,
 }: {
   /** Persisted turns: grouped, with subagent turns nested under their parent. */
   history: TaskTurn[];
   /** Turns finished in this view: rendered flat, no grouping, no run ids. */
   viewTurns: ViewTurn[];
+  /** Active/terminal blocks awaiting settled-history reconciliation. */
+  liveTurns?: LiveTranscriptTurn[];
+  /** Terminal distinctions preserved across live-to-history replacement. */
+  terminalStatusByRunId?: Readonly<Record<string, CancelledTurnState>>;
   onEditPrompt?: (prompt: string) => void;
 }) {
-  return (
-    <>
-      {groupTaskTurns(history).map(({ turn, subagents }) => (
-        <Fragment key={turn.runId}>
+  const entries: Array<{
+    key: string;
+    sequence: number;
+    order: number;
+    content: ReactNode;
+  }> = [];
+  let order = 0;
+  const chronologicalHistory = [...history].sort(
+    (a, b) => a.sequence - b.sequence,
+  );
+  for (const { turn, subagents } of groupTaskTurns(chronologicalHistory)) {
+    entries.push({
+      key: `history-${turn.runId}`,
+      sequence: turn.sequence,
+      order: order++,
+      content: (
+        <>
           <TurnView
             prompt={turn.prompt}
             messages={turn.messages}
             stream={turn.stream}
+            status={turn.status}
+            cancelled={terminalStatusByRunId[turn.runId]}
             onEditPrompt={onEditPrompt}
           />
-          {subagents.map((s) => (
-            <SubagentThread
-              key={s.runId}
-              persona={s.subagent ?? "Subagent"}
-              task={s.prompt}
-              messages={s.messages}
-              outputs={s.outputs}
-            />
-          ))}
-        </Fragment>
-      ))}
-      {viewTurns.map((t, i) => (
+        </>
+      ),
+    });
+    for (const subagent of subagents) {
+      entries.push({
+        key: `history-${subagent.runId}`,
+        sequence: subagent.sequence,
+        order: order++,
+        content: (
+          <SubagentThread
+            persona={subagent.subagent ?? "Subagent"}
+            task={subagent.prompt}
+            messages={subagent.messages}
+            outputs={subagent.outputs}
+          />
+        ),
+      });
+    }
+  }
+  const historyFloor = Math.max(0, ...history.map((turn) => turn.sequence));
+  viewTurns.forEach((turn, index) => {
+    entries.push({
+      key: `view-${index}`,
+      sequence: turn.sequence ?? historyFloor + index + 1,
+      order: order++,
+      content: (
         <TurnView
-          key={`view-${i}`}
-          prompt={t.prompt}
-          messages={t.messages}
-          stream={t.stream}
+          prompt={turn.prompt}
+          messages={turn.messages}
+          stream={turn.stream}
+          status={turn.status}
           onEditPrompt={onEditPrompt}
         />
+      ),
+    });
+  });
+  for (const turn of liveTurns) {
+    entries.push({
+      key: `live-${turn.runId}`,
+      sequence: turn.sequence,
+      order: order++,
+      content: turn.content,
+    });
+  }
+  entries.sort((a, b) => a.sequence - b.sequence || a.order - b.order);
+
+  return (
+    <>
+      {entries.map((entry) => (
+        <Fragment key={entry.key}>{entry.content}</Fragment>
       ))}
     </>
   );

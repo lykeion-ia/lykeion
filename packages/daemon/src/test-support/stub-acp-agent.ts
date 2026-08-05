@@ -65,9 +65,14 @@ let cancelled = false;
 const cancelWaiters: Array<() => void> = [];
 
 process.on("SIGTERM", () => {
-  const marker = process.env.LYKEION_STUB_EXIT_MARKER;
-  if (marker) appendFileSync(marker, `${process.pid}\n`);
-  process.exit(0);
+  const exit = () => {
+    const marker = process.env.LYKEION_STUB_EXIT_MARKER;
+    if (marker) appendFileSync(marker, `${process.pid}\n`);
+    process.exit(0);
+  };
+  const delayMs = Number(process.env.LYKEION_STUB_EXIT_DELAY_MS ?? "0");
+  if (Number.isFinite(delayMs) && delayMs > 0) setTimeout(exit, delayMs);
+  else exit();
 });
 
 function send(message: unknown): void {
@@ -179,10 +184,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (msg.method === "session/new") {
     sessionId = "stub-session";
-    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId } });
+    const marker = process.env.LYKEION_STUB_SESSION_NEW_MARKER;
+    if (marker) appendFileSync(marker, `${process.pid}\n`);
+    const reply = () => send({ jsonrpc: "2.0", id: msg.id, result: { sessionId } });
+    const delayMs = Number(process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS ?? "0");
+    if (Number.isFinite(delayMs) && delayMs > 0) setTimeout(reply, delayMs);
+    else reply();
     return;
   }
   if (msg.method === "session/prompt") {
+    const marker = process.env.LYKEION_STUB_PROMPT_MARKER;
+    if (marker) appendFileSync(marker, `${process.pid}\n`);
     const script = scripts[Math.min(promptCount, scripts.length - 1)];
     promptCount += 1;
     void play(script).then((stopReason) => send({ jsonrpc: "2.0", id: msg.id, result: { stopReason } }));
