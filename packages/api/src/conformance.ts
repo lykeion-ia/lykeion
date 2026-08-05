@@ -46,6 +46,7 @@ import { describe, expect, it } from "vitest";
 import type { LykeionApi } from "./api";
 import { isLykeionError } from "./errors";
 import type { ErrorCode } from "./errors";
+import type { RunEvent } from "./run";
 import { MAX_AVATAR_BYTES } from "./account";
 
 /** A real 1×1 PNG, as a data URL. The avatar tests need bytes an
@@ -935,6 +936,110 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
       // title — a derived title would read as the last thing said.
       expect(after.task.title).toBe(task.title);
     });
+
+    it("drives a run on the RunHandle contract alone: startRun, onEvent, submit, completion", async () => {
+      // The transport-facing seam, independent of anything a Task's
+      // transcript separately records about the turn (the test above) and of
+      // whatever a probed CLI's own readiness eventually gates (not this
+      // area's concern): after `startRun`, everything about a turn arrives
+      // through `onEvent` and is answered through `submit` alone — whatever
+      // gate an implementation happens to raise, answering it here has to be
+      // enough to reach `completed`.
+      const api = await makeApi();
+      const study = await api.createStudy({ title: "Run block", key: "RUB" });
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "Say something and stop",
+      });
+
+      const handle = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "Say something and stop",
+        options: { planMode: false },
+      });
+      expect(handle.runId).not.toBe("");
+
+      const completed = await new Promise<RunEvent>((resolve) => {
+        handle.onEvent((e) => {
+          switch (e.event) {
+            case "plan-proposed":
+              handle.submit({ action: "approve-plan" });
+              break;
+            case "permission-card":
+              handle.submit({
+                action: "permission",
+                requestId: e.request.id,
+                decision: { decision: "allow", scope: "once" },
+              });
+              break;
+            case "question-asked":
+              handle.submit({
+                action: "answer-question",
+                requestId: e.request.requestId,
+                answer: { selected: [] },
+              });
+              break;
+            case "completed":
+              resolve(e);
+              break;
+            default:
+              break;
+          }
+        });
+      });
+      handle.close();
+
+      expect(completed.event).toBe("completed");
+    });
+
+    it("stopping a run lands it cancelled, not a failure with an invented reason", async () => {
+      // A researcher's stop is not a decline of anything a plan or
+      // permission gate raised, and must not read as one: `cancelled` is its
+      // own terminal state, carrying no `reason` at all — inventing one for
+      // an ordinary stop would misdescribe a turn nothing actually failed
+      // at.
+      const api = await makeApi();
+      const study = await api.createStudy({ title: "Stop block", key: "STB" });
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "Say something and stop",
+      });
+
+      const handle = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "Say something and stop",
+        options: { planMode: false },
+      });
+
+      const completed = await new Promise<RunEvent>((resolve) => {
+        handle.onEvent((e) => {
+          switch (e.event) {
+            case "plan-proposed":
+            case "permission-card":
+            case "question-asked":
+              handle.submit({ action: "cancel" });
+              break;
+            case "completed":
+              resolve(e);
+              break;
+            default:
+              break;
+          }
+        });
+      });
+      handle.close();
+
+      expect(completed.event === "completed" && completed.state.state).toBe(
+        "cancelled",
+      );
+      expect(
+        completed.event === "completed" ? "reason" in completed.state : true,
+      ).toBe(false);
+    });
   });
 }
 
@@ -1656,6 +1761,89 @@ export function rolesConformance(makeLab: () => Promise<ConformanceLab>): void {
   });
 }
 
+/**
+ * `submitRunDecision` on a run id nobody holds — refused the same way an
+ * unowned one is, by name, so a caller cannot tell "no such run" apart from
+ * "not yours" from the error alone (run ids are sequential and guessable).
+ * Lab-based, like `rolesConformance`, and — unlike `runDecisionConformance`
+ * below — needs no live turn at all: an implementation with no machine
+ * behind it can refuse an id it never held exactly as readily as one that
+ * can actually run a turn, since the refusal depends on nothing a turn ever
+ * produced. Always run, never gated on the runtime skip.
+ */
+export function unknownRunConformance(makeLab: () => Promise<ConformanceLab>): void {
+  describe("submitRunDecision needs no live turn to refuse an id nobody holds", () => {
+    it("refuses a decision on a run id nobody holds, the same way an unowned one is refused", async () => {
+      const { owner } = await makeLab();
+      await expectRejection(
+        owner.submitRunDecision("run_conformance_nope", { action: "cancel" }),
+        "forbidden",
+        /does not belong to/,
+      );
+    });
+  });
+}
+
+/**
+ * `submitRunDecision`'s remaining refusal, the one thing neither a Task's
+ * chat nor a bare `RunHandle` exercises just by running a turn to
+ * completion: not who started it (`unknownRunConformance`, above, covers
+ * that), but a decision that would reach every Study in the lab. Lab-based,
+ * like `rolesConformance`, and needs a durable run id to address. It does not
+ * need an adapter to answer: global scope is rejected at the contract edge
+ * before any permission request is forwarded.
+ */
+export function runDecisionConformance(makeLab: () => Promise<ConformanceLab>): void {
+  describe("submitRunDecision's refusals addressed to a live run", () => {
+    it("refuses a decision from an actor who did not start the run", async () => {
+      const { owner, member } = await makeLab();
+      const study = await owner.createStudy({ title: "Actor check", key: "ACT" });
+      const task = await owner.createTask({
+        studyId: study.id,
+        stage: "background",
+        title: "run me",
+      });
+      const handle = await owner.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "go",
+        options: { planMode: false },
+      });
+
+      await expectRejection(
+        member.submitRunDecision(handle.runId, { action: "cancel" }),
+        "forbidden",
+        /does not belong to/,
+      );
+    });
+
+    it("refuses a global-scope permission decision by name, rather than narrowing it", async () => {
+      const { owner } = await makeLab();
+      const study = await owner.createStudy({ title: "Global scope", key: "GLB" });
+      const task = await owner.createTask({
+        studyId: study.id,
+        stage: "background",
+        title: "run me",
+      });
+      const handle = await owner.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "go",
+        options: { planMode: false },
+      });
+      await expectRejection(
+        owner.submitRunDecision(handle.runId, {
+          action: "permission",
+          requestId: "permission-conformance",
+          decision: { decision: "allow", scope: "global" },
+        }),
+        "invalid",
+        /every Study/,
+      );
+    });
+  });
+}
+
 /** Everything an implementation can satisfy with nothing but storage. */
 const AREAS = [
   identityConformance,
@@ -1698,12 +1886,19 @@ export function runContractConformance(
      *  expressed without it, and making it optional would let an
      *  implementation quietly stop being held to them. */
     makeLab: () => Promise<ConformanceLab>;
+    /** A lab with enough real runtime state to start a turn. Defaults to
+     *  `makeLab` for implementations whose ordinary conformance lab can run. */
+    makeRunLab?: () => Promise<ConformanceLab>;
   },
 ): void {
   const skipped = new Set(options.skip ?? []);
   describe(`contract conformance — ${label}`, () => {
     for (const area of ALL_AREAS) if (!skipped.has(area)) area(makeApi);
     rolesConformance(options.makeLab);
+    // Needs no live turn, so — unlike `runDecisionConformance` below — it is
+    // always run, the same way `rolesConformance` always is.
+    unknownRunConformance(options.makeLab);
+    runDecisionConformance(options.makeRunLab ?? options.makeLab);
   });
 }
 

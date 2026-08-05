@@ -1006,6 +1006,20 @@ export function TaskScreen({
                             Run failed — {state.reason}
                           </div>
                         )}
+
+                        {state.state === "cancelled" && (
+                          <div
+                            className={
+                              state.unacknowledged
+                                ? "run-line run-line--unacknowledged"
+                                : "run-line run-line--cancelled"
+                            }
+                          >
+                            {state.unacknowledged
+                              ? "The agent has not confirmed it stopped — it may still be running."
+                              : "Run stopped"}
+                          </div>
+                        )}
                       </>
                     )}
                   </div>

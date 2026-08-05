@@ -22,7 +22,7 @@ const COMMANDS: readonly DaemonCommand[] = ["serve", "status", "stop"];
 
 /** Flags that carry a value, written either as `--flag value` or
  *  `--flag=value`. */
-const VALUE_FLAGS: readonly string[] = ["--lab", "--port", "--data-dir"];
+const VALUE_FLAGS: readonly string[] = ["--lab", "--port", "--data-dir", "--work-dir"];
 
 /** Flags that stand on their own. */
 const BARE_FLAGS: readonly string[] = ["--no-browser", "--detached", "--help", "-h", "--version"];
@@ -50,6 +50,8 @@ Flags:
   --data-dir <dir>   Where this machine keeps what it knows about itself. One
                      directory is one machine identity, and all three commands
                      read it. [LYKEION_DAEMON_DATA_DIR]
+  --work-dir <dir>   Where session workspaces live while an agent runs in
+                     them. Defaults to --data-dir. [LYKEION_DAEMON_WORK_DIR]
   --no-browser       Print the pairing link rather than opening a browser on it.
   --detached         Serve in the background and return to the terminal.
                      Implies --no-browser.
@@ -81,6 +83,10 @@ export interface DaemonConfig {
    *  against a second lab, and how this program can be exercised without
    *  touching the one the account actually runs. */
   dataDir: string;
+  /** Where session workspaces live while an agent runs in them — separate
+   *  from `dataDir` so the two can sit on different disks, and defaulting to
+   *  it when a researcher has no reason to keep them apart. */
+  workDir: string;
 }
 
 /**
@@ -239,8 +245,10 @@ export function readDaemonConfig(
   // this program rather than doing anything with a lab, a port or a
   // directory, and refusing one of those would answer a question about the
   // program with a complaint about something else.
-  if (command === "help" || command === "version")
-    return { command, port: 0, openBrowser: false, detached: false, dataDir: defaultDataDir(env) };
+  if (command === "help" || command === "version") {
+    const dir = defaultDataDir(env);
+    return { command, port: 0, openBrowser: false, detached: false, dataDir: dir, workDir: dir };
+  }
 
   const detached = line.present.has("--detached");
   const lab = nonEmpty(line.values.get("--lab")) ?? nonEmpty(env.LYKEION_LAB);
@@ -250,6 +258,8 @@ export function readDaemonConfig(
     nonEmpty(line.values.get("--data-dir")) ??
     nonEmpty(env.LYKEION_DAEMON_DATA_DIR) ??
     defaultDataDir(env);
+  const workDir =
+    nonEmpty(line.values.get("--work-dir")) ?? nonEmpty(env.LYKEION_DAEMON_WORK_DIR) ?? dataDir;
 
-  return { command, lab, port, openBrowser, detached, dataDir };
+  return { command, lab, port, openBrowser, detached, dataDir, workDir };
 }

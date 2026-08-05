@@ -6,6 +6,7 @@ import { openStore } from "../store/sqlite";
 import { migrate } from "../store/migrations";
 import { readConfig } from "../config";
 import { createChannel } from "../channel";
+import { createRunRelay } from "../run-relay";
 import { changeRecorder } from "./changes";
 import type { Deps } from "./index";
 import type { Store } from "../store/store";
@@ -39,6 +40,7 @@ function depsFor(store: Store): Deps {
     now: () => NOW,
     config: readConfig({}),
     channel,
+    runs: createRunRelay(),
     changes: changeRecorder({ store, actorId: actor.userId, now: () => NOW, channel }),
   };
 }

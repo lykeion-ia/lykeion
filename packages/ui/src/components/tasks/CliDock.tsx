@@ -17,11 +17,14 @@ export function cliIdentity(c: Pick<AgentCli, "id" | "runtimeId">): string {
 
 /**
  * The macOS-style CLI dock — a row of tiles, one per detected agent CLI,
- * that magnify toward the cursor. The selected CLI expands
- * to a labelled pill; unavailable CLIs are dimmed and non-selectable. This is
- * the run's agent selector; the composer's ModelSwitcher then picks the model
- * for the chosen CLI. Shows a "no CLIs detected" hint when every known CLI is
- * unavailable, rather than a wall of dimmed tiles.
+ * that magnify toward the cursor. The selected CLI expands to a labelled
+ * pill; a CLI that cannot actually run a session is dimmed, non-selectable,
+ * and names why in its tile's title — installed but with no working ACP
+ * adapter reads differently than never installed at all, and the reason
+ * says which. This is the run's agent selector; the composer's
+ * ModelSwitcher then picks the model for the chosen CLI. Shows a "no CLIs
+ * detected" hint when nothing on the machine can run one, rather than a
+ * wall of dimmed tiles.
  */
 export function CliDock({
   clis,
@@ -68,10 +71,10 @@ export function CliDock({
     });
   };
 
-  // CLI detection always returns all known agents (each with an availability
-  // flag), so "nothing installed" arrives as all-unavailable, not as an empty
+  // CLI detection always returns all known agents (each with a readiness
+  // flag), so "nothing runnable" arrives as all-unready, not as an empty
   // array — show a hint instead of a wall of dimmed tiles.
-  if (!clis.some((c) => c.available)) {
+  if (!clis.some((c) => c.sessionReady)) {
     return (
       <div className="cli-dock cli-dock--empty" role="status">
         No agent CLIs detected — install Claude Code, Copilot, Cursor, …
@@ -81,7 +84,7 @@ export function CliDock({
 
   const selected =
     clis.find((c) => cliIdentity(c) === selectedId) ??
-    clis.find((c) => c.available) ??
+    clis.find((c) => c.sessionReady) ??
     clis[0];
   const selectedIdentity = cliIdentity(selected);
 
@@ -116,23 +119,24 @@ export function CliDock({
             );
           }
           const label = machine ? `${c.name} on ${machine}` : c.name;
+          const reason = c.sessionReadyReason ?? "cannot run a session";
           return (
             <button
               key={identity}
               type="button"
               className="cli-dock-btn"
-              title={c.available ? label : `${label} — not found`}
+              title={c.sessionReady ? label : `${label} — ${reason}`}
               aria-label={label}
-              disabled={!c.available}
-              onClick={() => c.available && onSelect(identity)}
+              disabled={!c.sessionReady}
+              onClick={() => c.sessionReady && onSelect(identity)}
             >
               <span
                 ref={setTile(identity)}
                 className="cli-tile cli-dock-tile"
                 style={{
-                  background: c.available ? b.color : "#2a2a30",
+                  background: c.sessionReady ? b.color : "#2a2a30",
                   color: b.fg,
-                  opacity: c.available ? 1 : 0.55,
+                  opacity: c.sessionReady ? 1 : 0.55,
                 }}
               >
                 {glyph}

@@ -87,13 +87,18 @@ function arrayField(body: unknown, name: string): unknown[] | undefined {
 }
 
 /** One CLI as a report's body carries it — the same shape as `AgentCli`,
- *  minus the `runtimeId` a report has no reason to name itself. */
+ *  minus the `runtimeId` a report has no reason to name itself. `sessionReady`
+ *  is read leniently, not required: a daemon built before this field existed
+ *  says nothing about it, and silence is read as "not session-ready" rather
+ *  than trusted as a claim nobody actually made. */
 interface ReportedCli {
   id: string;
   name: string;
   command: string;
   version: string;
   available: boolean;
+  sessionReady: boolean;
+  sessionReadyReason?: string;
 }
 
 /** Malformed entries are dropped rather than failing the whole report: a
@@ -119,22 +124,34 @@ function parseClis(entries: unknown[]): ReportedCli[] {
       continue;
     if (seen.has(row.id)) continue;
     seen.add(row.id);
-    out.push({ id: row.id, name: row.name, command: row.command, version: row.version, available: row.available });
+    const cli: ReportedCli = {
+      id: row.id,
+      name: row.name,
+      command: row.command,
+      version: row.version,
+      available: row.available,
+      sessionReady: row.sessionReady === true,
+    };
+    if (typeof row.sessionReadyReason === "string") cli.sessionReadyReason = row.sessionReadyReason;
+    out.push(cli);
   }
   return out;
 }
 
-/** Whether two CLI sets differ, compared on `(cli_id, version, available)` —
- *  a name or command changing without either is not a fact this lab needs
- *  to hear about again. */
+/** Whether two CLI sets differ, compared on `(cli_id, version, available,
+ *  sessionReady)` — a name or command changing without any of those is not a
+ *  fact this lab needs to hear about again. */
 function cliSetChanged(
-  stored: Array<{ cliId: string; version: string; available: boolean }>,
+  stored: Array<{ cliId: string; version: string; available: boolean; sessionReady: boolean }>,
   reported: ReportedCli[],
 ): boolean {
   if (stored.length !== reported.length) return true;
-  const key = (id: string, version: string, available: boolean) => `${id} ${version} ${available}`;
-  const storedKeys = new Set(stored.map((row) => key(row.cliId, row.version, row.available)));
-  return reported.some((cli) => !storedKeys.has(key(cli.id, cli.version, cli.available)));
+  const key = (id: string, version: string, available: boolean, sessionReady: boolean) =>
+    `${id} ${version} ${available} ${sessionReady}`;
+  const storedKeys = new Set(
+    stored.map((row) => key(row.cliId, row.version, row.available, row.sessionReady)),
+  );
+  return reported.some((cli) => !storedKeys.has(key(cli.id, cli.version, cli.available, cli.sessionReady)));
 }
 
 /**
@@ -233,17 +250,19 @@ function heartbeat(req: DaemonRequest): DaemonResult {
 
 /**
  * What a machine says about itself on every report: its platform, its
- * daemon build, what it can do, and the agent CLIs it found. `platform` and
- * `daemonVersion` empty, or `clis` missing or not an array, is refused
- * outright — a body that arrived that broken is not something to write over
- * what is already stored on the strength of a guess. The CLI rows are
- * replaced wholesale inside one transaction — a daemon always reports the
- * whole set it found, never a delta, so there is nothing to reconcile row by
- * row. A change is recorded only when something an owner would actually see
- * on the Runtimes screen is different from what is already stored: the
- * reported platform, daemon version, or capabilities, or the CLI set
- * compared on `(cli_id, version, available)`. Never more than one entry,
- * whatever combination of those changed.
+ * daemon build, what it can do, and the agent CLIs it found — including,
+ * per CLI, whether its adapter actually handshakes and, when it does not,
+ * what it refused with. `platform` and `daemonVersion` empty, or `clis`
+ * missing or not an array, is refused outright — a body that arrived that
+ * broken is not something to write over what is already stored on the
+ * strength of a guess. The CLI rows are replaced wholesale inside one
+ * transaction — a daemon always reports the whole set it found, never a
+ * delta, so there is nothing to reconcile row by row. A change is recorded
+ * only when something an owner would actually see on the Runtimes screen is
+ * different from what is already stored: the reported platform, daemon
+ * version, or capabilities, or the CLI set compared on `(cli_id, version,
+ * available, sessionReady)`. Never more than one entry, whatever combination
+ * of those changed.
  */
 function report(req: DaemonRequest): DaemonResult {
   const { store, body } = req;
@@ -265,11 +284,14 @@ function report(req: DaemonRequest): DaemonResult {
       machine.runtimeId,
     ])!;
     const existing = store
-      .all(`SELECT cli_id, version, available FROM runtime_clis WHERE runtime_id = ?`, [machine.runtimeId])
+      .all(`SELECT cli_id, version, available, session_ready FROM runtime_clis WHERE runtime_id = ?`, [
+        machine.runtimeId,
+      ])
       .map((row) => ({
         cliId: row.cli_id as string,
         version: row.version as string,
         available: row.available === 1,
+        sessionReady: row.session_ready === 1,
       }));
 
     const metaChanged =
@@ -285,9 +307,20 @@ function report(req: DaemonRequest): DaemonResult {
     store.run(`DELETE FROM runtime_clis WHERE runtime_id = ?`, [machine.runtimeId]);
     for (const cli of clis) {
       store.run(
-        `INSERT INTO runtime_clis (runtime_id, cli_id, name, command, version, available, seq)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [machine.runtimeId, cli.id, cli.name, cli.command, cli.version, cli.available ? 1 : 0, nextSeq(store)],
+        `INSERT INTO runtime_clis
+           (runtime_id, cli_id, name, command, version, available, session_ready, session_ready_reason, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          machine.runtimeId,
+          cli.id,
+          cli.name,
+          cli.command,
+          cli.version,
+          cli.available ? 1 : 0,
+          cli.sessionReady ? 1 : 0,
+          cli.sessionReadyReason ?? null,
+          nextSeq(store),
+        ],
       );
     }
 

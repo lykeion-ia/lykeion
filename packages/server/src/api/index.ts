@@ -3,6 +3,7 @@ import type { Store } from "../store/store";
 import type { Actor } from "../auth";
 import type { ServerConfig } from "../config";
 import type { Channel } from "../channel";
+import type { RunRelay } from "../run-relay";
 import type { ChangeRecorder } from "./changes";
 import { absentApi } from "./absent";
 import { accountApi } from "./account";
@@ -11,6 +12,7 @@ import { settingsApi } from "./settings";
 import { studiesApi } from "./studies";
 import { tasksApi } from "./tasks";
 import { runtimesApi } from "./runtimes";
+import { sessionsApi } from "./sessions";
 
 /** What every family module is handed. `now` is a function so tests can
  *  pin the clock and prove the ordering tiebreak does the work. */
@@ -23,6 +25,9 @@ export interface Deps {
    *  rather than directly, so what they record and what the request fans
    *  out afterwards cannot come apart. */
   channel: Channel;
+  /** The run command queue and event fan-out, held for the process's whole
+   *  lifetime the same way `channel` is. */
+  runs: RunRelay;
   /**
    * Where a family records what it changed. One per request, handed to
    * every family, and flushed by the request once its writes have settled.
@@ -55,6 +60,7 @@ export function createWorkspaceApi(deps: Deps): LykeionApi {
     ...studiesApi(deps),
     ...tasksApi(deps),
     ...runtimesApi(deps),
+    ...sessionsApi(deps),
     ...settingsApi(deps),
     ...configSurfaceApi(deps),
   };

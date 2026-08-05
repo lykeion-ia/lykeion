@@ -259,6 +259,25 @@ describe("useRuntimeBlocker", () => {
     expect(screen.getByText("composer is free")).toBeInTheDocument();
   });
 
+  it("is not freed by a colleague's machine that can run sessions", async () => {
+    // Capability is per machine and machines belong to people; somebody
+    // else's ready laptop is not a machine this researcher may run on.
+    declareWorkspaceServer();
+    const api: LykeionApi = {
+      ...createInMemoryApi(),
+      currentUser: async () => you,
+      listRuntimes: async () => [runtime({ ownerId: "u_bo", capabilities: ["sessions"] })],
+    };
+    render(
+      <ApiProvider api={api}>
+        <BlockerProbe />
+      </ApiProvider>,
+    );
+    expect(
+      await screen.findByText(/No machine of yours is connected/i),
+    ).toBeInTheDocument();
+  });
+
   it("names the caller's own machines and none of the lab's others", async () => {
     declareWorkspaceServer();
     const api: LykeionApi = {

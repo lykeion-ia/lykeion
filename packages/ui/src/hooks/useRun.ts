@@ -124,6 +124,14 @@ export function planOf(s: TurnState): Plan | null {
   }
 }
 
+/** Whether a turn state is one nothing further will happen to — the run is
+ *  over, however it ended. The one place that answers this, so a stopped
+ *  turn's state counts exactly the way a completed or failed one already
+ *  does everywhere this question is asked. */
+function isTerminal(state: TurnState["state"]): boolean {
+  return state === "completed" || state === "failed" || state === "cancelled";
+}
+
 /**
  * Manage a live run for one Task. A Task is a chat, so the Task is the only
  * owner a run can have. Calls `api.startRun`, subscribes to its event stream,
@@ -162,9 +170,19 @@ export function useRun(
   // Bumped on every start/teardown so a slow `startRun` promise from a
   // superseded run never attaches its listener.
   const token = useRef(0);
+  // Releases whatever `cancel`'s own late-completion watch (below) is still
+  // holding — its own subscription on a handle `cancel` deliberately did NOT
+  // close yet, kept open so a genuine `completed` frame arriving after the
+  // daemon's own grace on the stop can still reach this surface. Set only
+  // while a watch is in flight; `teardown` calls it so a superseding
+  // start/reset/unmount can never leave that watch running past the surface
+  // it was watching for.
+  const graceCleanupRef = useRef<(() => void) | null>(null);
 
   const teardown = useCallback(() => {
     token.current += 1;
+    graceCleanupRef.current?.();
+    graceCleanupRef.current = null;
     unsubRef.current?.();
     unsubRef.current = null;
     handleRef.current?.close();
@@ -206,12 +224,26 @@ export function useRun(
         setPendingQuestion(e.request);
         break;
       case "log-entry":
-        // Fires ONCE per entry, at creation — never again when the tool's
-        // result merges in. Appending by arrival is therefore exactly right,
-        // and a card drawn from here has no `result` until the landed record
-        // replaces the whole stream.
-        setLog((l) => [...l, e.entry]);
-        setLiveStream((s) => [...s, { kind: "step", entry: e.entry }]);
+        // The first frame creates the card at its arrival position. Later
+        // frames for the same ACP identity replace that card in place with a
+        // permission decision, result, or error without duplicating or moving
+        // it around prose that arrived in between.
+        setLog((log) => {
+          const index = log.findIndex((entry) => entry.toolUseId === e.entry.toolUseId);
+          if (index === -1) return [...log, e.entry];
+          const next = [...log];
+          next[index] = e.entry;
+          return next;
+        });
+        setLiveStream((stream) => {
+          const index = stream.findIndex(
+            (item) => item.kind === "step" && item.entry.toolUseId === e.entry.toolUseId,
+          );
+          if (index === -1) return [...stream, { kind: "step", entry: e.entry }];
+          const next = [...stream];
+          next[index] = { kind: "step", entry: e.entry };
+          return next;
+        });
         break;
       case "live":
         // A snapshot REPLACES its predecessor — never merge or append.
@@ -329,23 +361,72 @@ export function useRun(
       submit({ action: "answer-question", requestId, answer: { selected } }),
     [submit],
   );
-  // Stop a run and ALWAYS release the surface. The cancel is submitted so the
-  // core can end the turn its own way, but we also tear the stream down and end
-  // the turn locally: a run whose events stop arriving (dead stream, hung CLI,
-  // dropped tag) would otherwise pin `running` true forever, which disables the
-  // composer and silently swallows every later send — bricking the chat until
-  // a reload.
+  // Stop a run and ALWAYS release the surface AT ONCE. The cancel is
+  // submitted so the core can end the turn its own way, but we also tear the
+  // stream down and end the turn locally: a run whose events stop arriving
+  // (dead stream, hung CLI, dropped tag) would otherwise pin `running` true
+  // forever, which disables the composer and silently swallows every later
+  // send — bricking the chat until a reload.
+  //
+  // The handle itself is not closed on the spot, though: a SECOND
+  // subscription, registered on the same handle (the render-driving one
+  // above is already gone), keeps watching for the turn's own genuine
+  // `completed` frame and adopts whatever `state` it carries once it
+  // arrives — including `unacknowledged: true`, when the daemon's own grace
+  // period on the stop ran out with the agent never confirming it (see
+  // `daemon/session.ts`'s `cancelTurn`, which is where that judgment is
+  // made — not here; this surface only ever reports what actually arrives).
+  // `teardown` releases this watch early if a later start/reset/unmount
+  // supersedes it before a `completed` frame ever does.
   const cancel = useCallback(() => {
-    handleRef.current?.submit({ action: "cancel" });
-    teardown();
-    setState((s) =>
-      s === null || s.state === "completed" || s.state === "failed"
-        ? s
-        : { state: "failed", reason: "stopped" },
-    );
+    // Bumped directly here, since `cancel` does not route through
+    // `teardown`: `start`'s own in-flight `startRun` promise reads this
+    // token when it resolves, and a Stop pressed before that round-trip
+    // settles must make the late handle it hands back read as superseded —
+    // discarded via the `mine !== token.current` guard in `start` — rather
+    // than silently attached and resubscribed after the researcher already
+    // stopped the turn.
+    token.current += 1;
+    const handle = handleRef.current;
+    handleRef.current = null;
+    handle?.submit({ action: "cancel" });
+
+    unsubRef.current?.();
+    unsubRef.current = null;
+    setState((s) => (s === null || isTerminal(s.state) ? s : { state: "cancelled" }));
     setPendingCard(null);
     setPendingQuestion(null);
-  }, [teardown]);
+
+    if (!handle || graceCleanupRef.current) return;
+    // Two guards, not one, against a completed frame an implementation
+    // delivers SYNCHRONOUSLY — inside the `handle.onEvent` call below,
+    // before it has returned `unwatch`'s own value at all. `settled` records
+    // that this already happened; the `if (settled) unwatch?.()` line right
+    // after the subscribe call is what actually reaches the now-assigned
+    // `unwatch` and releases it in that case — `finishWatch`'s own
+    // `unwatch?.()`, reached first, could only no-op that time, since
+    // `unwatch` was still `null` the moment such a callback fires.
+    let settled = false;
+    let unwatch: (() => void) | null = null;
+    const finishWatch = () => {
+      graceCleanupRef.current = null;
+      settled = true;
+      unwatch?.();
+      handle.close();
+    };
+    // Set before subscribing, not after: a synchronously-delivered completed
+    // frame (below) runs `finishWatch` — which clears this — before this
+    // line would otherwise get a chance to. Set first, so that clearing is
+    // the one that sticks either way.
+    graceCleanupRef.current = finishWatch;
+    unwatch = handle.onEvent((e) => {
+      if (e.event !== "completed") return;
+      finishWatch();
+      setState(e.state);
+      if (e.run) setRun(e.run);
+    });
+    if (settled) unwatch?.();
+  }, []);
 
   // Tear the live run down and clear the surface — the "New" affordance. Any
   // in-flight run is closed (best-effort cancel) by teardown.
@@ -382,8 +463,7 @@ export function useRun(
   // Tear down the live run on unmount / Task change.
   useEffect(() => teardown, [studyId, taskId, teardown]);
 
-  const running =
-    state !== null && state.state !== "completed" && state.state !== "failed";
+  const running = state !== null && !isTerminal(state.state);
 
   return {
     state,

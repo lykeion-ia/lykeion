@@ -65,7 +65,9 @@ it("report posts what it found, with a bearer token and a JSON content-type", as
     platform: "macos-aarch64",
     daemonVersion: "0.1.0",
     capabilities: [],
-    clis: [{ id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true }],
+    clis: [
+      { id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true, sessionReady: true },
+    ],
   };
 
   await report(lab.base, "a-token", body);

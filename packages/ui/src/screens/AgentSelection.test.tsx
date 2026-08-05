@@ -17,6 +17,7 @@ const CLIS: AgentCli[] = [
     version: "",
     available: true,
     runtimeId: "rt_1",
+    sessionReady: true,
   },
   {
     id: "copilot",
@@ -25,6 +26,7 @@ const CLIS: AgentCli[] = [
     version: "",
     available: true,
     runtimeId: "rt_1",
+    sessionReady: true,
   },
 ];
 

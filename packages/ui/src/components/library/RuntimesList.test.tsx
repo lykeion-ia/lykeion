@@ -49,6 +49,7 @@ function cli(over: Partial<import("@lykeion/api").AgentCli> = {}) {
     version: "1.2.3",
     available: true,
     runtimeId: "rt_1",
+    sessionReady: true,
     ...over,
   };
 }
@@ -175,7 +176,15 @@ it("says the version is unknown for an installed command that would not name its
     [
       machine({
         clis: [
-          { id: "openclaw", name: "OpenClaw", command: "openclaw", version: "", available: true, runtimeId: "rt_1" },
+          {
+            id: "openclaw",
+            name: "OpenClaw",
+            command: "openclaw",
+            version: "",
+            available: true,
+            runtimeId: "rt_1",
+            sessionReady: true,
+          },
         ],
       }),
     ],

@@ -31,6 +31,8 @@ async function report(
     command: string;
     version: string;
     available: boolean;
+    sessionReady?: boolean;
+    sessionReadyReason?: string;
   }>,
 ): Promise<Response> {
   return fetch(`${base}/daemon/report`, {
@@ -289,4 +291,71 @@ it("refuses a still-outstanding code once the member who minted it is offboarded
 
   expect((await exchange(lab.base, code, verifier)).status).toBe(400);
   expect(await lab.ownerApi.listRuntimes()).toEqual([]);
+});
+
+it("carries a CLI's sessionReady through the report, with the reason absent once it is ready", async () => {
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  await report(lab.base, token, [
+    { id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true, sessionReady: true },
+    {
+      id: "codex",
+      name: "Codex",
+      command: "codex",
+      version: "1.0.0",
+      available: true,
+      sessionReady: false,
+      sessionReadyReason: "the codex-acp adapter is not installed — install it to run codex sessions",
+    },
+  ]);
+
+  const clis = await lab.ownerApi.listAgentClis();
+  const claude = clis.find((c) => c.id === "claude")!;
+  const codex = clis.find((c) => c.id === "codex")!;
+  expect(claude.sessionReady).toBe(true);
+  expect("sessionReadyReason" in claude).toBe(false);
+  expect(codex.sessionReady).toBe(false);
+  expect(codex.sessionReadyReason).toBe(
+    "the codex-acp adapter is not installed — install it to run codex sessions",
+  );
+});
+
+it("puts sessions in a machine's capabilities once one of its CLIs is session-ready", async () => {
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  const [before] = await lab.ownerApi.listRuntimes();
+  expect(before!.capabilities).toEqual([]);
+
+  await report(lab.base, token, [
+    { id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true, sessionReady: false },
+  ]);
+  const [stillBlocked] = await lab.ownerApi.listRuntimes();
+  expect(stillBlocked!.capabilities).toEqual([]);
+
+  await report(lab.base, token, [
+    { id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true, sessionReady: true },
+  ]);
+  const [after] = await lab.ownerApi.listRuntimes();
+  expect(after!.capabilities).toEqual(["sessions"]);
+});
+
+it("shows a colleague's capabilities without showing which CLI produced them", async () => {
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.memberApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  await report(lab.base, token, [
+    { id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true, sessionReady: true },
+  ]);
+
+  const [fromOwnersView] = await lab.ownerApi.listRuntimes();
+  expect(fromOwnersView!.capabilities).toEqual(["sessions"]);
+  expect("clis" in fromOwnersView!).toBe(false);
 });

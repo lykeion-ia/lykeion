@@ -100,14 +100,18 @@ export interface ExecutionLogEntry {
    * dropped, so the transcript shows the step as blocked instead of losing it)
    * | "ran" (an announced call that executed without ever reaching a
    * permission gate, e.g. `Read`, `Grep`, plain `Bash` against the real CLI) |
+   * "pending" (announced by the adapter and visible while the call is still
+   * in flight, before the seam can truthfully say whether it ran or reached a
+   * permission gate) |
    * "auto" (a call that DID reach a gate but mapped to no permission-engine
    * access at all, e.g. `ExitPlanMode` — genuinely no decision to make,
    * distinct from "ran") | "orphan-executed" (a result with no announcement
    * and no gate we ever saw).
    *
-   * Only "denied" and "cancelled" mean the tool did NOT run; every other value
-   * means it did. Consumers key presentation off that distinction, never off
-   * which adapter produced the entry.
+   * "Denied" and "cancelled" mean the tool did NOT run. "Pending" makes no
+   * execution claim yet. Every other value means it did. Consumers key
+   * presentation off those distinctions, never off which adapter produced the
+   * entry.
    */
   decision: string;
   result?: string;
@@ -168,14 +172,36 @@ export type TurnState =
   | { state: "awaiting-permission"; plan?: Plan; request: PermissionRequest }
   | { state: "awaiting-question"; plan?: Plan; request: QuestionRequest }
   | { state: "completed" }
-  | { state: "failed"; reason: string };
+  | { state: "failed"; reason: string }
+  /**
+   * A turn a researcher stopped outright. Distinct from `failed`: a decline
+   * at a plan or permission gate is a definite outcome and states why;
+   * stopping a turn that had nothing pending to decline is not a decline of
+   * anything, and inventing a reason for it would misdescribe the turn.
+   *
+   * `unacknowledged` is a SEPARATE fact from an ordinary stop, and not a
+   * reason for one: it means a bounded grace period after the stop was
+   * requested elapsed with no confirmation that the agent actually stopped
+   * — it may still be running tools and spending quota underneath a surface
+   * that already reads "stopped". Present (`true`) only once that grace
+   * period has passed unconfirmed; absent for a stop confirmed in time, and
+   * absent for a stop that never reached an agent to confirm at all.
+   */
+  | { state: "cancelled"; unacknowledged?: true };
 
 /** A recorded run — the fields the UI shows. */
 export interface RunRecord {
   runId: string;
   ts: number;
   command: string;
-  status: "ok" | "failed";
+  /**
+   * The terminal state a completed run landed in. `"cancelled"` is its own
+   * value rather than folded into `"failed"`, for the same reason
+   * `TurnState`'s own `cancelled` variant is distinct from `failed`: a
+   * researcher's stop is not a decline of anything, so reusing `"failed"`
+   * for it would misdescribe a turn nothing actually went wrong with.
+   */
+  status: "ok" | "failed" | "cancelled";
   wallMs?: number;
   code: RunArtifact[];
   outputs: RunArtifact[];
@@ -194,16 +220,18 @@ export interface RunArtifact {
   size: number;
 }
 
-/**
- * A past run on a Task — one entry per turn in its chat. Empty until run
- * history is persisted and surfaced; nothing is returned yet.
- */
+/** A durable past run on a Task — one entry per settled turn in its chat. */
 export interface RunSummary {
   runId: string;
   /** The prompt that started the run (the Task's title). */
   command: string;
   ts: number;
-  status: "ok" | "failed";
+  status: "ok" | "failed" | "cancelled";
+  /** Set alongside `status: "cancelled"` when the agent never confirmed the
+   *  stop within its own grace period — see `TurnState`'s `cancelled`
+   *  variant, which this mirrors. Absent for every other past run,
+   *  including an ordinary, confirmed stop. */
+  unacknowledged?: true;
 }
 
 /** One turn of a Task — a single run's user prompt + assistant replies. */
@@ -306,6 +334,14 @@ export type RunEvent =
   | { event: "live"; live: LiveTurn }
   | { event: "reviewing" }
   | { event: "completed"; state: TurnState; run?: RunRecord };
+
+/** One event of a run's stream, numbered by the daemon that produced it —
+ *  the frame a daemon batches into `/daemon/run/events` and a lab replays in
+ *  order from `seq`. */
+export interface RunEventFrame {
+  seq: number;
+  event: RunEvent;
+}
 
 /** A decision sent back into a running turn. */
 export type RunDecision =

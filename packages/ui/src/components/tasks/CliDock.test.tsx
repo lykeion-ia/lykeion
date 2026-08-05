@@ -14,6 +14,7 @@ const cli = (over: Partial<AgentCli>): AgentCli => ({
   version: "",
   available: true,
   runtimeId: "rt_1",
+  sessionReady: true,
   ...over,
 });
 
@@ -26,10 +27,17 @@ afterEach(() => {
 });
 
 describe("CliDock", () => {
-  it("shows the empty hint when no CLI is available", () => {
+  it("shows the empty hint when no CLI can run a session", () => {
     render(
       <CliDock
-        clis={[cli({ id: "claude", name: "Claude Code", available: false })]}
+        clis={[
+          cli({
+            id: "claude",
+            name: "Claude Code",
+            sessionReady: false,
+            sessionReadyReason: "no ACP adapter is known for claude yet",
+          }),
+        ]}
         selectedId={null}
         onSelect={() => {}}
       />,
@@ -39,7 +47,7 @@ describe("CliDock", () => {
     );
   });
 
-  it("renders a selectable tile for an available CLI", () => {
+  it("renders a selectable tile for a session-ready CLI", () => {
     render(
       <CliDock
         clis={[
@@ -86,9 +94,15 @@ describe("CliDock", () => {
     expect(onSelect).toHaveBeenCalledWith(cliIdentity(workClaude));
   });
 
-  it("names the machine on each tile once the CLIs span more than one runtime", () => {
+  it("names the machine on each tile once the CLIs span more than one runtime, and says why an unready one cannot run", () => {
     const laptopClaude = cli({ id: "claude", name: "Claude Code", runtimeId: "rt_laptop" });
-    const workCopilot = cli({ id: "copilot", name: "GitHub Copilot CLI", runtimeId: "rt_work", available: false });
+    const workCopilot = cli({
+      id: "copilot",
+      name: "GitHub Copilot CLI",
+      runtimeId: "rt_work",
+      sessionReady: false,
+      sessionReadyReason: "no ACP adapter is known for copilot yet",
+    });
 
     render(
       <CliDock
@@ -99,13 +113,13 @@ describe("CliDock", () => {
       />,
     );
 
-    const unavailable = screen.getByRole("button", {
+    const unready = screen.getByRole("button", {
       name: "GitHub Copilot CLI on workstation",
     });
-    expect(unavailable).toBeDisabled();
-    expect(unavailable).toHaveAttribute(
+    expect(unready).toBeDisabled();
+    expect(unready).toHaveAttribute(
       "title",
-      "GitHub Copilot CLI on workstation — not found",
+      "GitHub Copilot CLI on workstation — no ACP adapter is known for copilot yet",
     );
   });
 

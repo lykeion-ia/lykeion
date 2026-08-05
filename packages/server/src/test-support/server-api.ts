@@ -89,6 +89,7 @@ export function apiFor(base: string, cookie: string): LykeionApi {
       );
     },
     openEvents: () => () => {},
+    openRun: () => () => {},
   });
 }
 

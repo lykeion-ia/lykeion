@@ -2,12 +2,13 @@ import { afterEach, beforeAll, expect, it } from "vitest";
 import { build } from "esbuild";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isProcessAlive, readControlFile, waitForExit } from "./control";
+import { ensureSessionDir } from "./workspace";
 
 /**
  * The daemon as a person runs it: built, started as its own process, and
@@ -276,6 +277,26 @@ it(
     await waitFor("the next daemon to claim it", () => readControlFile(dir)?.pid === second.child.pid);
   },
   60_000,
+);
+
+it(
+  "sweeps a stale session workspace on startup",
+  async () => {
+    const dir = freshDir();
+    const lab = await silentLab();
+    pairWith(dir, lab.base);
+
+    const stale = ensureSessionDir(dir, "s_old", "se_old");
+    utimesSync(stale, 0, 0);
+    const fresh = ensureSessionDir(dir, "s_old", "se_fresh");
+
+    const daemon = serve(dir);
+    await waitFor("the daemon to claim the directory", () => readControlFile(dir) !== undefined);
+    await waitFor("the stale session workspace to be swept", () => !existsSync(stale), 5000);
+
+    expect(existsSync(fresh), daemon.output()).toBe(true);
+  },
+  15_000,
 );
 
 it(

@@ -280,6 +280,127 @@ export const MIGRATIONS: Migration[] = [
       store.run(`ALTER TABLE users ADD COLUMN avatar_url TEXT`);
     },
   },
+  {
+    version: 7,
+    up(store) {
+      // A session is the ACP conversation state living on one runtime for
+      // one Study and agent. It names no Task of its own — a Task's live
+      // session is found through the turn that already ties one to it,
+      // which is what lets one session outlive several turns filed under
+      // different Tasks in the same Study.
+      store.run(`
+        CREATE TABLE sessions (
+          id         TEXT PRIMARY KEY,
+          study_id   TEXT NOT NULL,
+          runtime_id TEXT NOT NULL,
+          agent      TEXT NOT NULL,
+          opened_by  TEXT NOT NULL,
+          opened_ts  INTEGER NOT NULL,
+          ended_ts   INTEGER,
+          seq        INTEGER NOT NULL UNIQUE
+        )`);
+      // A turn is a run: one prompt and its answer, filed against exactly
+      // one Task. `text` accumulates the assistant's prose as it streams so
+      // a reload mid-turn has something to show before the turn ends.
+      store.run(`
+        CREATE TABLE turns (
+          id         TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          task_id    TEXT NOT NULL,
+          prompt     TEXT NOT NULL,
+          started_ts INTEGER NOT NULL,
+          ended_ts   INTEGER,
+          status     TEXT NOT NULL,
+          text       TEXT NOT NULL DEFAULT '',
+          seq        INTEGER NOT NULL UNIQUE
+        )`);
+      store.run(`
+        CREATE TABLE turn_steps (
+          id          TEXT PRIMARY KEY,
+          turn_id     TEXT NOT NULL,
+          ts          INTEGER NOT NULL,
+          tool_use_id TEXT NOT NULL,
+          tool        TEXT NOT NULL,
+          title       TEXT,
+          input       TEXT NOT NULL,
+          decision    TEXT NOT NULL,
+          result      TEXT,
+          is_error    INTEGER NOT NULL,
+          seq         INTEGER NOT NULL UNIQUE
+        )`);
+      // A standing grant is scoped to (study, runtime) rather than to the
+      // Study alone: the path it names only means anything on the
+      // filesystem of the machine it was granted for.
+      store.run(`
+        CREATE TABLE folder_grants (
+          id         TEXT PRIMARY KEY,
+          study_id   TEXT NOT NULL,
+          runtime_id TEXT NOT NULL,
+          path       TEXT NOT NULL,
+          mode       TEXT NOT NULL,
+          granted_by TEXT NOT NULL,
+          granted_ts INTEGER NOT NULL,
+          revoked_ts INTEGER,
+          seq        INTEGER NOT NULL UNIQUE
+        )`);
+    },
+  },
+  {
+    version: 8,
+    up(store) {
+      // Whether a report's CLI actually handshakes an ACP adapter, and — when
+      // it does not — the adapter's own account of why. Every row already on
+      // disk predates a daemon ever checking this, so the default reads back
+      // as "not session-ready" rather than a claim no probe ever made.
+      store.run(`ALTER TABLE runtime_clis ADD COLUMN session_ready INTEGER NOT NULL DEFAULT 0`);
+      store.run(`ALTER TABLE runtime_clis ADD COLUMN session_ready_reason TEXT`);
+    },
+  },
+  {
+    version: 9,
+    up(store) {
+      store.run(`
+        CREATE TABLE turn_items (
+          id      TEXT PRIMARY KEY,
+          turn_id TEXT NOT NULL,
+          kind    TEXT NOT NULL CHECK (kind IN ('text', 'step')),
+          text    TEXT,
+          partial INTEGER,
+          step_id TEXT,
+          seq     INTEGER NOT NULL UNIQUE,
+          CHECK (
+            (kind = 'text' AND text IS NOT NULL AND partial IN (0, 1) AND step_id IS NULL)
+            OR
+            (kind = 'step' AND text IS NULL AND partial IS NULL AND step_id IS NOT NULL)
+          )
+        )`);
+
+      // Aggregate transcripts cannot reveal how prose and tools originally
+      // interleaved. Preserve the only deterministic representation they did
+      // expose: prose first, followed by execution entries in insertion order.
+      for (const turn of store.all(`SELECT id, text FROM turns ORDER BY seq ASC`)) {
+        if (turn.text !== "") {
+          const seq = nextSeq(store);
+          store.run(
+            `INSERT INTO turn_items (id, turn_id, kind, text, partial, seq)
+             VALUES (?, ?, 'text', ?, 0, ?)`,
+            [`item_${seq}`, turn.id, turn.text, seq],
+          );
+        }
+        for (const step of store.all(
+          `SELECT id FROM turn_steps WHERE turn_id = ? ORDER BY seq ASC`,
+          [turn.id],
+        )) {
+          const seq = nextSeq(store);
+          store.run(
+            `INSERT INTO turn_items (id, turn_id, kind, step_id, seq)
+             VALUES (?, ?, 'step', ?, ?)`,
+            [`item_${seq}`, turn.id, step.id, seq],
+          );
+        }
+      }
+    },
+  },
 ];
 
 assertAscending(MIGRATIONS);

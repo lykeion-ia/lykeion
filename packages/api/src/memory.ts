@@ -912,6 +912,18 @@ export function createInMemoryLab(
   // `getTask` answers with an empty array for it, because a captured Task is
   // a chat nobody has spoken in yet rather than a missing record.
   const transcripts = new Map<string, TaskTurn[]>();
+  // Every run this lab has started, keyed by its id, for `submitRunDecision`
+  // to reach one it was addressed to by id alone rather than through the
+  // `RunHandle` `startRun`/`delegateSubagent` returned — the same seam a
+  // wire transport is built on, where a `RunHandle`'s methods never survive
+  // the trip and only its `runId` does.
+  const runs = new Map<string, RunHandle>();
+  // The actor who started each run, keyed the same way — the in-memory
+  // analogue of the server's "only the machine's owner may decide": this lab
+  // has no machine for a run to belong to, but a run still belongs to
+  // whoever started it, and `submitRunDecision` holds every other actor to
+  // that the same way the server holds a colleague's un-owned machine to it.
+  const runStarters = new Map<string, string>();
   // Every write is stamped from here. The value is strictly increasing, so no
   // two writes in an instance ever tie and none can tie a seeded timestamp;
   // and it is never behind `options.now`, so with a real clock a write records
@@ -1466,7 +1478,8 @@ export function createInMemoryLab(
       };
     },
     async listAgentClis() {
-      // The browser core can't probe the machine — no CLIs are detected here.
+      // The browser core can't probe the machine or handshake an ACP
+      // adapter — no CLIs are detected, and so none is ever session-ready.
       return [];
     },
     async pairMachine(_input: PairMachineInput) {
@@ -1506,7 +1519,33 @@ export function createInMemoryLab(
         }
         appendTurn(input, status, run, messages);
       };
-      return simulateRun(input, onComplete);
+      const handle = simulateRun(input, onComplete);
+      runs.set(handle.runId, handle);
+      runStarters.set(handle.runId, me);
+      return handle;
+    },
+    async submitRunDecision(runId: string, decision: RunDecision) {
+      // One check, not two: an id nobody holds a run for and an id whose run
+      // belongs to somebody else answer identically — a lab-mate must not
+      // learn which is true from the difference (run ids are sequential and
+      // guessable), the same reasoning the workspace server's own check is
+      // held to.
+      if (runStarters.get(runId) !== me)
+        throw new LykeionError("forbidden", `run ${runId} does not belong to you`);
+      // Refused by name here, on the way in, rather than narrowed to
+      // something the researcher did not ask for: a "global" scope means
+      // every Study this lab holds, and there is nothing this core could
+      // grant that would honestly mean that.
+      if (
+        decision.action === "permission" &&
+        decision.decision.decision === "allow" &&
+        decision.decision.scope === "global"
+      )
+        throw new LykeionError(
+          "invalid",
+          `a "global" grant would reach every Study in this lab — grant one Study at a time instead`,
+        );
+      runs.get(runId)!.submit(decision);
     },
     async delegateSubagent(input: DelegateSubagentInput) {
       const runInput: StartRunInput = {
@@ -1529,7 +1568,10 @@ export function createInMemoryLab(
           subagent: input.persona.name,
         });
       };
-      return simulateRun(runInput, onComplete);
+      const handle = simulateRun(runInput, onComplete);
+      runs.set(handle.runId, handle);
+      runStarters.set(handle.runId, me);
+      return handle;
     },
     async readArtifact(_studyId, path) {
       const seeded = artifacts[path];
@@ -1886,13 +1928,14 @@ function simulateRun(
 
   /**
    * The run record a turn lands with. Every turn finalizes a record
-   * unconditionally — denied and failed turns are part of the study record
-   * too — with status following the terminal state (Completed → ok,
-   * anything else → failed). A failed turn stamps no provenance, hence no
-   * outputs. `stream` is snapshotted at the moment the turn ends.
+   * unconditionally — denied, failed and cancelled turns are part of the
+   * study record too — with status following the terminal state (Completed
+   * → ok, a researcher's stop → cancelled, anything else → failed). A
+   * failed or cancelled turn stamps no provenance, hence no outputs.
+   * `stream` is snapshotted at the moment the turn ends.
    */
   const record = (
-    status: "ok" | "failed",
+    status: "ok" | "failed" | "cancelled",
     wallMs: number,
     outputs: RunRecord["outputs"] = [],
   ): RunRecord => ({
@@ -1943,11 +1986,20 @@ function simulateRun(
       });
 
       const d1 = await waitDecision();
-      if (closed || d1.action !== "approve-plan") {
+      if (closed || d1.action === "cancel") {
+        // A stop reached before anything was even proposed to decline is
+        // still a stop, not a decline of anything — it lands `cancelled`,
+        // never a `failed` with an invented reason. It still lands a run:
+        // a cancelled turn is part of the study record too.
+        const run = record("cancelled", 200);
+        liveIdle();
+        emit({ event: "completed", state: { state: "cancelled" }, run });
+        onComplete("failed", run, messages);
+        return;
+      }
+      if (d1.action !== "approve-plan") {
         const reason =
-          d1.action === "reject-plan"
-            ? (d1.reason ?? "plan rejected")
-            : "cancelled";
+          d1.action === "reject-plan" ? (d1.reason ?? "plan rejected") : "plan rejected";
         // A soft failure still lands a run: the record carries the failed
         // state, not the absence of a record (only a hard, unrecoverable
         // error would complete with `run: undefined`).
@@ -1988,11 +2040,11 @@ function simulateRun(
       });
       const dq = await waitDecision();
       if (closed || dq.action === "cancel") {
-        const run = record("failed", 500);
+        const run = record("cancelled", 500);
         liveIdle();
         emit({
           event: "completed",
-          state: { state: "failed", reason: "cancelled" },
+          state: { state: "cancelled" },
           run,
         });
         onComplete("failed", run, messages);
@@ -2015,27 +2067,31 @@ function simulateRun(
 
     const d2 = await waitDecision();
     if (closed || d2.action === "cancel") {
-      // Cancel is the hard stop — nothing to resume. It still records the run:
-      // a cancelled turn is part of the study record.
+      // Cancel is the hard stop — nothing to resume. It still records the
+      // run: a cancelled turn is part of the study record, landed with
+      // status `cancelled` rather than `failed` — a stop is not a decline
+      // of anything, so nothing here actually failed.
       //
       // …and it records the ABANDONED STEP too: it pushes an entry with
       // decision "cancelled" and its order slot — the stop is on the
       // Execution Log for the record — so the tool the researcher stopped is
       // in the transcript, visibly blocked, instead of vanishing from it. The
-      // Write never ran: no result, and NOT an error (nothing failed).
+      // Write never ran: no result. `isError: true` even so — a live
+      // adapter still reports its own follow-up for a call it never got to
+      // finish, and that follow-up reads failed, whatever ended it.
       step({
         ts: 0,
         toolUseId: "tu-1",
         tool: "Write",
         input: writeInput,
         decision: "cancelled",
-        isError: false,
+        isError: true,
       });
-      const run = record("failed", 600);
+      const run = record("cancelled", 600);
       liveIdle();
       emit({
         event: "completed",
-        state: { state: "failed", reason: "cancelled" },
+        state: { state: "cancelled" },
         run,
       });
       onComplete("failed", run, messages);

@@ -11,6 +11,7 @@ import {
 import type { Deps } from "./index";
 import type { Row, Store } from "../store/store";
 import { nextSeq } from "../store/migrations";
+import { taskTurnsForTask } from "../store/sessions";
 
 export type TasksApi = Pick<
   LykeionApi,
@@ -216,10 +217,7 @@ export function tasksApi(deps: Deps): TasksApi {
     async getTask(taskId) {
       const row = store.get(`SELECT * FROM tasks WHERE id = ?`, [taskId]);
       if (!row) throw new LykeionError("not-found", `no such task: ${taskId}`);
-      // No turn storage exists on a server with no runtime behind it: only
-      // a run appends one, and a run needs a machine. An empty transcript is
-      // the honest answer, and it is what a captured Task has anyway.
-      return { task: taskRowsToTasks(store, [row])[0], turns: [] };
+      return { task: taskRowsToTasks(store, [row])[0], turns: taskTurnsForTask(store, taskId) };
     },
 
     async myWork() {

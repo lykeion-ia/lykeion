@@ -29,6 +29,15 @@ function pathRunning(commands: Record<string, string>): string {
   return dir;
 }
 
+/** The body of a minimal ACP adapter: reads the one line `initialize` writes
+ *  to its stdin, answers it — `initialize` is always the first call on a
+ *  fresh connection, so its id is always 1 — and lets the shell exit once
+ *  that line is flushed. Enough to prove a real handshake happened, rather
+ *  than assert against a canned "it would have worked". */
+function acpHandshakeScript(): string {
+  return 'read -r line\nprintf \'{"jsonrpc":"2.0","id":1,"result":{}}\\n\'';
+}
+
 it(
   "reports a command that is on PATH and answers",
   async () => {
@@ -137,6 +146,87 @@ it("reports every catalogue entry, installed or not", async () => {
   expect(clis).toHaveLength(13);
 });
 
+it(
+  "reports an agent as session-ready when its adapter handshakes",
+  async () => {
+    const path = pathRunning({
+      claude: 'echo "2.1.220"',
+      "claude-code-acp": acpHandshakeScript(),
+    });
+    const claude = (await probeAgentClis({ path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
+    expect(claude.available).toBe(true);
+    expect(claude.sessionReady).toBe(true);
+    expect("sessionReadyReason" in claude).toBe(false);
+  },
+  60_000,
+);
+
+it("uses the maintained Claude adapter when it is the only bridge on PATH", async () => {
+  const path = pathRunning({
+    claude: 'echo "2.1.220"',
+    "claude-agent-acp": acpHandshakeScript(),
+  });
+  const resolved: string[] = [];
+  const claude = (await probeAgentClis({
+    path,
+    timeoutMs: 30_000,
+    onAdapterResolved: (agentId, command) => {
+      if (agentId === "claude") resolved.push(command);
+    },
+  })).find((c) => c.id === "claude")!;
+  expect(claude.sessionReady).toBe(true);
+  expect(resolved).toEqual([join(path, "claude-agent-acp")]);
+});
+
+it("prefers the maintained Claude adapter when both bridges are on PATH", async () => {
+  const path = pathRunning({
+    claude: 'echo "2.1.220"',
+    "claude-agent-acp": acpHandshakeScript(),
+    "claude-code-acp": "echo deprecated-bridge-was-launched >&2\nexit 1",
+  });
+  const claude = (await probeAgentClis({ path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
+  expect(claude.sessionReady).toBe(true);
+});
+
+it("falls back to the compatibility Claude adapter when it is the only bridge on PATH", async () => {
+  const path = pathRunning({
+    claude: 'echo "2.1.220"',
+    "claude-code-acp": acpHandshakeScript(),
+  });
+  const claude = (await probeAgentClis({ path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
+  expect(claude.sessionReady).toBe(true);
+});
+
+it("says the CLI is there but the adapter is not, rather than calling it absent", async () => {
+  const claude = (await probeAgentClis({ path: pathWith({ claude: "2.1.220" }) })).find(
+    (c) => c.id === "claude",
+  )!;
+  expect(claude.available).toBe(true);
+  expect(claude.sessionReady).toBe(false);
+  expect(claude.sessionReadyReason).toMatch(/adapter/i);
+});
+
+it("carries what initialize refused with, so a version floor is named", async () => {
+  const path = pathRunning({
+    claude: 'echo "1.0.0"',
+    "claude-code-acp": "echo 'needs claude >= 2.0.0' >&2\nexit 1",
+  });
+  const claude = (await probeAgentClis({ path })).find((c) => c.id === "claude")!;
+  expect(claude.sessionReady).toBe(false);
+  expect(claude.sessionReadyReason).toContain("needs claude >= 2.0.0");
+});
+
+it("has no adapter to try for a catalogue entry that speaks no ACP yet, and says so", async () => {
+  // `gemini` carries no adapter mapping at all — unlike `claude`, there is no
+  // second binary to look for, so this settles without spawning anything.
+  const gemini = (await probeAgentClis({ path: pathWith({ gemini: "1.0.0" }) })).find(
+    (c) => c.id === "gemini",
+  )!;
+  expect(gemini.available).toBe(true);
+  expect(gemini.sessionReady).toBe(false);
+  expect(gemini.sessionReadyReason).toMatch(/adapter/i);
+});
+
 it("does not treat a non-executable file as a command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "lykeion-probe-"));
   dirs.push(dir);
@@ -183,8 +273,8 @@ it("isRunnable accepts a file with the executable bit set", async () => {
 
 it("cliFingerprint does not depend on the order clis arrive in", () => {
   const a: ProbedCli[] = [
-    { id: "codex", name: "Codex", command: "codex", version: "1.0.0", available: true },
-    { id: "claude", name: "Claude Code", command: "claude", version: "2.0.0", available: false },
+    { id: "codex", name: "Codex", command: "codex", version: "1.0.0", available: true, sessionReady: false },
+    { id: "claude", name: "Claude Code", command: "claude", version: "2.0.0", available: false, sessionReady: false },
   ];
   const b = [...a].reverse();
   expect(cliFingerprint(a)).toBe(cliFingerprint(b));
@@ -192,14 +282,14 @@ it("cliFingerprint does not depend on the order clis arrive in", () => {
 
 it("cliFingerprint is stable for an identical probe reported twice", () => {
   const clis: ProbedCli[] = [
-    { id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true },
+    { id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true, sessionReady: true },
   ];
   expect(cliFingerprint(clis)).toBe(cliFingerprint([...clis]));
 });
 
 it("cliFingerprint differs when a known id's version changes, with the id set unchanged", () => {
   const before: ProbedCli[] = [
-    { id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true },
+    { id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true, sessionReady: true },
   ];
   const after: ProbedCli[] = [{ ...before[0]!, version: "1.0.1" }];
   expect(cliFingerprint(before)).not.toBe(cliFingerprint(after));
@@ -207,8 +297,20 @@ it("cliFingerprint differs when a known id's version changes, with the id set un
 
 it("cliFingerprint differs when a known id's availability flips, with the id and version unchanged", () => {
   const before: ProbedCli[] = [
-    { id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true },
+    { id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true, sessionReady: true },
   ];
   const after: ProbedCli[] = [{ ...before[0]!, available: false }];
+  expect(cliFingerprint(before)).not.toBe(cliFingerprint(after));
+});
+
+it("cliFingerprint differs when sessionReady flips, with the id, version and availability unchanged", () => {
+  // An adapter that gets installed while the daemon is already running
+  // changes nothing `available` or `version` would ever show — this is the
+  // one fact that would otherwise go unreported until something else about
+  // the CLI happened to change too.
+  const before: ProbedCli[] = [
+    { id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true, sessionReady: false },
+  ];
+  const after: ProbedCli[] = [{ ...before[0]!, sessionReady: true }];
   expect(cliFingerprint(before)).not.toBe(cliFingerprint(after));
 });

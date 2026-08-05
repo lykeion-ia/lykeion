@@ -450,7 +450,7 @@ describe("in-memory run simulation", () => {
   it("cancelling at a permission card terminates the run", async () => {
     // The counterpart to the test above, and the one the suite was missing:
     // `Deny` resumes, `Cancel` ends. Nothing must execute after the stop, and
-    // the run must land as `failed` rather than quietly completing.
+    // the run must land `cancelled` rather than quietly completing.
     // (Cancel and Deny are easy to conflate, and a mock can pass while
     // masking that bug — this test pins the exact contract so that can't
     // happen unnoticed.)
@@ -478,18 +478,19 @@ describe("in-memory run simulation", () => {
 
     const done = events.at(-1)!;
     expect(done.event).toBe("completed");
-    expect(done.event === "completed" && done.state.state).toBe("failed");
-    expect(
-      done.event === "completed" && done.state.state === "failed"
-        ? done.state.reason
-        : undefined,
-    ).toBe("cancelled");
+    expect(done.event === "completed" && done.state.state).toBe("cancelled");
+    // A stop is not a decline: it carries no `reason`, and this turn never
+    // sat unconfirmed long enough to earn `unacknowledged` either — the
+    // landed state is bare `{ state: "cancelled" }`, nothing more.
+    expect(done.event === "completed" ? Object.keys(done.state) : []).toEqual([
+      "state",
+    ]);
 
     // The turn stopped AT the card, so the write never EXECUTED — but the
     // abandoned call is still on the Execution Log, decision "cancelled" with
-    // no result (the stop is on the Execution Log for the record). This used
-    // to assert that no entry was recorded at all, which was wrong and made a
-    // cancelled step impossible to reproduce anywhere in the test suite.
+    // no result: the stop is on the Execution Log for the record, so the
+    // tool the researcher stopped is in the transcript, visibly blocked,
+    // instead of vanishing from it.
     const logged = events.filter((e) => e.event === "log-entry");
     // Two: the CLI's ungated plan-file write (which really did happen, before
     // the plan gate) and the Write the researcher stopped at the card.
@@ -498,7 +499,11 @@ describe("in-memory run simulation", () => {
     const stopped = last.event === "log-entry" ? last.entry : undefined;
     expect(stopped!.decision).toBe("cancelled");
     expect(stopped!.result).toBeUndefined();
-    expect(stopped!.isError).toBe(false);
+    // An abandoned call is not a silent nothing: a live adapter still
+    // reports its own follow-up for a call it never got to finish, and that
+    // follow-up reads `isError: true` — the researcher stopping the turn is
+    // why the call never ran, not evidence nothing went wrong with it.
+    expect(stopped!.isError).toBe(true);
     // Nothing ran: no allowed/executed entry exists.
     expect(
       events.some(
@@ -507,20 +512,140 @@ describe("in-memory run simulation", () => {
       ),
     ).toBe(false);
     // It DOES land a run record though — a cancelled turn is part of the
-    // study record, stamping no provenance. This assertion used to require
-    // `run` to be undefined, which was wrong; it tested an old bug rather
-    // than the contract.
+    // study record, stamping no provenance, and its own `status` reads the
+    // same `cancelled` the turn's state does rather than misreporting it
+    // as `failed`.
     const cancelled = done.event === "completed" ? done.run : undefined;
     expect(cancelled).toBeDefined();
-    expect(cancelled!.status).toBe("failed");
+    expect(cancelled!.status).toBe("cancelled");
     expect(cancelled!.outputs).toEqual([]);
 
-    // ...and the turn counts as a failure, so the Task never advances to
+    // ...and the turn counts as unfinished, so the Task never advances to
     // review the way a completed run would.
     const after = (await api.getStudy(study.id)).tasks.find(
       (t) => t.id === task.id,
     );
     expect(after?.status).not.toBe("in-review");
+  });
+
+  it("cancelling at the plan gate also lands the turn cancelled, not failed", async () => {
+    // The same stop, reached one gate earlier: nothing has been proposed to
+    // decline yet, so treating this as a decline (`{ state: "failed", reason:
+    // "cancelled" }`) would misdescribe it exactly the way it would at the
+    // permission card.
+    const api = createInMemoryApi();
+    const [study] = await api.listStudies();
+    const task = (await api.getStudy(study.id)).tasks[0];
+    const session = await api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "run it",
+      options: { planMode: true },
+    });
+
+    const done = await new Promise<import("./run").RunEvent>((resolve) => {
+      session.onEvent((e) => {
+        if (e.event === "plan-proposed") session.submit({ action: "cancel" });
+        if (e.event === "completed") resolve(e);
+      });
+    });
+
+    expect(done.event === "completed" && done.state.state).toBe("cancelled");
+    const run = done.event === "completed" ? done.run : undefined;
+    expect(run).toBeDefined();
+    expect(run!.status).toBe("cancelled");
+  });
+});
+
+describe("submitRunDecision (in-memory)", () => {
+  it("routes a decision addressed by runId alone to the running turn", async () => {
+    // The seam a wire transport is built on: nothing here ever touches the
+    // `RunHandle` `startRun` returned — only the bare id it carries.
+    const api = createInMemoryApi();
+    const [study] = await api.listStudies();
+    const task = (await api.getStudy(study.id)).tasks[0];
+    const handle = await api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "run it",
+      options: { planMode: true },
+    });
+
+    const done = await new Promise<import("./run").RunEvent>((resolve) => {
+      handle.onEvent((e) => {
+        if (e.event === "plan-proposed")
+          void api.submitRunDecision(handle.runId, { action: "approve-plan" });
+        if (e.event === "permission-card")
+          void api.submitRunDecision(handle.runId, {
+            action: "permission",
+            requestId: e.request.id,
+            decision: { decision: "allow", scope: "once" },
+          });
+        if (e.event === "completed") resolve(e);
+      });
+    });
+
+    expect(done.event === "completed" && done.state.state).toBe("completed");
+  });
+
+  it("rejects a decision addressed to a run id nobody holds, the same way an unowned one is refused", async () => {
+    // Run ids are guessable, so a caller must not be able to tell "no such
+    // run" apart from "not yours" by the error it gets back — both answer
+    // `forbidden`, the same way the workspace server's own runs do.
+    const api = createInMemoryApi();
+    await expect(
+      api.submitRunDecision("run_nope", { action: "cancel" }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("refuses a decision from an actor who did not start the run", async () => {
+    // The in-memory core has no machine for a run to belong to, but a run
+    // still belongs to whoever started it — a lab-mate who merely knows its
+    // id is refused the same way a colleague's un-owned machine refuses one.
+    const lab = createInMemoryLab();
+    const owner = lab.api(lab.ownerId);
+    const member = lab.api(lab.memberId);
+    const [study] = await owner.listStudies();
+    const task = (await owner.getStudy(study.id)).tasks[0];
+    const handle = await owner.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "run it",
+      options: { planMode: true },
+    });
+
+    await expect(
+      member.submitRunDecision(handle.runId, { action: "cancel" }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("refuses a global-scope permission decision by name, rather than narrowing it", async () => {
+    // A "global" scope means every Study in the lab, and there is nothing
+    // this core could grant that would honestly mean that — refused by
+    // name on the way in, the same way the workspace server refuses it.
+    const api = createInMemoryApi();
+    const [study] = await api.listStudies();
+    const task = (await api.getStudy(study.id)).tasks[0];
+    const handle = await api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "run it",
+      options: { planMode: false },
+    });
+    const requestId = await new Promise<string>((resolve) => {
+      handle.onEvent((e) => {
+        if (e.event === "permission-card") resolve(e.request.id);
+      });
+    });
+
+    await expect(
+      api.submitRunDecision(handle.runId, {
+        action: "permission",
+        requestId,
+        decision: { decision: "allow", scope: "global" },
+      }),
+    ).rejects.toThrow(/every Study/);
+    handle.close();
   });
 });
 
@@ -825,12 +950,11 @@ describe("task transcripts: stream (in-memory)", () => {
 
   it("stopping the turn at the permission card records the abandoned step as `cancelled`", async () => {
     // A cancelled call at the gate still pushes an Execution Log entry —
-    // decision "cancelled", `isError: false`, NO result — plus its order
-    // slot: the stop is on the Execution Log for the record. The simulation
-    // used to record nothing at all here, so no test could reproduce a
-    // cancelled step, and a Critical (a stopped Write drawing as a completed
-    // success) survived three reviews. The simulation tracks that exact
-    // contract; that is the only reason UI tests may run against it.
+    // decision "cancelled", `isError: true`, NO result — plus its order slot:
+    // the stop is on the Execution Log for the record, so the tool the
+    // researcher stopped is visibly blocked in the transcript rather than
+    // vanishing from it. The simulation tracks that exact contract; that is
+    // the only reason UI tests may run against it.
     const api = createInMemoryApi();
     const [study] = await api.listStudies();
     const task = await chatTask(api, study.id, "write the results");
@@ -849,10 +973,10 @@ describe("task transcripts: stream (in-memory)", () => {
       });
     });
 
-    expect(done.event === "completed" && done.state.state).toBe("failed");
+    expect(done.event === "completed" && done.state.state).toBe("cancelled");
     const run = done.event === "completed" ? done.run : undefined;
     expect(run).toBeDefined();
-    expect(run!.status).toBe("failed");
+    expect(run!.status).toBe("cancelled");
 
     // The abandoned step is present in the landed stream, in arrival order —
     // after the ungated plan-file write, which happened before the plan gate.
@@ -862,8 +986,10 @@ describe("task transcripts: stream (in-memory)", () => {
     expect(entry!.decision).toBe("cancelled");
     expect(entry!.tool).toBe("Write");
     expect(entry!.input).toEqual({ file_path: "results/out.csv" });
-    // Not an error — nothing failed, the researcher stopped it...
-    expect(entry!.isError).toBe(false);
+    // An abandoned call still reads `isError: true` — the adapter's own
+    // follow-up for a call it never got to finish reports it failed, even
+    // though a researcher stopping the turn, not the tool itself, is why.
+    expect(entry!.isError).toBe(true);
     // ...and it never ran, so there is no result to attach.
     expect(entry!.result).toBeUndefined();
 
@@ -1284,15 +1410,18 @@ it("runs every area the suite defines against somebody", () => {
   // An area written and left off both lists runs nowhere and fails nothing,
   // which is the one way this file can be incomplete without saying so.
   // Counted by export rather than by name, so adding an area to the module
-  // and forgetting the list is what trips it. `rolesConformance` is excluded:
-  // it takes a lab rather than an api and `runContractConformance` always
-  // runs it, so it belongs to neither `ALL_AREAS` nor its skip mechanism.
+  // and forgetting the list is what trips it. `rolesConformance`,
+  // `unknownRunConformance` and `runDecisionConformance` are excluded: all
+  // three take a lab rather than an api and `runContractConformance` always
+  // runs them itself, so none belongs to `ALL_AREAS` or its skip mechanism.
   const exported = Object.entries(areaExports)
     .filter(
       ([name]) =>
         name.endsWith("Conformance") &&
         name !== "runContractConformance" &&
-        name !== "rolesConformance",
+        name !== "rolesConformance" &&
+        name !== "unknownRunConformance" &&
+        name !== "runDecisionConformance",
     )
     .map(([, fn]) => fn);
   expect(exported).toHaveLength(ALL_AREAS.length);

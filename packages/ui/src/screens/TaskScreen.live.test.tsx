@@ -285,10 +285,10 @@ describe("the live turn", () => {
     // Stop lives in the composer, in Send's place (see ComposerStop.test.tsx).
     await user.click(screen.getByRole("button", { name: "Stop" }));
 
-    // `cancel()` runs `teardown()` synchronously — the cards must survive it.
-    // A stopped turn lands no record here (the stream is simply cut), so
-    // nothing else can put them back on screen.
-    expect(await screen.findByText(/Run failed/)).toBeInTheDocument();
+    // `cancel()` unsubscribes and fabricates the stopped state synchronously
+    // — the cards must survive it. A stopped turn lands no record here (the
+    // stream is simply cut), so nothing else can put them back on screen.
+    expect(await screen.findByText("Run stopped")).toBeInTheDocument();
     expect(screen.getByText("Read data.csv")).toBeInTheDocument();
   });
 

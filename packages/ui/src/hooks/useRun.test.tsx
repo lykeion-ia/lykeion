@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
   LykeionApi,
@@ -10,7 +10,51 @@ import type {
 import { ApiProvider } from "../api/ApiContext";
 import { planOf, useRun } from "./useRun";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // A no-op when a test never called `vi.useFakeTimers()` — restored
+  // unconditionally so a grace-window test that does can never leak fake
+  // time into whichever test runs after it.
+  vi.useRealTimers();
+});
+
+/**
+ * A `startRun` that never resolves on its own — the caller gets `resolve`
+ * back and decides when the late handle arrives, so a test can drive Stop
+ * WHILE the round-trip is still in flight, the one window
+ * `stalledApi`/`drivenApi` (both resolved before the test ever touches them)
+ * cannot reach at all.
+ */
+function deferredApi(): {
+  api: LykeionApi;
+  resolveStart: () => void;
+  closeCount: () => number;
+} {
+  let resolve: (() => void) | null = null;
+  let closes = 0;
+  const handle: RunHandle = {
+    runId: "run-deferred",
+    onEvent() {
+      return () => {};
+    },
+    submit() {},
+    close() {
+      closes += 1;
+    },
+  };
+  const api = {
+    startRun: (_input: StartRunInput) =>
+      new Promise<RunHandle>((res) => {
+        resolve = () => res(handle);
+      }),
+    listMembers: () => Promise.resolve([]),
+  } as unknown as LykeionApi;
+  return {
+    api,
+    resolveStart: () => resolve?.(),
+    closeCount: () => closes,
+  };
+}
 
 /**
  * A run that emits `executing` and then goes silent — the "Running… (stuck)"
@@ -55,6 +99,11 @@ function Probe() {
       <span data-testid="state">{run.state?.state ?? "none"}</span>
       <span data-testid="running">{String(run.running)}</span>
       <span data-testid="reviewing">{String(run.reviewing)}</span>
+      <span data-testid="unacknowledged">
+        {String(
+          run.state?.state === "cancelled" && !!run.state.unacknowledged,
+        )}
+      </span>
       <span data-testid="plan-status">
         {(run.plan?.steps ?? []).map((s) => s.status ?? "none").join(",")}
       </span>
@@ -68,6 +117,20 @@ function Probe() {
       {run.live.text != null && (
         <span data-testid="live-text">{run.live.text}</span>
       )}
+      {run.log.map((entry) => (
+        <span key={entry.toolUseId} data-testid="log-entry">
+          {entry.toolUseId}:{entry.decision}:{entry.result ?? ""}:{String(entry.isError)}
+        </span>
+      ))}
+      <span data-testid="live-stream">
+        {run.liveStream
+          .map((item) =>
+            item.kind === "text"
+              ? `text:${item.text}`
+              : `step:${item.entry.toolUseId}:${item.entry.decision}:${item.entry.result ?? ""}`,
+          )
+          .join("|")}
+      </span>
       <button type="button" onClick={() => run.start("do it")}>
         start
       </button>
@@ -102,6 +165,47 @@ function drivenApi(): { api: LykeionApi; emit: (e: RunEvent) => void } {
   return { api, emit: (e: RunEvent) => cb?.(e) };
 }
 
+/**
+ * A run whose events reach every current subscriber, not just the latest
+ * one — the way `memory.ts`/`http.ts` actually fan a run's stream out.
+ * `cancel()`'s own grace watch registers a second, independent subscriber on
+ * the same handle after the render-driving one is gone, so a test of it
+ * needs more than the single-callback fakes above.
+ */
+function multiSubApi(): {
+  api: LykeionApi;
+  emit: (e: RunEvent) => void;
+  submitted: string[];
+  closeCount: () => number;
+} {
+  const subs = new Set<(e: RunEvent) => void>();
+  const submitted: string[] = [];
+  let closes = 0;
+  const handle: RunHandle = {
+    runId: "run-multi",
+    onEvent(cb: (e: RunEvent) => void) {
+      subs.add(cb);
+      return () => subs.delete(cb);
+    },
+    submit(d) {
+      submitted.push(d.action);
+    },
+    close() {
+      closes += 1;
+    },
+  };
+  const api = {
+    startRun: (_input: StartRunInput) => Promise.resolve(handle),
+    listMembers: () => Promise.resolve([]),
+  } as unknown as LykeionApi;
+  return {
+    api,
+    emit: (e: RunEvent) => subs.forEach((cb) => cb(e)),
+    submitted,
+    closeCount: () => closes,
+  };
+}
+
 it("Stop releases a stalled run so the surface is never bricked", async () => {
   const user = userEvent.setup();
   const { api, submitted } = stalledApi();
@@ -116,10 +220,41 @@ it("Stop releases a stalled run so the surface is never bricked", async () => {
   // Without Stop the surface would stay `running` forever (composer disabled,
   // every send swallowed). Stop must always end the turn locally.
   await user.click(screen.getByRole("button", { name: "stop" }));
-  expect(screen.getByTestId("state")).toHaveTextContent("failed");
+  expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
   expect(screen.getByTestId("running")).toHaveTextContent("false");
   // The core still gets told, so it can clean the turn up its own way.
   expect(submitted).toContain("cancel");
+});
+
+it("Stop during an in-flight startRun discards the late handle instead of reattaching it", async () => {
+  // A stop that silently fails to stick: `running` (and Stop) is live from
+  // the moment `start` sets state to "planning", well before `startRun`'s
+  // own round-trip has resolved and attached a handle. Pressing Stop in
+  // that window must still stick — the late handle arriving afterward must
+  // never quietly resume the turn it was told to stop.
+  const user = userEvent.setup();
+  const { api, resolveStart, closeCount } = deferredApi();
+  render(<Harness api={api} />);
+
+  await user.click(screen.getByRole("button", { name: "start" }));
+  expect(screen.getByTestId("state")).toHaveTextContent("planning");
+  expect(screen.getByTestId("running")).toHaveTextContent("true");
+
+  await user.click(screen.getByRole("button", { name: "stop" }));
+  expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
+  expect(screen.getByTestId("running")).toHaveTextContent("false");
+
+  // The round-trip finally resolves, late — after the stop.
+  await act(async () => {
+    resolveStart();
+  });
+
+  // Discarded, not attached: the surface stays stopped, not silently
+  // resumed, and the late handle is closed (which, for a real handle, also
+  // sends its own cancel — see http.ts's close()).
+  expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
+  expect(screen.getByTestId("running")).toHaveTextContent("false");
+  expect(closeCount()).toBe(1);
 });
 
 it("warns instead of silently hanging when an event tag drifts", async () => {
@@ -200,6 +335,80 @@ it("streams partial prose via the live tail, then paints ONE bubble", async () =
   expect(bubbles[0]).toHaveTextContent("Strong candidates");
 });
 
+it("merges tool updates by identity without moving the live card", async () => {
+  const user = userEvent.setup();
+  const { api, emit } = drivenApi();
+  render(<Harness api={api} />);
+  await user.click(screen.getByRole("button", { name: "start" }));
+  await act(() => new Promise((r) => setTimeout(r, 0)));
+
+  const base = {
+    ts: 1,
+    toolUseId: "write-1",
+    tool: "Write",
+    input: { path: "out.csv" },
+    isError: false,
+  };
+  await act(async () => {
+    emit({ event: "assistant-text", text: "before", partial: false });
+    emit({ event: "log-entry", entry: { ...base, decision: "pending" } });
+    emit({ event: "assistant-text", text: "after", partial: false });
+  });
+  expect(screen.getAllByTestId("log-entry")).toHaveLength(1);
+  expect(screen.getByTestId("log-entry")).toHaveTextContent("write-1:pending::false");
+
+  await act(async () => {
+    emit({ event: "log-entry", entry: { ...base, decision: "allowed-once" } });
+    emit({
+      event: "log-entry",
+      entry: { ...base, decision: "allowed-once", result: "created out.csv" },
+    });
+  });
+
+  expect(screen.getAllByTestId("log-entry")).toHaveLength(1);
+  expect(screen.getByTestId("log-entry")).toHaveTextContent(
+    "write-1:allowed-once:created out.csv:false",
+  );
+  expect(screen.getByTestId("live-stream")).toHaveTextContent(
+    "text:before|step:write-1:allowed-once:created out.csv|text:after",
+  );
+});
+
+it("keeps an immediate denial as one card while merging its later error detail", async () => {
+  const user = userEvent.setup();
+  const { api, emit } = drivenApi();
+  render(<Harness api={api} />);
+  await user.click(screen.getByRole("button", { name: "start" }));
+  await act(() => new Promise((r) => setTimeout(r, 0)));
+
+  const base = {
+    ts: 1,
+    toolUseId: "write-denied",
+    tool: "Write",
+    input: { path: "out.csv" },
+  };
+  await act(async () => {
+    emit({ event: "log-entry", entry: { ...base, decision: "pending", isError: false } });
+    emit({ event: "log-entry", entry: { ...base, decision: "denied", isError: true } });
+  });
+  expect(screen.getAllByTestId("log-entry")).toHaveLength(1);
+  expect(screen.getByTestId("log-entry")).toHaveTextContent("write-denied:denied::true");
+
+  await act(async () => {
+    emit({
+      event: "log-entry",
+      entry: { ...base, decision: "denied", result: "permission denied", isError: true },
+    });
+  });
+  expect(screen.getAllByTestId("log-entry")).toHaveLength(1);
+  expect(screen.getByTestId("log-entry")).toHaveTextContent(
+    "write-denied:denied:permission denied:true",
+  );
+  expect(screen.getByTestId("live-stream")).toHaveTextContent(
+    "step:write-denied:denied:permission denied",
+  );
+});
+
 it("tracks live plan-step status and the Reviewing phase", async () => {
   const user = userEvent.setup();
   const { api, emit } = drivenApi();
@@ -234,6 +443,164 @@ it("tracks live plan-step status and the Reviewing phase", async () => {
     emit({ event: "completed", state: { state: "completed" } });
   });
   expect(screen.getByTestId("reviewing")).toHaveTextContent("false");
+});
+
+describe("cancel's late-completion watch", () => {
+  // The grace period itself is judged by the daemon (`session.ts`'s
+  // `cancelTurn`), not here — this surface only ever watches for whatever
+  // `completed` frame the turn's own ending eventually carries and adopts
+  // it verbatim. No client-side clock is involved, so none of these tests
+  // touch fake timers.
+
+  it("adopts an ordinary confirmed stop, unflagged, from a completed frame that arrives after Stop", async () => {
+    const { api, emit, closeCount } = multiSubApi();
+    render(<Harness api={api} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "start" }));
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    fireEvent.click(screen.getByRole("button", { name: "stop" }));
+    // The surface returns at once — the researcher never waits on this.
+    expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
+    expect(screen.getByTestId("unacknowledged")).toHaveTextContent("false");
+    expect(closeCount()).toBe(0);
+
+    // The turn's own genuine ending arrives afterward, confirmed.
+    await act(async () => {
+      emit({ event: "completed", state: { state: "cancelled" } });
+    });
+
+    expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
+    expect(screen.getByTestId("unacknowledged")).toHaveTextContent("false");
+    expect(closeCount()).toBe(1);
+  });
+
+  it("flags the turn unacknowledged when the late completed frame says so", async () => {
+    // Stands in for the daemon's own grace running out on the adapter —
+    // from this surface's point of view, it is just another completed
+    // frame, adopted exactly as it arrives.
+    const { api, emit } = multiSubApi();
+    render(<Harness api={api} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "start" }));
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    fireEvent.click(screen.getByRole("button", { name: "stop" }));
+    expect(screen.getByTestId("unacknowledged")).toHaveTextContent("false");
+
+    await act(async () => {
+      emit({
+        event: "completed",
+        state: { state: "cancelled", unacknowledged: true },
+      });
+    });
+
+    expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
+    expect(screen.getByTestId("unacknowledged")).toHaveTextContent("true");
+  });
+
+  it("adopts a completed frame that arrives after Stop, since the turn genuinely finished despite the request to stop it", async () => {
+    // A deliberate choice, not a side effect: the surface reports whatever
+    // the turn actually landed as, even once the researcher has already
+    // moved on from having asked it to stop. An adapter that was already
+    // nearly done may simply finish rather than report `cancelled`, and
+    // "Run stopped" would misdescribe a turn that produced a real result.
+    const { api, emit } = multiSubApi();
+    render(<Harness api={api} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "start" }));
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    fireEvent.click(screen.getByRole("button", { name: "stop" }));
+    expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
+
+    await act(async () => {
+      emit({ event: "completed", state: { state: "completed" } });
+    });
+
+    expect(screen.getByTestId("state")).toHaveTextContent("completed");
+  });
+
+  it("adopts a failed frame that arrives after Stop, for the same reason", async () => {
+    // A researcher who stopped a turn that then genuinely failed for its
+    // own reasons must be told it failed, not left reading "Run stopped"
+    // over an error the request to stop had nothing to do with.
+    const { api, emit } = multiSubApi();
+    render(<Harness api={api} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "start" }));
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    fireEvent.click(screen.getByRole("button", { name: "stop" }));
+
+    await act(async () => {
+      emit({ event: "completed", state: { state: "failed", reason: "boom" } });
+    });
+
+    expect(screen.getByTestId("state")).toHaveTextContent("failed");
+  });
+
+  it("releases a stopped turn's late-completion watch when a new turn supersedes it", async () => {
+    const { api, closeCount } = multiSubApi();
+    render(<Harness api={api} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "start" }));
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    fireEvent.click(screen.getByRole("button", { name: "stop" }));
+    expect(screen.getByTestId("state")).toHaveTextContent("cancelled");
+    // The watch is still open — nothing has closed the handle yet, since no
+    // completed frame for the stopped turn has arrived.
+    expect(closeCount()).toBe(0);
+
+    // A new turn starts before the old one's own ending ever arrives.
+    fireEvent.click(screen.getByRole("button", { name: "start" }));
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    // Starting over released the old watch AT ONCE, synchronously with the
+    // new turn superseding it, rather than leaving it open forever waiting
+    // on a completed frame this surface has already moved past.
+    expect(closeCount()).toBe(1);
+    expect(screen.getByTestId("unacknowledged")).toHaveTextContent("false");
+  });
+
+  it("still unsubscribes and closes when the implementation delivers the completed frame synchronously on subscribe", async () => {
+    // Neither of this codebase's own RunHandles do this today, but the
+    // contract's `onEvent` doc never rules it out — and delivering it
+    // synchronously, inside the very `handle.onEvent` call the watcher
+    // registers with, races the assignment of that call's own return value.
+    let subscribeCount = 0;
+    let unsubscribeCalls = 0;
+    let closes = 0;
+    const handle: RunHandle = {
+      runId: "run-sync",
+      onEvent(cb) {
+        subscribeCount += 1;
+        // The second subscriber is `cancel`'s own late-completion watcher —
+        // fire its frame before this call has even returned an unsubscribe
+        // function for it to hold.
+        if (subscribeCount === 2) cb({ event: "completed", state: { state: "cancelled" } });
+        return () => {
+          unsubscribeCalls += 1;
+        };
+      },
+      submit() {},
+      close() {
+        closes += 1;
+      },
+    };
+    const api = {
+      startRun: (_input: StartRunInput) => Promise.resolve(handle),
+      listMembers: () => Promise.resolve([]),
+    } as unknown as LykeionApi;
+
+    render(<Harness api={api} />);
+    fireEvent.click(screen.getByRole("button", { name: "start" }));
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    fireEvent.click(screen.getByRole("button", { name: "stop" }));
+
+    // Both subscriptions unsubscribed: the render-driving one (`cancel`
+    // always releases that directly) AND the watcher's own — the one an
+    // un-guarded assignment ordering would leave dangling, since its
+    // synchronously-delivered frame runs `finishWatch` before `onEvent` has
+    // even returned the function `finishWatch` would otherwise call.
+    expect(unsubscribeCalls).toBe(2);
+    expect(closes).toBe(1);
+  });
 });
 
 describe("planOf", () => {

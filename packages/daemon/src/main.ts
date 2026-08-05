@@ -9,6 +9,8 @@ import { beginPairing, PairingRefused, type PairingSession } from "./pairing";
 import { cliFingerprint, platformTag, probeAgentClis } from "./probe";
 import { heartbeat, report } from "./lab";
 import { createRetryLoop, type RetryLoop } from "./retry";
+import { startRuns, type RunSubsystem } from "./runs";
+import { sweepSessions } from "./workspace";
 import {
   acquireControl,
   callControl,
@@ -34,6 +36,15 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
  *  again only when that comes back different from what was last sent. */
 const PROBE_INTERVAL_MS = 5 * 60 * 1000;
 
+/** How often stale session workspaces are swept away. */
+const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+
+/** How long a session's workspace can sit untouched before a sweep removes
+ *  it — long enough that a researcher stepping away from a live turn for a
+ *  meeting never loses it out from under them, short enough that a machine
+ *  running for months does not keep every workspace it ever opened. */
+const SESSION_MAX_AGE_SECONDS = 6 * 60 * 60;
+
 /** Where a daemon running in the background says everything it would have
  *  said to a terminal. */
 const LOG_FILE = "daemon.log";
@@ -54,6 +65,7 @@ let heartbeatTimer: NodeJS.Timeout | undefined;
 let probeTimer: NodeJS.Timeout | undefined;
 let controlServer: ControlServer | undefined;
 let pairingSession: PairingSession | undefined;
+let runSubsystem: RunSubsystem | undefined;
 let stopping = false;
 
 /**
@@ -124,6 +136,10 @@ async function shutdown(): Promise<void> {
   retries.stop();
   inFlight.abort();
 
+  const runs = runSubsystem;
+  runSubsystem = undefined;
+  if (runs) await runs.stop();
+
   const session = pairingSession;
   pairingSession = undefined;
   if (session) await session.close();
@@ -138,13 +154,19 @@ async function shutdown(): Promise<void> {
  *  there is no separate "initial" case to keep behaving the same as this
  *  one as the two would otherwise drift apart. */
 let lastReported = "";
+let readyAdapters = new Map<string, string>();
 
 /**
  * Probes this machine and reports again only when what it found differs, on
  * `(id, version, available)`, from what was last sent.
  */
 async function reportIfChanged(machine: PairedState): Promise<void> {
-  const clis = await probeAgentClis({ signal: inFlight.signal });
+  const resolved = new Map<string, string>();
+  const clis = await probeAgentClis({
+    signal: inFlight.signal,
+    onAdapterResolved: (agentId, command) => resolved.set(agentId, command),
+  });
+  readyAdapters = resolved;
   if (cliFingerprint(clis) === lastReported) return;
   await retries.run(machine.lab, "report", () =>
     report(
@@ -192,6 +214,35 @@ function scheduleProbe(machine: PairedState): void {
   }, PROBE_INTERVAL_MS);
 }
 
+/** Removes what has gone stale under `workDir`. A session's workspace is
+ *  scratch, not a durable record — nothing worth keeping lives only there —
+ *  so a failure here is logged rather than left to bring the rest of this
+ *  machine down with it. */
+function sweepWorkDir(workDir: string): void {
+  try {
+    // A session with a live ACP subprocess is excluded however old its
+    // directory's own `mtime` looks — that only moves when something
+    // touches the directory itself, not when the agent writes somewhere
+    // underneath it, so a long turn can look untouched for hours while its
+    // process is very much still using the directory it is standing in.
+    const live = new Set(runSubsystem?.liveSessionDirs() ?? []);
+    sweepSessions(workDir, Math.floor(Date.now() / 1000), SESSION_MAX_AGE_SECONDS, (dir) => live.has(dir));
+  } catch (err) {
+    console.error(`sweeping ${workDir} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** Sweeps again every hour for as long as this machine keeps running.
+ *  Unreferenced, unlike the heartbeat and probe schedules: those are what a
+ *  running `serve` is actually for and are meant to keep the process up,
+ *  but clearing stale workspaces is upkeep, never a reason on its own for
+ *  this process to still be here. */
+function scheduleSweep(workDir: string): void {
+  if (stopping) return;
+  const timer = setInterval(() => sweepWorkDir(workDir), SWEEP_INTERVAL_MS);
+  timer.unref?.();
+}
+
 /** What both this machine's own control endpoint and a `status` run against
  *  a daemon that is not there answer with. `machine` is what the lab calls
  *  this computer once it has said, and what this computer would propose
@@ -203,6 +254,17 @@ function describe(config: DaemonConfig, machine: PairedState | undefined): Recor
     machine: machine?.machineName ?? hostname(),
     paired: machine !== undefined,
   };
+}
+
+/** Which adapter speaks ACP for a given agent id — the same lookup
+ *  `probe.ts`'s own `sessionReady` handshake resolves on `PATH`, so a run is
+ *  never launched through a different program than the one that was checked.
+ *  An agent with no known adapter refuses here, the same way an unknown
+ *  agent id already did: `runs.ts` reports that as the run's own refusal
+ *  rather than launching a command probing never vetted. */
+function adapterFor(agent: string): { command: string; args: string[] } | undefined {
+  const command = readyAdapters.get(agent);
+  return command ? { command, args: [] } : undefined;
 }
 
 /**
@@ -299,6 +361,18 @@ async function runServe(config: DaemonConfig): Promise<void> {
   // can be handed this machine's identity from inside a callback.
   const identity = machine;
   out(`Paired as "${identity.machineName}" with ${labLabel(identity)}`);
+
+  runSubsystem = startRuns({
+    lab: identity.lab,
+    token: identity.token,
+    dataDir: config.workDir,
+    adapterFor,
+  });
+
+  // Swept once now, so a workspace already stale when this machine starts
+  // does not wait an hour to go, and then again on the schedule below.
+  sweepWorkDir(config.workDir);
+  scheduleSweep(config.workDir);
 
   // The heartbeat schedule starts unconditionally, before the first report is
   // even attempted: a lab that is refusing reports (a routing regression, a

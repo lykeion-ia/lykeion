@@ -7,14 +7,17 @@ import { openStore } from "./store/sqlite";
 import { migrate } from "./store/migrations";
 import { seedLabContent } from "./store/seed";
 import { handleAuthRoute } from "./routes/auth-routes";
-import { handleDaemonRoute } from "./routes/daemon-routes";
+import { handleDaemonRoute, resolveMachine } from "./routes/daemon-routes";
 import { readCookie, resolveActor, SESSION_COOKIE } from "./auth";
 import { createWorkspaceApi } from "./api/index";
 import { changeRecorder } from "./api/changes";
-import { isLykeionError } from "@lykeion/api";
+import { isLykeionError, type RunEventFrame } from "@lykeion/api";
 import { dispatch, rpcMethods } from "./rpc";
 import type { Store } from "./store/store";
 import { createChannel, type Channel, type Send } from "./channel";
+import { createRunRelay, type RunCommand, type RunRelay } from "./run-relay";
+import { failDroppedRuns } from "./run-recovery";
+import { addGrant, recordRunFrames, runtimeForTurn, runtimeOwnerForTurn, sessionForTurn } from "./store/sessions";
 
 const MAX_BODY = 1024 * 1024;
 
@@ -100,10 +103,13 @@ export async function startServer(
   seedLabContent(store);
   const secure = Boolean(config.tlsCertPath && config.tlsKeyPath);
   const channel = createChannel(store, config.changeLogRetention);
-  // Every open `/events` response, so `close()` can end them itself: a
-  // stream nobody tears down keeps its heartbeat alive (harmless — it is
-  // `unref`'d) but also keeps `server.close()` waiting on a connection that
-  // was never going to close on its own.
+  // Process-lived the same way `channel` is: the run command queue and
+  // event fan-out belong to the running server, not to any one request.
+  const runs = createRunRelay();
+  // Every open `/events` or `/daemon/commands` response, so `close()` can
+  // end them itself: a stream nobody tears down keeps its heartbeat alive
+  // (harmless — it is `unref`'d) but also keeps `server.close()` waiting on
+  // a connection that was never going to close on its own.
   const openStreams = new Set<() => void>();
 
   const rawIndex = readFileSync(join(config.uiDir, "index.html"), "utf8");
@@ -116,7 +122,7 @@ export async function startServer(
     );
   const indexHtml = rawIndex.replace("</head>", `${MARKER}</head>`);
 
-  const listener = createRequestListener({ store, config, secure, indexHtml, now, channel, openStreams });
+  const listener = createRequestListener({ store, config, secure, indexHtml, now, channel, openStreams, runs });
   const server = secure
     ? createHttpsServer(
         { cert: readFileSync(config.tlsCertPath!), key: readFileSync(config.tlsKeyPath!) },
@@ -159,14 +165,15 @@ export function createRequestListener(deps: {
   secure: boolean;
   indexHtml: string;
   channel: Channel;
-  /** Every open `/events` response's teardown, so the server that built this
-   *  listener can end them from `close()`. */
+  runs: RunRelay;
+  /** Every open `/events` or `/daemon/commands` response's teardown, so the
+   *  server that built this listener can end them from `close()`. */
   openStreams: Set<() => void>;
   /** Defaults to the real clock; a test pins this to prove ordering
    *  tiebreaks do the work rather than happening to pass on real time. */
   now?: () => number;
 }): (req: IncomingMessage, res: ServerResponse) => void {
-  const { store, config, secure, indexHtml, channel, openStreams } = deps;
+  const { store, config, secure, indexHtml, channel, openStreams, runs } = deps;
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
 
   return (req, res) => {
@@ -207,6 +214,67 @@ export function createRequestListener(deps: {
         }
       }
 
+      if (path === "/daemon/commands") {
+        // A GET held open, the way `/events` is, rather than a POST: this is
+        // a stream a daemon reads from, not a call it makes.
+        if (req.method !== "GET") return sendJson(res, 405, { error: "the command stream is read with GET" });
+        const machine = resolveMachine(store, req.headers.authorization);
+        if (!machine) return sendJson(res, 401, { error: "no such machine" });
+
+        // `Number(null)` is `0`, not `NaN` — an absent parameter must not
+        // read as cursor 0, or a daemon's very first connection would replay
+        // its whole retained backlog instead of starting fresh.
+        const rawCursor = url.searchParams.get("cursor");
+        const fromQuery = rawCursor === null ? NaN : Number(rawCursor);
+        const cursor = Number.isInteger(fromQuery) ? fromQuery : undefined;
+
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-store",
+          connection: "keep-alive",
+        });
+        res.flushHeaders();
+
+        let detach: () => void = () => {};
+        let heartbeat: ReturnType<typeof setInterval> | undefined;
+        const end = () => {
+          if (!openStreams.has(end)) return;
+          openStreams.delete(end);
+          if (heartbeat) clearInterval(heartbeat);
+          detach();
+          if (!res.writableEnded) res.end();
+        };
+
+        // `attach` replays every command this runtime has ever been queued —
+        // the cursor is honoured here, by skipping what a reconnecting
+        // daemon has already told us it handled, not inside the relay.
+        const send = (seq: number, command: RunCommand) => {
+          if (cursor !== undefined && seq <= cursor) return;
+          if (res.writableEnded) return;
+          try {
+            res.write(`data: ${JSON.stringify({ seq, command })}\n\n`);
+          } catch {
+            end();
+          }
+        };
+
+        openStreams.add(end);
+        req.on("close", end);
+        detach = runs.attach(machine.runtimeId, send);
+        if (res.writableEnded) return end();
+
+        heartbeat = setInterval(() => {
+          if (res.writableEnded) return;
+          try {
+            res.write(`: ping\n\n`);
+          } catch {
+            end();
+          }
+        }, 25_000);
+        heartbeat.unref();
+        return;
+      }
+
       if (path.startsWith("/daemon/")) {
         // A paired daemon, not a browser tab, is the only caller here, so
         // there is no CORS story to defend against — but the guard costs
@@ -223,6 +291,114 @@ export function createRequestListener(deps: {
         } catch {
           return sendJson(res, 400, { error: "that request body is not JSON" });
         }
+
+        if (path === "/daemon/run/live") {
+          const machine = resolveMachine(store, req.headers.authorization);
+          if (!machine) return sendJson(res, 401, { error: "no such machine" });
+          const rawRunIds = (body as { runIds?: unknown } | null)?.runIds;
+          const runIds = Array.isArray(rawRunIds)
+            ? rawRunIds.filter((id): id is string => typeof id === "string")
+            : [];
+          // Run ids are sequential and guessable — `run_<seq>` off one
+          // workspace-wide counter — so a machine's own valid bearer token
+          // proves only that some paired machine is calling, not that every
+          // id it reports holding is actually its own. Checked against the
+          // store — the durable record of which runtime a run's session
+          // belongs to — before any of it reaches `reconcile`.
+          //
+          // Two different facts hide behind a run id this store cannot
+          // attribute to this machine, and only one of them is an attack.
+          // Belonging to a real, different runtime is the attack this check
+          // exists for, and refuses the whole report over. Resolving to no
+          // runtime at all — a typo, or a run id this store never minted —
+          // is not; refusing the whole report over it would durably wedge
+          // an otherwise honest daemon out of every command behind it,
+          // since a machine that cannot pass this check never reaches
+          // `openCommands` either. Those ids are dropped from what reaches
+          // `reconcile` instead: not a member of anyone's `queue.live`,
+          // they cannot be reconciled away from it either.
+          const reported = runIds.map((runId) => ({ runId, owner: runtimeForTurn(store, runId) }));
+          if (reported.some(({ owner }) => owner !== undefined && owner !== machine.runtimeId))
+            return sendJson(res, 403, { error: "this machine does not own every run it reported" });
+          const owned = reported.filter(({ owner }) => owner !== undefined).map(({ runId }) => runId);
+          const dropped = runs.reconcile(machine.runtimeId, owned);
+          failDroppedRuns(store, runs, machine.runtimeId, dropped, now());
+          return sendJson(res, 200, { ok: true });
+        }
+        if (path === "/daemon/run/events") {
+          const machine = resolveMachine(store, req.headers.authorization);
+          if (!machine) return sendJson(res, 401, { error: "no such machine" });
+          const runId = (body as { runId?: unknown } | null)?.runId;
+          const rawFrames = (body as { frames?: unknown } | null)?.frames;
+          if (typeof runId !== "string" || !Array.isArray(rawFrames))
+            return sendJson(res, 400, { error: "a runId and a frames array are required" });
+          // Run ids are sequential and guessable — `run_<seq>` off one
+          // workspace-wide counter — so the bearer token above proves only
+          // that *some* paired machine is calling, not that it is the one
+          // this run was actually started on. Without this, any machine in
+          // the lab could post fabricated frames for a run it never held:
+          // a forged `completed` would retire someone else's live run, and
+          // forged prose or steps would be attributed to a transcript that
+          // was never theirs to write.
+          if (runtimeForTurn(store, runId) !== machine.runtimeId)
+            return sendJson(res, 403, { error: `this machine does not own run ${runId}` });
+          const frames = rawFrames.filter(
+            (f): f is RunEventFrame =>
+              f !== null && typeof f === "object" && typeof (f as { seq?: unknown }).seq === "number",
+          );
+          // Durable before fanned out, and as one transaction: a subscriber
+          // reacting to a published frame by reading `turns`/`turn_steps`
+          // straight back out must already find it there, and a batch that
+          // fails partway through must not leave part of it durable while
+          // none of it was ever published to a browser watching live.
+          store.tx(() => recordRunFrames(store, runId, frames, now()));
+          runs.publish(runId, frames);
+          return sendJson(res, 200, { ok: true });
+        }
+        if (path === "/daemon/run/grant") {
+          const machine = resolveMachine(store, req.headers.authorization);
+          if (!machine) return sendJson(res, 401, { error: "no such machine" });
+          const runId = (body as { runId?: unknown } | null)?.runId;
+          const grantPath = (body as { path?: unknown } | null)?.path;
+          const mode = (body as { mode?: unknown } | null)?.mode;
+          if (
+            typeof runId !== "string" ||
+            typeof grantPath !== "string" ||
+            // An empty `grantPath` would read, on the daemon's own `covers()`
+            // check, as `path.startsWith("/")` — every absolute path would
+            // match, a blanket grant by accident rather than the "global"
+            // scope this lab refuses outright by name.
+            !(grantPath.startsWith("/") || grantPath.startsWith("~/")) ||
+            (mode !== "read" && mode !== "write")
+          )
+            return sendJson(res, 400, {
+              error: `a runId, an absolute path, and a mode of "read" or "write" are required`,
+            });
+          // The same discipline `/daemon/run/events` holds to: a run id is
+          // sequential and guessable, so the bearer token alone proves only
+          // that some paired machine is calling, not that it is the one this
+          // run actually belongs to. Resolved through the run's own session
+          // rather than trusted from the body, so a grant always lands on
+          // the Study and runtime the run was actually started on. Unlike
+          // that route, this one's own refusal names neither case — "no such
+          // run" and "not yours" answer with the exact same body — because a
+          // grant is a standing authorization record, not a transcript
+          // frame, and this is the one route a caller could use to probe
+          // which run ids are real by comparing 403 bodies across guesses.
+          const session = sessionForTurn(store, runId);
+          if (!session || session.runtimeId !== machine.runtimeId)
+            return sendJson(res, 403, { error: "this machine does not own that run" });
+          addGrant(store, {
+            studyId: session.studyId,
+            runtimeId: session.runtimeId,
+            path: grantPath,
+            mode,
+            grantedBy: session.openedBy,
+            grantedTs: now(),
+          });
+          return sendJson(res, 200, { ok: true });
+        }
+
         // Nobody is signed in on this surface — a daemon authenticates with
         // a machine token, never a session cookie — so a change one of
         // these routes records is attributed explicitly, the same way the
@@ -261,7 +437,7 @@ export function createRequestListener(deps: {
         // module is handed, so whatever any of them records is in the queue
         // the `flush` below drains.
         const changes = changeRecorder({ store, actorId: actor.userId, now, channel });
-        const api = createWorkspaceApi({ store, actor, now, config, channel, changes });
+        const api = createWorkspaceApi({ store, actor, now, config, channel, changes, runs });
         const method = path.slice("/rpc/".length);
         if (!rpcMethods(api).has(method)) return sendJson(res, 404, { error: `no such method: ${method}` });
         try {
@@ -285,6 +461,109 @@ export function createRequestListener(deps: {
           // unconditionally on both paths.
           changes.flush();
         }
+      }
+
+      if (path.startsWith("/runs/") && path.endsWith("/events")) {
+        // Only a GET opens a stream, for the same reason `/events` refuses
+        // anything else below.
+        if (req.method !== "GET") return sendJson(res, 405, { error: "a run's stream is read with GET" });
+        const runId = path.slice("/runs/".length, path.length - "/events".length);
+        const actor = resolveActor(store, readCookie(req.headers.cookie, SESSION_COOKIE), now());
+        if (!actor) return sendJson(res, 401, { error: "not signed in" });
+        // No user id ever comes from the client: the run id names a turn,
+        // and the turn's session names the runtime it ran on. Whoever paired
+        // that runtime is who may watch it — resolved from the cookie the
+        // same way `/daemon/run/events`'s ownership check resolves a machine
+        // from its bearer token.
+        if (runtimeOwnerForTurn(store, runId) !== actor.userId)
+          return sendJson(res, 403, { error: `run ${runId} does not belong to a machine you own` });
+
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-store",
+          connection: "keep-alive",
+        });
+        res.flushHeaders();
+
+        // A run's whole transcript lives in this stream — there is no
+        // earlier call, the way `/rpc/` is for `/events`, that already
+        // handed a fresh page the run's history. So an absent cursor means
+        // "replay everything this run's buffer still holds," the same as an
+        // explicit cursor of `0`, not "nothing until the next frame" — what
+        // an absent cursor means on every other stream in this file. A
+        // browser opening a run's page for the first time, whether the run
+        // is still going or finished before it ever arrived, is the
+        // ordinary case here, not a reload, so `Number(null)` already
+        // reading as `0` is exactly the default this route wants.
+        //
+        // `Last-Event-ID` takes priority over the query parameter, the same
+        // way `/events` reads it below: it is what the browser's own
+        // `EventSource` resends on an unprompted reconnect, and a route that
+        // only read the query parameter would answer that reconnect with a
+        // full replay — duplicating every line of prose already on screen —
+        // instead of resuming where the connection actually left off.
+        const header = req.headers["last-event-id"];
+        const fromHeader = typeof header === "string" && header !== "" ? Number(header) : NaN;
+        const rawQuery = url.searchParams.get("cursor");
+        const fromQuery = rawQuery === null ? NaN : Number(rawQuery);
+        const cursor = Number.isInteger(fromHeader)
+          ? fromHeader
+          : Number.isInteger(fromQuery)
+            ? fromQuery
+            : 0;
+
+        let detach: (() => void) | undefined;
+        let heartbeat: ReturnType<typeof setInterval> | undefined;
+        let settled = false;
+        const end = () => {
+          if (!openStreams.has(end)) return;
+          openStreams.delete(end);
+          if (heartbeat) clearInterval(heartbeat);
+          detach?.();
+          if (!res.writableEnded) res.end();
+        };
+
+        const send = (frame: RunEventFrame) => {
+          if (res.writableEnded) return;
+          try {
+            res.write(`id: ${frame.seq}\nevent: frame\ndata: ${JSON.stringify(frame)}\n\n`);
+          } catch {
+            return end();
+          }
+          if (frame.event.event !== "completed") return;
+          settled = true;
+          try {
+            res.write(`event: end\ndata: {}\n\n`);
+          } catch {
+            // The write above already failed the same way; `end` below tears
+            // the connection down regardless of whether this one did too.
+          }
+          end();
+        };
+
+        openStreams.add(end);
+        req.on("close", end);
+        detach = runs.subscribe(runId, cursor, send);
+        // A cursor's replay can itself reach the run's `completed` frame
+        // synchronously, inside the call above — before `detach` here has
+        // even been assigned, so `end`'s own `detach?.()` was a no-op the
+        // one time it mattered. Finish what it started now that `detach`
+        // exists: without this, a browser opening an already-finished run's
+        // page would sit in that run's subscriber set forever, and a buffer
+        // with a subscriber still attached is never eligible to age out.
+        if (settled) detach();
+        if (res.writableEnded) return;
+
+        heartbeat = setInterval(() => {
+          if (res.writableEnded) return;
+          try {
+            res.write(`: ping\n\n`);
+          } catch {
+            end();
+          }
+        }, 25_000);
+        heartbeat.unref();
+        return;
       }
 
       if (path === "/events") {

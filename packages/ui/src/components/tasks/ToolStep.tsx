@@ -10,12 +10,11 @@ import { ToolStepDetail } from "./ToolStepDetail";
  * transcript, since TaskScreen renders each of those through this same
  * code.
  *
- * `stepStatus`/`stepSummary` leave room for a future running/background
- * state (there is no live per-step data yet — see `decision`'s doc on
- * `ExecutionLogEntry` in `@lykeion/api`) without faking them here.
+ * An announced call carries `decision: "pending"` until execution or a gate
+ * resolves it, so this same card is also the live running state.
  */
 
-export type StepStatus = "ok" | "blocked" | "error";
+export type StepStatus = "running" | "ok" | "blocked" | "error";
 
 /**
  * The decisions under which a step NEVER EXECUTED — the seam refused it
@@ -23,12 +22,16 @@ export type StepStatus = "ok" | "blocked" | "error";
  * (`"cancelled"`) — an intention, never a history. A property of the recorded
  * decision, never of which adapter produced it. Everything else in the
  * vocabulary ("ran", "auto", "allowed-*", "orphan-executed") means the tool
- * really ran.
+ * really ran. `"pending"` is neither set: it makes no execution claim yet.
  */
 const NEVER_RAN = new Set(["denied", "cancelled"]);
 
 function neverRan(entry: ExecutionLogEntry): boolean {
   return NEVER_RAN.has(entry.decision);
+}
+
+function didRun(entry: ExecutionLogEntry): boolean {
+  return entry.decision !== "pending" && !neverRan(entry);
 }
 
 /**
@@ -40,16 +43,20 @@ function neverRan(entry: ExecutionLogEntry): boolean {
  * Execution Log entry as the decision that produced it. Consulting `isError`
  * first therefore drew every refusal as a red ✕, indistinguishable from a
  * crash, and left `blocked` effectively unreachable. And a `"cancelled"` step
- * carries `isError: false` with no result, so it fell through to a green ✓
- * over a tool that never ran.
+ * carries no result — the tool never ran — whatever `isError` its entry ends
+ * up with (an abandoned call may still see the adapter's own follow-up
+ * report it failed): consulting `isError` first would risk drawing that as
+ * an ordinary success instead of the blocked step it is.
  */
 export function stepStatus(entry: ExecutionLogEntry): StepStatus {
+  if (entry.decision === "pending") return "running";
   if (neverRan(entry)) return "blocked";
   if (entry.isError) return "error";
   return "ok";
 }
 
 const STATUS_GLYPH: Record<StepStatus, string> = {
+  running: "…",
   ok: "✓",
   blocked: "⊘",
   error: "✕",
@@ -79,7 +86,7 @@ function stringField(input: unknown, keys: string[]): string | undefined {
  * `TaskTurn.stream`, so it would read that way on every reopen.
  */
 export function deterministicLabel(entry: ExecutionLogEntry): string {
-  const ran = !neverRan(entry);
+  const ran = didRun(entry);
   switch (entry.tool) {
     case "Bash": {
       const command = stringField(entry.input, ["command"]);
@@ -151,7 +158,7 @@ export const CONTROL_PLANE_TOOLS = new Set(["ExitPlanMode", "TodoWrite"]);
  * "did this step run" lives in exactly one place.
  */
 export function isControlPlaneStep(entry: ExecutionLogEntry): boolean {
-  return CONTROL_PLANE_TOOLS.has(entry.tool) && !neverRan(entry);
+  return CONTROL_PLANE_TOOLS.has(entry.tool) && didRun(entry);
 }
 
 /** Whether this step's access left the study workspace (`outsideWorkspace` —
@@ -393,9 +400,10 @@ function groupVerb(
 }
 
 function groupHeaderText(steps: ResolvedStep[]): string {
-  const ranCount = steps.filter((s) => !neverRan(s.entry)).length;
+  const ranCount = steps.filter((s) => didRun(s.entry)).length;
+  const blockedCount = steps.filter((s) => neverRan(s.entry)).length;
   const mix: GroupMix =
-    ranCount === 0
+    blockedCount === steps.length
       ? "none-ran"
       : ranCount === steps.length
         ? "all-ran"

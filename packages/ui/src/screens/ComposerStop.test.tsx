@@ -59,7 +59,7 @@ describe("Composer Stop", () => {
 
     // Stop ends the turn and hands the composer back.
     await user.click(screen.getByRole("button", { name: "Stop" }));
-    expect(await screen.findByText(/Run failed/i)).toBeInTheDocument();
+    expect(await screen.findByText("Run stopped")).toBeInTheDocument();
     expect(
       await screen.findByRole("button", { name: "Send" }),
     ).toBeInTheDocument();

@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createFetchTransport, createHttpApi, type Transport } from "./http";
 import { isLykeionError } from "./errors";
+import type { RunEvent, RunEventFrame } from "./run";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -10,6 +11,7 @@ function transportReturning(value: unknown): Transport {
   return {
     request: vi.fn(async () => value),
     openEvents: () => () => {},
+    openRun: () => () => {},
   };
 }
 
@@ -31,13 +33,83 @@ it("returns whatever the transport resolves with", async () => {
   expect(await api.listStudies()).toEqual([{ id: "s_1" }]);
 });
 
+it("builds a RunHandle over the transport without ever carrying one", async () => {
+  const frames: Array<(f: RunEventFrame) => void> = [];
+  const sent: unknown[][] = [];
+  const api = createHttpApi({
+    request: (method, args) => {
+      sent.push([method, ...args]);
+      return Promise.resolve(method === "startRun" ? { runId: "run_1" } : undefined);
+    },
+    openEvents: () => () => {},
+    openRun: (_runId, _cursor, onFrame) => {
+      frames.push(onFrame);
+      return () => {};
+    },
+  });
+  const handle = await api.startRun({
+    studyId: "s", taskId: "t", prompt: "go", options: { planMode: false },
+  });
+  expect(handle.runId).toBe("run_1");
+
+  const seen: RunEvent[] = [];
+  handle.onEvent((e) => seen.push(e));
+  frames[0]!({ seq: 1, event: { event: "assistant-text", text: "hi", partial: true } });
+  expect(seen).toHaveLength(1);
+
+  handle.submit({ action: "cancel" });
+  expect(sent.at(-1)).toEqual(["submitRunDecision", "run_1", { action: "cancel" }]);
+});
+
+it("close() detaches the stream and cancels an unfinished run, the same guarantee the in-process handle keeps", async () => {
+  const detached = vi.fn();
+  const sent: unknown[][] = [];
+  const api = createHttpApi({
+    request: (method, args) => {
+      sent.push([method, ...args]);
+      return Promise.resolve(method === "startRun" ? { runId: "run_1" } : undefined);
+    },
+    openEvents: () => () => {},
+    openRun: () => detached,
+  });
+  const handle = await api.startRun({
+    studyId: "s", taskId: "t", prompt: "go", options: { planMode: false },
+  });
+  handle.onEvent(() => {});
+
+  handle.close();
+
+  expect(detached).toHaveBeenCalledTimes(1);
+  expect(sent.at(-1)).toEqual(["submitRunDecision", "run_1", { action: "cancel" }]);
+});
+
+it("does not open a second stream for a second onEvent subscriber", async () => {
+  let opened = 0;
+  const api = createHttpApi({
+    request: (method) => Promise.resolve(method === "startRun" ? { runId: "run_1" } : undefined),
+    openEvents: () => () => {},
+    openRun: () => {
+      opened += 1;
+      return () => {};
+    },
+  });
+  const handle = await api.startRun({
+    studyId: "s", taskId: "t", prompt: "go", options: { planMode: false },
+  });
+
+  handle.onEvent(() => {});
+  handle.onEvent(() => {});
+
+  expect(opened).toBe(1);
+});
+
 it("implements every method the contract declares", () => {
   // The compile-time guarantee has a runtime shadow worth keeping: a method
   // left out is `undefined` here, and `undefined` is not callable.
   const api = createHttpApi(transportReturning(null));
   const missing = Object.entries(api).filter(([, v]) => typeof v !== "function");
   expect(missing).toEqual([]);
-  expect(Object.keys(api)).toHaveLength(63);
+  expect(Object.keys(api)).toHaveLength(64);
 });
 
 it("propagates a contract failure as a LykeionError", async () => {
@@ -46,6 +118,7 @@ it("propagates a contract failure as a LykeionError", async () => {
       throw new (await import("./errors")).LykeionError("not-found", "no such task: t_9");
     },
     openEvents: () => () => {},
+    openRun: () => () => {},
   };
   const err = await createHttpApi(t)
     .getTask("t_9")
@@ -121,13 +194,13 @@ class FakeEventSource {
 
   readyState = FakeEventSource.OPEN;
   closed = false;
-  private readonly listeners = new Map<string, Array<() => void>>();
+  private readonly listeners = new Map<string, Array<(e: { data?: string }) => void>>();
 
   constructor(readonly url: string) {
     FakeEventSource.last = this;
   }
 
-  addEventListener(type: string, fn: () => void): void {
+  addEventListener(type: string, fn: (e: { data?: string }) => void): void {
     const existing = this.listeners.get(type) ?? [];
     existing.push(fn);
     this.listeners.set(type, existing);
@@ -141,7 +214,13 @@ class FakeEventSource {
   /** Raise `error` the way the browser does, in a given state. */
   fail(state: number): void {
     this.readyState = state;
-    for (const fn of this.listeners.get("error") ?? []) fn();
+    for (const fn of this.listeners.get("error") ?? []) fn({});
+  }
+
+  /** Raise a named event carrying `data`, the way a real server-sent event
+   *  arrives on the wire — `change` and `frame` both go through here. */
+  emit(type: string, data?: string): void {
+    for (const fn of this.listeners.get(type) ?? []) fn({ data });
   }
 }
 
@@ -200,4 +279,81 @@ it("announces a lapsed session once, whichever way it shows up first", async () 
   await expect(transport.request("currentUser", [])).rejects.toThrow();
 
   expect(onUnauthenticated).toHaveBeenCalledTimes(1);
+});
+
+it("opens a run's own stream, addressed by id, with no cursor when none is given", () => {
+  const latest = stubEventSource();
+  const transport = createFetchTransport({ baseUrl: "https://lab.example" });
+  transport.openRun("run_1", undefined, () => {}, () => {});
+  expect(latest().url).toBe("https://lab.example/runs/run_1/events");
+});
+
+it("carries a given cursor on a run stream's URL", () => {
+  const latest = stubEventSource();
+  const transport = createFetchTransport({ baseUrl: "https://lab.example" });
+  transport.openRun("run_7", 3, () => {}, () => {});
+  expect(latest().url).toBe("https://lab.example/runs/run_7/events?cursor=3");
+});
+
+it("delivers a frame the server sends on a run's stream", () => {
+  const latest = stubEventSource();
+  const transport = createFetchTransport();
+  const seen: RunEventFrame[] = [];
+  transport.openRun("run_1", undefined, (f) => seen.push(f), () => {});
+
+  latest().emit(
+    "frame",
+    JSON.stringify({ seq: 1, event: { event: "assistant-text", text: "hi", partial: true } }),
+  );
+
+  expect(seen).toEqual([{ seq: 1, event: { event: "assistant-text", text: "hi", partial: true } }]);
+});
+
+it("closes the source itself on the server's own end signal, rather than leaving it to reconnect", () => {
+  // An ended response with no explicit close reads to `EventSource` exactly
+  // like a dropped connection, and a browser left to its own devices would
+  // reconnect against a run that has nothing further to send it.
+  const latest = stubEventSource();
+  const transport = createFetchTransport();
+  const onClose = vi.fn();
+  transport.openRun("run_1", undefined, () => {}, onClose);
+
+  latest().emit("end");
+
+  expect(latest().closed).toBe(true);
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("treats a refused reconnect as the run's stream ending", () => {
+  const latest = stubEventSource();
+  const transport = createFetchTransport();
+  const onClose = vi.fn();
+  transport.openRun("run_1", undefined, () => {}, onClose);
+
+  latest().fail(FakeEventSource.CLOSED);
+
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("sits through a dropped connection on a run's stream too — the browser is going to retry", () => {
+  const latest = stubEventSource();
+  const transport = createFetchTransport();
+  const onClose = vi.fn();
+  transport.openRun("run_1", undefined, () => {}, onClose);
+
+  latest().fail(FakeEventSource.CONNECTING);
+
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it("does not read its own teardown as the run's stream ending", () => {
+  const latest = stubEventSource();
+  const transport = createFetchTransport();
+  const onClose = vi.fn();
+  const close = transport.openRun("run_1", undefined, () => {}, onClose);
+
+  close();
+
+  expect(latest().closed).toBe(true);
+  expect(onClose).not.toHaveBeenCalled();
 });

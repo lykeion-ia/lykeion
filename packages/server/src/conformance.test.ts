@@ -8,7 +8,7 @@ import {
   type ConformanceLab,
 } from "@lykeion/api/conformance";
 import { makeServerApi } from "./test-support/server-api";
-import { makeServerLab } from "./test-support/test-lab";
+import { makeRunnableServerLab, makeServerLab } from "./test-support/test-lab";
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -20,6 +20,12 @@ async function makeApi(): Promise<LykeionApi> {
 
 async function makeLab(): Promise<ConformanceLab> {
   const lab = await makeServerLab();
+  cleanups.push(lab.close);
+  return { owner: lab.ownerApi, member: lab.memberApi };
+}
+
+async function makeRunLab(): Promise<ConformanceLab> {
+  const lab = await makeRunnableServerLab();
   cleanups.push(lab.close);
   return { owner: lab.ownerApi, member: lab.memberApi };
 }
@@ -65,4 +71,5 @@ runContractConformance("workspace server", makeApi, {
     pairingUnsupportedConformance,
   ],
   makeLab,
+  makeRunLab,
 });

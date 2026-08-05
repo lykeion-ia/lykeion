@@ -176,9 +176,10 @@ const apiWithFailedLandedRun = (): LykeionApi => ({
 
 /**
  * A persisted turn from a run the researcher STOPPED at the permission card.
- * The abandoned step is recorded (`decision: "cancelled"`,
- * `isError: false`, no result) and the run lands, so this is what a reopened
- * Task reads from — forever.
+ * The abandoned step is recorded (`decision: "cancelled"`, no result, and
+ * `isError: true` — an abandoned call still sees the adapter's own
+ * follow-up for it report the call failed) and the run lands, so this is
+ * what a reopened Task reads from — forever.
  */
 const CANCELLED_TURN: TaskTurn = {
   runId: "run-cancelled",
@@ -194,7 +195,7 @@ const CANCELLED_TURN: TaskTurn = {
         tool: "Write",
         input: { file_path: "results/out.csv" },
         decision: "cancelled",
-        isError: false,
+        isError: true,
       },
     },
     // After the step, so it can never be promoted onto it as a tier-2 title —
@@ -256,11 +257,11 @@ describe("Task transcript — tool-step cards", () => {
   });
 
   it("draws a STOPPED step as blocked on reopen, never as a completed success", async () => {
-    // The researcher clicked Stop on the permission card: the turn ended
-    // Failed{"cancelled"}, results/out.csv was never written. This card used to
-    // read "✓ Wrote results/out.csv" — a green tick over a file that does not
-    // exist — and, because it is persisted in `TaskTurn.stream`, it read
-    // that way on every reopen forever.
+    // The researcher clicked Stop on the permission card: the turn stopped,
+    // and results/out.csv was never written. A card reading
+    // "✓ Wrote results/out.csv" here would be a green tick over a file that
+    // does not exist — and, because it is persisted in `TaskTurn.stream`,
+    // would read that way on every reopen forever.
     window.location.hash = ROUTE;
     render(<App api={apiWithTurns([CANCELLED_TURN])} />);
 

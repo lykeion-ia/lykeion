@@ -7,6 +7,7 @@ import { openStore } from "../store/sqlite";
 import { migrate, nextSeq } from "../store/migrations";
 import { readConfig } from "../config";
 import { createChannel } from "../channel";
+import { createRunRelay } from "../run-relay";
 import { changeRecorder } from "./changes";
 import { tasksApi } from "./tasks";
 import type { Deps } from "./index";
@@ -74,6 +75,7 @@ function depsFor(store: Store): Deps {
     // A real channel rather than a stub: it is the cheapest place to leave
     // the recorder's publish path actually exercised.
     channel,
+    runs: createRunRelay(),
     changes: changeRecorder({ store, actorId: actor.userId, now: () => NOW, channel }),
   };
 }

@@ -139,6 +139,15 @@ describe("stepStatus", () => {
     expect(stepStatus(entry({ isError: true }))).toBe("error");
   });
 
+  it("draws an announced call as running rather than successful", () => {
+    expect(stepStatus(entry({ decision: "pending" }))).toBe("running");
+    expect(
+      deterministicLabel(
+        entry({ tool: "Write", input: { file_path: "out.csv" }, decision: "pending" }),
+      ),
+    ).toBe("Write out.csv");
+  });
+
   it("draws a REALISTIC denied gate as blocked, not as a crash", () => {
     // `decision: "denied"` and `isError: true` ALWAYS co-occur: the CLI
     // reports the refusal back to the model as an error `tool_result`, which
@@ -153,10 +162,30 @@ describe("stepStatus", () => {
   });
 
   it("draws a step the researcher STOPPED as blocked, never as a success", () => {
-    // The cancel path pushes `decision: "cancelled"`, `isError: false`, no
-    // result — the tool never ran. Falling through to "ok" drew a green ✓
-    // over a write that never happened, and it persists in
-    // `TaskTurn.stream`, so it reads that way on every reopen.
+    // The cancel path pushes `decision: "cancelled"` with no result — the
+    // tool never ran — and `isError: true`, since an abandoned call still
+    // sees the adapter's own follow-up for it report the call failed.
+    // Falling through to "ok" would draw a green ✓ over a write that never
+    // happened, and since this persists in `TaskTurn.stream`, it would read
+    // that way on every reopen.
+    expect(
+      stepStatus(
+        entry({
+          tool: "Write",
+          decision: "cancelled",
+          isError: true,
+          result: undefined,
+        }),
+      ),
+    ).toBe("blocked");
+  });
+
+  it("draws `blocked`, not `ok`, for a cancelled step even when isError happens to read false", () => {
+    // `decision` decides first regardless of which way `isError` lands —
+    // the stopped-turn case above pins the realistic pairing; this pins that
+    // the same rule holds for the other one, so `blocked` cannot quietly
+    // become order-dependent on a value the two implementations do not
+    // agree on.
     expect(
       stepStatus(
         entry({
@@ -903,7 +932,7 @@ describe("ToolStepGroup — a lone step renders bare, >1 renders under a header"
             toolUseId: "tu-4",
             tool: "Bash",
             decision: "cancelled",
-            isError: false,
+            isError: true,
             result: undefined,
           }),
         ]),
@@ -985,6 +1014,12 @@ describe("ToolStepCard — a disclosure row", () => {
     expect(screen.getByText("✕")).toBeInTheDocument();
   });
 
+  it("renders a pending announcement as a running card", () => {
+    render(<ToolStepCard entry={entry({ decision: "pending" })} />);
+    expect(screen.getByTestId("tool-step")).toHaveClass("tool-step--running");
+    expect(screen.getByText("…")).toBeInTheDocument();
+  });
+
   it("renders a STOPPED write as a blocked card labelled in the non-past", () => {
     // The whole failure in one assertion: plan mode, the agent asks to write
     // results/out.csv, the researcher hits Stop. Before the fix this card read
@@ -995,7 +1030,7 @@ describe("ToolStepCard — a disclosure row", () => {
           tool: "Write",
           input: { file_path: "results/out.csv" },
           decision: "cancelled",
-          isError: false,
+          isError: true,
           result: undefined,
         })}
       />,

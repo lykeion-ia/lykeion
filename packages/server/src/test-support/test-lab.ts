@@ -8,6 +8,7 @@
  */
 import type { ServerConfig } from "../config";
 import type { LykeionApi } from "@lykeion/api";
+import { createHash, randomBytes } from "node:crypto";
 import { apiFor, signUpOwner, startTestServer } from "./server-api";
 
 export interface Lab {
@@ -70,4 +71,48 @@ export async function makeServerLab(overrides?: Partial<ServerConfig>): Promise<
     },
     close: server.close,
   };
+}
+
+/** A conformance lab with one real paired runtime reported for its owner.
+ *  No daemon is simulated: the decision cases only need a durable live run
+ *  to address, not an adapter response. */
+export async function makeRunnableServerLab(): Promise<Lab> {
+  const lab = await makeServerLab();
+  const verifier = randomBytes(32).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  const { code } = await lab.ownerApi.pairMachine({
+    name: "conformance-machine",
+    platform: "macos-aarch64",
+    daemonVersion: "0.1.0",
+    challenge,
+    redirect: "http://127.0.0.1:7420/paired",
+  });
+  const exchanged = await fetch(`${lab.base}/daemon/pair/exchange`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code, verifier }),
+  });
+  if (!exchanged.ok) throw new Error(`pair exchange answered ${exchanged.status}`);
+  const { token } = (await exchanged.json()) as { token: string };
+  const reported = await fetch(`${lab.base}/daemon/report`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      platform: "macos-aarch64",
+      daemonVersion: "0.1.0",
+      capabilities: ["sessions"],
+      clis: [
+        {
+          id: "claude",
+          name: "Claude Code",
+          command: "claude",
+          version: "2.1.220",
+          available: true,
+          sessionReady: true,
+        },
+      ],
+    }),
+  });
+  if (!reported.ok) throw new Error(`runtime report answered ${reported.status}`);
+  return lab;
 }

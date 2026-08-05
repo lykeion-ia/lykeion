@@ -239,6 +239,52 @@ it("accepts the registered MIGRATIONS list — otherwise the module could not ha
   expect(() => assertAscending(MIGRATIONS)).not.toThrow();
 });
 
+it("upgrades aggregate transcripts into one deterministic ordered fallback", () => {
+  const store = freshStore();
+  for (const migration of MIGRATIONS.filter((entry) => entry.version <= 8)) {
+    store.tx(() => {
+      migration.up(store);
+      store.run(`INSERT INTO schema_version (version) VALUES (?)`, [migration.version]);
+    });
+  }
+  const sessionSeq = nextSeq(store);
+  store.run(
+    `INSERT INTO sessions (id, study_id, runtime_id, agent, opened_by, opened_ts, seq)
+     VALUES ('sess_legacy', 's_1', 'rt_1', 'claude', 'u_1', 1, ?)`,
+    [sessionSeq],
+  );
+  const turnSeq = nextSeq(store);
+  store.run(
+    `INSERT INTO turns (id, session_id, task_id, prompt, started_ts, ended_ts, status, text, seq)
+     VALUES ('run_legacy', 'sess_legacy', 't_1', 'go', 1, 2, 'ok', 'legacy prose', ?)`,
+    [turnSeq],
+  );
+  for (const [id, toolUseId] of [["step_a", "a"], ["step_b", "b"]] as const) {
+    store.run(
+      `INSERT INTO turn_steps
+         (id, turn_id, ts, tool_use_id, tool, input, decision, is_error, seq)
+       VALUES (?, 'run_legacy', 1, ?, 'Read', '{}', 'ran', 0, ?)`,
+      [id, toolUseId, nextSeq(store)],
+    );
+  }
+
+  migrate(store);
+  const table = store.get(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'turn_items'`,
+  );
+  expect(table).toBeDefined();
+  if (!table) return;
+  expect(
+    store.all(
+      `SELECT kind, text, step_id FROM turn_items WHERE turn_id = 'run_legacy' ORDER BY seq ASC`,
+    ),
+  ).toEqual([
+    { kind: "text", text: "legacy prose", step_id: null },
+    { kind: "step", text: null, step_id: "step_a" },
+    { kind: "step", text: null, step_id: "step_b" },
+  ]);
+});
+
 it("hands out strictly increasing sequence numbers", () => {
   const store = freshStore();
   migrate(store);

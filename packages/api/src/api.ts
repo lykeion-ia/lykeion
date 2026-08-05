@@ -26,6 +26,7 @@ import type {
 } from "./conversation";
 import type {
   DelegateSubagentInput,
+  RunDecision,
   RunHandle,
   RunSummary,
   StartRunInput,
@@ -323,8 +324,9 @@ export interface LykeionApi {
   listAgentClis(): Promise<AgentCli[]>;
 
   /**
-   * Past runs on a Task — one entry per turn in its chat. Empty until run
-   * history is persisted and surfaced.
+   * Durable past runs on a Task — one entry per settled turn in its chat.
+   * A stop the agent did not acknowledge is still `status: "cancelled"`
+   * and carries `unacknowledged: true` as a separate fact.
    */
   runHistory(taskId: string): Promise<RunSummary[]>;
 
@@ -334,6 +336,15 @@ export interface LykeionApi {
    * answer plan/permission prompts with `submit`.
    */
   startRun(input: StartRunInput): Promise<RunHandle>;
+
+  /**
+   * Answer or stop a run addressed by its id alone. This is the same
+   * decision `RunHandle.submit` sends — a handle's methods cannot survive
+   * the trip over JSON, so a `RunHandle` built on a wire transport has
+   * nothing to call *but* this, over the one thing that does survive: the
+   * `runId` `startRun` returned.
+   */
+  submitRunDecision(runId: string, decision: RunDecision): Promise<void>;
 
   /**
    * Delegate a scoped sub-task to a subagent (an Agent persona) as an isolated

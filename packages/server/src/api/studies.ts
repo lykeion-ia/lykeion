@@ -2,6 +2,7 @@ import { LykeionError, type LykeionApi, type Study, type StudyDetail } from "@ly
 import type { Deps } from "./index";
 import type { Row, Store } from "../store/store";
 import { nextSeq } from "../store/migrations";
+import { dropGrantsForStudy } from "../store/sessions";
 import { taskRowsToTasks } from "./tasks";
 
 export type StudiesApi = Pick<
@@ -133,7 +134,11 @@ export function studiesApi(deps: Deps): StudiesApi {
       store.tx(() => {
         requireStudy(store, studyId);
         // Tasks cascade; the foreign key declares it, and `PRAGMA
-        // foreign_keys` is on so the database performs it.
+        // foreign_keys` is on so the database performs it. `folder_grants`
+        // carries no foreign key of its own, so a Study's grants are dropped
+        // here rather than orphaned: a grant naming a Study that no longer
+        // exists means nothing.
+        dropGrantsForStudy(store, studyId);
         store.run(`DELETE FROM studies WHERE id = ?`, [studyId]);
         record("study-deleted", { studyId });
       });

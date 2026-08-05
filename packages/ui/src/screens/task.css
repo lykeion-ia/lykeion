@@ -937,6 +937,18 @@ label.question-option:hover {
   color: var(--priority-urgent);
 }
 
+.run-line--cancelled {
+  color: var(--ink-tertiary);
+}
+
+/* A stop the agent has not confirmed reads as a warning, not an ordinary
+   ended turn — the researcher's surface says "stopped" while the agent may
+   genuinely still be running, and that gap must not read as settled. */
+.run-line--unacknowledged {
+  color: var(--priority-urgent);
+  font-weight: 500;
+}
+
 .run-dot {
   width: 7px;
   height: 7px;
@@ -1032,6 +1044,10 @@ label.question-option:hover {
   font-size: 10px;
   line-height: 1;
   color: var(--status-done);
+}
+
+.tool-step--running .tool-step-glyph {
+  color: var(--ink-subtle);
 }
 
 .tool-step--blocked .tool-step-glyph {

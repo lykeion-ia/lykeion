@@ -2,6 +2,7 @@ import { access, constants } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { delimiter, join } from "node:path";
 import type { AgentCli } from "@lykeion/api";
+import { connectAcp } from "./acp";
 
 /**
  * What a probe of this machine can say about a catalogue entry, before it is
@@ -32,6 +33,17 @@ export const CATALOGUE: ReadonlyArray<{ id: string; name: string; command: strin
   { id: "pi", name: "Pi", command: "pi" },
 ];
 
+/**
+ * ACP adapter candidates for each catalogue entry, in preference order.
+ * Each is a separate program from the CLI itself, resolved on `PATH` the
+ * same way, never through a shell. An id with no entry has no known bridge
+ * to speak ACP through yet, whatever the CLI itself can do on its own.
+ */
+const ADAPTER_COMMANDS: Readonly<Record<string, readonly string[]>> = {
+  claude: ["claude-agent-acp", "claude-code-acp"],
+  codex: ["codex-acp"],
+};
+
 const WINDOWS_EXTENSIONS = [".exe", ".cmd", ".bat"];
 
 /**
@@ -61,6 +73,9 @@ export interface ProbeOptions {
    *  budget to answer, and that is time a daemon which has been asked to stop
    *  would otherwise spend waiting on programs it no longer cares about. */
   signal?: AbortSignal;
+  /** Receives the exact executable whose successful handshake made an agent
+   *  ready, so session launch can use the same resolved adapter. */
+  onAdapterResolved?: (agentId: string, command: string) => void;
 }
 
 /**
@@ -143,13 +158,12 @@ function readVersion(
 }
 
 /**
- * One catalogue entry, settled as two separate questions in the order they
- * can be answered.
+ * Whether the command resolves on `PATH` to a file this machine can run, and
+ * which build it is when it does.
  *
- * Whether the command resolves on PATH to a file this machine can run is
- * what `available` reports, and it is the whole of what it reports. A search
- * of PATH either finds such a file or does not; there is no clock on it and
- * nothing to lose a race to.
+ * Whether the command resolves at all is what `available` reports, and it is
+ * the whole of what it reports. A search of `PATH` either finds such a file
+ * or does not; there is no clock on it and nothing to lose a race to.
  *
  * Which build that file is, is the second question, and asking it means
  * running a program that answers on its own schedule. A command that will
@@ -162,18 +176,132 @@ function readVersion(
  * nobody saw, on a machine where a researcher can run the thing by typing
  * its name.
  */
+async function probeCliVersion(
+  command: string,
+  pathValue: string,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<{ available: boolean; version: string }> {
+  const resolved = await resolveOnPath(command, pathValue);
+  if (resolved === undefined) return { available: false, version: "" };
+  return { available: true, version: await readVersion(resolved, timeoutMs, signal) };
+}
+
+/** Whatever `promise` settles to, unless `timeoutMs` passes or `signal`
+ *  fires first. A probe's own clock, not the adapter's: an `initialize` a
+ *  real adapter never answers must not hold the probe cycle open the way it
+ *  would hold a researcher who actually needs the session — this is what
+ *  keeps that from happening. `signal` firing and the timer firing are told
+ *  apart in the rejection so a caller never mistakes an operator's stop for
+ *  the adapter simply running out of time. */
+function raced<T>(promise: Promise<T>, timeoutMs: number, signal: AbortSignal | undefined): Promise<T> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      rejectPromise(new Error(`did not answer within ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectPromise(new Error("aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        resolvePromise(value);
+      },
+      (err: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        rejectPromise(err);
+      },
+    );
+  });
+}
+
+/** The `initialize` handshake ACP opens with, the same shape `session.ts`
+ *  sends when it opens a real session — a probe asking the same question a
+ *  session start would, so `sessionReady` never claims more than a session
+ *  start could actually cash in. */
+const INITIALIZE_PARAMS = {
+  protocolVersion: 1,
+  clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+};
+
+/**
+ * Whether `agentId` can actually be run: its adapter resolved on `PATH` and
+ * answered `initialize` inside the probe's own budget. An id with no adapter
+ * mapping is settled without spawning anything — there is nothing to look
+ * for. Otherwise the adapter is spawned, asked, and always closed again
+ * before this returns, whichever way the handshake went — a probe that
+ * leaves an adapter process behind on every cycle would leak one every five
+ * minutes, forever, for a machine that only ever finds the same answer.
+ */
+async function probeAdapter(
+  agentId: string,
+  pathValue: string,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+  onResolved: ((agentId: string, command: string) => void) | undefined,
+): Promise<{ sessionReady: true } | { sessionReady: false; sessionReadyReason: string }> {
+  const adapterCommands = ADAPTER_COMMANDS[agentId];
+  if (adapterCommands === undefined)
+    return { sessionReady: false, sessionReadyReason: `no ACP adapter is known for ${agentId} yet` };
+
+  let resolved: string | undefined;
+  for (const candidate of adapterCommands) {
+    const found = await resolveOnPath(candidate, pathValue);
+    if (found !== undefined) {
+      resolved = found;
+      break;
+    }
+  }
+  if (resolved === undefined)
+    return {
+      sessionReady: false,
+      sessionReadyReason: `none of ${adapterCommands.join(", ")} is installed — install an ACP adapter to run ${agentId} sessions`,
+    };
+
+  const connection = await connectAcp(resolved, []);
+  try {
+    await raced(connection.request("initialize", INITIALIZE_PARAMS), timeoutMs, signal);
+    onResolved?.(agentId, resolved);
+    return { sessionReady: true };
+  } catch (err) {
+    const tail = connection.stderrTail().trim();
+    return { sessionReady: false, sessionReadyReason: tail || (err instanceof Error ? err.message : String(err)) };
+  } finally {
+    await connection.close();
+  }
+}
+
+/** One catalogue entry, settled as two independent questions asked at once:
+ *  whether the CLI itself is installed and which build it is, and whether a
+ *  session can actually be started against it. Run concurrently rather than
+ *  one after the other, so a catalogue entry with both to check never costs
+ *  more than the slower of the two — not their sum. */
 async function probeOne(
   entry: { id: string; name: string; command: string },
   pathValue: string,
   timeoutMs: number,
   signal: AbortSignal | undefined,
+  onResolved: ((agentId: string, command: string) => void) | undefined,
 ): Promise<ProbedCli> {
-  const resolved = await resolveOnPath(entry.command, pathValue);
-  if (resolved === undefined)
-    return { id: entry.id, name: entry.name, command: entry.command, available: false, version: "" };
-
-  const version = await readVersion(resolved, timeoutMs, signal);
-  return { id: entry.id, name: entry.name, command: entry.command, available: true, version };
+  const [cli, adapter] = await Promise.all([
+    probeCliVersion(entry.command, pathValue, timeoutMs, signal),
+    probeAdapter(entry.id, pathValue, timeoutMs, signal, onResolved),
+  ]);
+  return { id: entry.id, name: entry.name, command: entry.command, ...cli, ...adapter };
 }
 
 /**
@@ -184,21 +312,28 @@ async function probeOne(
 export async function probeAgentClis(options: ProbeOptions): Promise<ProbedCli[]> {
   const pathValue = options.path ?? process.env.PATH ?? "";
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return Promise.all(CATALOGUE.map((entry) => probeOne(entry, pathValue, timeoutMs, options.signal)));
+  return Promise.all(
+    CATALOGUE.map((entry) =>
+      probeOne(entry, pathValue, timeoutMs, options.signal, options.onAdapterResolved),
+    ),
+  );
 }
 
 /**
  * A probe's result, reduced to what two probes of the same machine are
- * judged identical on: which ids are present, at which version, and
- * whether each is installed. `id` alone is not enough — a version bump on a
- * CLI that was already known, or one that has left PATH, both leave the id
- * set unchanged and still have to compare as different. Sorted by id first,
- * so probing the catalogue in a different order never registers as a change
- * on its own.
+ * judged identical on: which ids are present, at which version, whether
+ * each is installed, and whether each can actually run a session. `id`
+ * alone is not enough — a version bump on a CLI that was already known, one
+ * that has left PATH, or an adapter that starts or stops answering, all
+ * leave the id set unchanged and still have to compare as different. Sorted
+ * by id first, so probing the catalogue in a different order never
+ * registers as a change on its own.
  */
 export function cliFingerprint(clis: ProbedCli[]): string {
   return JSON.stringify(
-    [...clis].sort((a, b) => a.id.localeCompare(b.id)).map((cli) => [cli.id, cli.version, cli.available]),
+    [...clis]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((cli) => [cli.id, cli.version, cli.available, cli.sessionReady]),
   );
 }
 

@@ -18,9 +18,10 @@ const NO_RUNTIME =
  * so are the invite, offboarding and settings methods — `accountApi` and
  * `settingsApi` own those — and so are the customization-engine and
  * research-group methods, which `configSurfaceApi` owns, and so are pairing
- * and the runtime list, which `runtimesApi` owns. The conversation methods
- * are the ones in that neighbourhood answered here: nothing yet stores a
- * thread or a message.
+ * and the runtime list, which `runtimesApi` owns, and so are `startRun`,
+ * `submitRunDecision` and `runHistory`, which `sessionsApi` owns. The
+ * conversation methods are the ones in that neighbourhood answered here:
+ * nothing yet stores a thread or a message.
  *
  * A list method has nothing to list, so it answers honestly with `[]`
  * rather than inventing content. A method addressed by an id has nothing to
@@ -49,6 +50,7 @@ export function absentApi(
   | "connectorCatalog" | "listConnectorTools"
   | "listResearchGroups" | "createResearchGroup"
   | "listRuntimes" | "listAgentClis" | "pairMachine" | "removeRuntime"
+  | "startRun" | "submitRunDecision" | "runHistory"
 > {
   return {
     async listConversations() {
@@ -117,13 +119,6 @@ export function absentApi(
       throw new LykeionError("unsupported", NO_RUNTIME);
     },
 
-    async runHistory(_taskId) {
-      return [];
-    },
-
-    async startRun(_input) {
-      throw new LykeionError("unsupported", NO_RUNTIME);
-    },
     async delegateSubagent(_input) {
       throw new LykeionError("unsupported", NO_RUNTIME);
     },

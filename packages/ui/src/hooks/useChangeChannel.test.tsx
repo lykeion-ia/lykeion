@@ -18,6 +18,7 @@ function controllableTransport() {
       resync = onResync;
       return close;
     },
+    openRun: () => () => {},
   };
   return {
     transport,

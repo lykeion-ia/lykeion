@@ -9,6 +9,7 @@ import {
 import type { Deps } from "./index";
 import type { Row, Store } from "../store/store";
 import { nextSeq } from "../store/migrations";
+import { dropGrantsForRuntime } from "../store/sessions";
 import { hashSecret, newToken } from "../auth";
 import { healthFor } from "../runtime-health";
 
@@ -47,10 +48,24 @@ function toAgentCli(row: Row): AgentCli {
     version: row.version as string,
     available: row.available === 1,
     runtimeId: row.runtime_id as string,
+    sessionReady: row.session_ready === 1,
+    ...(row.session_ready_reason === null ? {} : { sessionReadyReason: row.session_ready_reason as string }),
   };
 }
 
-function toRuntime(row: Row, now: number, clis: AgentCli[] | undefined): Runtime {
+/** Whether any CLI a machine has reported can actually run a session, asked
+ *  independent of ownership: a colleague is allowed to see that a machine
+ *  can run sessions without seeing which CLI makes that true — `clis` itself
+ *  stays theirs, `capabilities` does not. */
+function hasSessionReadyCli(store: Store, runtimeId: string): boolean {
+  return (
+    store.get(`SELECT 1 AS present FROM runtime_clis WHERE runtime_id = ? AND session_ready = 1 LIMIT 1`, [
+      runtimeId,
+    ]) !== undefined
+  );
+}
+
+function toRuntime(row: Row, now: number, clis: AgentCli[] | undefined, sessionsReady: boolean): Runtime {
   return {
     id: row.id as string,
     name: row.name as string,
@@ -59,7 +74,7 @@ function toRuntime(row: Row, now: number, clis: AgentCli[] | undefined): Runtime
     daemonVersion: row.daemon_version as string,
     health: healthFor(row.last_seen_ts as number, now),
     lastSeenTs: row.last_seen_ts as number,
-    capabilities: JSON.parse(row.capabilities as string) as RuntimeCapability[],
+    capabilities: sessionsReady ? (["sessions"] satisfies RuntimeCapability[]) : [],
     ...(clis === undefined ? {} : { clis }),
   };
 }
@@ -91,7 +106,10 @@ export function runtimesApi(deps: Deps): RuntimesApi {
                 .all(`SELECT * FROM runtime_clis WHERE runtime_id = ? ORDER BY seq ASC`, [row.id as string])
                 .map(toAgentCli)
             : undefined;
-          return toRuntime(row, nowTs, clis);
+          const sessionsReady = clis
+            ? clis.some((cli) => cli.sessionReady)
+            : hasSessionReadyCli(store, row.id as string);
+          return toRuntime(row, nowTs, clis, sessionsReady);
         });
     },
 
@@ -177,6 +195,10 @@ export function runtimesApi(deps: Deps): RuntimesApi {
           `UPDATE machine_tokens SET revoked_ts = ? WHERE runtime_id = ? AND revoked_ts IS NULL`,
           [ts, runtimeId],
         );
+        // A grant's path only ever meant anything on this machine's own
+        // filesystem — dropped rather than orphaned, the way a Study's
+        // grants are dropped when the Study itself goes.
+        dropGrantsForRuntime(store, runtimeId);
         record("runtime-removed", {});
       });
     },
