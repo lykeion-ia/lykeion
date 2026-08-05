@@ -1893,17 +1893,22 @@ export function runDecisionConformance(makeLab: () => Promise<ConformanceLab>): 
   });
 }
 
-/** Active runs are discoverable only to the actor whose runtime owns them,
- *  and keep the Task's durable turn order even when more than one is live. */
+/** Active runs are discoverable only to the actor whose runtime owns them.
+ *  One Task has one active run; different Tasks may each have one. */
 export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): void {
-  describe("resumeRuns discovers every owned active turn", () => {
-    it("returns concurrent runs in sequence order and reveals none to another actor", async () => {
+  describe("resumeRuns discovers an owned active run", () => {
+    it("refuses a second active run for one Task while revealing concurrent Task runs only to their owner", async () => {
       const { owner, member } = await makeLab();
       const study = await owner.createStudy({ title: "Resume", key: "RSM" });
       const task = await owner.createTask({
         studyId: study.id,
         stage: "methods",
-        title: "keep both turns",
+        title: "first active turn",
+      });
+      const sibling = await owner.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "second active turn",
       });
       const first = await owner.startRun({
         studyId: study.id,
@@ -1911,25 +1916,31 @@ export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): vo
         prompt: "first",
         options: { planMode: false },
       });
-      const second = await owner.startRun({
+      await expect(owner.startRun({
         studyId: study.id,
         taskId: task.id,
+        prompt: "second attempt",
+        options: { planMode: false },
+      })).rejects.toMatchObject({ code: "conflict" });
+      const second = await owner.startRun({
+        studyId: study.id,
+        taskId: sibling.id,
         prompt: "second",
         options: { planMode: false },
       });
 
-      const resumed = await owner.resumeRuns(task.id);
-      expect(resumed.map((run) => run.runId)).toEqual([first.runId, second.runId]);
-      expect(resumed.map((run) => run.snapshot.sequence)).toEqual([
-        resumed[0]!.snapshot.sequence,
-        resumed[0]!.snapshot.sequence + 1,
-      ]);
-      expect(resumed.map((run) => run.snapshot.prompt)).toEqual(["first", "second"]);
+      const firstResumed = await owner.resumeRuns(task.id);
+      const secondResumed = await owner.resumeRuns(sibling.id);
+      expect(firstResumed.map((run) => run.runId)).toEqual([first.runId]);
+      expect(secondResumed.map((run) => run.runId)).toEqual([second.runId]);
+      expect(firstResumed[0]!.snapshot.prompt).toBe("first");
+      expect(secondResumed[0]!.snapshot.prompt).toBe("second");
       expect(await member.resumeRuns(task.id)).toEqual([]);
+      expect(await member.resumeRuns(sibling.id)).toEqual([]);
 
       first.detach();
       second.detach();
-      for (const run of resumed) run.detach();
+      for (const run of [...firstResumed, ...secondResumed]) run.detach();
     });
   });
 }

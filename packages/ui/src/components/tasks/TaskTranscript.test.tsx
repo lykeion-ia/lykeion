@@ -41,6 +41,34 @@ describe("the transcript", () => {
     expect(screen.getByText("Done — 512 ROIs.")).toBeInTheDocument();
   });
 
+  it("renders persisted typed blocks in arrival order inside one turn", () => {
+    render(
+      <TaskTranscript
+        history={[turn({
+          stream: [
+            { kind: "text", text: "Visible plan", block: "thought" },
+            { kind: "text", text: "Starting analysis", block: "interim" },
+            { kind: "step", entry: { ts: 2, toolUseId: "py-1", tool: "python", input: {}, decision: "ran", result: "failed", isError: true } },
+            { kind: "text", text: "Recovered result", block: "final" },
+            { kind: "text", text: "Turn warning", block: "error" },
+          ],
+        })]}
+        viewTurns={[]}
+      />,
+    );
+    const kinds = Array.from(document.querySelectorAll("[data-block-kind]"))
+      .map((node) => node.getAttribute("data-block-kind"));
+    expect(kinds).toEqual(["thought", "interim", "tool", "final", "error"]);
+    expect(screen.getByTestId("turn-block-thought")).not.toHaveAttribute("open");
+    expect(screen.getByRole("alert")).toHaveTextContent("Turn warning");
+    expect(screen.getAllByText("segment the ROIs")).toHaveLength(1);
+  });
+
+  it("renders legacy untyped stream prose safely", () => {
+    render(<TaskTranscript history={[turn({ stream: [{ kind: "text", text: "Legacy prose" }] })]} viewTurns={[]} />);
+    expect(screen.getByTestId("turn-block-interim")).toHaveTextContent("Legacy prose");
+  });
+
   it("renders a turn finished in this view alongside the persisted ones", () => {
     render(
       <TaskTranscript

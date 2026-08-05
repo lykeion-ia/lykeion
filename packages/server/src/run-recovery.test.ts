@@ -372,9 +372,15 @@ it("drops the failed run's own command, the same as a normal completion would", 
 
 it("leaves a sibling run's status alone when only one run is missing", async () => {
   const lab = await labWithRunInFlight();
+  const studyId = (await lab.ownerApi.listStudies())[0]!.id;
+  const sibling = await lab.ownerApi.createTask({
+    studyId,
+    stage: "background",
+    title: "Sibling run",
+  });
   const second = await lab.ownerApi.startRun({
-    studyId: (await lab.ownerApi.listStudies())[0]!.id,
-    taskId: lab.taskId,
+    studyId,
+    taskId: sibling.id,
     prompt: "go again",
     options: { planMode: false, agent: "claude" },
   });

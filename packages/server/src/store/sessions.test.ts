@@ -118,7 +118,7 @@ it("persists progressive state, plan, transcript, live, and review snapshots", (
     state: { state: "executing", plan },
     plan,
     stream: [
-      { kind: "text", text: "Inspecting." },
+      { kind: "text", text: "Inspecting.", block: "interim" },
       { kind: "step", entry },
     ],
     live: { thinking: "Checking totals" },
@@ -142,7 +142,7 @@ it("keeps partial prose only in the active live tail and promotes it on settleme
   ], 10);
 
   expect(runSnapshot(store, turnId)).toMatchObject({
-    stream: [],
+    stream: [{ kind: "text", text: "Strong candidates", block: "interim" }],
     live: { text: "Strong candidates" },
     lastEventSeq: 4,
   });
@@ -160,12 +160,92 @@ it("keeps partial prose only in the active live tail and promotes it on settleme
 
   expect(runSnapshot(store, turnId)).toMatchObject({
     state: { state: "completed" },
-    stream: [{ kind: "text", text: "Strong candidates" }],
+    stream: [{ kind: "text", text: "Strong candidates", block: "interim" }],
     live: {},
     lastEventSeq: 5,
   });
   expect(taskTurnsForTask(store, "t_1")[0]?.stream).toEqual([
-    { kind: "text", text: "Strong candidates" },
+    { kind: "text", text: "Strong candidates", block: "interim" },
+  ]);
+});
+
+it("folds a compatibility whole-message frame over its partial chunks once", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store);
+
+  recordRunFrames(store, turnId, [
+    { seq: 1, event: { event: "assistant-text", text: "Strong ", partial: true } },
+    { seq: 2, event: { event: "assistant-text", text: "candidates", partial: true } },
+    { seq: 3, event: { event: "assistant-text", text: "Strong candidates", partial: false } },
+  ], 10);
+
+  expect(runSnapshot(store, turnId)?.stream).toEqual([
+    { kind: "text", text: "Strong candidates", block: "interim" },
+  ]);
+  expect(store.all(
+    `SELECT text, partial, block FROM turn_items
+      WHERE turn_id = ? ORDER BY seq ASC`,
+    [turnId],
+  )).toEqual([
+    { text: "Strong candidates", partial: 0, block: "interim" },
+  ]);
+  expect(store.get(`SELECT text FROM turns WHERE id = ?`, [turnId])).toEqual({
+    text: "Strong candidates",
+  });
+});
+
+it("persists ordered typed blocks inside one turn and recovery snapshot", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store);
+  const failedStep = {
+    ts: 4,
+    toolUseId: "python-1",
+    tool: "python",
+    input: { code: "import sklearn" },
+    decision: "ran",
+    result: "ModuleNotFoundError: sklearn",
+    isError: true,
+  };
+
+  recordRunFrames(store, turnId, [
+    { seq: 1, event: { event: "assistant-thought", text: "Check ", partial: true } },
+    { seq: 2, event: { event: "assistant-thought", text: "dependencies", partial: true } },
+    { seq: 3, event: { event: "assistant-text", text: "I will inspect the data.", partial: true } },
+    { seq: 4, event: { event: "log-entry", entry: failedStep } },
+    { seq: 5, event: { event: "assistant-text", text: "I used a ", partial: true } },
+    { seq: 6, event: { event: "assistant-text", text: "rank-based fallback.", partial: true } },
+    { seq: 7, event: { event: "assistant-text-final" } },
+  ], 10);
+
+  const ordered = [
+    { kind: "text", text: "Check dependencies", block: "thought" },
+    { kind: "text", text: "I will inspect the data.", block: "interim" },
+    { kind: "step", entry: failedStep },
+    { kind: "text", text: "I used a rank-based fallback.", block: "final" },
+  ];
+  expect(runSnapshot(store, turnId)).toMatchObject({ runId: turnId, stream: ordered });
+
+  recordRunFrames(store, turnId, [
+    { seq: 8, event: { event: "completed", state: { state: "completed" } } },
+  ], 11);
+  const settled = taskTurnsForTask(store, "t_1")[0];
+  expect(settled?.runId).toBe(turnId);
+  expect(settled?.stream).toEqual(ordered);
+});
+
+it("records a failed turn reason as an error block without creating another turn", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store);
+  recordRunFrames(store, turnId, [
+    { seq: 1, event: { event: "assistant-text", text: "Trying once.", partial: true } },
+    { seq: 2, event: { event: "completed", state: { state: "failed", reason: "adapter exited" } } },
+  ], 10);
+  const turns = taskTurnsForTask(store, "t_1");
+  expect(turns).toHaveLength(1);
+  expect(turns[0]?.runId).toBe(turnId);
+  expect(turns[0]?.stream).toEqual([
+    { kind: "text", text: "Trying once.", block: "interim" },
+    { kind: "text", text: "adapter exited", block: "error" },
   ]);
 });
 
@@ -301,11 +381,22 @@ it("preserves outside-workspace provenance in active and settled snapshots", () 
   expect(taskTurnsForTask(store, "t_1")[0].stream).toEqual([{ kind: "step", entry }]);
 });
 
-it("reads every active snapshot on a Task in turn sequence with session ownership", () => {
+it("reads the Task's active snapshot with its session ownership", () => {
   const store = freshStore();
   const first = freshTurn(store, { agent: "claude", runtimeId: "rt_1", openedBy: "u_1" });
-  const second = freshTurn(store, { agent: "codex", runtimeId: "rt_2", openedBy: "u_2" });
-  const settled = freshTurn(store, { agent: "claude", runtimeId: "rt_3", openedBy: "u_3" });
+  const sibling = freshTurn(store, {
+    taskId: "t_2",
+    agent: "codex",
+    runtimeId: "rt_2",
+    openedBy: "u_2",
+  });
+  finishTurn(store, sibling.turnId, { endedTs: 8, status: "ok" });
+  const settled = freshTurn(store, {
+    taskId: "t_3",
+    agent: "claude",
+    runtimeId: "rt_3",
+    openedBy: "u_3",
+  });
   finishTurn(store, settled.turnId, { endedTs: 9, status: "ok" });
 
   const read = (sessionsStore as unknown as {
@@ -322,30 +413,20 @@ it("reads every active snapshot on a Task in turn sequence with session ownershi
       runtimeId: "rt_1",
       openedBy: "u_1",
     },
-    {
-      runId: second.turnId,
-      agent: "codex",
-      sessionId: second.sessionId,
-      runtimeId: "rt_2",
-      openedBy: "u_2",
-    },
   ]);
-  expect(snapshots?.map(({ sequence }) => sequence)).toEqual(
-    snapshots?.map(({ sequence }) => sequence).slice().sort((a, b) => Number(a) - Number(b)),
-  );
 });
 
 it("returns only settled Task turns with their durable sequence in transcript order", () => {
   const store = freshStore();
   const first = freshTurn(store, { prompt: "first" });
+  finishTurn(store, first.turnId, { endedTs: 7, status: "ok" });
   const second = recordTurn(store, {
     sessionId: first.sessionId, taskId: "t_1", prompt: "second", startedTs: 3,
   });
+  finishTurn(store, second, { endedTs: 8, status: "ok" });
   recordTurn(store, {
     sessionId: first.sessionId, taskId: "t_1", prompt: "still running", startedTs: 4,
   });
-  finishTurn(store, second, { endedTs: 8, status: "ok" });
-  finishTurn(store, first.turnId, { endedTs: 9, status: "ok" });
   const expectedSequences = store
     .all(`SELECT seq FROM turns WHERE id IN (?, ?) ORDER BY seq ASC`, [first.turnId, second])
     .map((row) => row.seq);

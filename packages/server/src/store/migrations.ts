@@ -591,6 +591,96 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 13,
+    up(store) {
+      // Legacy rows deliberately remain NULL: readers render them as ordinary
+      // prose rather than guessing a thought/final boundary that was never
+      // recorded. New rows carry the provider-visible block role explicitly.
+      store.run(`ALTER TABLE turn_items ADD COLUMN block TEXT`);
+    },
+  },
+  {
+    version: 14,
+    up(store) {
+      // v12 still allowed several unfinished turns for one Task. Keep the
+      // highest-sequence turn recoverable and settle every older sibling
+      // deterministically before installing the durable constraint.
+      const failedAt = Math.floor(Date.now() / 1000);
+      const reason =
+        "This turn was superseded while upgrading to one active run per Task.";
+      const superseded = store.all(
+        `SELECT t.id, t.session_id, t.task_id, t.recovery_snapshot
+           FROM turns t
+          WHERE t.ended_ts IS NULL
+            AND EXISTS (
+              SELECT 1 FROM turns newer
+               WHERE newer.task_id = t.task_id
+                 AND newer.ended_ts IS NULL
+                 AND newer.seq > t.seq
+            )
+          ORDER BY t.seq ASC`,
+      );
+      const touchedTaskIds = new Set<string>();
+      for (const turn of superseded) {
+        const recovery = JSON.parse(
+          turn.recovery_snapshot as string,
+        ) as Record<string, unknown>;
+        store.run(
+          `UPDATE turns
+              SET ended_ts = ?, status = 'failed', recovery_snapshot = ?
+            WHERE id = ?`,
+          [
+            failedAt,
+            JSON.stringify({
+              ...recovery,
+              state: { state: "failed", reason },
+              live: {},
+              reviewing: false,
+            }),
+            turn.id,
+          ],
+        );
+        store.run(
+          `UPDATE sessions SET ended_ts = ?
+            WHERE id = ? AND ended_ts IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM turns WHERE session_id = ? AND ended_ts IS NULL
+              )`,
+          [failedAt, turn.session_id, turn.session_id],
+        );
+        touchedTaskIds.add(turn.task_id as string);
+      }
+      for (const taskId of touchedTaskIds) {
+        const settled = store.get(
+          `SELECT COUNT(*) AS run_count
+             FROM turns WHERE task_id = ? AND ended_ts IS NOT NULL`,
+          [taskId],
+        )!;
+        const latestStatus = store.get(
+          `SELECT status FROM turns
+            WHERE task_id = ? AND ended_ts IS NOT NULL
+            ORDER BY seq DESC LIMIT 1`,
+          [taskId],
+        )?.status as string | undefined;
+        store.run(
+          `UPDATE tasks
+              SET run_count = ?, last_run_status = ?, updated_ts = ?
+            WHERE id = ?`,
+          [
+            settled.run_count,
+            latestStatus === "ok" ? "ok" : "failed",
+            failedAt,
+            taskId,
+          ],
+        );
+      }
+      store.run(
+        `CREATE UNIQUE INDEX one_active_turn_per_task
+             ON turns(task_id) WHERE ended_ts IS NULL`,
+      );
+    },
+  },
 ];
 
 assertAscending(MIGRATIONS);

@@ -112,6 +112,19 @@ export function liveSessionFor(
   return row ? (row.id as string) : undefined;
 }
 
+/** The Task's sole active run, or undefined when it is idle. */
+export function activeRunIdForTask(store: Store, taskId: string): string | undefined {
+  const row = store.get(
+    `SELECT id
+       FROM turns
+      WHERE task_id = ? AND ended_ts IS NULL
+      ORDER BY seq DESC
+      LIMIT 1`,
+    [taskId],
+  );
+  return row ? (row.id as string) : undefined;
+}
+
 /**
  * The Study and runtime a turn's session belongs to, and the member who
  * opened it, or `undefined` when no turn has that id at all. This is the
@@ -356,21 +369,68 @@ export function appendStep(
  *  accumulated text — the way `assistant-text` events arrive, one chunk at a
  *  time, so a reload mid-turn already has something to show before the turn
  *  ends. */
-export function appendTurnText(store: Store, turnId: string, text: string, partial = false): void {
+export function appendTurnText(
+  store: Store,
+  turnId: string,
+  text: string,
+  partial = false,
+  block?: "thought" | "interim" | "final" | "error",
+): void {
   store.run(`UPDATE turns SET text = text || ? WHERE id = ?`, [text, turnId]);
   const seq = nextSeq(store);
   store.run(
-    `INSERT INTO turn_items (id, turn_id, kind, text, partial, seq)
-     VALUES (?, ?, 'text', ?, ?, ?)`,
-    [`item_${seq}`, turnId, text, partial ? 1 : 0, seq],
+    `INSERT INTO turn_items (id, turn_id, kind, text, partial, block, seq)
+     VALUES (?, ?, 'text', ?, ?, ?, ?)`,
+    [`item_${seq}`, turnId, text, partial ? 1 : 0, block ?? null, seq],
   );
 }
 
-function turnStream(store: Store, turnId: string, includePartial = true): TurnItem[] {
+/**
+ * Some adapters emit deltas and then repeat their concatenation as one legacy
+ * whole-message frame. Collapse only the immediately preceding partial run:
+ * content equality without that ordered partial-run identity would erase a
+ * legitimate repeated paragraph elsewhere in the turn.
+ */
+function collapseCompatibilityWholeText(
+  store: Store,
+  turnId: string,
+  text: string,
+  block: "interim",
+): boolean {
+  const trailing: Array<{ id: string; text: string }> = [];
+  for (const item of store.all(
+    `SELECT id, kind, text, partial, block
+       FROM turn_items
+      WHERE turn_id = ?
+      ORDER BY seq DESC`,
+    [turnId],
+  )) {
+    if (
+      item.kind !== "text" ||
+      item.partial !== 1 ||
+      (item.block ?? "interim") !== block
+    )
+      break;
+    trailing.push({ id: item.id as string, text: item.text as string });
+  }
+  if (trailing.length === 0) return false;
+  if (trailing.map((item) => item.text).reverse().join("") !== text) return false;
+
+  const first = trailing.at(-1)!;
+  store.run(
+    `UPDATE turn_items SET text = ?, partial = 0, block = ? WHERE id = ?`,
+    [text, block, first.id],
+  );
+  for (const item of trailing.slice(0, -1))
+    store.run(`DELETE FROM turn_items WHERE id = ?`, [item.id]);
+  return true;
+}
+
+function turnStream(store: Store, turnId: string): TurnItem[] {
   const stream: TurnItem[] = [];
   let joiningPartial = false;
   const items = store.all(
-    `SELECT i.kind, i.text, i.partial,
+    `SELECT i.kind, i.text, i.partial, i.block,
             s.ts, s.tool_use_id, s.tool, s.title, s.input, s.decision, s.result, s.is_error,
             s.outside_workspace
        FROM turn_items i
@@ -381,12 +441,16 @@ function turnStream(store: Store, turnId: string, includePartial = true): TurnIt
   );
   for (const item of items) {
     if (item.kind === "text") {
-      if (item.partial === 1 && !includePartial) continue;
-      if (item.partial === 1 && joiningPartial) {
-        const current = stream.at(-1);
-        if (current?.kind === "text") current.text += item.text as string;
+      const current = stream.at(-1);
+      const samePartialBlock =
+        item.partial === 1 &&
+        joiningPartial &&
+        current?.kind === "text" &&
+        (current.block ?? "interim") === (item.block ?? "interim");
+      if (samePartialBlock && current?.kind === "text") {
+        current.text += item.text as string;
       } else {
-        stream.push({ kind: "text", text: item.text as string });
+        stream.push({ kind: "text", text: item.text as string, ...(item.block === null ? {} : { block: item.block as "thought" | "interim" | "final" | "error" }) });
       }
       joiningPartial = item.partial === 1;
       continue;
@@ -471,8 +535,29 @@ export function recordRunFrames(
           break;
         }
         case "assistant-text":
-          appendTurnText(store, turnId, event.text, event.partial);
-          recovery.stream = turnStream(store, turnId, false);
+          if (
+            event.partial ||
+            !collapseCompatibilityWholeText(store, turnId, event.text, "interim")
+          )
+            appendTurnText(store, turnId, event.text, event.partial, "interim");
+          recovery.stream = turnStream(store, turnId);
+          break;
+        case "assistant-thought":
+          appendTurnText(store, turnId, event.text, event.partial, "thought");
+          recovery.stream = turnStream(store, turnId);
+          break;
+        case "assistant-text-final":
+          store.run(
+            `UPDATE turn_items SET block = 'final'
+              WHERE turn_id = ? AND kind = 'text' AND block = 'interim'
+                AND seq > COALESCE(
+                  (SELECT MAX(seq) FROM turn_items
+                    WHERE turn_id = ? AND (kind = 'step' OR block <> 'interim')),
+                  -1
+                )`,
+            [turnId, turnId],
+          );
+          recovery.stream = turnStream(store, turnId);
           break;
         case "plan-proposed":
           recovery.plan = event.plan;
@@ -506,7 +591,7 @@ export function recordRunFrames(
               ? {}
               : { outsideWorkspace: event.entry.outsideWorkspace }),
           });
-          recovery.stream = turnStream(store, turnId, false);
+          recovery.stream = turnStream(store, turnId);
           break;
         case "live":
           recovery.live = event.live;
@@ -515,6 +600,8 @@ export function recordRunFrames(
           recovery.reviewing = true;
           break;
         case "completed":
+          if (event.state.state === "failed")
+            appendTurnText(store, turnId, event.state.reason, false, "error");
           recovery.state = event.state;
           recovery.stream = turnStream(store, turnId);
           recovery.live = {};

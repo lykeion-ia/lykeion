@@ -159,6 +159,14 @@ function Probe() {
           )
           .join("|")}
       </span>
+      <span data-testid="block-stream">
+        {run.liveStream.map((item) => item.kind === "text" ? (item.block ?? "legacy") : "tool").join("|")}
+      </span>
+      <span data-testid="landed-stream">
+        {(run.run?.stream ?? [])
+          .map((item) => item.kind === "text" ? `text:${item.text}:${item.block ?? "legacy"}` : `step:${item.entry.toolUseId}`)
+          .join("|")}
+      </span>
       <button type="button" onClick={() => run.start("do it")}>
         start
       </button>
@@ -337,13 +345,12 @@ it("streams partial prose via the live tail, then paints ONE bubble", async () =
     emit({ event: "live", live: { text: "Strong candidates" } });
   });
 
-  // MID-TURN — before the whole message arrives (and before completion, whose
-  // cleanup would mask the bug). The streaming text is visible via the live
-  // tail, and NOT a single bubble has been painted from a fragment.
+  // MID-TURN the partial chunks have coalesced into one typed prose block.
   expect(screen.getByTestId("live-text")).toHaveTextContent(
     "Strong candidates",
   );
-  expect(screen.queryAllByTestId("bubble")).toHaveLength(0);
+  expect(screen.queryAllByTestId("bubble")).toHaveLength(1);
+  expect(screen.getByTestId("block-stream")).toHaveTextContent("interim");
 
   // The runner reassembles the run of fragments and re-emits the whole message.
   await act(async () => {
@@ -354,10 +361,139 @@ it("streams partial prose via the live tail, then paints ONE bubble", async () =
     });
   });
 
-  // Exactly ONE bubble for the message — not three.
+  // Exactly ONE bubble for the message — not three — after the adapter's
+  // compatibility whole-message frame as well.
   const bubbles = screen.getAllByTestId("bubble");
   expect(bubbles).toHaveLength(1);
-  expect(bubbles[0]).toHaveTextContent("Strong candidates");
+  expect(bubbles[0]).toHaveTextContent(/^Strong candidates$/);
+  expect(screen.getByTestId("live-stream")).toHaveTextContent(
+    /^text:Strong candidates$/,
+  );
+});
+
+it("does not duplicate a compatibility whole frame after recovery between delta frames", async () => {
+  const user = userEvent.setup();
+  const { api, emit } = drivenApi();
+  render(<Harness api={api} />);
+
+  await user.click(screen.getByRole("button", { name: "start" }));
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  await act(async () => {
+    emit({
+      event: "snapshot",
+      snapshot: {
+        runId: "run-driven",
+        sequence: 1,
+        prompt: "do it",
+        agent: "codex",
+        state: { state: "planning" },
+        stream: [
+          { kind: "text", text: "Strong candidates", block: "interim" },
+        ],
+        live: { text: "Strong candidates" },
+        reviewing: false,
+        lastEventSeq: 4,
+      },
+    });
+    emit({
+      event: "assistant-text",
+      text: "Strong candidates",
+      partial: false,
+    });
+  });
+
+  expect(screen.getByTestId("live-stream")).toHaveTextContent(
+    /^text:Strong candidates$/,
+  );
+  expect(screen.getAllByTestId("bubble")).toHaveLength(1);
+});
+
+it("keeps cancelled prose interim without an explicit final marker", async () => {
+  const user = userEvent.setup();
+  const { api, emit } = drivenApi();
+  render(<Harness api={api} />);
+
+  await user.click(screen.getByRole("button", { name: "start" }));
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  await act(async () => {
+    emit({ event: "assistant-text", text: "unfinished answer", partial: true });
+    emit({ event: "completed", state: { state: "cancelled" } });
+  });
+
+  expect(screen.getByTestId("block-stream")).toHaveTextContent(/^interim$/);
+  expect(screen.getByTestId("live-stream")).toHaveTextContent(
+    /^text:unfinished answer$/,
+  );
+});
+
+it("preserves repeated identical text blocks when a terminal record lags the stream", async () => {
+  const user = userEvent.setup();
+  const { api, emit } = drivenApi();
+  render(<Harness api={api} />);
+
+  await user.click(screen.getByRole("button", { name: "start" }));
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  const step = {
+    ts: 1,
+    toolUseId: "tool-1",
+    tool: "Read",
+    input: {},
+    decision: "ran",
+    isError: false,
+  } as const;
+  await act(async () => {
+    emit({ event: "assistant-text", text: "Repeated", partial: false });
+    emit({ event: "log-entry", entry: step });
+    emit({ event: "assistant-text", text: "Repeated", partial: false });
+    emit({ event: "assistant-text-final" });
+    emit({
+      event: "completed",
+      state: { state: "completed" },
+      run: {
+        runId: "run-driven",
+        ts: 1,
+        command: "do it",
+        status: "ok",
+        code: [],
+        outputs: [],
+        stream: [
+          { kind: "text", text: "Repeated", block: "interim" },
+          { kind: "step", entry: step },
+        ],
+      },
+    });
+  });
+
+  expect(screen.getByTestId("live-stream")).toHaveTextContent(
+    /^text:Repeated\|step:tool-1:ran:\|text:Repeated$/,
+  );
+  expect(screen.getByTestId("block-stream")).toHaveTextContent(
+    /^interim\|tool\|final$/,
+  );
+  expect(screen.getByTestId("landed-stream")).toHaveTextContent(
+    /^text:Repeated:interim\|step:tool-1\|text:Repeated:final$/,
+  );
+});
+
+it("keeps thought, interim, tool, final, and turn error blocks in one run", async () => {
+  const user = userEvent.setup();
+  const { api, emit } = drivenApi();
+  render(<Harness api={api} />);
+  await user.click(screen.getByRole("button", { name: "start" }));
+  await act(() => new Promise((r) => setTimeout(r, 0)));
+  await act(async () => {
+    emit({ event: "assistant-thought", text: "Plan", partial: true });
+    emit({ event: "assistant-text", text: "Trying.", partial: true });
+    emit({ event: "log-entry", entry: { ts: 1, toolUseId: "tool-1", tool: "python", input: {}, decision: "ran", result: "boom", isError: true } });
+    emit({ event: "assistant-text", text: "Fallback result.", partial: true });
+    emit({ event: "assistant-text-final" });
+  });
+  expect(screen.getByTestId("block-stream")).toHaveTextContent("thought|interim|tool|final");
+  await act(async () => {
+    emit({ event: "completed", state: { state: "failed", reason: "review failed" } });
+  });
+  expect(screen.getByTestId("block-stream")).toHaveTextContent("thought|interim|tool|final|error");
+  expect(screen.getByTestId("state")).toHaveTextContent("failed");
 });
 
 it("does not duplicate finalized prose when completion promotes the matching live tail", async () => {

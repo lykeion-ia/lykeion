@@ -135,6 +135,7 @@ export async function startSession(options: {
 
   let text = "";
   let thinking = "";
+  let lastVisibleUpdate: "text" | "thought" | "tool" | undefined;
   let plan: Plan | undefined;
   const steps = new Map<string, ExecutionLogEntry>();
   const publishedStepFingerprints = new Map<string, string>();
@@ -209,12 +210,16 @@ export async function startSession(options: {
       case "agent_message_chunk": {
         const chunk = (update.content as { text?: string })?.text ?? "";
         text += chunk;
+        lastVisibleUpdate = "text";
         onEvent({ event: "assistant-text", text: chunk, partial: true });
         emitLive();
         return;
       }
       case "agent_thought_chunk": {
-        thinking += (update.content as { text?: string })?.text ?? "";
+        const chunk = (update.content as { text?: string })?.text ?? "";
+        thinking += chunk;
+        lastVisibleUpdate = "thought";
+        onEvent({ event: "assistant-thought", text: chunk, partial: true });
         emitLive();
         return;
       }
@@ -232,6 +237,7 @@ export async function startSession(options: {
       }
       case "tool_call":
       case "tool_call_update": {
+        lastVisibleUpdate = "tool";
         const call = update as unknown as AcpToolCall;
         const id = call.toolCallId;
         const existing = steps.get(id);
@@ -494,6 +500,7 @@ export async function startSession(options: {
       pendingRequests.add(myEpoch);
       text = "";
       thinking = "";
+      lastVisibleUpdate = undefined;
       steps.clear();
       publishedStepFingerprints.clear();
       // No grace timer can still be pending here: `completed` — the
@@ -510,6 +517,12 @@ export async function startSession(options: {
           (result) => {
             pendingRequests.delete(myEpoch);
             const stopReason = (result as { stopReason?: string } | undefined)?.stopReason;
+            if (
+              myEpoch === epoch &&
+              stopReason !== "cancelled" &&
+              lastVisibleUpdate === "text"
+            )
+              onEvent({ event: "assistant-text-final" });
             finish(myEpoch, stopReason === "cancelled" ? "cancelled" : "completed");
           },
           (err: unknown) => {

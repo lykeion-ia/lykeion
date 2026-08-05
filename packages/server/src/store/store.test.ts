@@ -368,12 +368,12 @@ it("terminally fails a v9 active turn while preserving its transcript and ending
     ended_ts: row.ended_ts,
   });
   expect(store.all(
-    `SELECT kind, text, partial, step_id
+    `SELECT kind, text, partial, block, step_id
        FROM turn_items WHERE turn_id = 'run_legacy' ORDER BY seq ASC`,
   )).toEqual([
-    { kind: "text", text: "legacy ", partial: 1, step_id: null },
-    { kind: "text", text: "prose", partial: 1, step_id: null },
-    { kind: "step", text: null, partial: null, step_id: "step_legacy" },
+    { kind: "text", text: "legacy ", partial: 1, block: null, step_id: null },
+    { kind: "text", text: "prose", partial: 1, block: null, step_id: null },
+    { kind: "step", text: null, partial: null, block: null, step_id: "step_legacy" },
   ]);
 });
 
@@ -445,6 +445,131 @@ it("terminally fails an active turn when upgrading an already-v11 database", () 
     last_run_status: "failed",
     updated_ts: row.ended_ts,
   });
+});
+
+it("reconciles duplicate v12 active turns by keeping the newest turn active", () => {
+  const store = freshStore();
+  for (const migration of MIGRATIONS.filter((entry) => entry.version <= 12)) {
+    store.tx(() => {
+      migration.up(store);
+      store.run(`INSERT INTO schema_version (version) VALUES (?)`, [migration.version]);
+    });
+  }
+  insertUser(store, "u_1", "owner@example.test", "Owner");
+  store.run(
+    `INSERT INTO studies
+       (id, key, title, created_by, created_ts, updated_ts, seq)
+     VALUES ('s_1', 'ONE', 'One', 'u_1', 1, 1, ?)`,
+    [nextSeq(store)],
+  );
+  store.run(
+    `INSERT INTO tasks
+       (id, number, study_id, stage, title, status, priority, created_by,
+        created_ts, updated_ts, seq)
+     VALUES ('t_1', 1, 's_1', 'background', 'Duplicate active runs', 'in-progress',
+             'no-priority', 'u_1', 1, 1, ?)`,
+    [nextSeq(store)],
+  );
+  for (const sessionId of ["sess_older", "sess_newer"]) {
+    store.run(
+      `INSERT INTO sessions (id, study_id, runtime_id, agent, opened_by, opened_ts, seq)
+       VALUES (?, 's_1', 'rt_1', 'codex', 'u_1', 1, ?)`,
+      [sessionId, nextSeq(store)],
+    );
+  }
+  const recovery = JSON.stringify({
+    version: 1,
+    state: { state: "executing", plan: { steps: [] } },
+    stream: [{ kind: "text", text: "preserved" }],
+    live: { text: "preserved" },
+    reviewing: false,
+  });
+  for (const [id, sessionId, prompt] of [
+    ["run_older", "sess_older", "older"],
+    ["run_newer", "sess_newer", "newer"],
+  ] as const) {
+    store.run(
+      `INSERT INTO turns
+         (id, session_id, task_id, prompt, started_ts, status, seq,
+          last_frame_seq, recovery_snapshot)
+       VALUES (?, ?, 't_1', ?, 1, 'running', ?, 1, ?)`,
+      [id, sessionId, prompt, nextSeq(store), recovery],
+    );
+  }
+
+  migrate(store);
+
+  const turns = store.all(
+    `SELECT id, status, ended_ts, recovery_snapshot
+       FROM turns WHERE task_id = 't_1' ORDER BY seq ASC`,
+  );
+  expect(turns[0]).toMatchObject({
+    id: "run_older",
+    status: "failed",
+    ended_ts: expect.any(Number),
+  });
+  expect(JSON.parse(turns[0]!.recovery_snapshot as string)).toEqual({
+    version: 1,
+    state: {
+      state: "failed",
+      reason: expect.stringContaining("active run"),
+    },
+    stream: [{ kind: "text", text: "preserved" }],
+    live: {},
+    reviewing: false,
+  });
+  expect(turns[1]).toMatchObject({
+    id: "run_newer",
+    status: "running",
+    ended_ts: null,
+  });
+  expect(store.get(`SELECT ended_ts FROM sessions WHERE id = 'sess_older'`)?.ended_ts)
+    .toEqual(turns[0]!.ended_ts);
+  expect(store.get(`SELECT ended_ts FROM sessions WHERE id = 'sess_newer'`)).toEqual({
+    ended_ts: null,
+  });
+  expect(store.get(
+    `SELECT run_count, last_run_status FROM tasks WHERE id = 't_1'`,
+  )).toEqual({ run_count: 1, last_run_status: "failed" });
+});
+
+it("durably rejects a second active turn after upgrading a v12 database", () => {
+  const store = freshStore();
+  for (const migration of MIGRATIONS.filter((entry) => entry.version <= 12)) {
+    store.tx(() => {
+      migration.up(store);
+      store.run(`INSERT INTO schema_version (version) VALUES (?)`, [migration.version]);
+    });
+  }
+  store.run(
+    `INSERT INTO sessions (id, study_id, runtime_id, agent, opened_by, opened_ts, seq)
+     VALUES ('sess_v12', 's_1', 'rt_1', 'codex', 'u_1', 1, ?)`,
+    [nextSeq(store)],
+  );
+  store.run(
+    `INSERT INTO turns
+       (id, session_id, task_id, prompt, started_ts, status, seq,
+        last_frame_seq, recovery_snapshot)
+     VALUES ('run_v12', 'sess_v12', 't_1', 'first', 1, 'running', ?, 1,
+             '{"version":1,"state":{"state":"planning"},"stream":[],"live":{},"reviewing":false}')`,
+    [nextSeq(store)],
+  );
+
+  migrate(store);
+
+  expect(store.all(`PRAGMA index_list(turns)`).map((row) => row.name)).toContain(
+    "one_active_turn_per_task",
+  );
+  expect(() =>
+    store.run(
+      `INSERT INTO turns
+         (id, session_id, task_id, prompt, started_ts, status, seq,
+          last_frame_seq, recovery_snapshot)
+       VALUES ('run_duplicate', 'sess_v12', 't_1', 'second', 2, 'running', ?, 0,
+               '{"version":1,"state":{"state":"planning"},"stream":[],"live":{},"reviewing":false}')`,
+      [nextSeq(store)],
+    ),
+  ).toThrow(/UNIQUE/);
 });
 
 it("keeps the highest-sequence settled status when an older active turn is failed by migration", () => {

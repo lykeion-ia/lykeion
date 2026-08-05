@@ -1541,6 +1541,8 @@ export function createInMemoryLab(
       return [];
     },
     async startRun(input: StartRunInput) {
+      if ([...activeRuns.values()].some((run) => run.taskId === input.taskId))
+        throw new LykeionError("conflict", `task ${input.taskId} already has an active run`);
       // Starting genuinely new work after an explicit Done reopens the Task.
       // This boundary lets completion preserve a later Done written while a
       // sibling was already running without making Done permanent forever.

@@ -565,13 +565,18 @@ describe("in-memory run simulation", () => {
     }
   });
 
-  it("settles concurrent turns in start sequence order when the second finishes first", async () => {
+  it("settles concurrent Task runs independently when the second finishes first", async () => {
     const api = createInMemoryApi(emptySeed());
     const study = await api.createStudy({ title: "Concurrent", key: "CON" });
     const task = await api.createTask({
       studyId: study.id,
       stage: "methods",
       title: "keep turn order",
+    });
+    const sibling = await api.createTask({
+      studyId: study.id,
+      stage: "methods",
+      title: "second concurrent task",
     });
     const first = await api.startRun({
       studyId: study.id,
@@ -581,7 +586,7 @@ describe("in-memory run simulation", () => {
     });
     const second = await api.startRun({
       studyId: study.id,
-      taskId: task.id,
+      taskId: sibling.id,
       prompt: "second turn",
       options: { planMode: false },
     });
@@ -637,12 +642,14 @@ describe("in-memory run simulation", () => {
       })),
     ).toEqual([
       { prompt: "first turn", sequence: 1, status: "failed" },
-      { prompt: "second turn", sequence: 2, status: "ok" },
     ]);
-    expect(detail.task.lastRunStatus).toBe("ok");
+    expect(detail.task.lastRunStatus).toBe("failed");
+    const siblingDetail = await api.getTask(sibling.id);
+    expect(siblingDetail.turns.map((turn) => turn.status)).toEqual(["ok"]);
+    expect(siblingDetail.task.lastRunStatus).toBe("ok");
   });
 
-  it("keeps an explicit Done written between sibling completions, then reopens for a new run", async () => {
+  it("keeps an explicit Done after completion, then reopens for a new run", async () => {
     const api = createInMemoryApi(emptySeed());
     const study = await api.createStudy({ title: "Done race", key: "DONE" });
     const task = await api.createTask({
@@ -653,13 +660,7 @@ describe("in-memory run simulation", () => {
     const first = await api.startRun({
       studyId: study.id,
       taskId: task.id,
-      prompt: "first sibling",
-      options: { planMode: false },
-    });
-    const second = await api.startRun({
-      studyId: study.id,
-      taskId: task.id,
-      prompt: "second sibling",
+      prompt: "first run",
       options: { planMode: false },
     });
 
@@ -674,11 +675,9 @@ describe("in-memory run simulation", () => {
         handle.onEvent((event) => {
           if (event.event === "completed") resolve();
         });
-      });
+    });
     const firstPermission = permissionFor(first);
-    const secondPermission = permissionFor(second);
     const firstDone = completionFor(first);
-    const secondDone = completionFor(second);
     first.submit({
       action: "permission",
       requestId: await firstPermission,
@@ -686,12 +685,6 @@ describe("in-memory run simulation", () => {
     });
     await firstDone;
     await api.updateTask(task.id, { status: "done" });
-    second.submit({
-      action: "permission",
-      requestId: await secondPermission,
-      decision: { decision: "allow", scope: "once" },
-    });
-    await secondDone;
     expect((await api.getTask(task.id)).task.status).toBe("done");
 
     const third = await api.startRun({

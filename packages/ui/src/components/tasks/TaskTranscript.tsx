@@ -88,9 +88,31 @@ export function StreamView({
     <>
       {blocksOf(stream).map((block, i) =>
         block.kind === "text" ? (
-          <AssistantMessage text={block.text} key={i} />
+          block.block === "thought" ? (
+            <details
+              key={i}
+              className="turn-block turn-block--thought"
+              data-testid="turn-block-thought"
+              data-block-kind="thought"
+            >
+              <summary>Thought</summary>
+              <AssistantMessage text={block.text} />
+            </details>
+          ) : (
+            <div
+              key={i}
+              className={`turn-block turn-block--${block.block ?? "interim"}`}
+              data-testid={`turn-block-${block.block ?? "interim"}`}
+              data-block-kind={block.block ?? "interim"}
+              role={block.block === "error" ? "alert" : undefined}
+            >
+              <AssistantMessage text={block.text} />
+            </div>
+          )
         ) : (
-          <ToolStepGroup key={i} steps={block.steps} stdoutFor={stdoutFor} />
+          <div key={i} data-testid="turn-block-tool" data-block-kind="tool">
+            <ToolStepGroup steps={block.steps} stdoutFor={stdoutFor} />
+          </div>
         ),
       )}
     </>

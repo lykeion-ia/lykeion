@@ -157,7 +157,9 @@ export interface ExecutionLogEntry {
  * a real chunk seam mid-word), which is exactly why this guarantee exists.
  */
 export type TurnItem =
-  { kind: "text"; text: string } | { kind: "step"; entry: ExecutionLogEntry };
+  /** `block` is absent only on legacy streams; new streams carry an explicit role. */
+  { kind: "text"; text: string; block?: "thought" | "interim" | "final" | "error" }
+  | { kind: "step"; entry: ExecutionLogEntry };
 
 /**
  * Where one agent turn stands. `AwaitingPermission.plan` is optional: a gate
@@ -350,6 +352,10 @@ export type RunEvent =
   | { event: "snapshot"; snapshot: ActiveRunSnapshot }
   | { event: "state"; state: TurnState }
   | { event: "assistant-text"; text: string; partial: boolean }
+  /** Provider-emitted researcher-visible planning/thought summary. */
+  | { event: "assistant-thought"; text: string; partial: boolean }
+  /** The ACP prompt response ended the current prose block. */
+  | { event: "assistant-text-final" }
   | { event: "plan-proposed"; plan: Plan }
   | { event: "permission-card"; request: PermissionRequest }
   | { event: "question-asked"; request: QuestionRequest }

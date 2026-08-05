@@ -45,8 +45,6 @@ export function useTaskRun(
   const [terminalStatusByRunId, setTerminalStatusByRunId] = useState<
     Record<string, CancelledTurnState>
   >({});
-  const runsRef = useRef(runState.runs);
-  runsRef.current = runState.runs;
   const [viewTurns, setViewTurns] = useState<ViewTurn[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const addViewTurn = useCallback(
@@ -57,11 +55,12 @@ export function useTaskRun(
   const applyHistory = useCallback(
     (detail: TaskDetail) => {
       const ids = persistedIds(detail);
-      const cancelled = runsRef.current.flatMap((run) =>
-        ids.has(run.runId) && run.state.state === "cancelled"
-          ? [{ runId: run.runId, state: run.state }]
-          : [],
-      );
+      const cancelled = detail.turns.flatMap((turn) => {
+        const state = runState.terminalStateFor(turn.runId);
+        return state?.state === "cancelled"
+          ? [{ runId: turn.runId, state }]
+          : [];
+      });
       if (cancelled.length > 0) {
         setTerminalStatusByRunId((current) => {
           const next = { ...current };

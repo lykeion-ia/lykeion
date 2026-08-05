@@ -311,7 +311,7 @@ it("starts a fresh stream with an authoritative snapshot before later frames", a
     event: expect.objectContaining({
       event: "snapshot",
       snapshot: expect.objectContaining({
-        stream: [],
+        stream: [{ kind: "text", text: "hi", block: "interim" }],
         live: { text: "hi" },
         lastEventSeq: 2,
       }),
@@ -471,7 +471,7 @@ it("recovers an active run after a server rebuild and supplies a terminal snapsh
   expect(resumed.snapshot).toEqual(expect.objectContaining({
     runId: lab.runId,
     lastEventSeq: 1,
-    stream: [{ kind: "text", text: "before restart" }],
+    stream: [{ kind: "text", text: "before restart", block: "interim" }],
   }));
 
   await postFrames(rebuiltLab, [
@@ -554,7 +554,7 @@ it("gives a fresh browser opening a finished run one terminal snapshot and a clo
         event: "snapshot",
         snapshot: expect.objectContaining({
           state: { state: "completed" },
-          stream: [{ kind: "text", text: "hi" }],
+          stream: [{ kind: "text", text: "hi", block: "interim" }],
           lastEventSeq: 2,
         }),
       }),

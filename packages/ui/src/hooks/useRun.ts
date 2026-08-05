@@ -80,6 +80,8 @@ export interface UseRun {
   resume: () => Promise<boolean>;
   /** Remove blocks whose matching settled turns have been read successfully. */
   reconcile: (persistedRunIds: ReadonlySet<string>) => void;
+  /** Terminal state retained synchronously until history reconciliation. */
+  terminalStateFor: (runId: string) => TurnState | undefined;
   start: (prompt: string, opts?: StartOptions) => void;
   reset: () => void;
 
@@ -133,6 +135,8 @@ interface RunEntry {
   run: RunRecord | null;
   reviewing: boolean;
   settled: boolean;
+  /** Contiguous delta text awaiting an optional compatibility whole frame. */
+  partialText: string | null;
 }
 
 type RunEntries = Record<string, RunEntry>;
@@ -143,6 +147,18 @@ type RunAction =
   | { type: "event"; runId: string; event: RunEvent }
   | { type: "cancel"; runId: string }
   | { type: "remove"; runIds: ReadonlySet<string> };
+
+function partialTextFromSnapshot(snapshot: ActiveRunSnapshot): string | null {
+  if (isTerminal(snapshot.state.state)) return null;
+  const liveText = snapshot.live.text;
+  const last = snapshot.stream[snapshot.stream.length - 1];
+  return liveText &&
+    last?.kind === "text" &&
+    (last.block === undefined || last.block === "interim") &&
+    last.text === liveText
+    ? liveText
+    : null;
+}
 
 function entryFromSnapshot(snapshot: ActiveRunSnapshot): RunEntry {
   return {
@@ -157,6 +173,11 @@ function entryFromSnapshot(snapshot: ActiveRunSnapshot): RunEntry {
     run: null,
     reviewing: snapshot.reviewing,
     settled: isTerminal(snapshot.state.state),
+    // A reload may land after durable delta chunks but before the adapter's
+    // compatibility whole-message frame. The live tail and the ordered last
+    // interim block together identify that exact pending assembly without
+    // adding partial metadata to the public snapshot contract.
+    partialText: partialTextFromSnapshot(snapshot),
   };
 }
 
@@ -170,12 +191,57 @@ function mergeStep(stream: TurnItem[], entry: ExecutionLogEntry): TurnItem[] {
   return next;
 }
 
+function appendBlock(stream: TurnItem[], text: string, block: "thought" | "interim" | "error"): TurnItem[] {
+  const last = stream[stream.length - 1];
+  if (last?.kind === "text" && last.block === block)
+    return [...stream.slice(0, -1), { ...last, text: last.text + text }];
+  return [...stream, { kind: "text", text, block }];
+}
+
 function promoteLiveText(stream: TurnItem[], live: LiveTurn): TurnItem[] {
   const text = live.text;
   if (!text) return stream;
   const last = stream[stream.length - 1];
   if (last?.kind === "text" && last.text === text) return stream;
-  return [...stream, { kind: "text", text }];
+  return [...stream, { kind: "text", text, block: "interim" }];
+}
+
+function markFinalText(stream: TurnItem[]): TurnItem[] {
+  for (let index = stream.length - 1; index >= 0; index -= 1) {
+    const item = stream[index];
+    if (item?.kind !== "text" || item.block === "thought" || item.block === "error") continue;
+    const next = [...stream];
+    next[index] = { ...item, block: "final" };
+    return next;
+  }
+  return stream;
+}
+
+function mergeTerminalStream(landed: TurnItem[] | undefined, observed: TurnItem[]): TurnItem[] {
+  if (!landed || landed.length === 0) return observed;
+  const merged = [...landed];
+  const textOccurrences = new Map<string, number>();
+  for (const item of observed) {
+    if (item.kind === "step") {
+      const index = merged.findIndex(
+        (candidate) => candidate.kind === "step" && candidate.entry.toolUseId === item.entry.toolUseId,
+      );
+      if (index === -1) merged.push(item);
+      else merged[index] = item;
+      continue;
+    }
+    const occurrence = (textOccurrences.get(item.text) ?? 0) + 1;
+    textOccurrences.set(item.text, occurrence);
+    let seen = 0;
+    const index = merged.findIndex((candidate) => {
+      if (candidate.kind !== "text" || candidate.text !== item.text) return false;
+      seen += 1;
+      return seen === occurrence;
+    });
+    if (index === -1) merged.push(item);
+    else merged[index] = item;
+  }
+  return merged;
 }
 
 function applyEvent(entry: RunEntry, event: RunEvent): RunEntry {
@@ -193,13 +259,27 @@ function applyEvent(entry: RunEntry, event: RunEvent): RunEntry {
       };
     }
     case "assistant-text":
-      // Partial text is already represented by the replace-only live tail.
-      return event.partial
-        ? entry
-        : {
-            ...entry,
-            stream: [...entry.stream, { kind: "text", text: event.text }],
-          };
+      if (event.partial)
+        return {
+          ...entry,
+          stream: appendBlock(entry.stream, event.text, "interim"),
+          partialText: (entry.partialText ?? "") + event.text,
+        };
+      if (entry.partialText === event.text)
+        return { ...entry, partialText: null };
+      return {
+        ...entry,
+        stream: [...entry.stream, { kind: "text", text: event.text, block: "interim" }],
+        partialText: null,
+      };
+    case "assistant-thought":
+      return {
+        ...entry,
+        stream: appendBlock(entry.stream, event.text, "thought"),
+        partialText: null,
+      };
+    case "assistant-text-final":
+      return { ...entry, stream: markFinalText(entry.stream), partialText: null };
     case "plan-proposed":
       return { ...entry, plan: event.plan };
     case "permission-card":
@@ -221,22 +301,32 @@ function applyEvent(entry: RunEntry, event: RunEvent): RunEntry {
         },
       };
     case "log-entry":
-      return { ...entry, stream: mergeStep(entry.stream, event.entry) };
+      return {
+        ...entry,
+        stream: mergeStep(entry.stream, event.entry),
+        partialText: null,
+      };
     case "live":
       return { ...entry, live: event.live };
     case "reviewing":
       return { ...entry, reviewing: true };
     case "completed": {
-      // ACP may finish after sending only partial assistant-text frames. Their
-      // assembled prose lives solely in the replace-only live tail, so land it
-      // at the end before clearing that tail. An identical final text frame is
-      // already the last stream item and must remain a single message.
-      const stream = promoteLiveText(entry.stream, entry.live);
+      // Only assistant-text-final assigns final semantics. A terminal frame
+      // alone cannot distinguish a complete answer from prose cut off by Stop.
+      // Legacy snapshots that carried only live.text still land as interim.
+      let stream = entry.stream;
+      if (stream.length === 0) stream = promoteLiveText(stream, entry.live);
+      if (event.state.state === "failed" && event.state.reason)
+        stream = appendBlock(stream, event.state.reason, "error");
       const landedRun = event.run ?? entry.run;
       const run = landedRun
         ? {
             ...landedRun,
-            stream: promoteLiveText(landedRun.stream ?? entry.stream, entry.live),
+            // The subscribed stream already includes every frame observed
+            // after the last durable snapshot. A completion-carried record
+            // can lag that cursor, so the locally folded typed blocks are the
+            // authoritative terminal view until history refresh replaces it.
+            stream: mergeTerminalStream(landedRun.stream, stream),
           }
         : null;
       return {
@@ -247,6 +337,7 @@ function applyEvent(entry: RunEntry, event: RunEvent): RunEntry {
         reviewing: false,
         settled: true,
         run,
+        partialText: null,
       };
     }
     default:
@@ -326,6 +417,7 @@ export function useRun(
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [recovering, setRecovering] = useState(false);
   const controls = useRef(new Map<string, AttachedHandle>());
+  const terminalStates = useRef(new Map<string, TurnState>());
   const epoch = useRef(0);
   const recoveryAttempt = useRef(0);
 
@@ -372,6 +464,13 @@ export function useRun(
         authoritative: entry !== undefined,
       });
       const subscribed = handle.onEvent((event) => {
+        if (event.event === "completed")
+          terminalStates.current.set(handle.runId, event.state);
+        else if (
+          event.event === "snapshot" &&
+          isTerminal(event.snapshot.state.state)
+        )
+          terminalStates.current.set(handle.runId, event.snapshot.state);
         if (event.event === "snapshot") {
           const attached = controls.current.get(handle.runId);
           if (attached?.handle === handle) attached.authoritative = true;
@@ -467,6 +566,7 @@ export function useRun(
 
   const cancelById = useCallback(
     (runId: string) => {
+      terminalStates.current.set(runId, { state: "cancelled" });
       submit(runId, { action: "cancel" });
       dispatch({ type: "cancel", runId });
     },
@@ -476,6 +576,7 @@ export function useRun(
   const reconcile = useCallback(
     (persistedRunIds: ReadonlySet<string>) => {
       for (const runId of persistedRunIds) release(runId);
+      for (const runId of persistedRunIds) terminalStates.current.delete(runId);
       dispatch({ type: "remove", runIds: persistedRunIds });
     },
     [release],
@@ -485,6 +586,7 @@ export function useRun(
     epoch.current += 1;
     recoveryAttempt.current += 1;
     detachAll();
+    terminalStates.current.clear();
     dispatch({ type: "clear" });
     setPendingStarts(0);
     setStartError(null);
@@ -500,6 +602,7 @@ export function useRun(
     recoveryAttempt.current += 1;
     const mine = epoch.current;
     detachAll();
+    terminalStates.current.clear();
     dispatch({ type: "clear" });
     setPendingStarts(0);
     setStartError(null);
@@ -563,6 +666,10 @@ export function useRun(
     const runId = runs[runs.length - 1]?.runId;
     if (runId) cancelById(runId);
   }, [runs, cancelById]);
+  const terminalStateFor = useCallback(
+    (runId: string) => terminalStates.current.get(runId),
+    [],
+  );
   const approvePlan = useCallback(() => {
     const runId = runs[runs.length - 1]?.runId;
     if (runId) submit(runId, { action: "approve-plan" });
@@ -602,6 +709,7 @@ export function useRun(
     recovering,
     resume,
     reconcile,
+    terminalStateFor,
     start,
     reset,
     state: latest?.state ?? null,

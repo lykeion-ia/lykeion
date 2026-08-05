@@ -46,27 +46,6 @@ const plan = (name: string) => ({
   raw: `1. ${name} step`,
 });
 
-const permissionSnapshot: ActiveRunSnapshot = {
-  runId: "run-claude",
-  sequence: 3,
-  prompt: "Claude live prompt",
-  agent: "claude",
-  state: {
-    state: "awaiting-permission",
-    plan: plan("Claude"),
-    request: {
-      id: "permission-claude",
-      access: { kind: "read-path", target: "claude.csv" },
-      tool: "Read",
-    },
-  },
-  plan: plan("Claude"),
-  stream: [{ kind: "text", text: "Claude is working" }],
-  live: {},
-  reviewing: false,
-  lastEventSeq: 5,
-};
-
 const questionSnapshot: ActiveRunSnapshot = {
   runId: "run-codex",
   sequence: 4,
@@ -118,115 +97,30 @@ function resumed(snapshot: ActiveRunSnapshot) {
   };
 }
 
-describe("the Task page with concurrent live turns", () => {
-  it("hydrates chronological provider blocks with independent gates, Stop, and composer concurrency", async () => {
+describe("the Task page with recovered live turns", () => {
+  it("hydrates a recovered Task run without presenting its provider", async () => {
     const base = createInMemoryApi();
-    const claude = resumed(permissionSnapshot);
     const codex = resumed(questionSnapshot);
-    let resolveStart!: (handle: RunHandle) => void;
-    const freshSubscribers = new Set<(event: RunEvent) => void>();
-    const fresh: RunHandle = {
-      runId: "run-fresh",
-      onEvent(cb) {
-        freshSubscribers.add(cb);
-        queueMicrotask(() =>
-          cb({
-            event: "snapshot",
-            snapshot: {
-              runId: "run-fresh",
-              sequence: 5,
-              prompt: "start a third turn",
-              agent: "claude",
-              state: { state: "planning" },
-              stream: [],
-              live: {},
-              reviewing: false,
-              lastEventSeq: 0,
-            },
-          }),
-        );
-        return () => freshSubscribers.delete(cb);
-      },
-      submit() {},
-      detach() {
-        freshSubscribers.clear();
-      },
-      close() {},
-    };
     const api: LykeionApi = {
       ...base,
       listAgentClis: async () => CLIS,
-      resumeRuns: vi.fn(async () => [claude.handle, codex.handle]),
-      startRun: vi.fn(
-        () =>
-          new Promise<RunHandle>((resolve) => {
-            resolveStart = resolve;
-          }),
-      ),
+      resumeRuns: vi.fn(async () => [codex.handle]),
     };
-    const user = userEvent.setup();
     window.location.hash = ROUTE;
     render(<App api={api} />);
 
-    const blocks = await screen.findAllByTestId("live-turn");
-    expect(blocks).toHaveLength(2);
-    const claudeBlock = blocks.find((block) =>
-      block.textContent?.includes("Claude live prompt"),
-    )!;
-    const codexBlock = blocks.find((block) =>
-      block.textContent?.includes("Codex live prompt"),
-    )!;
-    expect(within(claudeBlock).getByText("Claude Code")).toBeInTheDocument();
-    expect(within(codexBlock).getByText("Codex")).toBeInTheDocument();
-    expect(within(claudeBlock).getByTestId("run-strip")).toHaveTextContent(
+    const block = await screen.findByTestId("live-turn");
+    expect(within(block).queryByTestId("run-provider")).not.toBeInTheDocument();
+    expect(within(block).queryByText("Codex")).not.toBeInTheDocument();
+    expect(api.resumeRuns).toHaveBeenCalledWith("t_3");
+    expect(within(block).getByTestId("run-strip")).toHaveTextContent(
       "Step 1 of 1",
     );
-    expect(within(codexBlock).getByTestId("run-strip")).toHaveTextContent(
-      "Step 1 of 1",
-    );
-    expect(within(claudeBlock).getByRole("button", { name: "Deny" })).toBeInTheDocument();
-    expect(within(codexBlock).getByText("How deep should Codex go?")).toBeInTheDocument();
+    expect(within(block).getByText("How deep should Codex go?")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Mark Done" }),
     ).not.toBeInTheDocument();
-
-    const historic = screen.getByText(/Motion-correct the deprivation cohort/);
-    const historicOrder = historic.compareDocumentPosition(claudeBlock);
-    const liveOrder = claudeBlock.compareDocumentPosition(codexBlock);
-    expect(historicOrder & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(liveOrder & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-
-    await user.click(within(claudeBlock).getByRole("button", { name: "Deny" }));
-    await user.click(within(codexBlock).getByRole("button", { name: "Fast" }));
-    await user.click(within(claudeBlock).getByRole("button", { name: "Stop" }));
-    expect(claude.submitted).toEqual([
-      {
-        action: "permission",
-        requestId: "permission-claude",
-        decision: { decision: "deny" },
-      },
-      { action: "cancel" },
-    ]);
-    expect(codex.submitted).toEqual([
-      {
-        action: "answer-question",
-        requestId: "question-codex",
-        answer: { selected: ["Fast"] },
-      },
-    ]);
-
-    const composer = screen.getByLabelText("Message the agent");
-    expect(composer).toBeEnabled();
-    await user.type(composer, "start a third turn");
-    await user.click(screen.getByRole("button", { name: "Send" }));
-    expect(composer).toBeDisabled();
-    expect(screen.getAllByTestId("live-turn")).toHaveLength(2);
-
-    await act(async () => resolveStart(fresh));
-    await waitFor(() => expect(composer).toBeEnabled());
-    expect(screen.getAllByTestId("live-turn")).toHaveLength(3);
-    expect(screen.getByText("Codex thinking")).toBeInTheDocument();
-    expect(within(codexBlock).getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
 
   it("restores and reports a rejected start without creating a ghost turn, then clears the error on retry", async () => {

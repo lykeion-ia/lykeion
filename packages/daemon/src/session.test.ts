@@ -71,8 +71,11 @@ it("carries thinking on its own channel, never glued to prose", async () => {
   await until(() => settled(events));
   const live = events.filter((e) => e.event === "live") as Array<{ live: { thinking?: string } }>;
   expect(live.at(-1)?.live.thinking).toBe("weighing it up");
+  const thoughts = events.filter((e) => e.event === "assistant-thought") as Array<{ text: string }>;
+  expect(thoughts.map((thought) => thought.text).join("")).toBe("weighing it up");
   const prose = events.filter((e) => e.event === "assistant-text") as Array<{ text: string }>;
   expect(prose.map((p) => p.text).join("")).toBe("done");
+  expect(events.filter((e) => e.event === "assistant-text-final")).toHaveLength(1);
 });
 
 it("turns a tool call and its result into one logical log entry that ran", async () => {
@@ -340,6 +343,20 @@ it("stops a turn and lands it cancelled, not failed", async () => {
   ]);
   s.prompt("go");
   await until(() => settled(events));
+  expect(events.at(-1)).toEqual({ event: "completed", state: { state: "cancelled" } });
+});
+
+it("does not finalize prose cut off by cancellation", async () => {
+  const { s, events } = await session([
+    { emit: "agent_message_chunk", text: "unfinished answer" },
+    { wait: "cancel", timeoutMs: 5000 },
+  ]);
+  s.prompt("go");
+  await until(() => events.some((event) => event.event === "assistant-text"));
+  s.cancel();
+  await until(() => settled(events));
+
+  expect(events.filter((event) => event.event === "assistant-text-final")).toEqual([]);
   expect(events.at(-1)).toEqual({ event: "completed", state: { state: "cancelled" } });
 });
 

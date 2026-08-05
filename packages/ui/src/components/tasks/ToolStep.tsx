@@ -239,7 +239,8 @@ export interface ResolvedStep {
  *  titles already resolved (so the promotion/omission decision below can
  *  never disagree with what renders). */
 export type StreamBlock =
-  { kind: "text"; text: string } | { kind: "steps"; steps: ResolvedStep[] };
+  { kind: "text"; text: string; block?: "thought" | "interim" | "final" | "error" }
+  | { kind: "steps"; steps: ResolvedStep[] };
 
 /**
  * Fold an arrival-order stream into ordered render blocks, resolving each
@@ -302,6 +303,7 @@ export function blocksOf(streamIn: TurnItem[]): StreamBlock[] {
       // the todos.") over unrelated work. It stays prose — the only rendering
       // that keeps it, and keeps it attached to nothing it does not describe.
       const promotable =
+        item.block === undefined &&
         next?.kind === "step" &&
         acceptsNarrationTitle(next.entry) &&
         !next.entry.title &&
@@ -310,7 +312,7 @@ export function blocksOf(streamIn: TurnItem[]): StreamBlock[] {
         pendingNarration = item.text.trim();
         continue; // becomes the next step's title below — omit from prose.
       }
-      blocks.push({ kind: "text", text: item.text });
+      blocks.push({ kind: "text", text: item.text, ...(item.block === undefined ? {} : { block: item.block }) });
     } else {
       if (isControlPlaneStep(item.entry)) {
         // Renders nothing — and therefore changes nothing else either. It

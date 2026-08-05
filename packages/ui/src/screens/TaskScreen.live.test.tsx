@@ -27,8 +27,10 @@ import {
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import type {
+  ActiveRunSnapshot,
   ExecutionLogEntry,
   LykeionApi,
+  ResumedRun,
   RunEvent,
   RunHandle,
 } from "@lykeion/api";
@@ -136,6 +138,41 @@ function expectStillRunning() {
 beforeEach(cleanup);
 
 describe("the live turn", () => {
+  it("restores Stop in the composer for a recovered active run", async () => {
+    const base = createInMemoryApi();
+    const snapshot: ActiveRunSnapshot = {
+      runId: "run-recovered",
+      sequence: 3,
+      prompt: "continue the analysis",
+      agent: "codex",
+      state: { state: "executing", plan: { steps: [], raw: "" } },
+      stream: [],
+      live: {},
+      reviewing: false,
+      lastEventSeq: 0,
+    };
+    const recovered: ResumedRun = {
+      runId: snapshot.runId,
+      snapshot,
+      onEvent(cb) {
+        queueMicrotask(() => cb({ event: "snapshot", snapshot }));
+        return () => {};
+      },
+      submit() {},
+      detach() {},
+      close() {},
+    };
+    const api: LykeionApi = {
+      ...base,
+      resumeRuns: async () => [recovered],
+    };
+    window.location.hash = ROUTE;
+    render(<App api={api} />);
+
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+  });
+
   it("renders a tool card while the turn is still running", async () => {
     const { emit } = await startTurn();
     emit({ event: "log-entry", entry: readEntry("data.csv") });

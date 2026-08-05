@@ -48,6 +48,9 @@ function recoverable(snapshot: ActiveRunSnapshot) {
     emit(event: RunEvent) {
       act(() => subscribers.forEach((cb) => cb(event)));
     },
+    emitBeforeCommit(event: RunEvent) {
+      subscribers.forEach((cb) => cb(event));
+    },
   };
 }
 
@@ -116,6 +119,49 @@ describe("Task transcript recovery", () => {
     expect(
       result.current.history.filter((turn) => turn.runId === "run-live"),
     ).toHaveLength(1);
+  });
+
+  it("retains cancellation status when history reconciles before the terminal render commits", async () => {
+    const base = createInMemoryApi();
+    const original = await base.getTask("t_3");
+    const resumed = recoverable(activeSnapshot("run-race-cancelled"));
+    let resolveHistory!: (detail: TaskDetail) => void;
+    const settledTurn: TaskTurn = {
+      runId: "run-race-cancelled",
+      sequence: 3,
+      ts: 30,
+      prompt: "resume this turn",
+      messages: [],
+      status: "failed",
+      code: [],
+      outputs: [],
+    };
+    const api: LykeionApi = {
+      ...base,
+      resumeRuns: async () => [resumed.handle],
+      getTask: () =>
+        new Promise<TaskDetail>((resolve) => {
+          resolveHistory = resolve;
+        }),
+    };
+    const { result } = renderHook(() => useTaskRun("s_cmp", "t_3"), {
+      wrapper: wrapper(api),
+    });
+    await waitFor(() => expect(result.current.run.runs).toHaveLength(1));
+
+    await act(async () => {
+      resumed.emitBeforeCommit({
+        event: "completed",
+        state: { state: "cancelled" },
+      });
+      resolveHistory({ ...original, turns: [...original.turns, settledTurn] });
+      await Promise.resolve();
+    });
+
+    expect(result.current.run.runs).toEqual([]);
+    expect(result.current.terminalStatusByRunId["run-race-cancelled"]).toEqual(
+      { state: "cancelled" },
+    );
   });
 
   it("retains a terminal block when its completion refresh fails", async () => {

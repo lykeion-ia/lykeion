@@ -31,13 +31,13 @@ import {
 } from "../components/tasks/ArtifactsPanel";
 import { NotebookPanel } from "../components/tasks/NotebookPanel";
 import { ArtifactPane } from "../components/tasks/ArtifactPane";
-import { AssistantMessage } from "../components/tasks/AssistantMessage";
 import { ModelSwitcher } from "../components/tasks/ModelSwitcher";
 import {
   TaskTranscript,
   StreamView,
   UserBubble,
 } from "../components/tasks/TaskTranscript";
+import { AssistantMessage } from "../components/tasks/AssistantMessage";
 import { modelsForCli } from "../lib/cli-models";
 import { useRouter, type Route } from "../router";
 import {
@@ -74,16 +74,14 @@ type LiveRunState = keyof typeof RUN_LINE_LABEL;
 const NEW_TASK_TITLE = "New task";
 
 /** One run owns one complete piece of live chrome. Keeping this boundary
- * keyed by `runId` prevents a sibling's provider, gate, stdout or Stop action
- * from leaking into the block beside it. */
+ * keyed by `runId` prevents its gates and streamed output from leaking into
+ * another Task's transcript. */
 function LiveRunBlock({
   run,
-  provider,
   onEditPrompt,
   onOpenNotebook,
 }: {
   run: ManagedRun;
-  provider: string;
   onEditPrompt?: (prompt: string) => void;
   onOpenNotebook?: () => void;
 }) {
@@ -108,21 +106,6 @@ function LiveRunBlock({
       data-testid="live-turn"
       data-run-id={run.runId}
     >
-      <div className="live-turn-head">
-        <span className="live-turn-provider" data-testid="run-provider">
-          {provider}
-        </span>
-        {run.running && (
-          <button
-            type="button"
-            className="btn live-turn-stop"
-            onClick={run.cancel}
-          >
-            Stop
-          </button>
-        )}
-      </div>
-
       <UserBubble
         prompt={run.prompt}
         onEdit={run.running ? undefined : onEditPrompt}
@@ -132,12 +115,12 @@ function LiveRunBlock({
         stdoutFor={landedStream ? undefined : stdoutFor}
       />
 
-      {run.live.thinking ? (
+      {run.live.thinking && !stream.some((item) => item.kind === "text" && item.block === "thought") ? (
         <div className="live-thinking" data-testid="live-thinking">
           {run.live.thinking}
         </div>
       ) : null}
-      {run.live.text ? (
+      {run.live.text && !stream.some((item) => item.kind === "text" && item.block !== "thought" && item.block !== "error") ? (
         <div className="live-text" data-testid="live-text">
           <AssistantMessage text={run.live.text} live />
         </div>
@@ -884,6 +867,7 @@ export function TaskScreen({
       ? "in-review"
       : task.status;
   const anyRunning = runState.runs.some((run) => run.running);
+  const activeRun = runState.runs.find((run) => run.running);
   // Finishing any live sibling can still update this Task. Keep Done out of
   // reach until all of them settle; the stores also preserve a later Done as
   // the authoritative write if another client creates this race directly.
@@ -921,21 +905,12 @@ export function TaskScreen({
           setRightPaneOpen(true);
         };
 
-  const providerFor = (agent: string): string => {
-    const cli = clis.find(
-      (candidate) =>
-        candidate.id === agent ||
-        `${candidate.runtimeId}:${candidate.id}` === agent,
-    );
-    return cli?.name ?? (agent === "default" ? "Default agent" : agent);
-  };
   const liveTurns = runState.runs.map((run) => ({
     runId: run.runId,
     sequence: run.sequence,
     content: (
       <LiveRunBlock
         run={run}
-        provider={providerFor(run.agent)}
         onEditPrompt={editPrompt}
         onOpenNotebook={openNotebook}
       />
@@ -974,7 +949,8 @@ export function TaskScreen({
         onSend={send}
         disabled={!recoveryReady || runState.starting}
         blocker={blocker}
-        running={false}
+        running={activeRun !== undefined}
+        onStop={activeRun?.cancel}
         switcher={switcher}
         draft={draft}
         onDraftChange={setDraft}

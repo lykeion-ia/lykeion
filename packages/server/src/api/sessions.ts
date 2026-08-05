@@ -4,6 +4,7 @@ import type { Store } from "../store/store";
 import { healthFor } from "../runtime-health";
 import {
   openSession,
+  activeRunIdForTask,
   activeRunSnapshotsForTask,
   liveSessionFor,
   recordTurn,
@@ -107,6 +108,12 @@ export function sessionsApi(deps: Deps): SessionsApi {
         );
 
       const { runId, sessionId } = store.tx(() => {
+        const activeRunId = activeRunIdForTask(store, input.taskId);
+        if (activeRunId !== undefined)
+          throw new LykeionError(
+            "conflict",
+            `task ${input.taskId} already has an active run`,
+          );
         const ts = now();
         const sessionId =
           liveSessionFor(store, input.taskId, resolved.runtimeId, resolved.agent) ??

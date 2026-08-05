@@ -227,6 +227,17 @@ async function labWithPairedMachine(): Promise<SessionsLab> {
   };
 }
 
+async function completeRun(lab: SessionsLab, runId: string): Promise<Response> {
+  return fetch(`${lab.base}/daemon/run/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify({
+      runId,
+      frames: [{ seq: 1, event: { event: "completed", state: { state: "completed" } } }],
+    }),
+  });
+}
+
 it("opens a session, records a turn, and hands the machine a start-run", async () => {
   const lab = await labWithPairedMachine();
   const taken: RunCommand[] = [];
@@ -243,7 +254,48 @@ it("opens a session, records a turn, and hands the machine a start-run", async (
   expect(lab.store.get(`SELECT status FROM turns WHERE id = ?`, [runId])?.status).toBe("running");
 });
 
-it("reuses the Task's live session for a second turn on the same agent", async () => {
+it("refuses a second active run for the same Task", async () => {
+  const lab = await labWithPairedMachine();
+  const input = {
+    studyId: lab.studyId,
+    taskId: lab.taskId,
+    prompt: "first",
+    // The fixture pairs the stubbed Claude catalogue entry; this is a
+    // server-unit fixture, not a live-provider assertion.
+    options: { planMode: false, agent: "claude" },
+  } as const;
+
+  await lab.ownerApi.startRun(input);
+  await expect(
+    lab.ownerApi.startRun({ ...input, prompt: "second" }),
+  ).rejects.toMatchObject({ code: "conflict" });
+
+  expect(lab.store.all(`SELECT id FROM turns WHERE task_id = ?`, [lab.taskId]))
+    .toHaveLength(1);
+});
+
+it("allows different Tasks in one Study to run concurrently", async () => {
+  const lab = await labWithPairedMachine();
+  const sibling = await lab.ownerApi.createTask({
+    studyId: lab.studyId,
+    stage: "background",
+    title: "Sibling task",
+  });
+
+  const first = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "first",
+    options: { planMode: false, agent: "claude" },
+  });
+  const second = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: sibling.id, prompt: "second",
+    options: { planMode: false, agent: "claude" },
+  });
+
+  expect(first.runId).not.toBe(second.runId);
+  expect(lab.store.all(`SELECT id FROM turns WHERE ended_ts IS NULL`)).toHaveLength(2);
+});
+
+it("reuses the Task's live session for a later turn on the same agent", async () => {
   const lab = await labWithPairedMachine();
   const go = () =>
     lab.ownerApi.startRun({
@@ -251,29 +303,23 @@ it("reuses the Task's live session for a second turn on the same agent", async (
       options: { planMode: false, agent: "claude" },
     });
   const first = await go();
+  expect((await completeRun(lab, first.runId)).status).toBe(200);
   const second = await go();
   expect(second.runId).not.toBe(first.runId);
   expect(lab.store.all(`SELECT id FROM sessions`)).toHaveLength(1);
   expect(lab.store.all(`SELECT id FROM turns`)).toHaveLength(2);
 });
 
-it("resumes every owned active turn in durable order and reveals none to another member", async () => {
+it("resumes an owned active turn and reveals it to no other member", async () => {
   const lab = await labWithPairedMachine();
   const first = await lab.ownerApi.startRun({
     studyId: lab.studyId, taskId: lab.taskId, prompt: "first",
     options: { planMode: false, agent: "claude" },
   });
-  const second = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "second",
-    options: { planMode: false, agent: "claude" },
-  });
-
   const resumed = await lab.ownerApi.resumeRuns(lab.taskId);
   expect(resumed.map((run) => ({ runId: run.runId, prompt: run.snapshot.prompt }))).toEqual([
     { runId: first.runId, prompt: "first" },
-    { runId: second.runId, prompt: "second" },
   ]);
-  expect(resumed[1]!.snapshot.sequence).toBe(resumed[0]!.snapshot.sequence + 1);
   expect(await lab.memberApi.resumeRuns(lab.taskId)).toEqual([]);
 });
 
@@ -350,6 +396,8 @@ it("replays only what a cursor missed when /daemon/commands reconnects", async (
     options: { planMode: false, agent: "claude" },
   });
   const [first] = await readCommands(lab.base, lab.token, undefined, 1);
+  expect((await completeRun(lab, lab.store.get(`SELECT id FROM turns WHERE task_id = ?`, [lab.taskId])!.id as string)).status)
+    .toBe(200);
 
   await lab.ownerApi.startRun({
     studyId: lab.studyId, taskId: lab.taskId, prompt: "second",
@@ -447,14 +495,10 @@ it("accepts run events posted by the machine that actually owns the run", async 
   expect(seen).toEqual([{ seq: 1, event: { event: "assistant-text", text: "hi", partial: false } }]);
 });
 
-it("derives lastRunStatus from transcript sequence when concurrent turns settle out of order", async () => {
+it("derives lastRunStatus from the latest settled turn", async () => {
   const lab = await labWithPairedMachine();
   const first = await lab.ownerApi.startRun({
     studyId: lab.studyId, taskId: lab.taskId, prompt: "first",
-    options: { planMode: false, agent: "claude" },
-  });
-  const second = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "second",
     options: { planMode: false, agent: "claude" },
   });
   const postCompletion = (runId: string, state: Record<string, unknown>) =>
@@ -464,23 +508,23 @@ it("derives lastRunStatus from transcript sequence when concurrent turns settle 
       body: JSON.stringify({ runId, frames: [{ seq: 1, event: { event: "completed", state } }] }),
     });
 
-  expect((await postCompletion(second.runId, { state: "completed" })).status).toBe(200);
-  expect((await postCompletion(first.runId, { state: "failed", reason: "older failed late" })).status)
+  expect((await postCompletion(first.runId, { state: "failed", reason: "first failed" })).status)
     .toBe(200);
+  const second = await lab.ownerApi.startRun({
+    studyId: lab.studyId, taskId: lab.taskId, prompt: "second",
+    options: { planMode: false, agent: "claude" },
+  });
+  expect((await postCompletion(second.runId, { state: "completed" })).status).toBe(200);
 
   const detail = await lab.ownerApi.getTask(lab.taskId);
   expect(detail.turns.map((turn) => turn.status)).toEqual(["failed", "ok"]);
   expect(detail.task.lastRunStatus).toBe("ok");
 });
 
-it("preserves Done across an older sibling completion and reopens it for later new work", async () => {
+it("preserves Done after a completed run and reopens it for later new work", async () => {
   const lab = await labWithPairedMachine();
   const first = await lab.ownerApi.startRun({
     studyId: lab.studyId, taskId: lab.taskId, prompt: "first sibling",
-    options: { planMode: false, agent: "claude" },
-  });
-  const second = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "second sibling",
     options: { planMode: false, agent: "claude" },
   });
   const postSuccess = (runId: string) =>
@@ -495,7 +539,6 @@ it("preserves Done across an older sibling completion and reopens it for later n
 
   expect((await postSuccess(first.runId)).status).toBe(200);
   await lab.ownerApi.updateTask(lab.taskId, { status: "done" });
-  expect((await postSuccess(second.runId)).status).toBe(200);
   expect((await lab.ownerApi.getTask(lab.taskId)).task.status).toBe("done");
 
   const third = await lab.ownerApi.startRun({
@@ -549,7 +592,7 @@ it("reopens a completed turn with prose and execution steps in their durable arr
       prompt: "inspect counts",
       messages: ["Before the read.After the read."],
       stream: [
-        { kind: "text", text: "Before the read." },
+        { kind: "text", text: "Before the read.", block: "interim" },
         {
           kind: "step",
           entry: {
@@ -563,7 +606,7 @@ it("reopens a completed turn with prose and execution steps in their durable arr
             isError: false,
           },
         },
-        { kind: "text", text: "After the read." },
+        { kind: "text", text: "After the read.", block: "interim" },
       ],
       status: "ok",
       code: [],
@@ -630,7 +673,7 @@ it("reopens repeated updates for one tool call as one enriched logical step", as
         isError: true,
       },
     },
-    { kind: "text", text: "Writing complete." },
+    { kind: "text", text: "Writing complete.", block: "interim" },
   ]);
   expect(lab.store.all(`SELECT id FROM turn_steps WHERE turn_id = ?`, [runId])).toHaveLength(1);
 });
@@ -805,12 +848,17 @@ it("stops a fresh handle's queued replay when its callback detaches", async () =
 it("resumed in-process handles use their durable cursor, route decisions per runtime, detach, and cancel on close", async () => {
   const lab = await labWithPairedMachine();
   const codex = await pairClaudeMachine(lab.base, lab.ownerApi, "ana-codex", "codex");
+  const sibling = await lab.ownerApi.createTask({
+    studyId: lab.studyId,
+    stage: "background",
+    title: "Second active run",
+  });
   const first = await lab.ownerApi.startRun({
     studyId: lab.studyId, taskId: lab.taskId, prompt: "claude turn",
     options: { planMode: false, agent: "claude" },
   });
   const second = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "codex turn",
+    studyId: lab.studyId, taskId: sibling.id, prompt: "codex turn",
     options: { planMode: false, agent: "codex" },
   });
   const firstFrame: RunEventFrame = {
@@ -834,7 +882,10 @@ it("resumed in-process handles use their durable cursor, route decisions per run
     runs: lab.relay,
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
-  const resumed = await sessionsApi(deps).resumeRuns(lab.taskId);
+  const resumed = [
+    ...(await sessionsApi(deps).resumeRuns(lab.taskId)),
+    ...(await sessionsApi(deps).resumeRuns(sibling.id)),
+  ];
   expect(resumed.map((run) => run.runId)).toEqual([first.runId, second.runId]);
 
   const seen: RunEvent[] = [];
