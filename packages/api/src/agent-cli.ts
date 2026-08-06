@@ -7,6 +7,21 @@
  * camelCase on the wire. No CLIs are ever seeded — an install with nothing
  * detected is empty.
  */
+/**
+ * One thing an agent lets a session change about how it works — its model,
+ * its reasoning effort, its own mode. Normalised from what the session
+ * advertised, so nothing downstream knows which of the two wire mechanisms
+ * produced it, including the setter.
+ */
+export interface AgentOption {
+  id: string;
+  /** "model", "thought_level", "mode", … — what the option governs. */
+  category: string;
+  /** Absent when the session named no current value, never `null`. */
+  currentValue?: string;
+  choices: Array<{ value: string; label: string; description?: string }>;
+}
+
 export interface AgentCli {
   id: string;
   name: string;
@@ -27,4 +42,14 @@ export interface AgentCli {
    *  adapter's own refusal when it has one, or that no adapter was found at
    *  all. Absent when `sessionReady` is true: nothing needs explaining. */
   sessionReadyReason?: string;
+  /**
+   * What this agent advertised when a session was opened with it. EMPTY when
+   * it advertised nothing — a valid agent may offer no choice at all —
+   * ABSENT when no session could be opened to ask, which is a different fact
+   * and never rendered as the first.
+   *
+   * Per agent and per machine, for the same reason `sessionReady` is: a
+   * machine can hold two adapters that answer differently.
+   */
+  options?: AgentOption[];
 }

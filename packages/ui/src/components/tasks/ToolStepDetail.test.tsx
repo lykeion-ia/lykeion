@@ -5,6 +5,7 @@ import {
   ToolStepDetail,
   langForPath,
   parseWebResults,
+  stepOutcome,
   stripReadLineNumbers,
   unifiedDiff,
 } from "./ToolStepDetail";
@@ -12,7 +13,7 @@ import {
 const entry = (over: Partial<ExecutionLogEntry> = {}): ExecutionLogEntry => ({
   ts: 1,
   toolUseId: "tu-1",
-  tool: "Bash",
+  tool: "execute",
   input: {},
   decision: "ran",
   isError: false,
@@ -99,11 +100,11 @@ describe("parseWebResults — defensive across the shapes a search can produce",
 });
 
 describe("ToolStepDetail — per-tool bodies", () => {
-  it("Bash: renders the command over its STDOUT", () => {
+  it("execute: renders the command over its STDOUT", () => {
     render(
       <ToolStepDetail
         entry={entry({
-          tool: "Bash",
+          tool: "execute",
           input: { command: "echo hi\nls -la" },
           result: "hi\ntotal 0",
         })}
@@ -113,11 +114,11 @@ describe("ToolStepDetail — per-tool bodies", () => {
     expect(screen.getByTestId("tool-output")).toHaveTextContent("total 0");
   });
 
-  it("Read: renders the file contents with the cat -n numbering stripped", () => {
+  it("read: renders the file contents with the cat -n numbering stripped", () => {
     const { container } = render(
       <ToolStepDetail
         entry={entry({
-          tool: "Read",
+          tool: "read",
           input: { file_path: "src/a.ts" },
           result: "1\tconst x = 1;\n2\tconst y = 2;\n",
         })}
@@ -128,11 +129,11 @@ describe("ToolStepDetail — per-tool bodies", () => {
     expect(container.textContent).not.toContain("1\tconst");
   });
 
-  it("Write (edit): renders a diff from old_string/new_string", () => {
+  it("edit: renders a diff from old_string/new_string", () => {
     const { container } = render(
       <ToolStepDetail
         entry={entry({
-          tool: "Write",
+          tool: "edit",
           input: {
             file_path: "notes.md",
             old_string: "alpha\nbeta\ngamma",
@@ -146,11 +147,11 @@ describe("ToolStepDetail — per-tool bodies", () => {
     expect(container.textContent).toContain("+BETA");
   });
 
-  it("Write (create): renders the written content", () => {
+  it("edit (create): renders the written content", () => {
     render(
       <ToolStepDetail
         entry={entry({
-          tool: "Write",
+          tool: "edit",
           input: { file_path: "out.csv", content: "a,b\n1,2" },
         })}
       />,
@@ -158,11 +159,11 @@ describe("ToolStepDetail — per-tool bodies", () => {
     expect(screen.getByText(/a,b/)).toBeInTheDocument();
   });
 
-  it("WebFetch (search): renders the query over a results list", () => {
+  it("fetch (search): renders the query over a results list", () => {
     render(
       <ToolStepDetail
         entry={entry({
-          tool: "WebFetch",
+          tool: "fetch",
           input: { query: "DEDD recombinase", url: "" },
           result: JSON.stringify([
             { title: "Bridge RNA", url: "https://nature.example/x" },
@@ -178,11 +179,11 @@ describe("ToolStepDetail — per-tool bodies", () => {
     ).toBeInTheDocument();
   });
 
-  it("WebFetch (search): falls back to raw text when results don't parse", () => {
+  it("fetch (search): falls back to raw text when results don't parse", () => {
     render(
       <ToolStepDetail
         entry={entry({
-          tool: "WebFetch",
+          tool: "fetch",
           input: { query: "q" },
           result: "an unstructured summary paragraph",
         })}
@@ -194,11 +195,11 @@ describe("ToolStepDetail — per-tool bodies", () => {
     );
   });
 
-  it("WebFetch (fetch): renders the url over the fetched response", () => {
+  it("fetch: renders the url over the fetched response", () => {
     render(
       <ToolStepDetail
         entry={entry({
-          tool: "WebFetch",
+          tool: "fetch",
           input: { url: "https://example.com/page" },
           result: "fetched body text",
         })}
@@ -210,11 +211,11 @@ describe("ToolStepDetail — per-tool bodies", () => {
     );
   });
 
-  it("falls back to a generic input/output view for an unrecognised tool", () => {
+  it("falls back to a generic input/output view for a kind it does not draw", () => {
     const { container } = render(
       <ToolStepDetail
         entry={entry({
-          tool: "SomeMcpTool",
+          tool: "hologram",
           input: { foo: "bar" },
           result: "opaque output",
         })}
@@ -230,7 +231,7 @@ describe("ToolStepDetail — per-tool bodies", () => {
     render(
       <ToolStepDetail
         entry={entry({
-          tool: "Bash",
+          tool: "execute",
           input: { command: "sleep 1" },
           result: undefined,
         })}
@@ -238,5 +239,158 @@ describe("ToolStepDetail — per-tool bodies", () => {
       />,
     );
     expect(screen.getByTestId("tool-output")).toHaveTextContent("partial line");
+  });
+});
+
+describe("ToolStepDetail — every step opens onto something true", () => {
+  it("renders both text blocks of an output that carried two", () => {
+    render(
+      <ToolStepDetail
+        entry={entry({
+          tool: "execute",
+          input: { command: "run" },
+          result: [
+            { type: "text", text: "first" },
+            { type: "text", text: "second" },
+          ],
+        })}
+      />,
+    );
+    const output = screen.getByTestId("tool-output");
+    expect(output).toHaveTextContent("first");
+    expect(output).toHaveTextContent("second");
+  });
+
+  it("draws a diff part as a diff over the path it names", () => {
+    const { container } = render(
+      <ToolStepDetail
+        entry={entry({
+          tool: "edit",
+          input: {},
+          result: [
+            {
+              type: "diff",
+              path: "/data/notes.md",
+              oldText: "alpha\nbeta\ngamma",
+              newText: "alpha\nBETA\ngamma",
+            },
+          ],
+        })}
+      />,
+    );
+    expect(container.textContent).toContain("/data/notes.md");
+    expect(container.textContent).toContain("-beta");
+    expect(container.textContent).toContain("+BETA");
+  });
+
+  it("draws a terminal part's output", () => {
+    render(
+      <ToolStepDetail
+        entry={entry({
+          tool: "execute",
+          input: { command: "ls" },
+          result: [{ type: "terminal", output: "12 rows" }],
+        })}
+      />,
+    );
+    expect(screen.getByTestId("tool-output")).toHaveTextContent("12 rows");
+  });
+
+  it("names a resource link as a reference rather than drawing it as content", () => {
+    const { container } = render(
+      <ToolStepDetail
+        entry={entry({
+          tool: "read",
+          input: {},
+          result: [
+            { type: "resource", uri: "file:///data/counts.csv", name: "counts.csv" },
+          ],
+        })}
+      />,
+    );
+    expect(container.textContent).toContain("file:///data/counts.csv");
+    expect(screen.getByTestId("tool-output-resource")).toBeInTheDocument();
+  });
+
+  it("names a part type it cannot draw rather than leaving a blank", () => {
+    const { container } = render(
+      <ToolStepDetail
+        entry={entry({
+          tool: "other",
+          input: {},
+          result: [{ type: "other", blockType: "hologram" }],
+        })}
+      />,
+    );
+    expect(container.textContent).toContain("hologram");
+  });
+
+  it("says a step ran and produced nothing, rather than showing an empty region", () => {
+    const { container } = render(
+      <ToolStepDetail entry={entry({ tool: "execute", input: {}, result: "" })} />,
+    );
+    expect(container.textContent).toMatch(/produced no output/i);
+  });
+
+  it("says a step's output was not captured, which is not the same as none", () => {
+    const { container } = render(
+      <ToolStepDetail entry={entry({ tool: "execute", input: {}, decision: "ran" })} />,
+    );
+    expect(container.textContent).toMatch(/not captured/i);
+    expect(container.textContent).not.toMatch(/produced no output/i);
+  });
+
+  it("says a denied step never ran", () => {
+    const { container } = render(
+      <ToolStepDetail
+        entry={entry({ tool: "edit", input: {}, decision: "denied", isError: true })}
+      />,
+    );
+    expect(container.textContent).toMatch(/never ran/i);
+    expect(container.textContent).toMatch(/denied/i);
+  });
+
+  it("tells a step stopped at the gate apart from one that was denied there", () => {
+    const { container } = render(
+      <ToolStepDetail
+        entry={entry({ tool: "edit", input: {}, decision: "cancelled", isError: true })}
+      />,
+    );
+    expect(container.textContent).toMatch(/never ran/i);
+    expect(container.textContent).toMatch(/stopped/i);
+  });
+
+  it("renders a body for a step carrying neither input nor output", () => {
+    const { container } = render(
+      <ToolStepDetail entry={entry({ tool: "other", input: {} })} />,
+    );
+    expect(container.textContent?.trim()).not.toBe("");
+  });
+});
+
+describe("stepOutcome — the four states, told apart", () => {
+  it("keeps a call that produced nothing apart from one whose output was lost", () => {
+    expect(stepOutcome(entry({ result: "" }))).toBe("no-output");
+    expect(stepOutcome(entry({ result: [] }))).toBe("no-output");
+    expect(stepOutcome(entry({}))).toBe("not-captured");
+  });
+
+  it("reads a call that never ran off its decision, whatever the record holds", () => {
+    expect(
+      stepOutcome(entry({ decision: "denied", result: "auto-refused" })),
+    ).toBe("never-ran");
+    expect(stepOutcome(entry({ decision: "cancelled" }))).toBe("never-ran");
+  });
+
+  it("calls a step with parts an output, live or persisted", () => {
+    expect(stepOutcome(entry({ result: "12 rows" }))).toBe("output");
+    expect(stepOutcome(entry({ result: [{ type: "terminal", output: "x" }] }))).toBe(
+      "output",
+    );
+    expect(stepOutcome(entry({ decision: "pending" }), "live tail")).toBe("output");
+  });
+
+  it("does not call a running step's missing output lost", () => {
+    expect(stepOutcome(entry({ decision: "pending" }))).toBe("running");
   });
 });

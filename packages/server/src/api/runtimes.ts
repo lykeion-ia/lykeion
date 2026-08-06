@@ -50,6 +50,9 @@ function toAgentCli(row: Row): AgentCli {
     runtimeId: row.runtime_id as string,
     sessionReady: row.session_ready === 1,
     ...(row.session_ready_reason === null ? {} : { sessionReadyReason: row.session_ready_reason as string }),
+    ...(row.options === null || row.options === undefined
+      ? {}
+      : { options: JSON.parse(row.options as string) as AgentCli["options"] }),
   };
 }
 

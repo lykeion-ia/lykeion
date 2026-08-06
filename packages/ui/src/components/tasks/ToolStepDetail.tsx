@@ -1,22 +1,26 @@
 import { useState } from "react";
-import type { ExecutionLogEntry } from "@lykeion/api";
+import type { ExecutionLogEntry, ToolOutputPart } from "@lykeion/api";
 import { ChevronRightIcon } from "../icons";
 import { CodeBlock } from "./CodeBlock";
 
 /**
- * The opened body of a tool-step card: the per-tool detail a researcher reveals
- * by clicking the row (see `ToolStepCard`). One small renderer per tool, chosen
- * by `entry.tool` — a Bash command over its STDOUT, an Edit's diff, a web
- * search's query over its results — with a generic input/output view for
- * anything unrecognised.
+ * The opened body of a tool-step card: the per-kind detail a researcher
+ * reveals by clicking the row (see `ToolStepCard`). One small renderer per
+ * call KIND, chosen by `entry.tool` — a command over its STDOUT, an edit's
+ * diff, a search's query over its results — with a generic input/output view
+ * for a kind that has none.
  *
  * Everything here reads off the SAME persisted `ExecutionLogEntry` the row
  * already has: `input` (the agent's tool arguments, preserved verbatim across
- * the ACP bridge — the command, an Edit's `old_string`/`new_string`, a
- * search's `query`) and `result` (the tool's real output text, captured from
- * the completion's content). So a reopened transcript renders the full detail
- * with no extra data threaded in; `stdout` is only the live tail of a step
- * whose tool is still running, used when there is no persisted result yet.
+ * the ACP bridge — the command, an edit's `old_string`/`new_string`, a
+ * search's `query`) and `result` (what the call produced, as text or as the
+ * typed pieces it arrived in). So a reopened transcript renders the full
+ * detail with no extra data threaded in; `stdout` is only the live tail of a
+ * step whose tool is still running, used when there is no persisted result
+ * yet.
+ *
+ * A step never opens onto nothing. Where there is no output to draw, the body
+ * says which of the reasons that is — see [`stepOutcome`].
  */
 
 /** A string field off the entry's (object) input, or undefined. */
@@ -264,17 +268,175 @@ function WebResultsList({ results }: { results: WebResult[] }) {
   );
 }
 
-// --- per-tool detail renderers --------------------------------------------
+// --- what a step produced --------------------------------------------------
 
-/** Bash: the command as a code block over its STDOUT. */
-function BashDetail({
+/**
+ * The pieces of what a step produced, whatever shape the record holds them
+ * in. A text result is one text piece; a live tail is one too, so nothing
+ * below has to ask whether the turn is still in flight.
+ */
+export function outputPartsOf(
+  entry: ExecutionLogEntry,
+  stdout?: string,
+): ToolOutputPart[] {
+  const result = entry.result;
+  if (Array.isArray(result)) return result;
+  if (typeof result === "string")
+    return result.length > 0 ? [{ type: "text", text: result }] : [];
+  return stdout ? [{ type: "text", text: stdout }] : [];
+}
+
+/**
+ * Which of the states a step is in when it is opened. They are told apart
+ * because they are different facts, and rendering any of them as an empty
+ * region — or as one of the others — says something the record does not.
+ *
+ * - `output` — the call produced pieces, and they are drawn.
+ * - `no-output` — the call ran to completion and produced none.
+ * - `never-ran` — the call was denied at a gate, or the turn was stopped
+ *   while it waited at one. Read off the decision, not off the output: a
+ *   refused call may carry the reason it was refused, and that reason is not
+ *   the call's output.
+ * - `not-captured` — the call ended, but no output was reported for it. It
+ *   may have done a great deal; none of it was recorded.
+ * - `running` — the call has not ended, so nothing about its output is
+ *   settled yet.
+ */
+export type StepOutcome =
+  | "output"
+  | "no-output"
+  | "never-ran"
+  | "not-captured"
+  | "running";
+
+export function stepOutcome(
+  entry: ExecutionLogEntry,
+  stdout?: string,
+): StepOutcome {
+  if (entry.decision === "denied" || entry.decision === "cancelled")
+    return "never-ran";
+  if (outputPartsOf(entry, stdout).length > 0) return "output";
+  if (entry.decision === "pending") return "running";
+  return entry.result === undefined ? "not-captured" : "no-output";
+}
+
+/** The text a step produced, as one string — every text and terminal piece,
+ *  concatenated in the order it arrived. This is what the views that draw
+ *  file contents, STDOUT and search results read; the pieces that are not
+ *  text are drawn as themselves, beside it. */
+function textOf(parts: ToolOutputPart[]): string {
+  return parts
+    .map((part) =>
+      part.type === "text" ? part.text : part.type === "terminal" ? part.output : "",
+    )
+    .join("");
+}
+
+function partsExcept(
+  parts: ToolOutputPart[],
+  drawn: ToolOutputPart["type"][],
+): ToolOutputPart[] {
+  return parts.filter((part) => !drawn.includes(part.type));
+}
+
+/** One piece that no view above claimed, drawn as what it is. A resource is
+ *  named as a reference rather than passed off as the content it never
+ *  carried, and a piece of a type nothing draws is named by that type. */
+function OutputPart({ part }: { part: ToolOutputPart }) {
+  switch (part.type) {
+    case "diff":
+      return (
+        <>
+          <DetailField label="path" value={part.path} />
+          <CodeBlock
+            code={unifiedDiff(part.oldText ?? "", part.newText)}
+            lang="diff"
+          />
+        </>
+      );
+    case "resource":
+      return (
+        <div className="tool-detail-field" data-testid="tool-output-resource">
+          <span className="tool-detail-key">resource</span>
+          <span className="tool-detail-value">{part.name ?? part.uri}</span>
+          <span className="tool-result-url">{part.uri}</span>
+        </div>
+      );
+    case "other":
+      return (
+        <DetailField
+          label="unrendered"
+          value={`a ${part.blockType} the transcript cannot draw`}
+        />
+      );
+    default:
+      return null;
+  }
+}
+
+/** Every piece a view did not draw itself, in arrival order. */
+function OtherParts({ parts }: { parts: ToolOutputPart[] }) {
+  if (parts.length === 0) return null;
+  return (
+    <>
+      {parts.map((part, i) => (
+        <OutputPart key={i} part={part} />
+      ))}
+    </>
+  );
+}
+
+const NEVER_RAN_REASON: Record<string, string> = {
+  denied: "This step never ran: it was denied at a permission gate.",
+  cancelled:
+    "This step never ran: the turn was stopped while it waited at a permission gate.",
+};
+
+/**
+ * What a step opens onto when there is no output to draw. Each sentence
+ * states a different fact, and the one that is false of this step is never
+ * shown in place of the one that is true.
+ */
+function StepOutcomeNote({
   entry,
-  output,
+  outcome,
 }: {
   entry: ExecutionLogEntry;
-  output?: string;
+  outcome: StepOutcome;
+}) {
+  if (outcome === "output") return null;
+  const reason =
+    outcome === "never-ran" && typeof entry.result === "string" && entry.result
+      ? entry.result
+      : undefined;
+  const text =
+    outcome === "never-ran"
+      ? (NEVER_RAN_REASON[entry.decision] ?? "This step never ran.")
+      : outcome === "no-output"
+        ? "This step ran and produced no output."
+        : outcome === "running"
+          ? "This step is still running."
+          : "This step's output was not captured.";
+  return (
+    <div className="tool-detail-note" data-testid="tool-detail-note">
+      <p className="tool-detail-note-text">{text}</p>
+      {reason && <p className="tool-detail-note-reason">{reason}</p>}
+    </div>
+  );
+}
+
+// --- per-kind detail renderers ---------------------------------------------
+
+/** `execute`: the command as a code block over its STDOUT. */
+function ExecuteDetail({
+  entry,
+  parts,
+}: {
+  entry: ExecutionLogEntry;
+  parts: ToolOutputPart[];
 }) {
   const command = strInput(entry, "command");
+  const output = textOf(parts);
   return (
     <>
       {command && <CodeBlock code={command} lang="bash" />}
@@ -283,67 +445,104 @@ function BashDetail({
           <OutputText text={output} testid="tool-output" />
         </OutputSection>
       )}
+      <OtherParts parts={partsExcept(parts, ["text", "terminal"])} />
     </>
   );
 }
 
-/** Read: the file contents, highlighted as the file's own language, with the
- *  `cat -n` numbering stripped so the highlighting lines up. */
+/** `read`: the file contents, highlighted as the file's own language, with
+ *  the `cat -n` numbering stripped so the highlighting lines up. */
 function ReadDetail({
   entry,
-  output,
+  parts,
 }: {
   entry: ExecutionLogEntry;
-  output?: string;
+  parts: ToolOutputPart[];
 }) {
-  const path = strInput(entry, "file_path");
-  if (!output) return null;
+  const path = strInput(entry, "file_path") ?? strInput(entry, "path");
+  const output = textOf(parts);
   return (
-    <CodeBlock code={stripReadLineNumbers(output)} lang={langForPath(path)} />
+    <>
+      {output && (
+        <CodeBlock
+          code={stripReadLineNumbers(output)}
+          lang={langForPath(path)}
+        />
+      )}
+      <OtherParts parts={partsExcept(parts, ["text", "terminal"])} />
+    </>
   );
 }
 
-/** Write / Edit (edits map to `Write` via the ACP bridge): a diff when the call
- *  carried `old_string`/`new_string`, the written content on a create, else the
- *  confirmation result. */
-function WriteDetail({
+/** `edit`: the diff the call produced, or the one its arguments describe, or
+ *  the content it wrote on a create — whichever of the three the record
+ *  actually carries. */
+function EditDetail({
   entry,
-  output,
+  parts,
 }: {
   entry: ExecutionLogEntry;
-  output?: string;
+  parts: ToolOutputPart[];
 }) {
-  const path = strInput(entry, "file_path");
+  const diffs = parts.filter((part) => part.type === "diff");
+  if (diffs.length > 0) {
+    return (
+      <>
+        <OtherParts parts={partsExcept(parts, ["text", "terminal"])} />
+        <ResultSection parts={parts} />
+      </>
+    );
+  }
+  const path = strInput(entry, "file_path") ?? strInput(entry, "path");
   const oldStr = strInput(entry, "old_string");
   const newStr = strInput(entry, "new_string");
   const content = strInput(entry, "content");
   if (oldStr !== undefined || newStr !== undefined) {
     return (
-      <CodeBlock code={unifiedDiff(oldStr ?? "", newStr ?? "")} lang="diff" />
+      <>
+        <CodeBlock code={unifiedDiff(oldStr ?? "", newStr ?? "")} lang="diff" />
+        <OtherParts parts={partsExcept(parts, ["text", "terminal"])} />
+      </>
     );
   }
   if (content) {
-    return <CodeBlock code={content} lang={langForPath(path)} />;
+    return (
+      <>
+        <CodeBlock code={content} lang={langForPath(path)} />
+        <OtherParts parts={partsExcept(parts, ["text", "terminal"])} />
+      </>
+    );
   }
-  return output ? (
+  return (
+    <>
+      <ResultSection parts={parts} />
+      <OtherParts parts={partsExcept(parts, ["text", "terminal"])} />
+    </>
+  );
+}
+
+function ResultSection({ parts }: { parts: ToolOutputPart[] }) {
+  const output = textOf(parts);
+  if (!output) return null;
+  return (
     <OutputSection label="RESULT">
       <OutputText text={output} testid="tool-output" />
     </OutputSection>
-  ) : null;
+  );
 }
 
-/** WebFetch — and web SEARCH, which the ACP bridge maps here too. A search
- *  carries a `query` and renders its results list; a fetch carries a `url` and
- *  renders the fetched text. */
-function WebFetchDetail({
+/** `search` and `fetch`: a search carries a `query` and renders its results
+ *  list; a fetch carries a `url` and renders what came back. */
+function LookupDetail({
   entry,
-  output,
+  parts,
 }: {
   entry: ExecutionLogEntry;
-  output?: string;
+  parts: ToolOutputPart[];
 }) {
-  const query = strInput(entry, "query");
+  const query = strInput(entry, "query") ?? strInput(entry, "pattern");
   const url = strInput(entry, "url");
+  const output = textOf(parts);
   const results = output ? parseWebResults(output) : null;
   return (
     <>
@@ -361,43 +560,24 @@ function WebFetchDetail({
           </OutputSection>
         )
       )}
+      <OtherParts parts={partsExcept(parts, ["text", "terminal"])} />
     </>
   );
 }
 
-/** Grep/search: the pattern over its matches. */
-function GrepDetail({
-  entry,
-  output,
-}: {
-  entry: ExecutionLogEntry;
-  output?: string;
-}) {
-  const pattern = strInput(entry, "pattern") ?? strInput(entry, "query");
-  return (
-    <>
-      {pattern && <DetailField label="pattern" value={pattern} />}
-      {output && (
-        <OutputSection label="MATCHES">
-          <OutputText text={output} testid="tool-output" />
-        </OutputSection>
-      )}
-    </>
-  );
-}
-
-/** Anything without a bespoke view: the raw input as JSON over the output. */
+/** Any kind without a view of its own — and any record whose `tool` predates
+ *  the kind vocabulary: the raw input as JSON over the output. */
 function GenericDetail({
   entry,
-  output,
+  parts,
 }: {
   entry: ExecutionLogEntry;
-  output?: string;
+  parts: ToolOutputPart[];
 }) {
   const input = entry.input;
   const hasInput =
     !!input && typeof input === "object" && Object.keys(input).length > 0;
-  if (!hasInput && !output) return null;
+  const output = textOf(parts);
   return (
     <>
       {hasInput && (
@@ -408,15 +588,22 @@ function GenericDetail({
           <OutputText text={output} testid="tool-output" />
         </OutputSection>
       )}
+      <OtherParts parts={partsExcept(parts, ["text", "terminal"])} />
     </>
   );
 }
 
 /**
- * The opened detail for one step, dispatched by tool name. `output` resolves
- * once here — the persisted `result` when the step has landed, otherwise the
- * live `stdout` tail — so every renderer treats "the tool's output" the same
- * way whether the turn is live or reopened.
+ * The opened detail for one step, dispatched by the call's KIND — the
+ * adapter's own classification of what the call is, which is the same
+ * vocabulary whichever adapter produced it. A value outside that vocabulary
+ * is a record written before `tool` carried a kind, and draws the generic
+ * view.
+ *
+ * The pieces of the output resolve once here — the persisted `result` when
+ * the step has landed, otherwise the live `stdout` tail — so every view
+ * treats "what the call produced" the same way whether the turn is live or
+ * reopened.
  */
 export function ToolStepDetail({
   entry,
@@ -425,20 +612,31 @@ export function ToolStepDetail({
   entry: ExecutionLogEntry;
   stdout?: string;
 }) {
-  const output =
-    entry.result && entry.result.length > 0 ? entry.result : stdout;
+  const outcome = stepOutcome(entry, stdout);
+  // A call that never ran produced nothing. Whatever its record carries is
+  // the reason it was refused, which the note below states as the reason it
+  // is rather than drawing it as output the call never produced.
+  const parts = outcome === "never-ran" ? [] : outputPartsOf(entry, stdout);
+  return (
+    <>
+      {detailBody(entry, parts)}
+      <StepOutcomeNote entry={entry} outcome={outcome} />
+    </>
+  );
+}
+
+function detailBody(entry: ExecutionLogEntry, parts: ToolOutputPart[]) {
   switch (entry.tool) {
-    case "Bash":
-      return <BashDetail entry={entry} output={output} />;
-    case "Read":
-      return <ReadDetail entry={entry} output={output} />;
-    case "Write":
-      return <WriteDetail entry={entry} output={output} />;
-    case "WebFetch":
-      return <WebFetchDetail entry={entry} output={output} />;
-    case "Grep":
-      return <GrepDetail entry={entry} output={output} />;
+    case "execute":
+      return <ExecuteDetail entry={entry} parts={parts} />;
+    case "read":
+      return <ReadDetail entry={entry} parts={parts} />;
+    case "edit":
+      return <EditDetail entry={entry} parts={parts} />;
+    case "search":
+    case "fetch":
+      return <LookupDetail entry={entry} parts={parts} />;
     default:
-      return <GenericDetail entry={entry} output={output} />;
+      return <GenericDetail entry={entry} parts={parts} />;
   }
 }

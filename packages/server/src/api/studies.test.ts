@@ -7,6 +7,7 @@ import { migrate, nextSeq } from "../store/migrations";
 import { readConfig } from "../config";
 import { createChannel } from "../channel";
 import { createRunRelay } from "../run-relay";
+import { createRevertRegistry } from "../run-revert";
 import { changeRecorder } from "./changes";
 import { studiesApi } from "./studies";
 import type { Deps } from "./index";
@@ -67,6 +68,7 @@ function depsFor(store: Store): Deps {
     // the recorder's publish path actually exercised.
     channel,
     runs: createRunRelay(),
+    reverts: createRevertRegistry(),
     changes: changeRecorder({ store, actorId: actor.userId, now: () => NOW, channel }),
   };
 }

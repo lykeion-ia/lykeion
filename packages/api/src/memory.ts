@@ -1798,6 +1798,31 @@ export function createInMemoryLab(
           };
         });
     },
+    async revertTurn(runId: string) {
+      if (runStarters.get(runId) !== me)
+        throw new LykeionError("forbidden", `run ${runId} does not belong to you`);
+      const taskId = [...transcripts.entries()].find(([, turns]) =>
+        turns.some((turn) => turn.runId === runId),
+      )?.[0];
+      if (taskId === undefined) throw new LykeionError("not-found", `no such run: ${runId}`);
+      const turns = transcripts.get(taskId)!;
+      if (turns[turns.length - 1]?.runId !== runId)
+        throw new LykeionError("conflict", "only the newest turn of a Task can be discarded");
+      if (turns[turns.length - 1]?.revert?.available !== true)
+        throw new LykeionError(
+          "conflict",
+          "there is no snapshot of this Task's files from before this turn, so nothing can be restored",
+        );
+      turns.pop();
+      transcripts.set(taskId, turns);
+      const task = tasks.find((t) => t.id === taskId);
+      if (task) {
+        task.runCount = turns.length;
+        task.updatedTs = tick();
+        task.lastRunStatus = turns[turns.length - 1]?.status;
+      }
+    },
+
     async submitRunDecision(runId: string, decision: RunDecision) {
       // One check, not two: an id nobody holds a run for and an id whose run
       // belongs to somebody else answer identically — a lab-mate must not

@@ -15,8 +15,26 @@ import { createInterface } from "node:readline";
 type Directive =
   | { emit: "agent_message_chunk"; text: string }
   | { emit: "agent_thought_chunk"; text: string }
-  | { emit: "tool_call"; toolCallId: string; title: string; rawInput?: unknown }
-  | { emit: "tool_call_update"; toolCallId: string; status: string; content?: string }
+  | {
+      emit: "tool_call";
+      toolCallId: string;
+      title?: string;
+      kind?: string;
+      rawInput?: unknown;
+    }
+  /** `content` is the shorthand for one text block. `blocks` carries the
+   *  update's content array verbatim, so a script can send a diff, a
+   *  terminal, a resource link, several blocks at once, or an empty array —
+   *  the shapes the shorthand cannot express. An update naming neither
+   *  carries no content array at all. */
+  | {
+      emit: "tool_call_update";
+      toolCallId: string;
+      status: string;
+      content?: string;
+      blocks?: unknown[];
+      rawInput?: unknown;
+    }
   | { emit: "plan"; entries: Array<{ content: string; status: string }> }
   | {
       ask: "permission";
@@ -54,6 +72,18 @@ const scripts: Directive[][] = Array.isArray(parsedScript[0])
   ? (parsedScript as Directive[][])
   : [parsedScript as Directive[]];
 let promptCount = 0;
+
+/** What this agent advertises on `session/new`: `configOptions`, `models`,
+ *  `modes`, or nothing at all. */
+const advertised = JSON.parse(process.env.LYKEION_STUB_ADVERTISES ?? "{}") as {
+  configOptions?: Array<Record<string, unknown> & { id: string }>;
+  models?: unknown;
+  modes?: unknown;
+};
+/** Every set this agent was asked for, recorded so a test can assert what
+ *  travelled rather than what was intended. */
+const setCalls: Array<{ method: string; id: string; value: string }> = [];
+const marker = process.env.LYKEION_STUB_SET_MARKER;
 
 let sessionId = "";
 let nextId = 1;
@@ -154,14 +184,17 @@ async function play(script: Directive[]): Promise<string> {
       update.content = { type: "text", text: step.text };
     if (step.emit === "tool_call") {
       update.toolCallId = step.toolCallId;
-      update.title = step.title;
+      if (step.title !== undefined) update.title = step.title;
+      if (step.kind !== undefined) update.kind = step.kind;
       update.rawInput = step.rawInput;
       update.status = "pending";
     }
     if (step.emit === "tool_call_update") {
       update.toolCallId = step.toolCallId;
       update.status = step.status;
-      if (step.content !== undefined)
+      if (step.rawInput !== undefined) update.rawInput = step.rawInput;
+      if (step.blocks !== undefined) update.content = step.blocks;
+      else if (step.content !== undefined)
         update.content = [{ type: "content", content: { type: "text", text: step.content } }];
     }
     if (step.emit === "plan") update.entries = step.entries;
@@ -186,7 +219,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     sessionId = "stub-session";
     const marker = process.env.LYKEION_STUB_SESSION_NEW_MARKER;
     if (marker) appendFileSync(marker, `${process.pid}\n`);
-    const reply = () => send({ jsonrpc: "2.0", id: msg.id, result: { sessionId } });
+    const reply = () =>
+      send({ jsonrpc: "2.0", id: msg.id, result: { sessionId, ...advertised } });
     const delayMs = Number(process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS ?? "0");
     if (Number.isFinite(delayMs) && delayMs > 0) setTimeout(reply, delayMs);
     else reply();
@@ -203,6 +237,25 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (msg.method === "session/cancel") {
     cancelled = true;
     for (const resolve of cancelWaiters.splice(0)) resolve();
+    return;
+  }
+  if (msg.method === "session/set_config_option") {
+    const { configId, value } = msg.params as { configId?: string; value?: string };
+    setCalls.push({ method: msg.method, id: configId ?? "", value: value ?? "" });
+    if (marker) appendFileSync(marker, `${msg.method} ${configId} ${value}\n`);
+    // The echoed state a caller confirms a set from.
+    const options = (advertised.configOptions ?? []).map((option) =>
+      option.id === configId ? { ...option, currentValue: value } : option,
+    );
+    send({ jsonrpc: "2.0", id: msg.id, result: { configOptions: options } });
+    return;
+  }
+  if (msg.method === "session/set_model") {
+    const { modelId } = msg.params as { modelId?: string };
+    setCalls.push({ method: msg.method, id: "model", value: modelId ?? "" });
+    if (marker) appendFileSync(marker, `${msg.method} model ${modelId}\n`);
+    // No confirmation payload at all, which a caller must not read as one.
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
     return;
   }
   send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `no such method: ${msg.method}` } });

@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cliFingerprint, isRunnable, probeAgentClis, type ProbedCli } from "./probe";
@@ -18,6 +18,14 @@ function pathWith(commands: Record<string, string>): string {
 /** A PATH holding commands that do whatever is asked of them, for the cases
  *  where what a command says — and on which stream, and after how many blank
  *  lines — is the thing under test. */
+/** A stand-in for this machine's state directory: its own, so denying it
+ *  never reaches a fixture another helper put under the temp directory. */
+function stateDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "lykeion-probe-state-"));
+  dirs.push(dir);
+  return dir;
+}
+
 function pathRunning(commands: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "lykeion-probe-"));
   dirs.push(dir);
@@ -46,7 +54,7 @@ it(
     // a loaded machine takes to start a shell script. What a real probe
     // allows a command, and what happens when one takes longer, is the
     // subject of its own test below.
-    const clis = await probeAgentClis({ path: pathWith({ claude: "1.2.3" }), timeoutMs: 30_000 });
+    const clis = await probeAgentClis({ dataDir: stateDir(), path: pathWith({ claude: "1.2.3" }), timeoutMs: 30_000 });
     const claude = clis.find((c) => c.id === "claude")!;
     expect(claude.available).toBe(true);
     expect(claude.version).toBe("1.2.3");
@@ -64,6 +72,7 @@ it(
     // A budget a working command can lose against reports a tool the
     // researcher has installed as one they do not have.
     const clis = await probeAgentClis({
+    dataDir: stateDir(),
       path: pathRunning({ openclaw: 'sleep 4\necho "2026.2.21-2"' }),
     });
     const openclaw = clis.find((c) => c.id === "openclaw")!;
@@ -77,7 +86,7 @@ it("reports a command that answers nothing as installed, without inventing a ver
   // Exits zero and says nothing. It is on PATH and it ran, so it is
   // installed; what build it is went unsaid, and the empty version is how
   // that is said rather than a claim it is missing.
-  const clis = await probeAgentClis({ path: pathRunning({ claude: "exit 0" }), timeoutMs: 30_000 });
+  const clis = await probeAgentClis({ dataDir: stateDir(), path: pathRunning({ claude: "exit 0" }), timeoutMs: 30_000 });
   const claude = clis.find((c) => c.id === "claude")!;
   expect(claude.available).toBe(true);
   expect(claude.version).toBe("");
@@ -85,6 +94,7 @@ it("reports a command that answers nothing as installed, without inventing a ver
 
 it("reads a version a command answers on the error stream", async () => {
   const clis = await probeAgentClis({
+    dataDir: stateDir(),
     path: pathRunning({ claude: 'echo "2026.2.21-2" >&2' }),
     timeoutMs: 30_000,
   });
@@ -95,6 +105,7 @@ it("reads a version a command answers on the error stream", async () => {
 
 it("reads a version out of an answer that opens with a blank line", async () => {
   const clis = await probeAgentClis({
+    dataDir: stateDir(),
     path: pathRunning({ claude: 'printf "\\n\\n1.2.3\\n"' }),
     timeoutMs: 30_000,
   });
@@ -109,6 +120,7 @@ it("never calls a command missing on the strength of what it would not say", asy
   // PATH, so every one of them is installed; none of the four ways of saying
   // nothing is evidence of a machine that does not have the tool.
   const clis = await probeAgentClis({
+    dataDir: stateDir(),
     path: pathRunning({
       claude: "exit 0",
       codex: 'printf ""',
@@ -135,14 +147,14 @@ it("never calls a command missing on the strength of what it would not say", asy
 }, 60_000);
 
 it("reports a command that is not installed, without inventing a version", async () => {
-  const clis = await probeAgentClis({ path: pathWith({}) });
+  const clis = await probeAgentClis({ dataDir: stateDir(), path: pathWith({}) });
   const claude = clis.find((c) => c.id === "claude")!;
   expect(claude.available).toBe(false);
   expect(claude.version).toBe("");
 });
 
 it("reports every catalogue entry, installed or not", async () => {
-  const clis = await probeAgentClis({ path: pathWith({ claude: "1.2.3" }) });
+  const clis = await probeAgentClis({ dataDir: stateDir(), path: pathWith({ claude: "1.2.3" }) });
   expect(clis).toHaveLength(13);
 });
 
@@ -153,7 +165,7 @@ it(
       claude: 'echo "2.1.220"',
       "claude-code-acp": acpHandshakeScript(),
     });
-    const claude = (await probeAgentClis({ path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
+    const claude = (await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
     expect(claude.available).toBe(true);
     expect(claude.sessionReady).toBe(true);
     expect("sessionReadyReason" in claude).toBe(false);
@@ -168,6 +180,7 @@ it("uses the maintained Claude adapter when it is the only bridge on PATH", asyn
   });
   const resolved: string[] = [];
   const claude = (await probeAgentClis({
+    dataDir: stateDir(),
     path,
     timeoutMs: 30_000,
     onAdapterResolved: (agentId, command) => {
@@ -184,7 +197,7 @@ it("prefers the maintained Claude adapter when both bridges are on PATH", async 
     "claude-agent-acp": acpHandshakeScript(),
     "claude-code-acp": "echo deprecated-bridge-was-launched >&2\nexit 1",
   });
-  const claude = (await probeAgentClis({ path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
+  const claude = (await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
   expect(claude.sessionReady).toBe(true);
 });
 
@@ -193,12 +206,12 @@ it("falls back to the compatibility Claude adapter when it is the only bridge on
     claude: 'echo "2.1.220"',
     "claude-code-acp": acpHandshakeScript(),
   });
-  const claude = (await probeAgentClis({ path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
+  const claude = (await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
   expect(claude.sessionReady).toBe(true);
 });
 
 it("says the CLI is there but the adapter is not, rather than calling it absent", async () => {
-  const claude = (await probeAgentClis({ path: pathWith({ claude: "2.1.220" }) })).find(
+  const claude = (await probeAgentClis({ dataDir: stateDir(), path: pathWith({ claude: "2.1.220" }) })).find(
     (c) => c.id === "claude",
   )!;
   expect(claude.available).toBe(true);
@@ -211,7 +224,7 @@ it("carries what initialize refused with, so a version floor is named", async ()
     claude: 'echo "1.0.0"',
     "claude-code-acp": "echo 'needs claude >= 2.0.0' >&2\nexit 1",
   });
-  const claude = (await probeAgentClis({ path })).find((c) => c.id === "claude")!;
+  const claude = (await probeAgentClis({ dataDir: stateDir(), path })).find((c) => c.id === "claude")!;
   expect(claude.sessionReady).toBe(false);
   expect(claude.sessionReadyReason).toContain("needs claude >= 2.0.0");
 });
@@ -219,7 +232,7 @@ it("carries what initialize refused with, so a version floor is named", async ()
 it("has no adapter to try for a catalogue entry that speaks no ACP yet, and says so", async () => {
   // `gemini` carries no adapter mapping at all — unlike `claude`, there is no
   // second binary to look for, so this settles without spawning anything.
-  const gemini = (await probeAgentClis({ path: pathWith({ gemini: "1.0.0" }) })).find(
+  const gemini = (await probeAgentClis({ dataDir: stateDir(), path: pathWith({ gemini: "1.0.0" }) })).find(
     (c) => c.id === "gemini",
   )!;
   expect(gemini.available).toBe(true);
@@ -231,7 +244,7 @@ it("does not treat a non-executable file as a command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "lykeion-probe-"));
   dirs.push(dir);
   writeFileSync(join(dir, "claude"), "not executable");
-  const clis = await probeAgentClis({ path: dir });
+  const clis = await probeAgentClis({ dataDir: stateDir(), path: dir });
   expect(clis.find((c) => c.id === "claude")!.available).toBe(false);
 });
 
@@ -249,7 +262,7 @@ it("gives up on a command that never answers, and still calls it installed", asy
   const file = join(dir, "claude");
   writeFileSync(file, "#!/bin/sh\nsleep 30\n");
   chmodSync(file, 0o755);
-  const claude = (await probeAgentClis({ path: dir, timeoutMs: 200 })).find((c) => c.id === "claude")!;
+  const claude = (await probeAgentClis({ dataDir: stateDir(), path: dir, timeoutMs: 200 })).find((c) => c.id === "claude")!;
   expect(claude.available).toBe(true);
   expect(claude.version).toBe("");
 }, 10_000);
@@ -314,3 +327,119 @@ it("cliFingerprint differs when sessionReady flips, with the id, version and ava
   const after: ProbedCli[] = [{ ...before[0]!, sessionReady: true }];
   expect(cliFingerprint(before)).not.toBe(cliFingerprint(after));
 });
+
+it("offers no agent at all on a platform whose runs cannot be confined", async () => {
+  const clis = await probeAgentClis({ dataDir: stateDir(), path: "", platform: "linux" });
+  expect(clis.length).toBeGreaterThan(0);
+  for (const cli of clis) {
+    expect(cli.sessionReady).toBe(false);
+    expect(cli.sessionReadyReason).toMatch(/linux/);
+  }
+});
+
+it(
+  "reports what an agent advertised when a session was opened with it",
+  async () => {
+    const advertises = {
+      models: {
+        currentModelId: "sonnet",
+        availableModels: [
+          { modelId: "opus", name: "Opus" },
+          { modelId: "sonnet", name: "Sonnet" },
+        ],
+      },
+    };
+    const clis = await probeAgentClis({
+    dataDir: stateDir(),
+      path: pathRunning({
+        "claude-code-acp": [
+          "read -r line",
+          `printf '{"jsonrpc":"2.0","id":1,"result":{}}\\n'`,
+          "read -r line",
+          `printf '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","models":{"currentModelId":"sonnet","availableModels":[{"modelId":"opus","name":"Opus"},{"modelId":"sonnet","name":"Sonnet"}]}}}\\n'`,
+          "read -r line",
+        ].join("\n"),
+      }),
+      timeoutMs: 30_000,
+    });
+    const claude = clis.find((c) => c.id === "claude")!;
+    expect(claude.sessionReady).toBe(true);
+    expect(claude.options).toEqual([
+      {
+        id: "model",
+        category: "model",
+        currentValue: advertises.models.currentModelId,
+        choices: [
+          { value: "opus", label: "Opus" },
+          { value: "sonnet", label: "Sonnet" },
+        ],
+      },
+    ]);
+  },
+  60_000,
+);
+
+it(
+  "leaves what an agent offers unknown when no session could be opened to ask",
+  async () => {
+    const clis = await probeAgentClis({
+    dataDir: stateDir(),
+      path: pathRunning({
+        // Answers the handshake and refuses to open a session.
+        "claude-code-acp": [
+          "read -r line",
+          `printf '{"jsonrpc":"2.0","id":1,"result":{}}\\n'`,
+          "read -r line",
+          `printf '{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"not entitled"}}\\n'`,
+          "read -r line",
+        ].join("\n"),
+      }),
+      timeoutMs: 30_000,
+    });
+    const claude = clis.find((c) => c.id === "claude")!;
+    // The handshake still earned `sessionReady`; what it offers is absent
+    // rather than reported as nothing, which is a different fact.
+    expect(claude.sessionReady).toBe(true);
+    expect(claude.options).toBeUndefined();
+  },
+  60_000,
+);
+
+it(
+  "never runs a CLI it cannot confine, and still reports it as installed",
+  async () => {
+    const escaped = join(mkdtempSync(join(tmpdir(), "lykeion-probe-escape-")), "ran.txt");
+    const clis = await probeAgentClis({
+    dataDir: stateDir(),
+      // A "CLI" that records having been executed at all.
+      path: pathRunning({ claude: `echo ran > ${escaped}\necho "9.9.9"` }),
+      platform: "linux",
+      timeoutMs: 30_000,
+    });
+    const claude = clis.find((c) => c.id === "claude")!;
+    // Found on PATH, so it is installed; never executed, so its build is
+    // unknown — a narrower claim than a version, and a true one.
+    expect(claude.available).toBe(true);
+    expect(claude.version).toBe("");
+    expect(existsSync(escaped)).toBe(false);
+  },
+  60_000,
+);
+
+it(
+  "confines the CLI it asks for a version, so a probe cannot be an escape either",
+  async () => {
+    const escaped = join(mkdtempSync(join(tmpdir(), "lykeion-probe-escape-")), "ran.txt");
+    const clis = await probeAgentClis({
+    dataDir: stateDir(),
+      path: pathRunning({ claude: `echo escaped > ${escaped}\necho "1.2.3"` }),
+      timeoutMs: 30_000,
+    });
+    const claude = clis.find((c) => c.id === "claude")!;
+    // It answered, so it really ran — and it still could not write outside
+    // the throwaway directory the probe confined it to.
+    expect(claude.version).toBe("1.2.3");
+    expect(existsSync(escaped)).toBe(false);
+  },
+  60_000,
+);

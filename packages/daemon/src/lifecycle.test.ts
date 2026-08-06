@@ -2,13 +2,13 @@ import { afterEach, beforeAll, expect, it } from "vitest";
 import { build } from "esbuild";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isProcessAlive, readControlFile, waitForExit } from "./control";
-import { ensureSessionDir } from "./workspace";
+import { ensureTaskDir } from "./workspace";
 
 /**
  * The daemon as a person runs it: built, started as its own process, and
@@ -115,6 +115,9 @@ afterEach(async () => {
 function freshDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "lykeion-daemon-run-"));
   dirs.push(dir);
+  // The daemon keeps Task workspaces in a tree beside its data directory
+  // rather than inside it, so a test that leaves one behind cleans up both.
+  dirs.push(`${dir}-work`);
   return dir;
 }
 
@@ -217,6 +220,27 @@ async function portNobodyIsOn(): Promise<number> {
   return port;
 }
 
+/** A lab that answers every daemon call, and answers `/daemon/workspaces`
+ *  with exactly the ids it was told to call gone. */
+async function answeringLab(gone: {
+  studyIds: string[];
+  taskIds: string[];
+}): Promise<{ base: string }> {
+  const server: Server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(req.url === "/daemon/workspaces" ? gone : { ok: true }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  servers.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  return { base: `http://127.0.0.1:${port}` };
+}
+
 function pairWith(dir: string, lab: string): void {
   writeFileSync(
     join(dir, "state.json"),
@@ -280,21 +304,21 @@ it(
 );
 
 it(
-  "sweeps a stale session workspace on startup",
+  "removes the working directory of a Task the lab no longer has, on startup",
   async () => {
     const dir = freshDir();
-    const lab = await silentLab();
+    // The lab answers that one of the two Tasks it was asked about is gone.
+    const lab = await answeringLab({ studyIds: [], taskIds: ["t_gone"] });
     pairWith(dir, lab.base);
 
-    const stale = ensureSessionDir(dir, "s_old", "se_old");
-    utimesSync(stale, 0, 0);
-    const fresh = ensureSessionDir(dir, "s_old", "se_fresh");
+    const gone = ensureTaskDir(`${dir}-work`, "s_old", "t_gone");
+    const held = ensureTaskDir(`${dir}-work`, "s_old", "t_held");
 
     const daemon = serve(dir);
     await waitFor("the daemon to claim the directory", () => readControlFile(dir) !== undefined);
-    await waitFor("the stale session workspace to be swept", () => !existsSync(stale), 5000);
+    await waitFor("the removed Task's directory to go", () => !existsSync(gone), 5000);
 
-    expect(existsSync(fresh), daemon.output()).toBe(true);
+    expect(existsSync(held), daemon.output()).toBe(true);
   },
   15_000,
 );

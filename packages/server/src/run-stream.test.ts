@@ -14,6 +14,7 @@ import { createRequestListener } from "./http";
 import { apiFor, signUpOwner } from "./test-support/server-api";
 import type { Store } from "./store/store";
 import { recordRunFrames } from "./store/sessions";
+import { createRevertRegistry } from "./run-revert";
 
 const dirs: string[] = [];
 const servers: Array<{ close(): Promise<void> }> = [];
@@ -74,7 +75,7 @@ function freshLabServer(existingDir?: string): Promise<{
     indexHtml,
     channel,
     openStreams,
-    runs: relay,
+    runs: relay, reverts: createRevertRegistry(),
   });
   const server = createHttpServer(listener);
 

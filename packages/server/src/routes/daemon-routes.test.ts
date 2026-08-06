@@ -379,3 +379,35 @@ it("a report records the one entry when only the platform, daemon version, or ca
   ).toBe(200);
   expect(changeLogCount(store)).toBe(1);
 });
+
+it("names which of the Studies and Tasks a machine asked about are gone", () => {
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  const ownerId = store.get(`SELECT id FROM users LIMIT 1`)!.id as string;
+  store.run(
+    `INSERT INTO studies (id, key, title, created_by, created_ts, updated_ts, seq)
+     VALUES ('s_here', 'HERE', 'Here', ?, ?, ?, ?)`,
+    [ownerId, NOW, NOW, nextSeq(store)],
+  );
+  store.run(
+    `INSERT INTO tasks (id, study_id, number, title, status, priority, stage, created_by,
+                        created_ts, updated_ts, seq)
+     VALUES ('t_here', 's_here', 1, 'Here', 'todo', 'normal', 'inbox', ?, ?, ?, ?)`,
+    [ownerId, NOW, NOW, nextSeq(store)],
+  );
+
+  const result = post(
+    store,
+    "/daemon/workspaces",
+    { studyIds: ["s_here", "s_gone"], taskIds: ["t_here", "t_gone"] },
+    "Bearer a-real-token",
+  );
+
+  expect(result).toEqual({ status: 200, json: { studyIds: ["s_gone"], taskIds: ["t_gone"] } });
+});
+
+it("refuses to say anything about workspaces to a machine it does not know", () => {
+  const store = freshStore();
+  const result = post(store, "/daemon/workspaces", { studyIds: ["s_1"] }, "Bearer not-a-token");
+  expect(result?.status).toBe(401);
+});

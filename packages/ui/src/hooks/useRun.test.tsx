@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
+  ExecutionLogEntry,
   LykeionApi,
   RunEvent,
   RunHandle,
@@ -111,6 +112,15 @@ function stalledApi(): { api: LykeionApi; submitted: string[] } {
   return { api, submitted };
 }
 
+/** A step's output as one string, so the probe below can print it. A record
+ *  carrying typed pieces prints the text ones; the assertions here are about
+ *  what reached the hook, not about how a step is drawn. */
+function resultText(result: ExecutionLogEntry["result"]): string {
+  if (typeof result === "string") return result;
+  if (!result) return "";
+  return result.map((part) => (part.type === "text" ? part.text : "")).join("");
+}
+
 function Harness({ api }: { api: LykeionApi }) {
   return (
     <ApiProvider api={api}>
@@ -147,7 +157,7 @@ function Probe() {
       )}
       {run.log.map((entry) => (
         <span key={entry.toolUseId} data-testid="log-entry">
-          {entry.toolUseId}:{entry.decision}:{entry.result ?? ""}:{String(entry.isError)}
+          {entry.toolUseId}:{entry.decision}:{resultText(entry.result)}:{String(entry.isError)}
         </span>
       ))}
       <span data-testid="live-stream">
@@ -155,7 +165,7 @@ function Probe() {
           .map((item) =>
             item.kind === "text"
               ? `text:${item.text}`
-              : `step:${item.entry.toolUseId}:${item.entry.decision}:${item.entry.result ?? ""}`,
+              : `step:${item.entry.toolUseId}:${item.entry.decision}:${resultText(item.entry.result)}`,
           )
           .join("|")}
       </span>

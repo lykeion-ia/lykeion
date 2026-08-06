@@ -10,6 +10,7 @@ import { openStore } from "../store/sqlite";
 import { migrate } from "../store/migrations";
 import { createChannel } from "../channel";
 import { createRunRelay, type RunCommand, type RunRelay } from "../run-relay";
+import { createRevertRegistry } from "../run-revert";
 import { createRequestListener } from "../http";
 import { apiFor, signUpOwner } from "../test-support/server-api";
 import type { Store } from "../store/store";
@@ -41,7 +42,10 @@ function freshLabServer(): Promise<{ base: string; store: Store; relay: RunRelay
   const openStreams = new Set<() => void>();
   const config = { ...readConfig({}), host: "127.0.0.1", port: 0, dataDir: dir, uiDir };
 
-  const listener = createRequestListener({ store, config, secure: false, indexHtml, channel, openStreams, runs: relay });
+  const listener = createRequestListener({
+    store, config, secure: false, indexHtml, channel, openStreams, runs: relay,
+    reverts: createRevertRegistry(),
+  });
   const server = createHttpServer(listener);
 
   return new Promise((resolve, reject) => {

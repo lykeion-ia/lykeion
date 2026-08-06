@@ -30,7 +30,7 @@ import {
   PinIcon,
   TrashIcon,
 } from "../components/icons";
-import { modelsForCli } from "../lib/cli-models";
+import { modelOptionOf, noChoiceReason } from "../lib/agent-options";
 import { stashRun } from "../lib/pending-run";
 import {
   closeTaskTab,
@@ -123,17 +123,18 @@ export function StudyScreen({ studyId }: { studyId: string }) {
     clis[0];
   const effectiveCliId = effectiveCli?.id ?? null;
 
-  // A catalogued CLI defaults to its first (recommended) model, so the composer
-  // surfaces a concrete model — e.g. "Opus 5" — rather than a bare "Default".
-  const effectiveModel =
-    selectedModel ?? modelsForCli(effectiveCliId)[0]?.value ?? null;
+  // What this agent itself advertised, which is the only authority on what
+  // it offers. Absent when it offered nothing, or when no session could be
+  // opened to ask — the pill says which.
+  const modelOption = modelOptionOf(effectiveCli);
+  const effectiveModel = selectedModel ?? modelOption?.currentValue ?? null;
 
-  // Switching CLI drops a model the new CLI doesn't offer.
+  // Switching agent drops a value the new one does not offer.
   const selectCli = (identity: string) => {
     setSelectedCliId(identity);
     const cli = clis.find((c) => cliIdentity(c) === identity);
     setSelectedModel((m) =>
-      modelsForCli(cli?.id ?? null).some((x) => x.value === m) ? m : null,
+      modelOptionOf(cli)?.choices.some((x) => x.value === m) ? m : null,
     );
   };
 
@@ -420,7 +421,8 @@ export function StudyScreen({ studyId }: { studyId: string }) {
                   placeholder="Describe a task, or run a command — ⌘K to search…"
                   switcher={
                     <ModelSwitcher
-                      cliId={effectiveCliId}
+                      {...(modelOption ? { option: modelOption } : {})}
+                      reason={noChoiceReason(effectiveCli)}
                       selectedModel={effectiveModel}
                       onSelect={setSelectedModel}
                     />

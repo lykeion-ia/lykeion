@@ -8,10 +8,14 @@ import {
   postRunEvents,
   postRunGrant,
   postRunLive,
+  postRunReverted,
+  postRunSnapshot,
   type RunCommand,
 } from "./lab";
 import { createRetryLoop } from "./retry";
-import { ensureSessionDir } from "./workspace";
+import { ensureTaskDir } from "./workspace";
+import { boundaryOf, policyFor } from "./sandbox";
+import { restoreSnapshot, takeSnapshot } from "./snapshot";
 import { startSession, type LiveSession, type StandingGrant } from "./session";
 
 /** How long a run's buffered events wait for company before they are posted
@@ -45,10 +49,10 @@ export interface RunSubsystem {
   /** The reason the most recent turn was abandoned, for a caller that has
    *  no event stream to read it from. Absent until one is. */
   lastFailure(): string | undefined;
-  /** The working directory of every session this daemon currently holds a
-   *  live ACP subprocess for. What a sweep of stale workspaces must never
-   *  remove out from under a running agent, however long it has been since
-   *  the directory itself was last touched. */
+  /** The working directory every session this daemon currently holds a live
+   *  ACP subprocess for is standing in. What a sweep must never remove out
+   *  from under a running agent. Two sessions on one Task name the same
+   *  directory, so a caller comparing against it treats this as a set. */
   liveSessionDirs(): string[];
 }
 
@@ -91,8 +95,16 @@ function delay(ms: number): Promise<void> {
 export function startRuns(options: {
   lab: string;
   token: string;
+  /** Where Task workspaces live. Disjoint from `dataDir`, which the sandbox
+   *  denies. */
+  workDir: string;
+  /** Where this machine keeps its own state, so the boundary can deny it. */
   dataDir: string;
   adapterFor(agent: string): { command: string; args: string[] } | undefined;
+  /** The platform whose sandbox backend confines every run here. Production
+   *  passes none and this machine's own platform is used; a test naming one
+   *  is how the no-backend path is exercised without a second machine. */
+  platform?: string;
   cancelGraceMs?: number;
 }): RunSubsystem {
   // Two signals rather than one: aborting the command stream the instant
@@ -561,9 +573,11 @@ export function startRuns(options: {
     runId: string,
     sessionId: string,
     studyId: string,
+    taskId: string,
     adapter: { command: string; args: string[] },
     prompt: string,
     grants: StandingGrant[],
+    model: string | undefined,
   ): Promise<void> {
     if (cancelledQueuedRuns.delete(runId)) {
       sessionOfRun.delete(runId);
@@ -580,9 +594,63 @@ export function startRuns(options: {
       sessionOfRun.delete(runId);
       return;
     }
+    // What this turn's grants actually permit. A profile is fixed when the
+    // process is spawned and cannot be widened or narrowed underneath it, so
+    // a session already running is only reusable while the boundary it was
+    // rendered from is still the one this turn needs. Where it is not, the
+    // subprocess is retired and a new one takes its place: the alternative
+    // is a turn running inside a boundary that describes grants the
+    // researcher no longer gives it.
+    let boundary: string;
+    try {
+      boundary = boundaryOf(
+        policyFor({
+          workspace: ensureTaskDir(options.workDir, studyId, taskId),
+          grants,
+          dataDir: options.dataDir,
+        }),
+      );
+    } catch (err) {
+      refuse(runId, err instanceof Error ? err.message : String(err));
+      sessionOfRun.delete(runId);
+      return;
+    }
     let live = liveSessions.get(sessionId);
+    if (live && live.boundary !== boundary) {
+      liveSessions.delete(sessionId);
+      sessionDirs.delete(sessionId);
+      if (runOfSession.get(sessionId) === runId) runOfSession.delete(sessionId);
+      await live.close();
+      live = undefined;
+    }
     if (!live) {
-      const cwd = ensureSessionDir(options.dataDir, studyId, sessionId);
+      // The boundary is established before anything is spawned, and a run
+      // whose boundary cannot be established never spawns anything at all.
+      // That is the whole guarantee: this machine stays up and manageable,
+      // and no agent code runs outside one.
+      let cwd: string;
+      try {
+        cwd = ensureTaskDir(options.workDir, studyId, taskId);
+        // Taken before the turn starts, and reported whichever way it went,
+        // so a Revert control is offered only where it can actually put the
+        // files back.
+        const snapshot = await takeSnapshot(options.workDir, studyId, taskId);
+        void postRunSnapshot(
+          options.lab,
+          options.token,
+          runId,
+          snapshot,
+          eventsController.signal,
+        ).catch(() => {
+          // A snapshot the lab never heard about leaves Revert unoffered,
+          // which is the safe reading of it: the files are still there, and
+          // nothing claims a restore that was never confirmed possible.
+        });
+      } catch (err) {
+        refuse(runId, err instanceof Error ? err.message : String(err));
+        sessionOfRun.delete(runId);
+        return;
+      }
       const initialization = new AbortController();
       initializations.set(runId, initialization);
       try {
@@ -590,6 +658,8 @@ export function startRuns(options: {
         created = await startSession({
           adapter,
           cwd,
+          dataDir: options.dataDir,
+          ...(options.platform === undefined ? {} : { platform: options.platform }),
           grants,
           onEvent: (event) => {
             if (liveSessions.get(sessionId) !== created) return;
@@ -634,6 +704,7 @@ export function startRuns(options: {
             inFlightFlushes.add(sent);
           },
           env: process.env,
+          ...(model === undefined ? {} : { model }),
           signal: initialization.signal,
           ...(options.cancelGraceMs !== undefined ? { cancelGraceMs: options.cancelGraceMs } : {}),
         });
@@ -675,7 +746,7 @@ export function startRuns(options: {
   }
 
   function handleStartRun(command: RunCommand): void {
-    const { runId, agent, studyId, sessionId, prompt } = command;
+    const { runId, agent, studyId, taskId, sessionId, prompt, model } = command;
     // A reconnect replays commands from its cursor, and the lab cannot always
     // be sure this daemon saw the last one before the connection dropped.
     // Acting on the same run id twice would queue a second turn and, once
@@ -689,15 +760,22 @@ export function startRuns(options: {
       refuse(runId, `this machine has no adapter for "${agent ?? "no agent named"}"`);
       return;
     }
-    if (studyId === undefined || sessionId === undefined || prompt === undefined) {
-      refuse(runId, "a start-run command is missing studyId, sessionId, or a prompt");
+    if (
+      studyId === undefined ||
+      taskId === undefined ||
+      sessionId === undefined ||
+      prompt === undefined
+    ) {
+      refuse(runId, "a start-run command is missing studyId, taskId, sessionId, or a prompt");
       return;
     }
     const grants = command.grants ?? [];
 
     sessionOfRun.set(runId, sessionId);
     const tail = turnQueues.get(sessionId) ?? Promise.resolve();
-    const next = tail.catch(() => {}).then(() => runTurn(runId, sessionId, studyId, adapter, prompt, grants));
+    const next = tail
+      .catch(() => {})
+      .then(() => runTurn(runId, sessionId, studyId, taskId, adapter, prompt, grants, model));
     turnQueues.set(sessionId, next);
   }
 
@@ -734,11 +812,56 @@ export function startRuns(options: {
     cancelRun(command.runId);
   }
 
+  /**
+   * Puts a Task's working directory back to what it held before this turn
+   * ran, and ends the conversation the turn belonged to.
+   *
+   * The session is closed first: the protocol carries no way to take a turn
+   * out of what an agent remembers, so a session left open is an agent that
+   * would go on acting on a turn the researcher has just been told was
+   * discarded. The next Send opens a new one, in this same directory.
+   *
+   * How it went is reported back rather than assumed. The lab truncates the
+   * record only once this says the files are back.
+   */
+  function handleRevert(command: RunCommand): void {
+    const { runId, studyId, taskId, sessionId } = command;
+    void (async () => {
+      let error: string | undefined;
+      try {
+        if (studyId === undefined || taskId === undefined)
+          throw new Error("a revert command is missing studyId or taskId");
+        if (sessionId !== undefined) {
+          const live = liveSessions.get(sessionId);
+          liveSessions.delete(sessionId);
+          sessionDirs.delete(sessionId);
+          if (runOfSession.get(sessionId) === runId) runOfSession.delete(sessionId);
+          if (live) await live.close();
+        }
+        await restoreSnapshot(options.workDir, studyId, taskId);
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
+      }
+      await postRunReverted(
+        options.lab,
+        options.token,
+        runId,
+        error === undefined ? { ok: true } : { ok: false, error },
+        eventsController.signal,
+      ).catch(() => {
+        // The lab will not truncate what it never heard was restored, which
+        // leaves the record standing over files that ARE back. Visible and
+        // recoverable; the opposite ordering is neither.
+      });
+    })();
+  }
+
   function handleCommand(seq: number, command: RunCommand): void {
     lastCommandSeq = seq;
     if (command.type === "start-run") return handleStartRun(command);
     if (command.type === "decision") return handleDecision(command);
     if (command.type === "cancel") return handleCancel(command);
+    if (command.type === "revert") return handleRevert(command);
   }
 
   const retries = createRetryLoop({

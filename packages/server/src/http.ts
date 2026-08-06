@@ -16,11 +16,13 @@ import { dispatch, rpcMethods } from "./rpc";
 import type { Store } from "./store/store";
 import { createChannel, type Channel, type Send } from "./channel";
 import { createRunRelay, type RunCommand, type RunRelay } from "./run-relay";
+import { createRevertRegistry, type RevertRegistry } from "./run-revert";
 import { failDroppedRuns } from "./run-recovery";
 import {
   activeRunIdsForRuntime,
   addGrant,
   recordRunFrames,
+  recordTurnSnapshot,
   RunFrameSequenceGapError,
   runSnapshot,
   runtimeForTurn,
@@ -115,6 +117,7 @@ export async function startServer(
   // Process-lived the same way `channel` is: the run command queue and
   // event fan-out belong to the running server, not to any one request.
   const runs = createRunRelay();
+  const reverts: RevertRegistry = createRevertRegistry();
   // Every open `/events` or `/daemon/commands` response, so `close()` can
   // end them itself: a stream nobody tears down keeps its heartbeat alive
   // (harmless — it is `unref`'d) but also keeps `server.close()` waiting on
@@ -131,7 +134,9 @@ export async function startServer(
     );
   const indexHtml = rawIndex.replace("</head>", `${MARKER}</head>`);
 
-  const listener = createRequestListener({ store, config, secure, indexHtml, now, channel, openStreams, runs });
+  const listener = createRequestListener({
+    store, config, secure, indexHtml, now, channel, openStreams, runs, reverts,
+  });
   const server = secure
     ? createHttpsServer(
         { cert: readFileSync(config.tlsCertPath!), key: readFileSync(config.tlsKeyPath!) },
@@ -175,6 +180,9 @@ export function createRequestListener(deps: {
   indexHtml: string;
   channel: Channel;
   runs: RunRelay;
+  /** Reverts waiting on the machine holding the files to say whether they
+   *  are back, so `/daemon/run/reverted` can settle the one it names. */
+  reverts: RevertRegistry;
   /** Every open `/events` or `/daemon/commands` response's teardown, so the
    *  server that built this listener can end them from `close()`. */
   openStreams: Set<() => void>;
@@ -182,7 +190,7 @@ export function createRequestListener(deps: {
    *  tiebreaks do the work rather than happening to pass on real time. */
   now?: () => number;
 }): (req: IncomingMessage, res: ServerResponse) => void {
-  const { store, config, secure, indexHtml, channel, openStreams, runs } = deps;
+  const { store, config, secure, indexHtml, channel, openStreams, runs, reverts } = deps;
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
 
   return (req, res) => {
@@ -406,6 +414,37 @@ export function createRequestListener(deps: {
           runs.publish(runId, accepted);
           return sendJson(res, 200, { ok: true });
         }
+        if (path === "/daemon/run/snapshot") {
+          const machine = resolveMachine(store, req.headers.authorization);
+          if (!machine) return sendJson(res, 401, { error: "no such machine" });
+          const runId = (body as { runId?: unknown } | null)?.runId;
+          const taken = (body as { taken?: unknown } | null)?.taken;
+          const reason = (body as { reason?: unknown } | null)?.reason;
+          if (typeof runId !== "string" || typeof taken !== "boolean")
+            return sendJson(res, 400, { error: "a runId and a taken flag are required" });
+          if (runtimeForTurn(store, runId) !== machine.runtimeId)
+            return sendJson(res, 403, { error: "this machine does not own that run" });
+          recordTurnSnapshot(store, runId, {
+            taken,
+            ...(typeof reason === "string" ? { reason } : {}),
+          });
+          return sendJson(res, 200, { ok: true });
+        }
+        if (path === "/daemon/run/reverted") {
+          const machine = resolveMachine(store, req.headers.authorization);
+          if (!machine) return sendJson(res, 401, { error: "no such machine" });
+          const runId = (body as { runId?: unknown } | null)?.runId;
+          const ok = (body as { ok?: unknown } | null)?.ok;
+          const error = (body as { error?: unknown } | null)?.error;
+          if (typeof runId !== "string" || typeof ok !== "boolean")
+            return sendJson(res, 400, { error: "a runId and an ok flag are required" });
+          if (runtimeForTurn(store, runId) !== machine.runtimeId)
+            return sendJson(res, 403, { error: "this machine does not own that run" });
+          // The record is truncated only from here, once the machine has
+          // said the files are back: restore first, truncate second.
+          reverts.settle(runId, ok, typeof error === "string" ? error : undefined);
+          return sendJson(res, 200, { ok: true });
+        }
         if (path === "/daemon/run/grant") {
           const machine = resolveMachine(store, req.headers.authorization);
           if (!machine) return sendJson(res, 401, { error: "no such machine" });
@@ -488,7 +527,7 @@ export function createRequestListener(deps: {
         // module is handed, so whatever any of them records is in the queue
         // the `flush` below drains.
         const changes = changeRecorder({ store, actorId: actor.userId, now, channel });
-        const api = createWorkspaceApi({ store, actor, now, config, channel, changes, runs });
+        const api = createWorkspaceApi({ store, actor, now, config, channel, changes, runs, reverts });
         const method = path.slice("/rpc/".length);
         if (!rpcMethods(api).has(method)) return sendJson(res, 404, { error: `no such method: ${method}` });
         try {

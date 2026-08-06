@@ -7,10 +7,10 @@ import { DAEMON_VERSION, readDaemonConfig, USAGE, type DaemonConfig } from "./co
 import { labLabel, readState, revokedStatePath, setAsidePairing, type PairedState } from "./state";
 import { beginPairing, PairingRefused, type PairingSession } from "./pairing";
 import { cliFingerprint, platformTag, probeAgentClis } from "./probe";
-import { heartbeat, report } from "./lab";
+import { heartbeat, report, workspacesGone } from "./lab";
 import { createRetryLoop, type RetryLoop } from "./retry";
 import { startRuns, type RunSubsystem } from "./runs";
-import { sweepSessions } from "./workspace";
+import { heldWorkspaces, removeWorkspaces } from "./workspace";
 import {
   acquireControl,
   callControl,
@@ -36,14 +36,9 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
  *  again only when that comes back different from what was last sent. */
 const PROBE_INTERVAL_MS = 5 * 60 * 1000;
 
-/** How often stale session workspaces are swept away. */
+/** How often this machine asks the lab which of the working directories it
+ *  holds belong to a Study or a Task that is gone. */
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
-
-/** How long a session's workspace can sit untouched before a sweep removes
- *  it — long enough that a researcher stepping away from a live turn for a
- *  meeting never loses it out from under them, short enough that a machine
- *  running for months does not keep every workspace it ever opened. */
-const SESSION_MAX_AGE_SECONDS = 6 * 60 * 60;
 
 /** Where a daemon running in the background says everything it would have
  *  said to a terminal. */
@@ -160,9 +155,13 @@ let readyAdapters = new Map<string, string>();
  * Probes this machine and reports again only when what it found differs, on
  * `(id, version, available)`, from what was last sent.
  */
-async function reportIfChanged(machine: PairedState): Promise<void> {
+async function reportIfChanged(machine: PairedState, dataDir: string): Promise<void> {
   const resolved = new Map<string, string>();
   const clis = await probeAgentClis({
+    // A probe runs the researcher's own agent CLI and confines it exactly
+    // as a session is confined, and the boundary denies this machine's own
+    // state — so it has to be told where that is.
+    dataDir,
     signal: inFlight.signal,
     onAdapterResolved: (agentId, command) => resolved.set(agentId, command),
   });
@@ -190,8 +189,8 @@ async function reportIfChanged(machine: PairedState): Promise<void> {
  *  every caller of this reschedules on completion, and a probe that failed
  *  must be tried again in five minutes the same as one that succeeded, not
  *  leave probing stopped for good. */
-function runProbeCycle(machine: PairedState): Promise<void> {
-  return reportIfChanged(machine).catch((err: unknown) => {
+function runProbeCycle(machine: PairedState, dataDir: string): Promise<void> {
+  return reportIfChanged(machine, dataDir).catch((err: unknown) => {
     if (stopping) return;
     const message = err instanceof Error ? err.message : String(err);
     console.error(`probe against ${machine.lab} failed: ${message}`);
@@ -207,26 +206,33 @@ function scheduleHeartbeat(machine: PairedState): void {
   }, HEARTBEAT_INTERVAL_MS);
 }
 
-function scheduleProbe(machine: PairedState): void {
+function scheduleProbe(machine: PairedState, dataDir: string): void {
   if (stopping) return;
   probeTimer = setTimeout(() => {
-    void runProbeCycle(machine).then(() => scheduleProbe(machine));
+    void runProbeCycle(machine, dataDir).then(() => scheduleProbe(machine, dataDir));
   }, PROBE_INTERVAL_MS);
 }
 
-/** Removes what has gone stale under `workDir`. A session's workspace is
- *  scratch, not a durable record — nothing worth keeping lives only there —
- *  so a failure here is logged rather than left to bring the rest of this
- *  machine down with it. */
-function sweepWorkDir(workDir: string): void {
+/**
+ * Removes the working directory of every Study and Task this machine holds
+ * one for that the lab no longer has. A Task's directory is not scratch — it
+ * holds the work of every turn that Task has run — so nothing here decides
+ * on its own that a directory has gone stale: it asks, and removes only what
+ * the lab said is gone.
+ *
+ * A lab that cannot be reached removes nothing, and a failure is logged
+ * rather than left to bring the rest of this machine down with it.
+ */
+async function sweepWorkDir(workDir: string, machine: PairedState): Promise<void> {
   try {
-    // A session with a live ACP subprocess is excluded however old its
-    // directory's own `mtime` looks — that only moves when something
-    // touches the directory itself, not when the agent writes somewhere
-    // underneath it, so a long turn can look untouched for hours while its
-    // process is very much still using the directory it is standing in.
+    const held = heldWorkspaces(workDir);
+    if (held.studyIds.length === 0 && held.taskIds.length === 0) return;
+    const gone = await workspacesGone(machine.lab, machine.token, held, inFlight.signal);
+    // A Task with a live ACP subprocess is excluded whatever the lab says:
+    // removing the directory an adapter is standing in would take the turn's
+    // own work with it, and the answer is still true on the next sweep.
     const live = new Set(runSubsystem?.liveSessionDirs() ?? []);
-    sweepSessions(workDir, Math.floor(Date.now() / 1000), SESSION_MAX_AGE_SECONDS, (dir) => live.has(dir));
+    removeWorkspaces(workDir, gone, (dir) => live.has(dir));
   } catch (err) {
     console.error(`sweeping ${workDir} failed: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -235,11 +241,11 @@ function sweepWorkDir(workDir: string): void {
 /** Sweeps again every hour for as long as this machine keeps running.
  *  Unreferenced, unlike the heartbeat and probe schedules: those are what a
  *  running `serve` is actually for and are meant to keep the process up,
- *  but clearing stale workspaces is upkeep, never a reason on its own for
- *  this process to still be here. */
-function scheduleSweep(workDir: string): void {
+ *  but clearing workspaces the lab has let go of is upkeep, never a reason
+ *  on its own for this process to still be here. */
+function scheduleSweep(workDir: string, machine: PairedState): void {
   if (stopping) return;
-  const timer = setInterval(() => sweepWorkDir(workDir), SWEEP_INTERVAL_MS);
+  const timer = setInterval(() => void sweepWorkDir(workDir, machine), SWEEP_INTERVAL_MS);
   timer.unref?.();
 }
 
@@ -365,14 +371,16 @@ async function runServe(config: DaemonConfig): Promise<void> {
   runSubsystem = startRuns({
     lab: identity.lab,
     token: identity.token,
-    dataDir: config.workDir,
+    workDir: config.workDir,
+    dataDir: config.dataDir,
     adapterFor,
   });
 
-  // Swept once now, so a workspace already stale when this machine starts
-  // does not wait an hour to go, and then again on the schedule below.
-  sweepWorkDir(config.workDir);
-  scheduleSweep(config.workDir);
+  // Swept once now, so a directory the lab had already let go of before
+  // this machine started does not wait an hour to go, and then again on the
+  // schedule below.
+  void sweepWorkDir(config.workDir, identity);
+  scheduleSweep(config.workDir, identity);
 
   // The heartbeat schedule starts unconditionally, before the first report is
   // even attempted: a lab that is refusing reports (a routing regression, a
@@ -386,7 +394,7 @@ async function runServe(config: DaemonConfig): Promise<void> {
   // the traffic while it is already failing, and `lastReported` ends up written
   // by whichever chain settled last rather than by the report the lab actually
   // applied — which then suppresses a report that should have been sent.
-  void runProbeCycle(identity).then(() => scheduleProbe(identity));
+  void runProbeCycle(identity, config.dataDir).then(() => scheduleProbe(identity, config.dataDir));
 }
 
 /** The arguments the background copy is started with: the same ones this

@@ -611,32 +611,107 @@
    uncluttered. Refills the composer draft; it never touches the recorded
    turn (see `TurnView`'s doc comment). Absent entirely while a run is live —
    the Task surface omits `onEditPrompt` in that case. */
-.msg-edit-btn {
+/* What a recorded message carries: Copy on every one, Edit and Revert on the
+   newest turn. Revealed on hover and on focus, so a keyboard reaches them. */
+.msg-actions {
   position: absolute;
-  top: 50%;
-  right: 100%;
-  transform: translateY(-50%);
-  margin-right: 6px;
+  top: 100%;
+  right: 0;
+  display: flex;
+  gap: 4px;
+  padding-top: 4px;
+  opacity: 0;
+}
+
+.msg--user:hover .msg-actions,
+.msg-actions:focus-within {
+  opacity: 1;
+}
+
+.msg-action {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  padding: 4px;
+  gap: 4px;
+  padding: 3px 8px;
   border: 1px solid var(--hairline-strong);
   border-radius: 999px;
   background: var(--surface-1);
   color: var(--ink-subtle);
+  font: inherit;
+  font-size: 11px;
   cursor: pointer;
-  opacity: 0;
-  line-height: 0;
 }
 
-.msg--user:hover .msg-edit-btn,
-.msg-edit-btn:focus-visible {
-  opacity: 1;
-}
-
-.msg-edit-btn:hover {
+.msg-action:hover:not(:disabled) {
   color: var(--ink);
+  background: var(--surface-3);
+}
+
+.msg-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* What discarding a turn costs, named before it happens. */
+.turn-confirm {
+  margin-top: 34px;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  background: var(--surface-1);
+  color: var(--ink);
+  font-size: 12px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.turn-confirm-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--ink-muted);
+}
+
+.turn-confirm-draft {
+  width: 100%;
+  min-height: 64px;
+  padding: 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.turn-confirm-failure {
+  margin: 0;
+  color: var(--danger, #d66);
+}
+
+.turn-confirm-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.turn-confirm-go,
+.turn-confirm-keep {
+  padding: 5px 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.turn-confirm-go:hover:not(:disabled) {
   background: var(--surface-3);
 }
 
@@ -1215,6 +1290,29 @@ label.question-option:hover {
 .tool-detail-value {
   min-width: 0;
   color: var(--ink);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* What an opened step shows when it has no output to draw: which of the
+   reasons that is, stated rather than left as an empty region. */
+.tool-detail-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.tool-detail-note-text {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.tool-detail-note-reason {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-tertiary);
   overflow-wrap: anywhere;
   user-select: text;
 }

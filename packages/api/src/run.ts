@@ -79,10 +79,66 @@ export interface QuestionAnswer {
   selected: string[];
 }
 
+/**
+ * The closed set of call kinds an entry's `tool` may hold. `"other"` is a
+ * real member rather than a failure: a call that names no kind, and a call
+ * naming one this set does not carry, are both genuinely "some other kind of
+ * call" and are recorded as one.
+ */
+export const TOOL_KINDS = [
+  "read",
+  "edit",
+  "delete",
+  "move",
+  "search",
+  "execute",
+  "think",
+  "fetch",
+  "switch_mode",
+  "other",
+] as const;
+
+export type ToolKind = (typeof TOOL_KINDS)[number];
+
+/** Whether `tool` names a kind this contract pins. A value outside the set
+ *  is a record written before `tool` carried a kind at all; a consumer that
+ *  keys presentation off the kind treats it as `"other"`. */
+export function isToolKind(tool: string): tool is ToolKind {
+  return (TOOL_KINDS as readonly string[]).includes(tool);
+}
+
+/**
+ * One piece of what a tool call produced, keeping the shape it arrived in.
+ *
+ * A call's output is a LIST of these rather than one string, because the
+ * pieces are not all text: an edit produces a before and an after over a
+ * path, and a reference to a resource is not the resource's bytes. Flattening
+ * either into text loses exactly the part a renderer needs.
+ *
+ * `other` names a piece whose type nothing draws yet, so it is reported as
+ * present and unrecognised rather than dropped.
+ */
+export type ToolOutputPart =
+  | { type: "text"; text: string }
+  | { type: "diff"; path: string; oldText?: string; newText: string }
+  | { type: "terminal"; output: string }
+  | { type: "resource"; uri: string; name?: string }
+  | { type: "other"; blockType: string };
+
 /** One authoritative Execution Log entry. */
 export interface ExecutionLogEntry {
   ts: number;
   toolUseId: string;
+  /**
+   * What kind of call this is, from the adapter's own classification: one of
+   * [`TOOL_KINDS`]. Never the adapter's prose label — that is `title` — and
+   * never a CLI's own tool name, so a consumer keys presentation off the kind
+   * and never off which adapter produced it.
+   *
+   * A record written before `tool` carried a kind holds a prose label here
+   * instead; a consumer treats any value outside the set as `"other"` (see
+   * [`isToolKind`]) rather than rejecting the record.
+   */
   tool: string;
   /**
    * A human-readable label for this call, when the adapter supplied one
@@ -114,7 +170,24 @@ export interface ExecutionLogEntry {
    * entry.
    */
   decision: string;
-  result?: string;
+  /**
+   * What the call produced, and one of the four things a consumer must be
+   * able to tell apart:
+   *
+   * - a non-empty string, or a non-empty list of parts — the call produced
+   *   THAT. A string is the whole of an output that was entirely text, its
+   *   blocks concatenated in arrival order; a list carries the pieces that
+   *   are not text (see [`ToolOutputPart`]) beside any that are.
+   * - `""` or `[]` — the call ran to completion and produced NOTHING.
+   * - absent, on a call that never ran (`decision` says which of denied or
+   *   cancelled) — there is nothing to produce output.
+   * - absent, on a call that ended — the output was NOT CAPTURED. The call
+   *   may have done a great deal; the adapter reported none of it.
+   *
+   * The last two are told apart by `decision`, not by this field. Collapsing
+   * any of the four into another states something the record does not.
+   */
+  result?: string | ToolOutputPart[];
   isError: boolean;
   /**
    * True when this call's access fell OUTSIDE the study workspace (skipped
@@ -258,6 +331,13 @@ export interface TaskTurn {
   /** Set when this turn is a delegated subagent turn (nested in the UI). */
   parentRunId?: string;
   subagent?: string;
+  /**
+   * Whether this turn can be discarded and its files put back, and when it
+   * cannot, why. Absent on a turn recorded before a snapshot was taken at
+   * all — the control is not offered rather than offered and unable to
+   * restore anything, which is worse than absent.
+   */
+  revert?: { available: boolean; reason?: string };
 }
 
 /** A Task with its full transcript (turns ascending by ts). */

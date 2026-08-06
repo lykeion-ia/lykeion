@@ -38,7 +38,7 @@ import {
   UserBubble,
 } from "../components/tasks/TaskTranscript";
 import { AssistantMessage } from "../components/tasks/AssistantMessage";
-import { modelsForCli } from "../lib/cli-models";
+import { modelOptionOf, noChoiceReason } from "../lib/agent-options";
 import { useRouter, type Route } from "../router";
 import {
   closeTaskTab,
@@ -78,11 +78,9 @@ const NEW_TASK_TITLE = "New task";
  * another Task's transcript. */
 function LiveRunBlock({
   run,
-  onEditPrompt,
   onOpenNotebook,
 }: {
   run: ManagedRun;
-  onEditPrompt?: (prompt: string) => void;
   onOpenNotebook?: () => void;
 }) {
   const landedStream = run.run?.stream;
@@ -106,10 +104,7 @@ function LiveRunBlock({
       data-testid="live-turn"
       data-run-id={run.runId}
     >
-      <UserBubble
-        prompt={run.prompt}
-        onEdit={run.running ? undefined : onEditPrompt}
-      />
+      <UserBubble prompt={run.prompt} />
       <StreamView
         stream={stream}
         stdoutFor={landedStream ? undefined : stdoutFor}
@@ -406,9 +401,10 @@ export function TaskScreen({
   // available CLI — the choice belongs to the Study's composer, which is where
   // the work is started from. What that CLI offers is what the switcher lists.
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const effectiveCliId = (clis.find((c) => c.available) ?? clis[0])?.id ?? null;
-  const effectiveModel =
-    selectedModel ?? modelsForCli(effectiveCliId)[0]?.value ?? null;
+  const effectiveCli = clis.find((c) => c.available) ?? clis[0];
+  const effectiveCliId = effectiveCli?.id ?? null;
+  const modelOption = modelOptionOf(effectiveCli);
+  const effectiveModel = selectedModel ?? modelOption?.currentValue ?? null;
 
   // Reviewer findings for this Task (loaded on open and after a run completes).
   const [findings, setFindings] = useState<Finding[]>([]);
@@ -873,21 +869,29 @@ export function TaskScreen({
   // the authoritative write if another client creates this race directly.
   const showMarkDone = liveStatus === "in-review" && !anyRunning;
 
-  // Refill the composer with a past prompt and hand focus back to it — see
-  // `UserBubble`'s `onEdit` doc comment for what Edit does and does NOT do.
-  // Undefined while a run is live: `undefined` renders no Edit button at all,
-  // rather than a button that would fight the (disabled) composer for the
-  // researcher's next move.
-  const editPrompt = anyRunning
+  // Discards the newest turn and puts the Task's files back. Undefined
+  // while a run is live: a turn cannot be pulled out from under one that is
+  // still working, and the control the researcher wants there is Stop.
+  const revertTurn = anyRunning
     ? undefined
-    : (text: string) => {
-        setDraft(text);
-        inputRef.current?.focus();
+    : async (runId: string) => {
+        await api.revertTurn(runId);
+        setTaskNonce((n) => n + 1);
+      };
+  // Edit is Revert followed by an ordinary send of the corrected text. It is
+  // not a second operation, which keeps the destructive path down to one.
+  const editTurn = anyRunning
+    ? undefined
+    : async (runId: string, prompt: string) => {
+        await api.revertTurn(runId);
+        setTaskNonce((n) => n + 1);
+        send(prompt);
       };
 
   const switcher = (
     <ModelSwitcher
-      cliId={effectiveCliId}
+      {...(modelOption ? { option: modelOption } : {})}
+      reason={noChoiceReason(effectiveCli)}
       selectedModel={effectiveModel}
       onSelect={setSelectedModel}
     />
@@ -909,11 +913,7 @@ export function TaskScreen({
     runId: run.runId,
     sequence: run.sequence,
     content: (
-      <LiveRunBlock
-        run={run}
-        onEditPrompt={editPrompt}
-        onOpenNotebook={openNotebook}
-      />
+      <LiveRunBlock run={run} onOpenNotebook={openNotebook} />
     ),
   }));
 
@@ -1039,7 +1039,8 @@ export function TaskScreen({
                     viewTurns={viewTurns}
                     liveTurns={liveTurns}
                     terminalStatusByRunId={terminalStatusByRunId}
-                    onEditPrompt={editPrompt}
+                    {...(revertTurn ? { onRevertTurn: revertTurn } : {})}
+                    {...(editTurn ? { onEditTurn: editTurn } : {})}
                   />
 
                   {findings.length > 0 && (

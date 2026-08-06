@@ -50,7 +50,7 @@ export function absentApi(
   | "connectorCatalog" | "listConnectorTools"
   | "listResearchGroups" | "createResearchGroup"
   | "listRuntimes" | "listAgentClis" | "pairMachine" | "removeRuntime"
-  | "startRun" | "submitRunDecision" | "runHistory"
+  | "startRun" | "submitRunDecision" | "runHistory" | "revertTurn"
 > {
   return {
     async listConversations() {

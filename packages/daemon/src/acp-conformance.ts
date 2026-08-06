@@ -205,6 +205,7 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
       const starting = startSession({
         adapter: { command, args },
         cwd: workspace(),
+        dataDir: mkdtempSync(join(tmpdir(), "lykeion-acp-conformance-state-")),
         grants: [],
         onEvent: (event) => events.push(event),
         onGrant: () => {},

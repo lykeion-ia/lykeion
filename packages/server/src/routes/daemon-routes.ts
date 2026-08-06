@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Store } from "../store/store";
 import type { ChangeRecorder } from "../api/changes";
+import type { AgentOption } from "@lykeion/api";
 import { hashSecret, newToken } from "../auth";
 import { nextSeq } from "../store/migrations";
 
@@ -66,6 +67,7 @@ const OWNED_ROUTES = new Set([
   "POST /daemon/pair/exchange",
   "POST /daemon/heartbeat",
   "POST /daemon/report",
+  "POST /daemon/workspaces",
 ]);
 
 function field(body: unknown, name: string): string {
@@ -99,6 +101,10 @@ interface ReportedCli {
   available: boolean;
   sessionReady: boolean;
   sessionReadyReason?: string;
+  /** What the agent advertised when a session was opened with it. ABSENT
+   *  when no session could be opened to ask, which is not the same as an
+   *  agent that advertised nothing. */
+  options?: AgentOption[];
 }
 
 /** Malformed entries are dropped rather than failing the whole report: a
@@ -133,6 +139,7 @@ function parseClis(entries: unknown[]): ReportedCli[] {
       sessionReady: row.sessionReady === true,
     };
     if (typeof row.sessionReadyReason === "string") cli.sessionReadyReason = row.sessionReadyReason;
+    if (Array.isArray(row.options)) cli.options = row.options as AgentOption[];
     out.push(cli);
   }
   return out;
@@ -249,6 +256,28 @@ function heartbeat(req: DaemonRequest): DaemonResult {
 }
 
 /**
+ * Which of the Studies and Tasks a machine holds a working directory for
+ * this lab no longer has. A Task's directory holds the work of every turn
+ * that Task has run, so a machine keeps it for as long as the Task exists
+ * rather than ageing it out on a timer; this is how it finds out that one
+ * of them stopped existing.
+ *
+ * It answers about the ids it was asked about and no others, so it can never
+ * be read as a listing of what this lab holds.
+ */
+function workspaces(req: DaemonRequest): DaemonResult {
+  const machine = resolveMachine(req.store, req.authorization);
+  if (!machine) return { status: 401, json: { error: "no such machine" } };
+  const studyIds = stringArrayField(req.body, "studyIds").filter(
+    (id) => !req.store.get(`SELECT id FROM studies WHERE id = ?`, [id]),
+  );
+  const taskIds = stringArrayField(req.body, "taskIds").filter(
+    (id) => !req.store.get(`SELECT id FROM tasks WHERE id = ?`, [id]),
+  );
+  return { status: 200, json: { studyIds, taskIds } };
+}
+
+/**
  * What a machine says about itself on every report: its platform, its
  * daemon build, what it can do, and the agent CLIs it found — including,
  * per CLI, whether its adapter actually handshakes and, when it does not,
@@ -308,8 +337,9 @@ function report(req: DaemonRequest): DaemonResult {
     for (const cli of clis) {
       store.run(
         `INSERT INTO runtime_clis
-           (runtime_id, cli_id, name, command, version, available, session_ready, session_ready_reason, seq)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (runtime_id, cli_id, name, command, version, available, session_ready,
+            session_ready_reason, options, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           machine.runtimeId,
           cli.id,
@@ -319,6 +349,10 @@ function report(req: DaemonRequest): DaemonResult {
           cli.available ? 1 : 0,
           cli.sessionReady ? 1 : 0,
           cli.sessionReadyReason ?? null,
+          // An empty list and no list at all are different answers, so an
+          // agent that advertised nothing is stored as `[]` and one no
+          // session could be opened against stays NULL.
+          cli.options === undefined ? null : JSON.stringify(cli.options),
           nextSeq(store),
         ],
       );
@@ -341,5 +375,6 @@ export function handleDaemonRoute(req: DaemonRequest): DaemonResult | undefined 
   if (!OWNED_ROUTES.has(`${req.method} ${req.path}`)) return undefined;
   if (req.path === "/daemon/pair/exchange") return exchange(req);
   if (req.path === "/daemon/report") return report(req);
+  if (req.path === "/daemon/workspaces") return workspaces(req);
   return heartbeat(req);
 }

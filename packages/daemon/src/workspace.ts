@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 /** An id that is safe to use as one path segment. Ids the lab mints are
@@ -12,51 +12,82 @@ function segment(kind: string, value: string): string {
 }
 
 /**
- * Where one session's agent runs. Nested under its Study so removing a Study
- * takes its sessions with it in one recursive delete, rather than needing a
- * scan of what belonged to what.
+ * Where a Task's agent runs. Keyed to the Task, which persists, rather than
+ * to a session, which is created per machine and per agent and changes
+ * whenever either does — so a Task's work accumulates in one place across
+ * every agent and machine that touches it. Sessions come and go inside it.
+ *
+ * Nested under its Study so removing a Study takes its Tasks with it in one
+ * recursive delete, rather than needing a scan of what belonged to what.
  */
-export function ensureSessionDir(dataDir: string, studyId: string, sessionId: string): string {
+export function ensureTaskDir(dataDir: string, studyId: string, taskId: string): string {
   const dir = join(
     dataDir,
     "studies",
     segment("study", studyId),
-    "sessions",
-    segment("session", sessionId),
+    "tasks",
+    segment("task", taskId),
   );
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
+/** What this machine holds a working directory for. */
+export interface HeldWorkspaces {
+  studyIds: string[];
+  taskIds: string[];
+}
+
+/** Every Study and Task this machine currently holds a directory for, so a
+ *  caller can ask the lab which of them it still has. */
+export function heldWorkspaces(dataDir: string): HeldWorkspaces {
+  const studies = join(dataDir, "studies");
+  const studyIds = listDirs(studies);
+  const taskIds = studyIds.flatMap((study) => listDirs(join(studies, study, "tasks")));
+  return { studyIds, taskIds };
+}
+
 /**
- * Removes session directories nothing has touched for `maxAgeSeconds`, and
- * answers with what it removed. A session's workspace is scratch: what was
- * worth keeping is an artifact, and a machine that ran for a month should not
- * be holding every directory it ever opened.
+ * Removes the working directory of every Task named, and every Study
+ * directory named — the recursive delete this layout is nested for, since a
+ * Study's directory holds its Tasks'.
  *
- * `keep`, when given, names directories never removed no matter how old they
- * look — a session whose ACP subprocess is still running is the reason this
- * exists: `mtime` only moves when something touches the directory itself,
- * not when the agent writes somewhere underneath it, so a long-running turn
- * can look untouched for hours while its process is very much still using
- * the directory it is standing in.
+ * A Task's directory is not scratch: it holds the work of every turn the
+ * Task has run, across every session that touched it, and revert restores to
+ * it. So nothing ages out on a timer. What is removed is what the lab says
+ * is gone.
+ *
+ * `keep` names directories never removed whatever the lab says — a Task
+ * whose ACP subprocess is still standing in the directory is the reason this
+ * exists, since removing it out from under a running adapter would take the
+ * turn's own work with it.
  */
-export function sweepSessions(
+export function removeWorkspaces(
   dataDir: string,
-  now: number,
-  maxAgeSeconds: number,
+  gone: HeldWorkspaces,
   keep: (dir: string) => boolean = () => false,
 ): string[] {
   const removed: string[] = [];
   const studies = join(dataDir, "studies");
+  const goneStudies = new Set(gone.studyIds);
+  const goneTasks = new Set(gone.taskIds);
   for (const study of listDirs(studies)) {
-    const sessions = join(studies, study, "sessions");
-    for (const session of listDirs(sessions)) {
-      const dir = join(sessions, session);
+    const studyDir = join(studies, study);
+    if (goneStudies.has(study)) {
+      const tasks = join(studyDir, "tasks");
+      if (listDirs(tasks).some((task) => keep(join(tasks, task)))) continue;
+      rmSync(studyDir, { recursive: true, force: true });
+      removed.push(studyDir);
+      continue;
+    }
+    const tasks = join(studyDir, "tasks");
+    for (const task of listDirs(tasks)) {
+      if (!goneTasks.has(task)) continue;
+      const dir = join(tasks, task);
       if (keep(dir)) continue;
-      const touched = Math.floor(statSync(dir).mtimeMs / 1000);
-      if (now - touched < maxAgeSeconds) continue;
       rmSync(dir, { recursive: true, force: true });
+      // The snapshot of a Task that is gone has nothing left to restore to.
+      rmSync(join(studyDir, "snapshots", task), { recursive: true, force: true });
       removed.push(dir);
     }
   }

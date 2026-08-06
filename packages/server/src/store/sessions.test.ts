@@ -20,6 +20,7 @@ import {
   dropGrantsForStudy,
   dropGrantsForRuntime,
 } from "./sessions";
+import type { ExecutionLogEntry } from "@lykeion/api";
 import type { Store } from "./store";
 
 const dirs: string[] = [];
@@ -558,4 +559,108 @@ it("drops every grant standing on a runtime, leaving another runtime's alone", (
 
   expect(listGrants(store, "s_1", "rt_1")).toEqual([]);
   expect(listGrants(store, "s_1", "rt_2")).toEqual([{ path: "/work/other", mode: "read" }]);
+});
+
+it("reads a step's typed output parts back as they were written", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store);
+  const parts = [
+    { type: "diff" as const, path: "/data/notes.md", oldText: "one\n", newText: "two\n" },
+    { type: "text" as const, text: "edited" },
+  ];
+
+  recordRunFrames(
+    store,
+    turnId,
+    [
+      {
+        seq: 1,
+        event: {
+          event: "log-entry" as const,
+          entry: {
+            ts: 4,
+            toolUseId: "edit-1",
+            tool: "edit",
+            input: { file_path: "/data/notes.md" },
+            decision: "ran",
+            result: parts,
+            isError: false,
+          },
+        },
+      },
+    ],
+    10,
+  );
+  finishTurn(store, turnId, { endedTs: 11, status: "ok" });
+
+  const [turn] = taskTurnsForTask(store, "t_1");
+  expect(turn.stream).toEqual([
+    {
+      kind: "step",
+      entry: {
+        ts: 4,
+        toolUseId: "edit-1",
+        tool: "edit",
+        input: { file_path: "/data/notes.md" },
+        decision: "ran",
+        result: parts,
+        isError: false,
+      },
+    },
+  ]);
+});
+
+it("keeps a step that produced no output apart from one whose output was never reported", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store);
+
+  appendStep(store, {
+    turnId, ts: 5, toolUseId: "empty", tool: "execute", input: {}, decision: "ran",
+    result: "", isError: false,
+  });
+  appendStep(store, {
+    turnId, ts: 6, toolUseId: "silent", tool: "execute", input: {}, decision: "ran",
+    isError: false,
+  });
+  finishTurn(store, turnId, { endedTs: 7, status: "ok" });
+
+  const [turn] = taskTurnsForTask(store, "t_1");
+  const entries = (turn.stream ?? []).flatMap((item) => (item.kind === "step" ? [item.entry] : []));
+  expect(entries.map((entry) => entry.result)).toEqual(["", undefined]);
+});
+
+it("gives back the same step it was given, for every shape an output takes", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store);
+  const shapes: Array<ExecutionLogEntry["result"]> = [
+    "12 rows",
+    "",
+    undefined,
+    [{ type: "diff", path: "/data/a.md", oldText: "one\n", newText: "two\n" }],
+    [{ type: "terminal", output: "done\n" }],
+    [{ type: "resource", uri: "file:///data/a.csv", name: "a.csv" }],
+    [{ type: "other", blockType: "hologram" }],
+  ];
+  const sent: ExecutionLogEntry[] = shapes.map((result, i) => ({
+    ts: 4 + i,
+    toolUseId: `tu-${i}`,
+    tool: "other",
+    input: { i },
+    decision: "ran",
+    ...(result === undefined ? {} : { result }),
+    isError: false,
+  }));
+
+  recordRunFrames(
+    store,
+    turnId,
+    sent.map((entry, i) => ({ seq: i + 1, event: { event: "log-entry" as const, entry } })),
+    10,
+  );
+  finishTurn(store, turnId, { endedTs: 20, status: "ok" });
+
+  const [turn] = taskTurnsForTask(store, "t_1");
+  expect((turn.stream ?? []).flatMap((item) => (item.kind === "step" ? [item.entry] : []))).toEqual(
+    sent,
+  );
 });

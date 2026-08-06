@@ -1,21 +1,29 @@
 import { useEffect, useRef, useState } from "react";
-import { modelsForCli } from "../../lib/cli-models";
+import type { AgentOption } from "@lykeion/api";
 
 /**
- * The model switcher — the composer's pill that picks which AI model the run
- * uses. Options depend on the currently-selected CLI (the dock below the
- * composer picks the CLI; this picks its model). A CLI with a real model
- * catalogue (Claude Code, via `--model`) gets a working dropdown; a CLI with no
- * catalogue (the ACP agents, whose models are session-dynamic) shows a disabled
- * "Default". `null` = the provider default (no `--model` passed).
+ * The model switcher — the composer's pill that picks what the next turn
+ * runs on. What it lists is what the agent itself advertised when a session
+ * was opened with it, never a catalogue kept here: a catalogue is a second
+ * source of truth that goes stale the week a provider ships a model.
+ *
+ * `option` absent is an agent that offers no choice, or one no session could
+ * be opened to ask — a neutral pill reading *Default*, which can now say
+ * which of the two it is. `null` selected is the agent's own default.
+ *
+ * The same widget serves reasoning effort: an option's `category` is all
+ * that differs, so nothing here is built twice.
  */
 export function ModelSwitcher({
-  cliId,
+  option,
+  reason,
   selectedModel,
   onSelect,
 }: {
-  /** The effective selected CLI id — drives which models are offered. */
-  cliId: string | null;
+  /** What this agent advertised under the category being picked. */
+  option?: AgentOption;
+  /** Why there is no choice, when there is none. */
+  reason?: string;
   selectedModel: string | null;
   onSelect: (value: string | null) => void;
 }) {
@@ -32,16 +40,18 @@ export function ModelSwitcher({
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  const models = modelsForCli(cliId);
-  const active = models.find((m) => m.value === selectedModel) ?? null;
+  const models = option?.choices ?? [];
+  const current = selectedModel ?? option?.currentValue ?? null;
+  const active = models.find((m) => m.value === current) ?? null;
   const label = active?.label ?? "Default";
 
-  // No catalogue for this CLI — a neutral, non-interactive pill.
+  // This agent offered no choice — a neutral, non-interactive pill, which
+  // says why rather than leaving a researcher to guess.
   if (models.length === 0) {
     return (
       <span
         className="cli-pill cli-pill--empty"
-        title="This CLI selects its model automatically"
+        title={reason ?? "This agent offered no choice of model"}
       >
         <span className="cli-pill-name">Default</span>
       </span>
@@ -80,17 +90,17 @@ export function ModelSwitcher({
       {open && (
         <div className="cli-menu" role="listbox" aria-label="Models">
           <div className="cli-menu-head">
-            <span className="cli-menu-eyebrow">Model</span>
+            <span className="cli-menu-eyebrow">{CATEGORY_LABEL[option?.category ?? "model"] ?? "Option"}</span>
           </div>
           {models.map((m) => {
-            const isSel = m.value === selectedModel;
+            const isSel = m.value === current;
             return (
               <button
                 key={m.value}
                 type="button"
                 role="option"
                 aria-selected={isSel}
-                aria-label={`${m.label} — ${m.desc}`}
+                aria-label={m.description ? `${m.label} — ${m.description}` : m.label}
                 className={`cli-row${isSel ? " is-selected" : ""}`}
                 onClick={() => {
                   onSelect(m.value);
@@ -99,7 +109,9 @@ export function ModelSwitcher({
               >
                 <span className="cli-row-main">
                   <span className="cli-row-name">{m.label}</span>
-                  <span className="cli-row-desc">{m.desc}</span>
+                  {m.description && (
+                    <span className="cli-row-desc">{m.description}</span>
+                  )}
                 </span>
                 <span className="cli-row-status">
                   {isSel && (
@@ -122,5 +134,12 @@ export function ModelSwitcher({
     </div>
   );
 }
+
+/** What a category is called on screen. An unlisted one is still offered —
+ *  the agent named it, and refusing to draw it would hide a real choice. */
+const CATEGORY_LABEL: Record<string, string> = {
+  model: "Model",
+  thought_level: "Reasoning",
+};
 
 export default ModelSwitcher;

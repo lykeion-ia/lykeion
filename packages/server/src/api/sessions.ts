@@ -12,13 +12,16 @@ import {
   runtimeForTurn,
   runtimeOwnerForTurn,
   runSnapshot,
+  newestTurnForTask,
+  sessionForTurn,
+  truncateTurn,
   turnsForTask,
 } from "../store/sessions";
 import type { RunCommand } from "../run-relay";
 
 export type SessionsApi = Pick<
   LykeionApi,
-  "startRun" | "resumeRuns" | "submitRunDecision" | "runHistory"
+  "startRun" | "resumeRuns" | "submitRunDecision" | "runHistory" | "revertTurn"
 >;
 
 interface ResolvedRuntime {
@@ -76,7 +79,7 @@ function resolveRuntimeForAgent(
 }
 
 export function sessionsApi(deps: Deps): SessionsApi {
-  const { store, actor, now, runs } = deps;
+  const { store, actor, now, runs, reverts, changes } = deps;
   return {
     async startRun(input) {
       const resolved = resolveRuntimeForAgent(store, input.options.agent, actor.userId);
@@ -147,9 +150,11 @@ export function sessionsApi(deps: Deps): SessionsApi {
         type: "start-run",
         runId,
         studyId: input.studyId,
+        taskId: input.taskId,
         sessionId,
         agent: resolved.agent,
         prompt: input.prompt,
+        ...(input.options.model === undefined ? {} : { model: input.options.model }),
         ...(grants.length > 0 ? { grants } : {}),
       };
       runs.enqueue(resolved.runtimeId, command);
@@ -226,6 +231,66 @@ export function sessionsApi(deps: Deps): SessionsApi {
             runs.enqueue(resolved.runtimeId, { type: "cancel", runId });
         },
       };
+    },
+
+    async revertTurn(runId) {
+      const turn = store.get(`SELECT task_id, session_id FROM turns WHERE id = ?`, [runId]);
+      if (!turn) throw new LykeionError("not-found", `no such run: ${runId}`);
+      const taskId = turn.task_id as string;
+      // Only the newest turn. There is one snapshot per Task, and a turn
+      // that has already been built on cannot be pulled out from under the
+      // work that followed it.
+      if (newestTurnForTask(store, taskId) !== runId)
+        throw new LykeionError(
+          "conflict",
+          "only the newest turn of a Task can be discarded",
+        );
+      const session = sessionForTurn(store, runId);
+      if (!session) throw new LykeionError("not-found", `no such run: ${runId}`);
+      // Resolved from the caller rather than taken from the client: the turn
+      // ran on their machine, in a directory only they can run in.
+      const owner = runtimeOwnerForTurn(store, runId);
+      if (owner !== actor.userId)
+        throw new LykeionError(
+          "forbidden",
+          "only the member who started this run may discard it",
+        );
+      const snapshot = store.get(`SELECT snapshot_taken FROM turns WHERE id = ?`, [runId]);
+      if (snapshot?.snapshot_taken !== 1)
+        throw new LykeionError(
+          "conflict",
+          "there is no snapshot of this Task's files from before this turn, so nothing can be restored",
+        );
+      // A turn still running is stopped first, so the two never happen at
+      // once: an agent going on working through a restore would write into
+      // a directory being replaced underneath it.
+      if (turnIsActive(store, runId))
+        runs.enqueue(session.runtimeId, { type: "cancel", runId });
+
+      const command: RunCommand = {
+        type: "revert",
+        runId,
+        studyId: session.studyId,
+        taskId,
+        sessionId: turn.session_id as string,
+      };
+      runs.enqueue(session.runtimeId, command);
+      // Restore first, truncate second. A machine that could not put the
+      // files back leaves the turn in the record — never a truncated record
+      // standing over files that were not restored — and its own account of
+      // what went wrong is what the researcher reads.
+      try {
+        await reverts.await(runId);
+      } catch (err) {
+        throw new LykeionError(
+          "conflict",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+      truncateTurn(store, runId);
+      // Published, so a colleague with the Task open sees the turn go rather
+      // than holding one the server no longer has.
+      changes.record("task-updated", { taskId });
     },
 
     async runHistory(taskId) {

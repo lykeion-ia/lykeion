@@ -194,6 +194,7 @@ export function createHttpApi(transport: Transport): LykeionApi {
       }));
     },
     submitRunDecision: call("submitRunDecision"),
+    revertTurn: call("revertTurn"),
     delegateSubagent: call("delegateSubagent"),
     readArtifact: call("readArtifact"),
     reviewFindings: call("reviewFindings"),

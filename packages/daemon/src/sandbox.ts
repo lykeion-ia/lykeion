@@ -1,0 +1,431 @@
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+
+/**
+ * The boundary an agent's tool calls execute inside, on the machine the
+ * researcher runs. Nothing here spawns anything unconfined: a run whose
+ * boundary cannot be established fails, naming why, and this machine stays
+ * up so it remains manageable rather than disappearing from the lab with no
+ * explanation.
+ */
+
+/** A folder a run may reach, and how far. */
+export interface SandboxGrant {
+  path: string;
+  mode: "read" | "write";
+}
+
+/**
+ * What a run may touch, with no platform in it. A backend renders it and
+ * spawns the adapter inside it, so a second platform is a second backend
+ * rather than a second policy.
+ */
+export interface SandboxPolicy {
+  /** The one Task directory this run may write. Never the whole work dir:
+   *  one run may not read another Task's. */
+  workspace: string;
+  /** Canonicalized standing and session grants. */
+  grants: SandboxGrant[];
+  /** Paths denied whatever the grants say. Rendered last. */
+  denied: string[];
+}
+
+export interface SandboxBackend {
+  /** What this backend is, for a reason a researcher reads. */
+  name: string;
+  /** The adapter command, wrapped so it runs inside the boundary. */
+  confine(
+    policy: SandboxPolicy,
+    adapter: { command: string; args: string[] },
+  ): { command: string; args: string[] };
+}
+
+/**
+ * The physical path a name resolves to: every symlink followed, and `~`
+ * read as the home directory so a grant written that way names the same
+ * place a grant written in full does.
+ *
+ * Resolving physically rather than lexically is what puts a rule where the
+ * kernel will actually look — it canonicalizes the path being accessed and
+ * not the one in the filter, so a rule written against an unresolved name
+ * matches nothing.
+ *
+ * Throws, naming the path, when it will not resolve. A rule that cannot
+ * match is indistinguishable from an allowance nobody asked for, and a
+ * researcher watching an agent be denied a folder they can see themselves
+ * having granted has nothing connecting the two.
+ */
+export function canonicalPath(path: string): string {
+  const home = homedir();
+  const expanded =
+    path === "~" ? home : path.startsWith(`~${sep}`) ? join(home, path.slice(2)) : path;
+  try {
+    return realpathSync(isAbsolute(expanded) ? expanded : resolve(expanded));
+  } catch {
+    throw new Error(`${path} is not a path this machine can resolve`);
+  }
+}
+
+/**
+ * The deepest part of `path` that exists, with the rest named from there.
+ * A rule is written where the kernel will look even for something not
+ * created yet — which is what a deny needs, since a credential store this
+ * machine does not happen to have today is still a place nothing should be
+ * allowed to write tomorrow.
+ */
+function canonicalPrefix(path: string): string | undefined {
+  const home = homedir();
+  const expanded =
+    path === "~" ? home : path.startsWith(`~${sep}`) ? join(home, path.slice(2)) : path;
+  const absolute = isAbsolute(expanded) ? expanded : resolve(expanded);
+  const parts = absolute.split(sep);
+  for (let depth = parts.length; depth > 0; depth -= 1) {
+    try {
+      const head = realpathSync(parts.slice(0, depth).join(sep) || sep);
+      return depth === parts.length ? head : join(head, ...parts.slice(depth));
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+/** Whether `path` is `root` or lies beneath it. Both are already physical,
+ *  so no `..` and no symlink can build a name that passes here and is
+ *  refused by the kernel. */
+function beneath(root: string, path: string): boolean {
+  return path === root || path.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
+}
+
+/**
+ * Whether the researcher has already allowed this access. Asked of the same
+ * canonical grant set the profile is rendered from, so "did the researcher
+ * allow this?" and "will the kernel permit this?" cannot drift apart.
+ *
+ * Both sides are resolved as far as they exist, because the thing being
+ * asked about is often a file the call is on its way to creating. Resolving
+ * that far is what the kernel does too, so no `..` and no symlink can build
+ * a name that passes here and is refused there.
+ */
+export function covers(
+  grants: SandboxGrant[],
+  path: string,
+  mode: "read" | "write",
+): boolean {
+  const target = canonicalPrefix(path);
+  if (target === undefined) return false;
+  return grants.some((grant) => {
+    if (mode === "write" && grant.mode === "read") return false;
+    const root = canonicalPrefix(grant.path);
+    return root !== undefined && beneath(root, target);
+  });
+}
+
+/** A path as one Seatbelt string literal. A quote inside a path ends the
+ *  literal early and turns the rest of the rule into something else, so it
+ *  is escaped rather than assumed absent. */
+function literal(path: string): string {
+  return `"${path.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/** Shallow before deep, so a rule on a folder is written before a rule on
+ *  something inside it and reading the profile follows the tree. */
+function shallowToDeep<T>(items: T[], pathOf: (item: T) => string): T[] {
+  return [...items].sort((a, b) => {
+    const left = pathOf(a);
+    const right = pathOf(b);
+    return left.split(sep).length - right.split(sep).length || left.localeCompare(right);
+  });
+}
+
+/**
+ * The read this machine must grant for a program to be a program at all:
+ * the system, the runtime, and the operating system's own configuration.
+ * Without it `(deny default)` aborts the child before it reaches its first
+ * instruction, which is a failure that looks nothing like a denial — the
+ * process dies with no output and nothing refused.
+ *
+ * The root directory itself is named because a child that cannot read it
+ * never starts. It is one directory entry, not a subtree: reading `/` says
+ * what is at the top level and nothing about what is inside any of it.
+ */
+const SYSTEM_READ = [
+  "/usr",
+  "/bin",
+  "/sbin",
+  "/opt",
+  "/etc",
+  "/System",
+  "/Library",
+  "/Applications",
+  "/dev",
+  "/var/db",
+  "/var/select",
+];
+
+/**
+ * The directory names a credential store goes by. Denied at any depth, under
+ * any grant — the researcher's keys are theirs whether they sit in their home
+ * directory or inside the folder they meant to share.
+ *
+ * Written without the leading dot, which the rule adds.
+ */
+const CREDENTIAL_STORE_NAMES = ["ssh", "aws", "gnupg", "docker", "kube", "netrc", "git-credentials"];
+
+/** Devices and inherited descriptors a runtime writes to as a matter of
+ *  course, and which carry nothing of the researcher's. */
+const DEVICE_WRITE = ["/dev/null", "/dev/dtracehelper", "/dev/tty"];
+
+/**
+ * Renders a policy as a Seatbelt profile. A pure function of the policy, so
+ * what it produces can be read and asserted without a sandbox or a
+ * subprocess anywhere near it.
+ *
+ * The order is the specification rather than an implementation detail,
+ * because the last rule that matches is the one that decides. A deny
+ * emitted before an allow on its own ancestor is simply defeated — which is
+ * how a researcher granting a folder that happens to hold their keys would
+ * hand them over without ever being asked.
+ */
+export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] = []): string {
+  const home = homedir();
+  const lines: string[] = ["(version 1)", "(deny default)", ""];
+
+  lines.push("; the baseline, without which nothing starts");
+  lines.push("(allow process-fork)");
+  lines.push("(allow process-exec)");
+  lines.push("(allow signal (target self))");
+  lines.push("(allow sysctl-read)");
+  lines.push("(allow file-read-metadata)");
+  lines.push("(allow mach-lookup)");
+  lines.push(`(allow file-read* (literal ${literal(sep)}))`);
+  // Written where the kernel will look. It canonicalizes the path being
+  // accessed and not the path in the filter, so a rule naming a directory
+  // that is itself a link matches nothing at all.
+  const system = SYSTEM_READ.map(canonicalPrefix).filter((path): path is string => !!path);
+  lines.push(`(allow file-read* ${system.map((path) => `(subpath ${literal(path)})`).join(" ")})`);
+  const devices = DEVICE_WRITE.map(canonicalPrefix).filter((path): path is string => !!path);
+  lines.push(
+    `(allow file-write* ${devices.map((path) => `(literal ${literal(path)})`).join(" ")} (subpath "/dev/fd"))`,
+  );
+  // Nothing grants the platform's shared temporary directory. It is one
+  // directory for every process on the machine, so granting it would let a
+  // run read what another run left there — and would swallow the boundary
+  // for anything the researcher happens to keep beneath it. A run's own
+  // scratch belongs inside its workspace, which is already granted.
+  //
+  // An agent reads its own configuration to run at all, and configuration
+  // is what a home directory's hidden entries hold — the researcher's data
+  // files are not hidden. Read only: a write here would let an agent leave
+  // something behind that runs outside this boundary the next time the
+  // researcher opens a shell. The credential stores among them are denied
+  // below, which is why the order matters.
+  const hidden = canonicalPrefix(home);
+  if (hidden) lines.push(`(allow file-read* (regex ${literal(`^${escapeRegex(hidden)}/\\.`)}))`);
+  // The program this machine is about to run has to be readable to be that
+  // program: the adapter itself, whatever its argument array names, and the
+  // directories a command is looked up in. This machine built that argument
+  // array, so nothing an agent says reaches here.
+  for (const path of shallowToDeep([...new Set(program)], (p) => p))
+    lines.push(`(allow file-read* (subpath ${literal(path)}))`);
+  lines.push("");
+
+  lines.push("; the policy's own allows, shallow to deep");
+  lines.push(`(allow file-read* file-write* (subpath ${literal(policy.workspace)}))`);
+  for (const grant of shallowToDeep(policy.grants, (g) => g.path))
+    lines.push(
+      `(allow file-read*${grant.mode === "write" ? " file-write*" : ""} (subpath ${literal(grant.path)}))`,
+    );
+  lines.push("");
+
+  lines.push("; denies last, so a deny survives an allow on its ancestor");
+  // A credential store is denied wherever it is, not only where this policy
+  // happened to name one. A researcher grants a folder because of the data
+  // in it, and a folder that also holds their keys is the ordinary case
+  // rather than the unusual one — the grant would otherwise hand those keys
+  // over without anyone being asked.
+  lines.push(
+    `(deny file-read* file-write* (regex ${literal(`/\\.(${CREDENTIAL_STORE_NAMES.join("|")})(/|$)`)}))`,
+  );
+  for (const path of shallowToDeep(policy.denied, (p) => p))
+    lines.push(`(deny file-read* file-write* (subpath ${literal(path)}))`);
+
+  return `${lines.join("\n")}\n`;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * A place too broad to be "where a program lives", whatever derived it. The
+ * root of the disk and a home directory are each somebody's whole world, and
+ * granting either as a program location would swallow the boundary — every
+ * read-deny not rendered after it would be the only thing left holding.
+ *
+ * Refused rather than trimmed: a location this wide is a mistake in whatever
+ * produced it, not a rule to emit more carefully.
+ */
+function tooBroadForAProgram(path: string): boolean {
+  if (path.split(sep).filter(Boolean).length < 2) return true;
+  return path === canonicalPrefix(homedir());
+}
+
+/**
+ * Where the program being spawned lives: the adapter, the directory holding
+ * it, the package root above that — a program installed as `<prefix>/bin/x`
+ * keeps its own files under `<prefix>` — anything its argument array names
+ * that is really on disk, and the directories a command is looked up in,
+ * which is where the runtime a script names in its own first line is found.
+ *
+ * Read only, and only what a program needs in order to be a program. A path
+ * that does not resolve is simply not a file and contributes nothing; one
+ * that is too broad to be a program's own location contributes nothing
+ * either.
+ *
+ * A directory on the search path is taken as itself and never with its
+ * parent: it is ALREADY the directory holding the program, and the thing
+ * above it is a home directory or the root of the disk.
+ */
+function programPaths(adapter: { command: string; args: string[] }): string[] {
+  const paths: string[] = [];
+  const push = (path: string | undefined): void => {
+    if (path !== undefined && !tooBroadForAProgram(path)) paths.push(path);
+  };
+  const resolved = (path: string): string | undefined => {
+    try {
+      return canonicalPath(path);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const command = resolved(adapter.command);
+  if (command !== undefined) {
+    push(command);
+    push(dirname(command));
+    push(dirname(dirname(command)));
+  }
+  for (const arg of adapter.args) {
+    if (!arg.includes(sep)) continue;
+    const named = resolved(arg);
+    if (named === undefined) continue;
+    push(named);
+    push(dirname(named));
+  }
+  for (const dir of (process.env.PATH ?? "").split(delimiter))
+    if (dir.length > 0) push(resolved(dir));
+  return paths;
+}
+
+const SEATBELT: SandboxBackend = {
+  name: "seatbelt",
+  confine(policy, adapter) {
+    return {
+      command: "/usr/bin/sandbox-exec",
+      args: [
+        "-p",
+        renderSeatbeltProfile(policy, programPaths(adapter)),
+        "--",
+        adapter.command,
+        ...adapter.args,
+      ],
+    };
+  },
+};
+
+/** The backend that can confine a run on `platform`, or undefined. A
+ *  platform with none is a named gap with a shaped hole to fill: the policy
+ *  carries no platform, so a second backend is all it takes. */
+export function sandboxBackendFor(platform: string): SandboxBackend | undefined {
+  return platform === "darwin" ? SEATBELT : undefined;
+}
+
+/** The reason a machine cannot run an agent at all, when its platform has
+ *  no backend. */
+export function noBackendReason(platform: string): string {
+  return `this machine runs ${platform}, and agent runs are only confined on macOS so far`;
+}
+
+/**
+ * A stable summary of what a policy permits, so a caller can tell whether a
+ * session already running is confined by the boundary this turn actually
+ * needs. Order-independent: the same permissions listed differently are the
+ * same boundary.
+ *
+ * A profile is fixed when the process is spawned and cannot be widened or
+ * narrowed underneath it, so a turn whose grants no longer match the ones a
+ * live session was rendered from has to be given a new process rather than
+ * be run inside a boundary that describes something else.
+ */
+export function boundaryOf(policy: SandboxPolicy): string {
+  return JSON.stringify({
+    workspace: policy.workspace,
+    grants: policy.grants.map((grant) => `${grant.mode}:${grant.path}`).sort(),
+    denied: [...policy.denied].sort(),
+  });
+}
+
+/**
+ * The adapter command, wrapped so it runs inside the boundary. Throws when
+ * the platform has no backend, naming it — the one thing that never happens
+ * is an adapter spawned outside one.
+ */
+export function confine(
+  platform: string,
+  policy: SandboxPolicy,
+  adapter: { command: string; args: string[] },
+): { command: string; args: string[] } {
+  const backend = sandboxBackendFor(platform);
+  if (!backend) throw new Error(noBackendReason(platform));
+  return backend.confine(policy, adapter);
+}
+
+/**
+ * What is denied whatever a grant says. This machine's own token is its
+ * identity, and an agent that can read it off disk can impersonate the
+ * machine; the rest are the credential stores a researcher keeps beside the
+ * data they meant to share.
+ *
+ * A store this machine does not happen to have is still named, so nothing
+ * turns on whether it existed at the moment a run started.
+ */
+export function deniedPaths(dataDir: string): string[] {
+  const home = homedir();
+  const candidates = [
+    dataDir,
+    join(home, ".ssh"),
+    join(home, ".aws"),
+    join(home, ".gnupg"),
+    join(home, ".docker"),
+    join(home, ".kube"),
+    join(home, ".netrc"),
+    join(home, ".config", "gcloud"),
+    join(home, "Library", "Keychains"),
+  ];
+  return [...new Set(candidates.map(canonicalPrefix).filter((path): path is string => !!path))];
+}
+
+/**
+ * The one canonical policy a run is both rendered from and asked about. The
+ * profile and `covers()` are two consumers of this same list, so a card that
+ * says yes and a write the kernel refuses cannot come apart.
+ *
+ * Throws, naming the path, when the workspace or a grant will not resolve.
+ * Every grant comes from a card the agent raised about a path it had just
+ * tried to reach, so a resolution failure means something genuinely unusual,
+ * and refusing the run says so once at the moment the answer was given.
+ */
+export function policyFor(input: {
+  workspace: string;
+  grants: SandboxGrant[];
+  dataDir: string;
+}): SandboxPolicy {
+  const workspace = canonicalPath(input.workspace);
+  const grants = input.grants.map((grant) => ({
+    path: canonicalPath(grant.path),
+    mode: grant.mode,
+  }));
+  return { workspace, grants, denied: deniedPaths(input.dataDir) };
+}

@@ -1,8 +1,12 @@
 import { access, constants } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { delimiter, join } from "node:path";
-import type { AgentCli } from "@lykeion/api";
+import type { AgentCli, AgentOption } from "@lykeion/api";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { connectAcp } from "./acp";
+import { confine, noBackendReason, policyFor, sandboxBackendFor } from "./sandbox";
+import { readAdvertised } from "./agent-options";
 
 /**
  * What a probe of this machine can say about a catalogue entry, before it is
@@ -76,6 +80,14 @@ export interface ProbeOptions {
   /** Receives the exact executable whose successful handshake made an agent
    *  ready, so session launch can use the same resolved adapter. */
   onAdapterResolved?: (agentId: string, command: string) => void;
+  /** The platform whose sandbox backend would confine a session here.
+   *  Production passes none and this machine's own platform is used. */
+  platform?: string;
+  /** Where this machine keeps its own state. Required, because a probe runs
+   *  the researcher's own agent CLI and confines it the way a session is
+   *  confined — and it can only deny this machine's own token if it is told
+   *  where that is. */
+  dataDir: string;
 }
 
 /**
@@ -125,6 +137,12 @@ function firstSpokenLine(output: string): string {
   return "";
 }
 
+/** A directory a confined probe works in, and the one directory it may
+ *  write. Removed again whichever way the probe went. */
+function throwawayWorkspace(): string {
+  return mkdtempSync(join(tmpdir(), "lykeion-probe-"));
+}
+
 /**
  * Asks a resolved executable which build it is, and answers with what it
  * said — or the empty string, when it said nothing usable. Always an
@@ -145,15 +163,36 @@ function readVersion(
   resolved: string,
   timeoutMs: number,
   signal: AbortSignal | undefined,
+  platform: string,
+  dataDir: string,
 ): Promise<string> {
+  // Asking a program what it is means running it, and it is the
+  // researcher's agent CLI — the same code a turn drives. It is confined
+  // exactly as a session is, so nothing about a probe is a way around the
+  // boundary.
+  const workspace = throwawayWorkspace();
+  const confined = confine(
+    platform,
+    policyFor({ workspace, grants: [], dataDir }),
+    { command: resolved, args: ["--version"] },
+  );
   return new Promise((resolvePromise) => {
-    execFile(resolved, ["--version"], { timeout: timeoutMs, signal }, (error, stdout, stderr) => {
-      if (error) {
-        resolvePromise("");
-        return;
-      }
-      resolvePromise(firstSpokenLine(stdout) || firstSpokenLine(stderr));
-    });
+    const done = (version: string) => {
+      rmSync(workspace, { recursive: true, force: true });
+      resolvePromise(version);
+    };
+    execFile(
+      confined.command,
+      confined.args,
+      { timeout: timeoutMs, signal },
+      (error, stdout, stderr) => {
+        if (error) {
+          done("");
+          return;
+        }
+        done(firstSpokenLine(stdout) || firstSpokenLine(stderr));
+      },
+    );
   });
 }
 
@@ -181,10 +220,20 @@ async function probeCliVersion(
   pathValue: string,
   timeoutMs: number,
   signal: AbortSignal | undefined,
+  platform: string,
+  dataDir: string,
 ): Promise<{ available: boolean; version: string }> {
   const resolved = await resolveOnPath(command, pathValue);
   if (resolved === undefined) return { available: false, version: "" };
-  return { available: true, version: await readVersion(resolved, timeoutMs, signal) };
+  // Found by looking, not by running: a machine whose platform has no
+  // backend cannot confine this program, so it is never executed. The CLI
+  // is still reported as installed, with its build unknown — a narrower
+  // claim than a version, and a true one.
+  if (sandboxBackendFor(platform) === undefined) return { available: true, version: "" };
+  return {
+    available: true,
+    version: await readVersion(resolved, timeoutMs, signal, platform, dataDir),
+  };
 }
 
 /** Whatever `promise` settles to, unless `timeoutMs` passes or `signal`
@@ -253,7 +302,19 @@ async function probeAdapter(
   timeoutMs: number,
   signal: AbortSignal | undefined,
   onResolved: ((agentId: string, command: string) => void) | undefined,
-): Promise<{ sessionReady: true } | { sessionReady: false; sessionReadyReason: string }> {
+  platform: string,
+  dataDir: string,
+): Promise<
+  | { sessionReady: true; options?: AgentOption[] }
+  | { sessionReady: false; sessionReadyReason: string }
+> {
+  // Asked before anything is looked for. A machine whose platform has no
+  // sandbox backend cannot confine a run, and no agent is offered on it —
+  // an agent that is never offered is the whole of how "never launch an
+  // unsandboxed run" is kept before a run is even asked for.
+  if (sandboxBackendFor(platform) === undefined)
+    return { sessionReady: false, sessionReadyReason: noBackendReason(platform) };
+
   const adapterCommands = ADAPTER_COMMANDS[agentId];
   if (adapterCommands === undefined)
     return { sessionReady: false, sessionReadyReason: `no ACP adapter is known for ${agentId} yet` };
@@ -272,16 +333,51 @@ async function probeAdapter(
       sessionReadyReason: `none of ${adapterCommands.join(", ")} is installed — install an ACP adapter to run ${agentId} sessions`,
     };
 
-  const connection = await connectAcp(resolved, []);
+  // Confined exactly as a real session is. A probe that opens a session
+  // opens one an agent could act in, and "never launch an unsandboxed run"
+  // is not a rule about which caller asked.
+  const workspace = throwawayWorkspace();
+  const confined = confine(
+    platform,
+    policyFor({ workspace, grants: [], dataDir }),
+    { command: resolved, args: [] },
+  );
+  const connection = await connectAcp(confined.command, confined.args, { cwd: workspace });
+  // A throwaway session, opened and closed on every path. Options are
+  // advertised on `session/new` rather than on `initialize`, and a Task
+  // holds no session until its first Send — so without this the picker would
+  // be empty at exactly the moment a researcher wants it, choosing a model
+  // BEFORE asking the first question. A probe cycle costs one more round
+  // trip; the adapter is torn down either way.
+  let sessionId: string | undefined;
   try {
     await raced(connection.request("initialize", INITIALIZE_PARAMS), timeoutMs, signal);
     onResolved?.(agentId, resolved);
-    return { sessionReady: true };
+    let options: AgentOption[] | undefined;
+    try {
+      const created = await raced(
+        connection.request("session/new", { cwd: workspace, mcpServers: [] }),
+        timeoutMs,
+        signal,
+      );
+      sessionId = (created as { sessionId?: string }).sessionId;
+      options = readAdvertised(created).options;
+    } catch {
+      // An entitlement refusal, an unauthenticated CLI: the agent keeps the
+      // `sessionReady` answer its handshake earned, and what it offers is
+      // left UNKNOWN rather than reported as nothing. The Task's first real
+      // session fills it in.
+    }
+    return { sessionReady: true, ...(options === undefined ? {} : { options }) };
   } catch (err) {
     const tail = connection.stderrTail().trim();
     return { sessionReady: false, sessionReadyReason: tail || (err instanceof Error ? err.message : String(err)) };
   } finally {
+    // Closed on every path, including the failing ones: a probe that leaks a
+    // session leaks one every cycle, forever.
+    if (sessionId !== undefined) connection.notify("session/cancel", { sessionId });
     await connection.close();
+    rmSync(workspace, { recursive: true, force: true });
   }
 }
 
@@ -296,10 +392,12 @@ async function probeOne(
   timeoutMs: number,
   signal: AbortSignal | undefined,
   onResolved: ((agentId: string, command: string) => void) | undefined,
+  platform: string,
+  dataDir: string,
 ): Promise<ProbedCli> {
   const [cli, adapter] = await Promise.all([
-    probeCliVersion(entry.command, pathValue, timeoutMs, signal),
-    probeAdapter(entry.id, pathValue, timeoutMs, signal, onResolved),
+    probeCliVersion(entry.command, pathValue, timeoutMs, signal, platform, dataDir),
+    probeAdapter(entry.id, pathValue, timeoutMs, signal, onResolved, platform, dataDir),
   ]);
   return { id: entry.id, name: entry.name, command: entry.command, ...cli, ...adapter };
 }
@@ -314,7 +412,15 @@ export async function probeAgentClis(options: ProbeOptions): Promise<ProbedCli[]
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return Promise.all(
     CATALOGUE.map((entry) =>
-      probeOne(entry, pathValue, timeoutMs, options.signal, options.onAdapterResolved),
+      probeOne(
+        entry,
+        pathValue,
+        timeoutMs,
+        options.signal,
+        options.onAdapterResolved,
+        options.platform ?? process.platform,
+        options.dataDir,
+      ),
     ),
   );
 }

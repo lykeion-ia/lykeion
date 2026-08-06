@@ -4,6 +4,7 @@ import type { Actor } from "../auth";
 import type { ServerConfig } from "../config";
 import type { Channel } from "../channel";
 import type { RunRelay } from "../run-relay";
+import type { RevertRegistry } from "../run-revert";
 import type { ChangeRecorder } from "./changes";
 import { absentApi } from "./absent";
 import { accountApi } from "./account";
@@ -28,6 +29,9 @@ export interface Deps {
   /** The run command queue and event fan-out, held for the process's whole
    *  lifetime the same way `channel` is. */
   runs: RunRelay;
+  /** Reverts waiting on the machine that holds the files to say whether
+   *  they are back. Held for the process's lifetime, like `runs`. */
+  reverts: RevertRegistry;
   /**
    * Where a family records what it changed. One per request, handed to
    * every family, and flushed by the request once its writes have settled.

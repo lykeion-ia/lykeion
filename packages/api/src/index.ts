@@ -60,6 +60,7 @@ export const Commands = {
   resumeRuns: "resume_runs",
   delegateSubagent: "delegate_subagent",
   submitRunDecision: "submit_run_decision",
+  revertTurn: "revert_turn",
   reviewFindings: "review_findings",
   resolveFinding: "resolve_finding",
   listSkills: "list_skills",

@@ -14,6 +14,7 @@ import { createRequestListener } from "./http";
 import { apiFor, signUpOwner } from "./test-support/server-api";
 import type { Store } from "./store/store";
 import { failDroppedRuns } from "./run-recovery";
+import { createRevertRegistry } from "./run-revert";
 
 /**
  * A machine that restarts, or simply drops its command-stream connection and
@@ -55,7 +56,7 @@ function freshLabServer(existingDir?: string): Promise<RawServer> {
   const openStreams = new Set<() => void>();
   const config = { ...readConfig({}), host: "127.0.0.1", port: 0, dataDir: dir, uiDir };
 
-  const listener = createRequestListener({ store, config, secure: false, indexHtml, channel, openStreams, runs: relay });
+  const listener = createRequestListener({ store, config, secure: false, indexHtml, channel, openStreams, runs: relay, reverts: createRevertRegistry() });
   const server = createHttpServer(listener);
 
   return new Promise((resolve, reject) => {

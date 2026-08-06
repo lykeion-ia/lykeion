@@ -7,6 +7,7 @@ import { migrate } from "../store/migrations";
 import { readConfig } from "../config";
 import { createChannel } from "../channel";
 import { createRunRelay } from "../run-relay";
+import { createRevertRegistry } from "../run-revert";
 import { changeRecorder } from "./changes";
 import type { Deps } from "./index";
 import type { Store } from "../store/store";
@@ -41,6 +42,7 @@ function depsFor(store: Store): Deps {
     config: readConfig({}),
     channel,
     runs: createRunRelay(),
+    reverts: createRevertRegistry(),
     changes: changeRecorder({ store, actorId: actor.userId, now: () => NOW, channel }),
   };
 }

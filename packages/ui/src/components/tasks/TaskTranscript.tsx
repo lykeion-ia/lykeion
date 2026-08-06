@@ -1,6 +1,6 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import type { TaskTurn, TurnItem, TurnState } from "@lykeion/api";
-import { PencilIcon } from "../icons";
+import { CopyIcon, PencilIcon } from "../icons";
 import { blocksOf, ToolStepGroup } from "./ToolStep";
 import { AssistantMessage } from "./AssistantMessage";
 import { SubagentThread } from "./SubagentThread";
@@ -119,39 +119,182 @@ export function StreamView({
   );
 }
 
+/** What a turn's newest-turn controls do, and whether they can. Absent on
+ *  every turn but the newest: an older turn keeps Copy, which is most of
+ *  what it was wanted for. */
+export interface TurnRevert {
+  /** False when no snapshot of the Task's files was taken before this turn
+   *  ran. A control that cannot restore anything is worse than an absent
+   *  one, so it is drawn disabled, naming why. */
+  available: boolean;
+  reason?: string;
+  onRevert?: () => Promise<void>;
+  onEdit?: (prompt: string) => Promise<void>;
+}
+
+/** Copies text and says so briefly. Nothing is lost, so nothing is
+ *  confirmed. */
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="msg-action"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+    >
+      <CopyIcon width={13} height={13} />
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+/**
+ * What discarding a turn costs, named before it happens rather than
+ * afterwards. Every clause is a separate fact and none of them is a
+ * footnote: the turn goes, the Task's own files go back, the agent starts a
+ * fresh conversation with no memory of the earlier turns either, and a
+ * folder the researcher granted is left exactly as the turn left it.
+ */
+const REVERT_CONSEQUENCES = [
+  "This turn and its steps are discarded.",
+  "The Task's files go back to what they were before it ran.",
+  "The agent starts a fresh conversation, with no memory of the earlier turns either. The transcript keeps them; its context is not kept.",
+  "Files written into a folder you granted are your own, and are not rolled back.",
+];
+
 /**
  * One researcher prompt bubble. Shared by `TurnView` (a historic/graduated
  * turn) and the live region (the turn currently running or just finished) so
  * the two never draw different markup for the same kind of bubble.
  *
- * `onEdit`, when supplied, draws a hover **Edit** button on the bubble.
- * Clicking it hands `prompt` back to the caller — the Task surface refills
- * the composer draft and focuses it. Edit does **NOT** delete, rewrite, or
- * otherwise touch the recorded turn: the bubble and every message below it
- * are untouched, and nothing here (or in `useRun`) mutates persisted history.
- * It is purely a shortcut for starting a new message from an old prompt's
- * text — never assume the opposite because of the name.
+ * Copy is drawn on every bubble. Edit and Revert are drawn on the newest
+ * turn alone — there is one snapshot per Task, and a turn that has already
+ * been built on cannot be pulled out from under the work that followed it —
+ * and each confirms first, naming what is lost.
+ *
+ * Edit is Revert followed by an ordinary send of the corrected text. It is
+ * not a second operation, and it is not the shortcut that only refilled the
+ * composer: two controls called Edit on one surface, meaning different
+ * things, is worse than either.
  */
 export function UserBubble({
   prompt,
-  onEdit,
+  revert,
 }: {
   prompt: string;
-  onEdit?: (text: string) => void;
+  revert?: TurnRevert;
 }) {
+  const [asking, setAsking] = useState<"revert" | "edit" | undefined>(undefined);
+  const [draft, setDraft] = useState(prompt);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | undefined>(undefined);
   if (!prompt) return null;
+
+  const disabled = revert !== undefined && !revert.available;
+  const why = disabled
+    ? (revert.reason ??
+      "there is no snapshot of this Task's files from before this turn")
+    : undefined;
+
+  const attempt = (work: () => Promise<void>): void => {
+    setBusy(true);
+    setFailure(undefined);
+    void work().then(
+      () => {
+        setBusy(false);
+        setAsking(undefined);
+      },
+      (err: unknown) => {
+        setBusy(false);
+        setFailure(err instanceof Error ? err.message : String(err));
+      },
+    );
+  };
+
   return (
     <div className="msg msg--user">
       {prompt}
-      {onEdit && (
-        <button
-          type="button"
-          className="msg-edit-btn"
-          aria-label="Edit prompt"
-          onClick={() => onEdit(prompt)}
-        >
-          <PencilIcon width={14} height={14} />
-        </button>
+      <div className="msg-actions">
+        <CopyButton text={prompt} />
+        {revert && (
+          <>
+            <button
+              type="button"
+              className="msg-action"
+              disabled={disabled}
+              {...(why ? { title: why } : {})}
+              onClick={() => {
+                setDraft(prompt);
+                setAsking("edit");
+              }}
+            >
+              <PencilIcon width={13} height={13} />
+              Edit
+            </button>
+            <button
+              type="button"
+              className="msg-action"
+              disabled={disabled}
+              {...(why ? { title: why } : {})}
+              onClick={() => setAsking("revert")}
+            >
+              Revert
+            </button>
+          </>
+        )}
+      </div>
+      {asking && (
+        <div className="turn-confirm" data-testid="turn-confirm">
+          <ul className="turn-confirm-list">
+            {REVERT_CONSEQUENCES.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+          {asking === "edit" && (
+            <textarea
+              className="turn-confirm-draft"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              aria-label="Corrected prompt"
+            />
+          )}
+          {failure && (
+            <p className="turn-confirm-failure" role="alert">
+              {failure}
+            </p>
+          )}
+          <div className="turn-confirm-buttons">
+            <button
+              type="button"
+              className="turn-confirm-go"
+              disabled={busy}
+              onClick={() =>
+                attempt(async () => {
+                  if (asking === "edit") await revert?.onEdit?.(draft);
+                  else await revert?.onRevert?.();
+                })
+              }
+            >
+              {asking === "edit" ? "Discard and resend" : "Discard the turn"}
+            </button>
+            <button
+              type="button"
+              className="turn-confirm-keep"
+              disabled={busy}
+              onClick={() => {
+                setAsking(undefined);
+                setFailure(undefined);
+              }}
+            >
+              Keep it
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -164,8 +307,8 @@ export function UserBubble({
  * older turn recorded before live streaming existed, and those transcripts
  * must keep rendering exactly as they did.
  *
- * `onEditPrompt` is passed straight through to `UserBubble`'s `onEdit` — see
- * its doc comment for what Edit does and does not do.
+ * `revert` is passed straight through to `UserBubble` — see its doc comment
+ * for what Edit and Revert do, and which turns carry them.
  */
 function TurnView({
   prompt,
@@ -173,18 +316,18 @@ function TurnView({
   stream,
   status,
   cancelled,
-  onEditPrompt,
+  revert,
 }: {
   prompt: string;
   messages: string[];
   stream?: TurnItem[];
   status?: "ok" | "failed";
   cancelled?: CancelledTurnState;
-  onEditPrompt?: (text: string) => void;
+  revert?: TurnRevert;
 }) {
   return (
     <>
-      <UserBubble prompt={prompt} onEdit={onEditPrompt} />
+      <UserBubble prompt={prompt} {...(revert ? { revert } : {})} />
       {stream && stream.length > 0 ? (
         <StreamView stream={stream} />
       ) : (
@@ -227,7 +370,8 @@ export function TaskTranscript({
   viewTurns,
   liveTurns = [],
   terminalStatusByRunId = {},
-  onEditPrompt,
+  onRevertTurn,
+  onEditTurn,
 }: {
   /** Persisted turns: grouped, with subagent turns nested under their parent. */
   history: TaskTurn[];
@@ -237,7 +381,11 @@ export function TaskTranscript({
   liveTurns?: LiveTranscriptTurn[];
   /** Terminal distinctions preserved across live-to-history replacement. */
   terminalStatusByRunId?: Readonly<Record<string, CancelledTurnState>>;
-  onEditPrompt?: (prompt: string) => void;
+  /** Discards the newest turn and puts the Task's files back. Offered on
+   *  that turn alone; every older one keeps Copy. */
+  onRevertTurn?: (runId: string) => Promise<void>;
+  /** Discards the newest turn and sends the corrected text in its place. */
+  onEditTurn?: (runId: string, prompt: string) => Promise<void>;
 }) {
   const entries: Array<{
     key: string;
@@ -249,7 +397,22 @@ export function TaskTranscript({
   const chronologicalHistory = [...history].sort(
     (a, b) => a.sequence - b.sequence,
   );
+  // The one turn Edit and Revert are offered on. A turn that has already
+  // been built on cannot be pulled out from under the work that followed it,
+  // and there is one snapshot per Task rather than one per turn.
+  const newest = chronologicalHistory[chronologicalHistory.length - 1];
   for (const { turn, subagents } of groupTaskTurns(chronologicalHistory)) {
+    const revert: TurnRevert | undefined =
+      turn.runId === newest?.runId && (onRevertTurn || onEditTurn)
+        ? {
+            available: turn.revert?.available === true,
+            ...(turn.revert?.reason === undefined ? {} : { reason: turn.revert.reason }),
+            ...(onRevertTurn ? { onRevert: () => onRevertTurn(turn.runId) } : {}),
+            ...(onEditTurn
+              ? { onEdit: (prompt: string) => onEditTurn(turn.runId, prompt) }
+              : {}),
+          }
+        : undefined;
     entries.push({
       key: `history-${turn.runId}`,
       sequence: turn.sequence,
@@ -262,7 +425,7 @@ export function TaskTranscript({
             stream={turn.stream}
             status={turn.status}
             cancelled={terminalStatusByRunId[turn.runId]}
-            onEditPrompt={onEditPrompt}
+            {...(revert ? { revert } : {})}
           />
         </>
       ),
@@ -295,7 +458,6 @@ export function TaskTranscript({
           messages={turn.messages}
           stream={turn.stream}
           status={turn.status}
-          onEditPrompt={onEditPrompt}
         />
       ),
     });

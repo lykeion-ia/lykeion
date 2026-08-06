@@ -4,6 +4,7 @@ import type {
   Plan,
   RunEventFrame,
   TaskTurn,
+  ToolOutputPart,
   TurnItem,
   TurnState,
 } from "@lykeion/api";
@@ -120,6 +121,75 @@ export function activeRunIdForTask(store: Store, taskId: string): string | undef
       WHERE task_id = ? AND ended_ts IS NULL
       ORDER BY seq DESC
       LIMIT 1`,
+    [taskId],
+  );
+  return row ? (row.id as string) : undefined;
+}
+
+/** Records what a machine said about snapshotting a turn's working
+ *  directory before the turn ran. */
+export function recordTurnSnapshot(
+  store: Store,
+  turnId: string,
+  snapshot: { taken: boolean; reason?: string },
+): void {
+  store.run(`UPDATE turns SET snapshot_taken = ?, snapshot_reason = ? WHERE id = ?`, [
+    snapshot.taken ? 1 : 0,
+    snapshot.reason ?? null,
+    turnId,
+  ]);
+}
+
+/**
+ * Removes a turn and everything filed under it, and puts the Task back to
+ * what it was before that turn ran.
+ *
+ * Never called before the machine has said the files are back: a record
+ * truncated over an un-restored directory describes a state that never
+ * existed.
+ */
+export function truncateTurn(store: Store, turnId: string): void {
+  store.tx(() => {
+    const turn = store.get(`SELECT task_id, session_id FROM turns WHERE id = ?`, [turnId]);
+    if (!turn) return;
+    const taskId = turn.task_id as string;
+    store.run(
+      `DELETE FROM turn_steps WHERE id IN (SELECT step_id FROM turn_items WHERE turn_id = ?)`,
+      [turnId],
+    );
+    store.run(`DELETE FROM turn_items WHERE turn_id = ?`, [turnId]);
+    store.run(`DELETE FROM turn_steps WHERE turn_id = ?`, [turnId]);
+    store.run(`DELETE FROM turns WHERE id = ?`, [turnId]);
+    // The session the turn belonged to is over: the protocol carries no way
+    // to take a turn out of what an agent remembers, so the conversation
+    // ends rather than going on with a turn nobody has any more.
+    store.run(`UPDATE sessions SET ended_ts = ? WHERE id = ? AND ended_ts IS NULL`, [
+      Math.floor(Date.now() / 1000),
+      turn.session_id,
+    ]);
+    const settled = store.get(
+      `SELECT COUNT(*) AS run_count FROM turns WHERE task_id = ? AND ended_ts IS NOT NULL`,
+      [taskId],
+    )!;
+    const latestStatus = store.get(
+      `SELECT status FROM turns WHERE task_id = ? AND ended_ts IS NOT NULL ORDER BY seq DESC LIMIT 1`,
+      [taskId],
+    )?.status as string | undefined;
+    store.run(`UPDATE tasks SET run_count = ?, last_run_status = ? WHERE id = ?`, [
+      settled.run_count as number,
+      latestStatus === undefined ? null : latestStatus === "ok" ? "ok" : "failed",
+      taskId,
+    ]);
+  });
+}
+
+/** The turn a Task would revert, which is its newest settled or running
+ *  one. Revert is offered on that turn alone: there is one snapshot per
+ *  Task, and a turn that has already been built on cannot be pulled out
+ *  from under the work that followed it. */
+export function newestTurnForTask(store: Store, taskId: string): string | undefined {
+  const row = store.get(
+    `SELECT id FROM turns WHERE task_id = ? ORDER BY seq DESC LIMIT 1`,
     [taskId],
   );
   return row ? (row.id as string) : undefined;
@@ -274,6 +344,20 @@ export function endSessionForTurn(store: Store, turnId: string, endedTs: number)
   );
 }
 
+/** How a step's output is held in the two columns that carry it: a text
+ *  output in `result`, an output with a piece that is not text in
+ *  `result_parts` as JSON, and both NULL when no output was reported at all.
+ *  Exactly one is ever set, so reading it back never has to guess which of
+ *  the two a stored string was. */
+function resultColumns(result: string | ToolOutputPart[] | undefined): {
+  result: string | null;
+  resultParts: string | null;
+} {
+  if (result === undefined) return { result: null, resultParts: null };
+  if (typeof result === "string") return { result, resultParts: null };
+  return { result: null, resultParts: JSON.stringify(result) };
+}
+
 /** Inserts or enriches one logical Execution Log entry and returns its id.
  *  Repeated frames for the same ACP tool-call identity retain their original
  *  transcript position. `input` is stored as JSON — the column has no
@@ -289,22 +373,27 @@ export function appendStep(
     title?: string;
     input: unknown;
     decision: string;
-    result?: string;
+    result?: string | ToolOutputPart[];
     isError: boolean;
     outsideWorkspace?: boolean;
   },
 ): string {
+  const output = resultColumns(params.result);
   const existing = store.get(
-    `SELECT id, title, result, outside_workspace FROM turn_steps
+    `SELECT id, title, result, result_parts, outside_workspace FROM turn_steps
       WHERE turn_id = ? AND tool_use_id = ?
       ORDER BY seq ASC LIMIT 1`,
     [params.turnId, params.toolUseId],
   );
   if (existing) {
+    // An update reporting no output leaves whatever the step already had:
+    // the columns move together, so a later frame that says nothing about
+    // the output cannot half-replace one the step already carries.
+    const keep = params.result === undefined;
     store.run(
       `UPDATE turn_steps
-          SET ts = ?, tool = ?, title = ?, input = ?, decision = ?, result = ?, is_error = ?,
-              outside_workspace = ?
+          SET ts = ?, tool = ?, title = ?, input = ?, decision = ?, result = ?,
+              result_parts = ?, is_error = ?, outside_workspace = ?
         WHERE id = ?`,
       [
         params.ts,
@@ -312,7 +401,8 @@ export function appendStep(
         params.title ?? existing.title,
         JSON.stringify(params.input),
         params.decision,
-        params.result ?? existing.result,
+        keep ? existing.result : output.result,
+        keep ? existing.result_parts : output.resultParts,
         params.isError ? 1 : 0,
         params.outsideWorkspace === undefined
           ? existing.outside_workspace
@@ -338,9 +428,9 @@ export function appendStep(
   const id = `step_${seq}`;
   store.run(
     `INSERT INTO turn_steps
-       (id, turn_id, ts, tool_use_id, tool, title, input, decision, result, is_error,
-        outside_workspace, seq)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, turn_id, ts, tool_use_id, tool, title, input, decision, result, result_parts,
+        is_error, outside_workspace, seq)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       params.turnId,
@@ -350,7 +440,8 @@ export function appendStep(
       params.title ?? null,
       JSON.stringify(params.input),
       params.decision,
-      params.result ?? null,
+      output.result,
+      output.resultParts,
       params.isError ? 1 : 0,
       params.outsideWorkspace ? 1 : null,
       seq,
@@ -431,8 +522,8 @@ function turnStream(store: Store, turnId: string): TurnItem[] {
   let joiningPartial = false;
   const items = store.all(
     `SELECT i.kind, i.text, i.partial, i.block,
-            s.ts, s.tool_use_id, s.tool, s.title, s.input, s.decision, s.result, s.is_error,
-            s.outside_workspace
+            s.ts, s.tool_use_id, s.tool, s.title, s.input, s.decision, s.result,
+            s.result_parts, s.is_error, s.outside_workspace
        FROM turn_items i
        LEFT JOIN turn_steps s ON s.id = i.step_id
       WHERE i.turn_id = ?
@@ -465,7 +556,11 @@ function turnStream(store: Store, turnId: string): TurnItem[] {
         ...(item.title === null ? {} : { title: item.title as string }),
         input: JSON.parse(item.input as string) as unknown,
         decision: item.decision as string,
-        ...(item.result === null ? {} : { result: item.result as string }),
+        ...(item.result_parts !== null
+          ? { result: JSON.parse(item.result_parts as string) as ToolOutputPart[] }
+          : item.result === null
+            ? {}
+            : { result: item.result as string }),
         isError: item.is_error === 1,
         ...(item.outside_workspace === 1 ? { outsideWorkspace: true } : {}),
       },
@@ -703,7 +798,8 @@ export function activeRunIdsForRuntime(store: Store, runtimeId: string): string[
 export function taskTurnsForTask(store: Store, taskId: string): TaskTurn[] {
   return store
     .all(
-      `SELECT id, seq, prompt, started_ts, status, text FROM turns
+      `SELECT id, seq, prompt, started_ts, status, text, snapshot_taken, snapshot_reason
+         FROM turns
         WHERE task_id = ? AND ended_ts IS NOT NULL
         ORDER BY seq ASC`,
       [taskId],
@@ -721,6 +817,18 @@ export function taskTurnsForTask(store: Store, taskId: string): TaskTurn[] {
         status: row.status === "ok" ? "ok" as const : "failed" as const,
         code: [],
         outputs: [],
+        // Absent when the machine never said either way, so the control is
+        // not offered rather than offered and unable to restore anything.
+        ...(row.snapshot_taken === null
+          ? {}
+          : {
+              revert: {
+                available: row.snapshot_taken === 1,
+                ...(row.snapshot_reason === null
+                  ? {}
+                  : { reason: row.snapshot_reason as string }),
+              },
+            }),
       };
     });
 }

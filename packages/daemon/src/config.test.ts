@@ -144,8 +144,17 @@ it("falls back to a platform-conventional place for its state", () => {
   expect(readDaemonConfig({}, []).dataDir).not.toBe("");
 });
 
-it("defaults the work directory to the data directory", () => {
-  expect(readDaemonConfig({}, ["--data-dir", "/tmp/lyk-p1"]).workDir).toBe("/tmp/lyk-p1");
+it("defaults the work directory to a tree beside the data directory, never inside it", () => {
+  expect(readDaemonConfig({}, ["--data-dir", "/tmp/lyk-p1"]).workDir).toBe("/tmp/lyk-p1-work");
+});
+
+it("refuses a work directory inside the data directory, naming the conflict", () => {
+  expect(() =>
+    readDaemonConfig({}, ["--data-dir", "/tmp/lyk-p1", "--work-dir", "/tmp/lyk-p1/work"]),
+  ).toThrow(/inside --data-dir/);
+  expect(() =>
+    readDaemonConfig({}, ["--data-dir", "/tmp/lyk-p1", "--work-dir", "/tmp/lyk-p1"]),
+  ).toThrow(/inside --data-dir/);
 });
 
 it("takes the work directory from a flag, independent of the data directory", () => {
@@ -168,7 +177,7 @@ it("lets a work-dir flag beat the environment", () => {
 
 it("treats an empty work-dir environment value as unset", () => {
   const config = readDaemonConfig({ LYKEION_DAEMON_WORK_DIR: "", LYKEION_DAEMON_DATA_DIR: "/tmp/lyk-p1" }, []);
-  expect(config.workDir).toBe("/tmp/lyk-p1");
+  expect(config.workDir).toBe("/tmp/lyk-p1-work");
 });
 
 it("refuses --work-dir with no value the same way --data-dir does", () => {

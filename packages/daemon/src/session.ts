@@ -1,11 +1,21 @@
 import type {
+  AgentOption,
   ExecutionLogEntry,
   PermissionRequest,
   Plan,
   RunDecision,
   RunEvent,
+  ToolOutputPart,
 } from "@lykeion/api";
+import { isToolKind } from "@lykeion/api";
 import { connectAcp, type AcpConnection } from "./acp";
+import { boundaryOf, confine, covers, policyFor, type SandboxGrant } from "./sandbox";
+import {
+  confirmationOf,
+  ordinaryWorkingMode,
+  readAdvertised,
+  type OptionSetter,
+} from "./agent-options";
 
 /**
  * How long a stopped turn is given, after `session/cancel` is sent, to
@@ -21,10 +31,7 @@ import { connectAcp, type AcpConnection } from "./acp";
  */
 const DEFAULT_CANCEL_GRACE_MS = 45_000;
 
-export interface StandingGrant {
-  path: string;
-  mode: "read" | "write";
-}
+export type StandingGrant = SandboxGrant;
 
 export interface LiveSession {
   /**
@@ -55,6 +62,11 @@ export interface LiveSession {
    */
   cancel(): void;
   close(): Promise<void>;
+  /** What this session is confined by. A caller holding a live session
+   *  compares this against the boundary the next turn needs: a profile is
+   *  fixed when the process is spawned, so a turn whose grants no longer
+   *  match cannot be run in it. */
+  readonly boundary: string;
   /** The last of what the adapter wrote to stderr — `AcpConnection`'s own
    *  tail, read through the connection this session holds. A failure reason
    *  already carries it when a turn ends `failed`; this is for a caller that
@@ -63,12 +75,104 @@ export interface LiveSession {
   stderrTail(): string;
 }
 
+/** One block of a tool call's output, as the adapter sends it. The fields
+ *  are the union of every block type's own, because the type is only known
+ *  after reading `type`. */
+interface AcpContentBlock {
+  type?: string;
+  content?: { type?: string; text?: string };
+  path?: string;
+  oldText?: string | null;
+  newText?: string;
+  output?: string;
+  uri?: string;
+  name?: string;
+}
+
 interface AcpToolCall {
   toolCallId: string;
   title?: string;
+  kind?: string;
   status?: string;
   rawInput?: unknown;
-  content?: Array<{ content?: { text?: string } }>;
+  content?: AcpContentBlock[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * What kind of call this is. An adapter that names no kind, and one naming a
+ * kind this contract does not carry, both get `"other"` — a real member of
+ * the set. An update that names none at all leaves the kind an earlier
+ * update established, since only the announcement usually carries it.
+ */
+function kindOf(call: AcpToolCall, existing: ExecutionLogEntry | undefined): string {
+  if (call.kind === undefined) return existing?.tool ?? "other";
+  return isToolKind(call.kind) ? call.kind : "other";
+}
+
+/**
+ * The arguments a call has been given so far. Later arguments merge over
+ * earlier ones: an adapter announces a call before it knows what it is being
+ * given, so an update carrying no keys states nothing about the arguments
+ * and must not displace what an earlier one did carry.
+ */
+function mergeInput(existing: unknown, raw: unknown): unknown {
+  if (raw === undefined || raw === null) return existing ?? {};
+  if (!isRecord(raw)) return raw;
+  if (Object.keys(raw).length === 0) return existing ?? {};
+  return isRecord(existing) ? { ...existing, ...raw } : { ...raw };
+}
+
+/** One output block, as the part it is. A block whose type nothing draws is
+ *  named by that type, so it is reported as present and unrecognised rather
+ *  than dropped. */
+function partOf(block: AcpContentBlock): ToolOutputPart {
+  const type = block.type ?? (block.content !== undefined ? "content" : "");
+  switch (type) {
+    case "content": {
+      const text = block.content?.text;
+      if (typeof text === "string") return { type: "text", text };
+      return { type: "other", blockType: block.content?.type ?? "content" };
+    }
+    case "diff":
+      return {
+        type: "diff",
+        path: block.path ?? "",
+        ...(typeof block.oldText === "string" ? { oldText: block.oldText } : {}),
+        newText: block.newText ?? "",
+      };
+    case "terminal":
+      return { type: "terminal", output: block.output ?? "" };
+    case "resource_link":
+      return {
+        type: "resource",
+        uri: block.uri ?? "",
+        ...(block.name === undefined ? {} : { name: block.name }),
+      };
+    default:
+      return { type: "other", blockType: type || "other" };
+  }
+}
+
+/**
+ * Everything a call produced, in arrival order and by type. An output that
+ * is entirely text collapses to that text, its blocks concatenated — which
+ * is what an output of text IS, and keeps the common case a plain string.
+ * Anything else stays a list, so a diff, a terminal's output and a resource
+ * reference each survive the trip as themselves.
+ *
+ * An empty block list therefore reads as the empty string: the call ran and
+ * produced nothing, which is a different fact from an update that carried no
+ * block list at all.
+ */
+function outputOf(blocks: AcpContentBlock[]): string | ToolOutputPart[] {
+  const parts = blocks.map(partOf);
+  return parts.every((part) => part.type === "text")
+    ? parts.map((part) => (part as { text: string }).text).join("")
+    : parts;
 }
 
 interface AcpUpdate {
@@ -85,11 +189,6 @@ function pathFrom(title: string): string | undefined {
   return match?.[1];
 }
 
-function covers(grant: StandingGrant, path: string, mode: "read" | "write"): boolean {
-  if (mode === "write" && grant.mode === "read") return false;
-  return path === grant.path || path.startsWith(`${grant.path}/`);
-}
-
 /** Recovers the path and mode a raised card asked about, from the access it
  *  carries — the same shape `decide` needs to know what to remember. An
  *  `execute` card names no path, so there is nothing standing to grant. */
@@ -100,8 +199,20 @@ function grantFrom(request: PermissionRequest): StandingGrant | undefined {
 }
 
 export async function startSession(options: {
+  /** The adapter to run. It is confined HERE rather than by the caller, so
+   *  spawning one outside a boundary is not something a caller can express:
+   *  there is no argument that asks for it and no path through this
+   *  function that does it. */
   adapter: { command: string; args: string[] };
+  /** The Task directory this session works in, and the one directory the
+   *  boundary lets it write. */
   cwd: string;
+  /** Where this machine keeps its own state. Denied to the agent: the
+   *  machine token is the machine's identity. */
+  dataDir: string;
+  /** The platform whose backend confines this session. Production passes
+   *  none and this machine's own platform is used. */
+  platform?: string;
   grants: StandingGrant[];
   onEvent: (event: RunEvent) => void;
   onGrant: (grant: StandingGrant) => void;
@@ -110,6 +221,11 @@ export async function startSession(options: {
    *  settles. Once initialization succeeds, lifecycle ownership transfers to
    *  the returned LiveSession and callers close it normally. */
   signal?: AbortSignal;
+  /** Which of the agent's own advertised choices this turn asked for, by
+   *  option value. Reused from `RunOptions.model`; an agent advertising no
+   *  such value is left as it is rather than told something it never
+   *  offered. */
+  model?: string;
   /** Overrides `DEFAULT_CANCEL_GRACE_MS` — a test's own way to make a stop's
    *  grace period something shorter than real seconds. Production never
    *  passes this. */
@@ -117,7 +233,13 @@ export async function startSession(options: {
 }): Promise<LiveSession> {
   const { cwd, onEvent, onGrant } = options;
   const cancelGraceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
-  const connection: AcpConnection = await connectAcp(options.adapter.command, options.adapter.args, {
+  // Established before anything is spawned, and nothing is spawned if it
+  // cannot be: `policyFor` throws on a path that will not resolve and
+  // `confine` throws on a platform with no backend, both before the first
+  // line below that starts a process.
+  const policy = policyFor({ workspace: cwd, grants: options.grants, dataDir: options.dataDir });
+  const confined = confine(options.platform ?? process.platform, policy, options.adapter);
+  const connection: AcpConnection = await connectAcp(confined.command, confined.args, {
     cwd,
     env: options.env,
   });
@@ -131,7 +253,10 @@ export async function startSession(options: {
   // Session-scoped grants: what "this session" on a card means. Held here and
   // nowhere else, so they go when the session does.
   const sessionGrants: StandingGrant[] = [];
-  const standing = [...options.grants];
+  // The canonical set the boundary was rendered from, so the question "did
+  // the researcher allow this?" is asked of exactly what the kernel was
+  // told — not of the paths as they were written.
+  const standing = [...policy.grants];
 
   let text = "";
   let thinking = "";
@@ -170,6 +295,13 @@ export async function startSession(options: {
     onEvent({ event: "log-entry", entry });
   };
 
+  // What this session said it lets a caller change, and which method a set
+  // travels on. Read from what the session advertised, never from which CLI
+  // it is.
+  let advertised: { options: AgentOption[]; setter: OptionSetter } = {
+    options: [],
+    setter: "none",
+  };
   // The id the agent assigned to this session in `session/new`'s response —
   // every later call names it, exactly as an adapter that checks it expects.
   let sessionId = "session";
@@ -181,6 +313,7 @@ export async function startSession(options: {
     });
     const created = await connection.request("session/new", { cwd, mcpServers: [] });
     sessionId = (created as { sessionId?: string }).sessionId ?? sessionId;
+    advertised = readAdvertised(created);
   } catch (err) {
     const tail = connection.stderrTail().trim();
     await (aborting ?? connection.close());
@@ -191,6 +324,64 @@ export async function startSession(options: {
   if (options.signal?.aborted) {
     await (aborting ?? connection.close());
     throw new Error("session initialization was cancelled");
+  }
+
+  /** Tells this session to change one of its own advertised options, by the
+   *  method the session's own advertisement chose. A refusal is not fatal:
+   *  the boundary this run executes inside does not depend on the agent
+   *  agreeing to anything. */
+  const setOption = async (id: string, value: string): Promise<void> => {
+    try {
+      if (advertised.setter === "config") {
+        const echoed = await connection.request("session/set_config_option", {
+          sessionId,
+          configId: id,
+          value,
+        });
+        // What the option holds now is what came back, not what was asked
+        // for: an agent that rejected the set echoes its real current value,
+        // and recording the asked-for one instead would leave this session
+        // describing itself as something it is not.
+        const outcome = confirmationOf(echoed, id, value);
+        advertised = {
+          ...advertised,
+          options: advertised.options.map((option) =>
+            option.id === id ? { ...option, currentValue: outcome.value } : option,
+          ),
+        };
+      } else if (advertised.setter === "model" && id === "model") {
+        // This method answers with nothing at all, so the value is applied
+        // and unconfirmed — recorded as asked for, and never as verified.
+        await connection.request("session/set_model", { sessionId, modelId: value });
+        advertised = {
+          ...advertised,
+          options: advertised.options.map((option) =>
+            option.id === id ? { ...option, currentValue: value } : option,
+          ),
+        };
+      }
+    } catch {
+      // Left as it was. What an agent may touch is settled by the kernel,
+      // and what it runs on is the agent's own default.
+    }
+  };
+
+  // The operating-system boundary is the outer bound. The agent's own mode
+  // may narrow it and can never widen it, so this selects the ordinary
+  // working mode and never the full-access one — an agent told it has full
+  // access, inside a boundary that says otherwise, produces a turn full of
+  // denials that look like breakage rather than policy.
+  const mode = advertised.options.find((option) => option.category === "mode");
+  if (mode) {
+    const working = ordinaryWorkingMode(mode);
+    if (working !== undefined) await setOption(mode.id, working);
+  }
+  // What the researcher picked beside the composer, if this agent offers it.
+  if (options.model !== undefined) {
+    const chosen = advertised.options.find((option) =>
+      option.choices.some((choice) => choice.value === options.model),
+    );
+    if (chosen) await setOption(chosen.id, options.model);
   }
 
   connection.onNotify("session/update", (raw) => {
@@ -246,8 +437,8 @@ export async function startSession(options: {
         const entry: ExecutionLogEntry = {
           ts: existing?.ts ?? Math.floor(Date.now() / 1000),
           toolUseId: id,
-          tool: existing?.tool ?? call.title ?? id,
-          input: existing?.input ?? call.rawInput ?? {},
+          tool: kindOf(call, existing),
+          input: mergeInput(existing?.input, call.rawInput),
           decision: gated ? existing.decision : terminal ? "ran" : "pending",
           isError:
             call.status === "failed" ||
@@ -256,7 +447,7 @@ export async function startSession(options: {
         };
         if (call.title !== undefined) entry.title = call.title;
         else if (existing?.title !== undefined) entry.title = existing.title;
-        const result = call.content?.[0]?.content?.text;
+        const result = call.content === undefined ? undefined : outputOf(call.content);
         if (result !== undefined) entry.result = result;
         else if (existing?.result !== undefined) entry.result = existing.result;
         emitStep(entry);
@@ -278,8 +469,11 @@ export async function startSession(options: {
     // consent, not a fact about the turn asking, so a request landing here
     // during the ambiguous window below is still honoured by one exactly
     // the way a live turn's own request would be.
-    const sessionGrant = target && sessionGrants.some((g) => covers(g, target, mode));
-    const studyGrant = target && standing.some((g) => covers(g, target, mode));
+    // Asked of the same canonical grant set the sandbox profile is
+    // rendered from, so the question "did the researcher allow this?" and
+    // the question "will the kernel permit this?" cannot come apart.
+    const sessionGrant = target !== undefined && covers(sessionGrants, target, mode);
+    const studyGrant = target !== undefined && covers(standing, target, mode);
     if (sessionGrant || studyGrant) {
       const card: PermissionRequest = {
         id: `pr_${nextRequest++}`,
@@ -310,7 +504,7 @@ export async function startSession(options: {
       const entry: ExecutionLogEntry = {
         ts: Math.floor(Date.now() / 1000),
         toolUseId: refusedId,
-        tool: refusedId,
+        tool: "other",
         ...(title !== "" ? { title } : {}),
         input: {},
         decision: "denied",
@@ -361,7 +555,7 @@ export async function startSession(options: {
     const entry: ExecutionLogEntry = {
       ts: existing?.ts ?? Math.floor(Date.now() / 1000),
       toolUseId: id,
-      tool: existing?.tool ?? id,
+      tool: existing?.tool ?? "other",
       input: existing?.input ?? {},
       decision,
       isError: decision === "denied" || decision === "cancelled",
@@ -590,6 +784,7 @@ export async function startSession(options: {
       abandonCards();
       return connection.close();
     },
+    boundary: boundaryOf(policy),
     stderrTail() {
       return connection.stderrTail();
     },

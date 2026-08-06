@@ -681,6 +681,39 @@ export const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    version: 15,
+    up(store) {
+      // `result` holds an output that is entirely text. An output carrying a
+      // piece that is not text — a diff, a terminal, a reference to a
+      // resource — is held here as JSON instead, in its own column so the two
+      // can never be confused for one another: a text result that happens to
+      // read like JSON is still a text result. Exactly one of the two is ever
+      // set, and both NULL is the distinct fact that no output was reported.
+      store.run(`ALTER TABLE turn_steps ADD COLUMN result_parts TEXT`);
+    },
+  },
+  {
+    version: 16,
+    up(store) {
+      // Whether the machine took a snapshot of this turn's working directory
+      // before the turn started, and when it did not, why. NULL is a turn
+      // recorded before a snapshot was taken at all: the control is not
+      // offered rather than offered and unable to restore anything.
+      store.run(`ALTER TABLE turns ADD COLUMN snapshot_taken INTEGER`);
+      store.run(`ALTER TABLE turns ADD COLUMN snapshot_reason TEXT`);
+    },
+  },
+  {
+    version: 17,
+    up(store) {
+      // What an agent advertised when a session was opened with it, as JSON.
+      // NULL is a CLI no session could be opened to ask, which is a
+      // different fact from one that advertised nothing and is never
+      // rendered as the first.
+      store.run(`ALTER TABLE runtime_clis ADD COLUMN options TEXT`);
+    },
+  },
 ];
 
 assertAscending(MIGRATIONS);

@@ -152,6 +152,37 @@ export async function heartbeat(lab: string, token: string, signal?: AbortSignal
   await callLab(lab, "/daemon/heartbeat", token, {}, signal);
 }
 
+/** The Studies and Tasks a working directory can belong to. */
+export interface HeldWorkspaces {
+  studyIds: string[];
+  taskIds: string[];
+}
+
+/**
+ * Asks the lab which of the Studies and Tasks this machine holds a working
+ * directory for it no longer has. Those are the directories that may be
+ * removed; anything the lab still has a Study or a Task for is work, and a
+ * machine never decides on its own that work has gone stale.
+ *
+ * An answer that does not name an id is not an answer about it: a lab that
+ * fails, or replies with a shape this does not recognise, removes nothing.
+ */
+export async function workspacesGone(
+  lab: string,
+  token: string,
+  held: HeldWorkspaces,
+  signal?: AbortSignal,
+): Promise<HeldWorkspaces> {
+  const res = await callLab(lab, "/daemon/workspaces", token, held, signal);
+  const body = (await res.json().catch(() => ({}))) as Partial<HeldWorkspaces>;
+  const named = (value: unknown, from: string[]): string[] =>
+    Array.isArray(value) ? value.filter((id): id is string => from.includes(id as string)) : [];
+  return {
+    studyIds: named(body.studyIds, held.studyIds),
+    taskIds: named(body.taskIds, held.taskIds),
+  };
+}
+
 /** Doubled with every failed attempt, `attempt` counting from 1. */
 const BACKOFF_BASE_MS = 1000;
 
@@ -173,12 +204,15 @@ export function backoffDelayMs(attempt: number): number {
  *  one shape rather than three because they arrive on the same stream in the
  *  same envelope — only `runId` is ever guaranteed present. */
 export interface RunCommand {
-  type: "start-run" | "decision" | "cancel";
+  type: "start-run" | "decision" | "cancel" | "revert";
   runId: string;
   studyId?: string;
+  taskId?: string;
   sessionId?: string;
   agent?: string;
   prompt?: string;
+  /** Which of the agent's own advertised choices this turn asked for. */
+  model?: string;
   grants?: StandingGrant[];
   decision?: RunDecision;
 }
@@ -292,6 +326,32 @@ export async function postRunGrant(
   signal: AbortSignal,
 ): Promise<void> {
   await callLab(lab, "/daemon/run/grant", token, { runId, path: grant.path, mode: grant.mode }, signal);
+}
+
+/** Tells the lab whether this turn's working directory was snapshotted
+ *  before it started, and when it was not, why — so a Revert control is
+ *  offered only where it can actually restore something. */
+export async function postRunSnapshot(
+  lab: string,
+  token: string,
+  runId: string,
+  snapshot: { taken: boolean; reason?: string },
+  signal: AbortSignal,
+): Promise<void> {
+  await callLab(lab, "/daemon/run/snapshot", token, { runId, ...snapshot }, signal);
+}
+
+/** Tells the lab how a revert went. The lab truncates the record only once
+ *  this says the files are back: a record truncated over an un-restored
+ *  directory describes a state that never existed. */
+export async function postRunReverted(
+  lab: string,
+  token: string,
+  runId: string,
+  outcome: { ok: boolean; error?: string },
+  signal: AbortSignal,
+): Promise<void> {
+  await callLab(lab, "/daemon/run/reverted", token, { runId, ...outcome }, signal);
 }
 
 /** Tells the lab which runs this daemon currently holds — sent as soon as

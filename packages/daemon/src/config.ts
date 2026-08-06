@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 /** This build's own version, carried on the pairing approval screen so a lab
  *  owner can tell which build of the daemon is asking to join, and on every
@@ -50,8 +50,9 @@ Flags:
   --data-dir <dir>   Where this machine keeps what it knows about itself. One
                      directory is one machine identity, and all three commands
                      read it. [LYKEION_DAEMON_DATA_DIR]
-  --work-dir <dir>   Where session workspaces live while an agent runs in
-                     them. Defaults to --data-dir. [LYKEION_DAEMON_WORK_DIR]
+  --work-dir <dir>   Where Task workspaces live while an agent runs in them.
+                     Defaults to a directory beside --data-dir, and may not be
+                     inside it. [LYKEION_DAEMON_WORK_DIR]
   --no-browser       Print the pairing link rather than opening a browser on it.
   --detached         Serve in the background and return to the terminal.
                      Implies --no-browser.
@@ -83,9 +84,14 @@ export interface DaemonConfig {
    *  against a second lab, and how this program can be exercised without
    *  touching the one the account actually runs. */
   dataDir: string;
-  /** Where session workspaces live while an agent runs in them — separate
-   *  from `dataDir` so the two can sit on different disks, and defaulting to
-   *  it when a researcher has no reason to keep them apart. */
+  /**
+   * Where Task workspaces live while an agent runs in them. A disjoint tree
+   * from `dataDir`, never inside it: the sandbox denies this machine's own
+   * state — the token is the machine's identity, and an agent that can read
+   * it off disk can impersonate the machine — and a deny is rendered after
+   * the allows so it wins on conflict. A workspace inside the denied tree
+   * would therefore be a workspace the run cannot write.
+   */
   workDir: string;
 }
 
@@ -115,6 +121,22 @@ function defaultDataDir(env: Record<string, string | undefined>): string {
     "lykeion",
     "daemon",
   );
+}
+
+/** Beside the data directory rather than inside it, so the tree holding
+ *  this machine's own state and the tree an agent writes in are disjoint by
+ *  default and nobody has to know why. */
+function defaultWorkDir(dataDir: string): string {
+  return `${dataDir}-work`;
+}
+
+/** Whether `inner` is `outer` or lies beneath it, read lexically on the
+ *  names as given: a configuration is refused before anything is created,
+ *  so there may be nothing on disk yet to resolve. */
+function within(outer: string, inner: string): boolean {
+  const root = resolve(outer);
+  const path = resolve(inner);
+  return path === root || path.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
 }
 
 function readPort(raw: string | undefined): number {
@@ -259,7 +281,16 @@ export function readDaemonConfig(
     nonEmpty(env.LYKEION_DAEMON_DATA_DIR) ??
     defaultDataDir(env);
   const workDir =
-    nonEmpty(line.values.get("--work-dir")) ?? nonEmpty(env.LYKEION_DAEMON_WORK_DIR) ?? dataDir;
+    nonEmpty(line.values.get("--work-dir")) ??
+    nonEmpty(env.LYKEION_DAEMON_WORK_DIR) ??
+    defaultWorkDir(dataDir);
+  // Refused here rather than started in a shape whose sandbox cannot be
+  // rendered: the boundary denies the data directory, and a workspace
+  // inside it is a workspace the agent would be denied every write to.
+  if (within(dataDir, workDir))
+    throw new Error(
+      `--work-dir ${workDir} is inside --data-dir ${dataDir}, and an agent's workspace cannot live in the directory this machine keeps its own state in`,
+    );
 
   return { command, lab, port, openBrowser, detached, dataDir, workDir };
 }

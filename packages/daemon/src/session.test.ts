@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecutionLogEntry, RunEvent } from "@lykeion/api";
@@ -14,6 +14,14 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
+/** A folder the researcher granted. A real directory, because the boundary
+ *  is rendered from it and a path that will not resolve refuses the run. */
+function grantedDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "lykeion-granted-"));
+  dirs.push(dir);
+  return dir;
+}
+
 async function session(
   script: unknown[],
   grants: StandingGrant[] = [],
@@ -21,6 +29,8 @@ async function session(
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "lykeion-sess-"));
   dirs.push(cwd);
+  const dataDir = mkdtempSync(join(tmpdir(), "lykeion-sess-state-"));
+  dirs.push(dataDir);
   const events: RunEvent[] = [];
   const granted: StandingGrant[] = [];
   const s = await startSession({
@@ -29,6 +39,7 @@ async function session(
       args: ["--experimental-strip-types", STUB],
     },
     cwd,
+    dataDir,
     grants,
     onEvent: (e) => events.push(e),
     onGrant: (g) => granted.push(g),
@@ -198,9 +209,10 @@ it("leaves the permission gate as soon as the researcher answers it", async () =
 it("never asks about a folder the Study already granted", async () => {
   // The standing grant is the whole point: a researcher who said "this
   // Study" once must not be asked the same question next session.
+  const granted = grantedDir();
   const { s, events } = await session(
-    [{ ask: "permission", toolCallId: "t1", title: "Write /granted/out.csv" }],
-    [{ path: "/granted", mode: "write" }],
+    [{ ask: "permission", toolCallId: "t1", title: `Write ${granted}/out.csv` }],
+    [{ path: granted, mode: "write" }],
   );
   s.prompt("go");
   await until(() => settled(events));
@@ -411,6 +423,7 @@ it("fails the turn with the adapter's own words when it will not start", async (
     startSession({
       adapter: { command: process.execPath, args: ["-e", "process.stderr.write('bad flag\\n');process.exit(3)"] },
       cwd: tmpdir(),
+      dataDir: tmpdir(),
       grants: [],
       onEvent: () => {},
       onGrant: () => {},
@@ -588,16 +601,17 @@ it("does not leave the abandoned call's own permission request deadlocked in the
 });
 
 it("still shows a successor's own output, and still honours a standing grant, for a request stuck in the ambiguous window", async () => {
+  const granted = grantedDir();
   const { s, events } = await session(
     [
       [
         { sleep: 150 },
-        { ask: "permission", toolCallId: "granted-tool", title: "Write /work/out.csv" },
+        { ask: "permission", toolCallId: "granted-tool", title: `Write ${granted}/out.csv` },
         { endTurn: "end_turn" },
       ],
       [{ emit: "agent_message_chunk", text: "second turn content" }, { endTurn: "end_turn" }],
     ],
-    [{ path: "/work", mode: "write" }],
+    [{ path: granted, mode: "write" }],
     { cancelGraceMs: 20 },
   );
   s.prompt("first");
@@ -631,4 +645,311 @@ it("still shows a successor's own output, and still honours a standing grant, fo
         e.event === "log-entry" && e.entry.toolUseId === "granted-tool" && e.entry.decision === "denied",
     ),
   ).toBe(false);
+});
+
+// --- what a tool call is, what it was given, and what it produced ---------
+
+const stepsOf = (events: RunEvent[]): ExecutionLogEntry[] =>
+  events.flatMap((e) => (e.event === "log-entry" ? [e.entry] : []));
+
+const lastStep = (events: RunEvent[], toolUseId: string): ExecutionLogEntry =>
+  stepsOf(events).filter((entry) => entry.toolUseId === toolUseId).at(-1)!;
+
+it("records the adapter's own kind as the call's tool, never its title", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "t1", kind: "read", title: "Read File" },
+    { emit: "tool_call_update", toolCallId: "t1", status: "completed", content: "rows" },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  const entry = lastStep(events, "t1");
+  expect(entry.tool).toBe("read");
+  expect(entry.title).toBe("Read File");
+});
+
+it("records a call that names no kind as other", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "t1", title: "`python3 -c \"print(42)\"`" },
+    { emit: "tool_call_update", toolCallId: "t1", status: "completed", content: "42" },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(lastStep(events, "t1").tool).toBe("other");
+});
+
+it("records a kind outside the closed set as other", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "t1", kind: "telepathy", title: "Guess" },
+    { emit: "tool_call_update", toolCallId: "t1", status: "completed", content: "no" },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(lastStep(events, "t1").tool).toBe("other");
+});
+
+it("lets a later rawInput merge over an empty one rather than latching it", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "t1", kind: "read", title: "Read File", rawInput: {} },
+    {
+      emit: "tool_call_update",
+      toolCallId: "t1",
+      status: "in_progress",
+      rawInput: { file_path: "/data/counts.csv" },
+    },
+    { emit: "tool_call_update", toolCallId: "t1", status: "completed", content: "rows" },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(lastStep(events, "t1").input).toEqual({ file_path: "/data/counts.csv" });
+});
+
+it("keeps a populated input when a later update carries an empty one", async () => {
+  const { s, events } = await session([
+    {
+      emit: "tool_call",
+      toolCallId: "t1",
+      kind: "read",
+      title: "Read File",
+      rawInput: { file_path: "/data/counts.csv" },
+    },
+    { emit: "tool_call_update", toolCallId: "t1", status: "completed", content: "rows", rawInput: {} },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(lastStep(events, "t1").input).toEqual({ file_path: "/data/counts.csv" });
+});
+
+it("keeps every text block of an output, not only the first", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "t1", kind: "execute", title: "python3" },
+    {
+      emit: "tool_call_update",
+      toolCallId: "t1",
+      status: "completed",
+      blocks: [
+        { type: "content", content: { type: "text", text: "first" } },
+        { type: "content", content: { type: "text", text: "second" } },
+      ],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(lastStep(events, "t1").result).toBe("firstsecond");
+});
+
+it("keeps a diff block's path and both its sides", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "t1", kind: "edit", title: "Edit `/data/notes.md`" },
+    {
+      emit: "tool_call_update",
+      toolCallId: "t1",
+      status: "completed",
+      blocks: [
+        { type: "diff", path: "/data/notes.md", oldText: "one\n", newText: "two\n" },
+      ],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(lastStep(events, "t1").result).toEqual([
+    { type: "diff", path: "/data/notes.md", oldText: "one\n", newText: "two\n" },
+  ]);
+});
+
+it("keeps a terminal block's output", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "t1", kind: "execute", title: "bash" },
+    {
+      emit: "tool_call_update",
+      toolCallId: "t1",
+      status: "completed",
+      blocks: [{ type: "terminal", terminalId: "term-1", output: "12 rows\n" }],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(lastStep(events, "t1").result).toEqual([{ type: "terminal", output: "12 rows\n" }]);
+});
+
+it("names a resource link as a reference rather than passing it off as content", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "t1", kind: "read", title: "Read" },
+    {
+      emit: "tool_call_update",
+      toolCallId: "t1",
+      status: "completed",
+      blocks: [{ type: "resource_link", uri: "file:///data/counts.csv", name: "counts.csv" }],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(lastStep(events, "t1").result).toEqual([
+    { type: "resource", uri: "file:///data/counts.csv", name: "counts.csv" },
+  ]);
+});
+
+it("names a block type it cannot draw rather than dropping it", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "t1", kind: "other", title: "Something" },
+    {
+      emit: "tool_call_update",
+      toolCallId: "t1",
+      status: "completed",
+      blocks: [{ type: "hologram", frames: 3 }],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(lastStep(events, "t1").result).toEqual([{ type: "other", blockType: "hologram" }]);
+});
+
+it("tells a call that produced no output apart from one whose output was never reported", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "empty", kind: "execute", title: "true" },
+    { emit: "tool_call_update", toolCallId: "empty", status: "completed", blocks: [] },
+    { emit: "tool_call", toolCallId: "silent", kind: "execute", title: "true" },
+    { emit: "tool_call_update", toolCallId: "silent", status: "completed" },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(lastStep(events, "empty").result).toBe("");
+  expect(lastStep(events, "silent").result).toBeUndefined();
+});
+
+// --- what an agent lets a session change ----------------------------------
+
+/** A session opened against a stub that advertises `advertises`, with
+ *  whatever it was asked to set recorded in a file the test reads back. */
+async function advertisingSession(
+  advertises: unknown,
+  extra: { model?: string } = {},
+) {
+  const cwd = mkdtempSync(join(tmpdir(), "lykeion-opt-"));
+  dirs.push(cwd);
+  const dataDir = mkdtempSync(join(tmpdir(), "lykeion-opt-state-"));
+  dirs.push(dataDir);
+  const setMarker = join(cwd, "sets.log");
+  const events: RunEvent[] = [];
+  const s = await startSession({
+    adapter: { command: process.execPath, args: ["--experimental-strip-types", STUB] },
+    cwd,
+    dataDir,
+    grants: [],
+    onEvent: (e) => events.push(e),
+    onGrant: () => {},
+    env: {
+      ...process.env,
+      LYKEION_STUB_SCRIPT: JSON.stringify([]),
+      LYKEION_STUB_ADVERTISES: JSON.stringify(advertises),
+      LYKEION_STUB_SET_MARKER: setMarker,
+    },
+    ...extra,
+  });
+  live.push(s);
+  const sets = (): string[] =>
+    existsSync(setMarker) ? readFileSync(setMarker, "utf8").trim().split("\n").filter(Boolean) : [];
+  return { s, events, sets };
+}
+
+it("puts an agent into its ordinary working mode, never its full-access one", async () => {
+  const { sets } = await advertisingSession({
+    configOptions: [
+      {
+        id: "mode",
+        category: "mode",
+        currentValue: "read-only",
+        options: [
+          { id: "read-only", name: "Read only" },
+          { id: "agent", name: "Agent" },
+          { id: "agent-full-access", name: "Full access" },
+        ],
+      },
+    ],
+  });
+  expect(sets()).toEqual(["session/set_config_option mode agent"]);
+});
+
+it("sends the researcher's choice over the method the session advertised", async () => {
+  const { sets } = await advertisingSession(
+    {
+      models: {
+        currentModelId: "sonnet",
+        availableModels: [
+          { modelId: "opus", name: "Opus" },
+          { modelId: "sonnet", name: "Sonnet" },
+        ],
+      },
+    },
+    { model: "opus" },
+  );
+  expect(sets()).toEqual(["session/set_model model opus"]);
+});
+
+it("says nothing to an agent about a value it never offered", async () => {
+  const { sets } = await advertisingSession(
+    {
+      models: { currentModelId: "sonnet", availableModels: [{ modelId: "sonnet", name: "Sonnet" }] },
+    },
+    { model: "a-model-this-agent-has-never-heard-of" },
+  );
+  expect(sets()).toEqual([]);
+});
+
+it("starts a turn normally against an agent that advertises nothing at all", async () => {
+  const { s, events, sets } = await advertisingSession({});
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(sets()).toEqual([]);
+  expect(events.at(-1)).toEqual({ event: "completed", state: { state: "completed" } });
+});
+
+// --- the boundary belongs to the session, not to whoever called it --------
+
+it("confines the adapter itself, so an unconfined spawn is not something a caller can ask for", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "lykeion-confine-"));
+  dirs.push(cwd);
+  const dataDir = mkdtempSync(join(tmpdir(), "lykeion-confine-state-"));
+  dirs.push(dataDir);
+  const outside = join(dataDir, "escaped.txt");
+  const events: RunEvent[] = [];
+  const s = await startSession({
+    adapter: { command: process.execPath, args: ["--experimental-strip-types", STUB] },
+    cwd,
+    dataDir,
+    grants: [],
+    onEvent: (e) => events.push(e),
+    onGrant: () => {},
+    // The stub writes this marker the moment a prompt arrives. Inside the
+    // boundary it cannot: the path is this machine's own state directory.
+    env: {
+      ...process.env,
+      LYKEION_STUB_SCRIPT: JSON.stringify([]),
+      LYKEION_STUB_PROMPT_MARKER: outside,
+    },
+  });
+  live.push(s);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(existsSync(outside)).toBe(false);
+});
+
+it("refuses to open a session at all where this platform cannot be confined", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "lykeion-noback-"));
+  dirs.push(cwd);
+  const dataDir = mkdtempSync(join(tmpdir(), "lykeion-noback-state-"));
+  dirs.push(dataDir);
+  const spawned = join(cwd, "spawned.txt");
+  await expect(
+    startSession({
+      adapter: { command: process.execPath, args: ["--experimental-strip-types", STUB] },
+      cwd,
+      dataDir,
+      grants: [],
+      platform: "linux",
+      onEvent: () => {},
+      onGrant: () => {},
+      env: { ...process.env, LYKEION_STUB_SCRIPT: JSON.stringify([]), LYKEION_STUB_SESSION_NEW_MARKER: spawned },
+    }),
+  ).rejects.toThrow(/linux/);
+  expect(existsSync(spawned)).toBe(false);
 });

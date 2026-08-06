@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEvent } from "@lykeion/api";
@@ -76,10 +76,22 @@ async function stubLab(commands: unknown[]) {
   };
 }
 
+/** A file the stub can write while it is confined. Every run is sandboxed,
+ *  and the one directory a run may write is its Task's — so a marker the
+ *  stub records its own progress in has to live there, created up front
+ *  because the stub only appends. */
+function markerIn(dataDir: string, name: string): string {
+  const taskDir = join(`${dataDir}-work`, "studies", "s_cmp", "tasks", "t_cmp");
+  mkdirSync(taskDir, { recursive: true });
+  dirs.push(`${dataDir}-work`);
+  return join(taskDir, name);
+}
+
 function subsystem(base: string, dataDir: string) {
   const r = startRuns({
     lab: base,
     token: "machine-token",
+    workDir: `${dataDir}-work`,
     dataDir,
     adapterFor: () => ({
       command: process.execPath,
@@ -111,7 +123,7 @@ it("retires a local run the rebuilt server reports already terminal", async () =
   process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ wait: "cancel", timeoutMs: 10_000 }]);
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
-  const promptMarker = join(data, "prompt-called");
+  const promptMarker = markerIn(data, "prompt-called");
   process.env.LYKEION_STUB_PROMPT_MARKER = promptMarker;
   process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS = "250";
   const liveReports: string[][] = [];
@@ -129,6 +141,7 @@ it("retires a local run the rebuilt server reports already terminal", async () =
               type: "start-run",
               runId: "run_migrated_terminal",
               studyId: "s_cmp",
+              taskId: "t_cmp",
               sessionId: "se_migrated_terminal",
               agent: "claude",
               prompt: "must be retired",
@@ -184,9 +197,9 @@ it("closes a retired active child before releasing its same-session successor", 
   process.env.LYKEION_STUB_EXIT_DELAY_MS = "500";
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
-  const sessions = join(data, "sessions-started");
-  const prompts = join(data, "prompts-started");
-  const exited = join(data, "old-child-exited");
+  const sessions = markerIn(data, "sessions-started");
+  const prompts = markerIn(data, "prompts-started");
+  const exited = markerIn(data, "old-child-exited");
   process.env.LYKEION_STUB_SESSION_NEW_MARKER = sessions;
   process.env.LYKEION_STUB_PROMPT_MARKER = prompts;
   process.env.LYKEION_STUB_EXIT_MARKER = exited;
@@ -208,6 +221,7 @@ it("closes a retired active child before releasing its same-session successor", 
                 type: "start-run",
                 runId,
                 studyId: "s_cmp",
+                taskId: "t_cmp",
                 sessionId: "se_shared_retirement",
                 agent: "claude",
                 prompt: runId,
@@ -264,6 +278,7 @@ it("takes a start-run command and posts the turn's events back", async () => {
       type: "start-run",
       runId: "run_1",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_1",
       agent: "claude",
       prompt: "go",
@@ -291,7 +306,7 @@ it("refuses a start-run for an agent this machine has no adapter for", async () 
   ]);
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
-  const r = startRuns({ lab: lab.base, token: "t", dataDir: data, adapterFor: () => undefined });
+  const r = startRuns({ lab: lab.base, token: "t", workDir: `${data}-work`, dataDir: data, adapterFor: () => undefined });
   running.push(r);
   await until(
     () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
@@ -329,6 +344,7 @@ it("posts the terminal frame for a turn that was still running when stopped", as
       type: "start-run",
       runId: "run_mid",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_mid",
       agent: "claude",
       prompt: "go",
@@ -379,6 +395,7 @@ it("carries a run's own ending to the lab even when it starts only after stop's 
             type: "start-run",
             runId: "run_drain",
             studyId: "s_cmp",
+            taskId: "t_cmp",
             sessionId: "se_drain",
             agent: "claude",
             prompt: "go",
@@ -442,6 +459,7 @@ it("does not act on a start-run command a second time when a reconnect replays i
     type: "start-run",
     runId: "run_replay",
     studyId: "s_cmp",
+    taskId: "t_cmp",
     sessionId: "se_replay",
     agent: "claude",
     prompt: "go",
@@ -515,6 +533,7 @@ it("resets its command cursor when an upgraded server first reports a relay gene
             type: "start-run",
             runId: "run_after_server_restart",
             studyId: "s_cmp",
+            taskId: "t_cmp",
             sessionId: "se_after_server_restart",
             agent: "claude",
             prompt: "delivered from rebuilt relay",
@@ -590,7 +609,7 @@ it("stops calling the lab once it says this machine has been removed", async () 
   const base = `http://127.0.0.1:${port}`;
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
-  const r = startRuns({ lab: base, token: "t", dataDir: data, adapterFor: () => undefined });
+  const r = startRuns({ lab: base, token: "t", workDir: `${data}-work`, dataDir: data, adapterFor: () => undefined });
   running.push(r);
 
   await until(() => hits > 0, "the lab to be called at all");
@@ -620,6 +639,7 @@ it("posts a grant to the lab when a card is answered for the Study", async () =>
             type: "start-run",
             runId: "run_g",
             studyId: "s_cmp",
+            taskId: "t_cmp",
             sessionId: "se_g",
             agent: "claude",
             prompt: "go",
@@ -706,6 +726,7 @@ it("waits for a grant still travelling to the lab before stop finishes", async (
             type: "start-run",
             runId: "run_wait",
             studyId: "s_cmp",
+            taskId: "t_cmp",
             sessionId: "se_wait",
             agent: "claude",
             prompt: "go",
@@ -812,6 +833,7 @@ it("answers a card 'once' or 'for this conversation' without ever posting a gran
             type: "start-run",
             runId: "run_h",
             studyId: "s_cmp",
+            taskId: "t_cmp",
             sessionId: "se_h",
             agent: "claude",
             prompt: "go",
@@ -897,6 +919,7 @@ it("fails a turn when the adapter dies, with its stderr as the reason", async ()
       type: "start-run",
       runId: "run_x",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_x",
       agent: "claude",
       prompt: "go",
@@ -908,6 +931,7 @@ it("fails a turn when the adapter dies, with its stderr as the reason", async ()
   const r = startRuns({
     lab: lab.base,
     token: "t",
+    workDir: `${data}-work`,
     dataDir: data,
     adapterFor: () => ({
       command: process.execPath,
@@ -943,6 +967,7 @@ it("retries the exact numbered event batch after a transient lab outage before s
             type: "start-run",
             runId: "run_retry",
             studyId: "s_cmp",
+            taskId: "t_cmp",
             sessionId: "se_retry",
             agent: "claude",
             prompt: "go",
@@ -1016,6 +1041,7 @@ it("treats a frame-sequence conflict as an explicit failed resynchronization and
             type: "start-run",
             runId: "run_conflict",
             studyId: "s_cmp",
+            taskId: "t_cmp",
             sessionId: "se_conflict",
             agent: "claude",
             prompt: "go",
@@ -1106,6 +1132,7 @@ it("reports again when another sequence conflict lands during an in-flight recon
               type: "start-run",
               runId,
               studyId: "s_cmp",
+              taskId: "t_cmp",
               sessionId: `se_${runId}`,
               agent: "claude",
               prompt: "go",
@@ -1181,6 +1208,7 @@ async function deadLab(): Promise<{ base: string }> {
             type: "start-run",
             runId: "run_chatty",
             studyId: "s_cmp",
+            taskId: "t_cmp",
             sessionId: "se_chatty",
             agent: "claude",
             prompt: "go",
@@ -1234,6 +1262,7 @@ it("gives a run still queued behind another its own honest ending when stop is c
       type: "start-run",
       runId: "run_first",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_queue",
       agent: "claude",
       prompt: "go",
@@ -1243,6 +1272,7 @@ it("gives a run still queued behind another its own honest ending when stop is c
       type: "start-run",
       runId: "run_second",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_queue",
       agent: "claude",
       prompt: "go again",
@@ -1282,6 +1312,7 @@ it("cancels a queued same-session run durably without ever invoking its prompt",
       type: "start-run",
       runId: "run_first",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_queue_cancel",
       agent: "claude",
       prompt: "first",
@@ -1291,6 +1322,7 @@ it("cancels a queued same-session run durably without ever invoking its prompt",
       type: "start-run",
       runId: "run_second",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_queue_cancel",
       agent: "claude",
       prompt: "must never run",
@@ -1351,8 +1383,8 @@ it("cancels a queued same-session run durably without ever invoking its prompt",
 it("cancels and reaps stuck initialization before a same-session successor starts", async () => {
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
-  const initializing = join(data, "session-new-started");
-  const exited = join(data, "initializing-adapter-exited");
+  const initializing = markerIn(data, "session-new-started");
+  const exited = markerIn(data, "initializing-adapter-exited");
   process.env.LYKEION_STUB_SESSION_NEW_MARKER = initializing;
   process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS = "3000";
   process.env.LYKEION_STUB_EXIT_MARKER = exited;
@@ -1361,6 +1393,7 @@ it("cancels and reaps stuck initialization before a same-session successor start
       type: "start-run",
       runId: "run_cancel_during_init",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_cancel_during_init",
       agent: "claude",
       prompt: "must never reach session/prompt",
@@ -1380,6 +1413,7 @@ it("cancels and reaps stuck initialization before a same-session successor start
     type: "start-run",
     runId: "run_after_cancelled_init",
     studyId: "s_cmp",
+    taskId: "t_cmp",
     sessionId: "se_cancel_during_init",
     agent: "claude",
     prompt: "start only after the old child exits",
@@ -1412,9 +1446,9 @@ it("cancels and reaps stuck initialization before a same-session successor start
 it("aborts and reaps a session whose initialization stays stuck after stop", async () => {
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
-  const initializing = join(data, "session-new-started");
-  const prompted = join(data, "prompt-started");
-  const exited = join(data, "adapter-exited");
+  const initializing = markerIn(data, "session-new-started");
+  const prompted = markerIn(data, "prompt-started");
+  const exited = markerIn(data, "adapter-exited");
   process.env.LYKEION_STUB_SESSION_NEW_MARKER = initializing;
   // Longer than stop's own bounded final-flush window: a timeout that merely
   // returns while leaving the subprocess alive fails the exit-marker check.
@@ -1426,6 +1460,7 @@ it("aborts and reaps a session whose initialization stays stuck after stop", asy
       type: "start-run",
       runId: "run_stop_during_init",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_stop_during_init",
       agent: "claude",
       prompt: "must never start after shutdown",
@@ -1471,6 +1506,7 @@ it("bounds shutdown while retaining and retrying an event batch the lab never ac
             type: "start-run",
             runId: "run_lost",
             studyId: "s_cmp",
+            taskId: "t_cmp",
             sessionId: "se_lost",
             agent: "claude",
             prompt: "go",
@@ -1514,13 +1550,14 @@ it("bounds shutdown while retaining and retrying an event batch the lab never ac
   expect(Date.now() - started).toBeLessThan(2_750);
 });
 
-it("reports a live session's own working directory, so a sweep never removes it out from under a running adapter", async () => {
+it("reports the working directory a live session is standing in, so a sweep never removes it out from under a running adapter", async () => {
   process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ emit: "agent_message_chunk", text: "hi" }]);
   const lab = await stubLab([
     {
       type: "start-run",
       runId: "run_live_dir",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_live_dir",
       agent: "claude",
       prompt: "go",
@@ -1534,14 +1571,14 @@ it("reports a live session's own working directory, so a sweep never removes it 
     () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
     "a completed turn",
   );
-  expect(r.liveSessionDirs()).toEqual([join(data, "studies", "s_cmp", "sessions", "se_live_dir")]);
+  expect(r.liveSessionDirs()).toEqual([join(`${data}-work`, "studies", "s_cmp", "tasks", "t_cmp")]);
 });
 
 it("retires a session whose stop was unacknowledged and keeps a later turn healthy", async () => {
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
-  const oldMarker = join(data, "old.closed");
-  const freshMarker = join(data, "fresh.closed");
+  const oldMarker = markerIn(data, "old.closed");
+  const freshMarker = markerIn(data, "fresh.closed");
   process.env.LYKEION_STUB_EXIT_MARKER = oldMarker;
   process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
     { sleep: 120 },
@@ -1553,6 +1590,7 @@ it("retires a session whose stop was unacknowledged and keeps a later turn healt
       type: "start-run",
       runId: "run_poisoned",
       studyId: "s_cmp",
+      taskId: "t_cmp",
       sessionId: "se_reused",
       agent: "claude",
       prompt: "first",
@@ -1562,6 +1600,7 @@ it("retires a session whose stop was unacknowledged and keeps a later turn healt
   const r = startRuns({
     lab: lab.base,
     token: "machine-token",
+    workDir: `${data}-work`,
     dataDir: data,
     cancelGraceMs: 20,
     adapterFor: () => ({ command: process.execPath, args: ["--experimental-strip-types", STUB] }),
@@ -1591,6 +1630,7 @@ it("retires a session whose stop was unacknowledged and keeps a later turn healt
     type: "start-run",
     runId: "run_fresh",
     studyId: "s_cmp",
+    taskId: "t_cmp",
     sessionId: "se_reused",
     agent: "claude",
     prompt: "second",
@@ -1628,4 +1668,223 @@ it("retires a session whose stop was unacknowledged and keeps a later turn healt
   await r.stop();
   expect(existsSync(oldMarker)).toBe(true);
   expect(existsSync(freshMarker)).toBe(true);
+});
+
+it("keeps a Task's work in one directory across the sessions that touch it", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ emit: "agent_message_chunk", text: "hi" }]);
+  const lab = await stubLab([
+    {
+      type: "start-run",
+      runId: "run_first_agent",
+      studyId: "s_cmp",
+      taskId: "t_shared",
+      sessionId: "se_first_agent",
+      agent: "claude",
+      prompt: "go",
+      grants: [],
+    },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const r = subsystem(lab.base, data);
+  const taskDir = join(`${data}-work`, "studies", "s_cmp", "tasks", "t_shared");
+  dirs.push(`${data}-work`);
+  await until(
+    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
+    "the first turn",
+  );
+  expect(r.liveSessionDirs()).toEqual([taskDir]);
+
+  // A second agent on the same Task opens a new session, and lands in the
+  // directory the first one's work is already in.
+  lab.send({
+    type: "start-run",
+    runId: "run_second_agent",
+    studyId: "s_cmp",
+    taskId: "t_shared",
+    sessionId: "se_second_agent",
+    agent: "codex",
+    prompt: "again",
+    grants: [],
+  });
+  await until(
+    () =>
+      lab.events.filter((e) => e.frames.some((f) => f.event.event === "completed")).length === 2,
+    "the second turn",
+  );
+  expect(r.liveSessionDirs()).toEqual([taskDir, taskDir]);
+  expect(existsSync(join(`${data}-work`, "studies", "s_cmp", "sessions"))).toBe(false);
+});
+
+it("refuses a start-run that names no Task, since there is nowhere to run it", async () => {
+  const lab = await stubLab([
+    {
+      type: "start-run",
+      runId: "run_no_task",
+      studyId: "s_cmp",
+      sessionId: "se_no_task",
+      agent: "claude",
+      prompt: "go",
+      grants: [],
+    },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(lab.base, data);
+  await until(
+    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
+    "a refusal",
+  );
+  const done = lab.events
+    .flatMap((e) => e.frames)
+    .find((f) => f.event.event === "completed")!;
+  expect(done.event).toMatchObject({ state: { state: "failed" } });
+  expect((done.event as { state: { reason: string } }).state.reason).toMatch(/taskId/);
+});
+
+it("refuses a run whose grant names a path this machine cannot resolve, and spawns nothing", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const spawned = markerIn(data, "adapter-was-spawned");
+  process.env.LYKEION_STUB_SESSION_NEW_MARKER = spawned;
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ emit: "agent_message_chunk", text: "hi" }]);
+  const lab = await stubLab([
+    {
+      type: "start-run",
+      runId: "run_bad_grant",
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: "se_bad_grant",
+      agent: "claude",
+      prompt: "go",
+      grants: [{ path: "/there-is-no-such-folder-here/data", mode: "write" }],
+    },
+  ]);
+  subsystem(lab.base, data);
+  await until(
+    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
+    "a refusal",
+  );
+  const done = lab.events.flatMap((e) => e.frames).find((f) => f.event.event === "completed")!;
+  expect(done.event).toMatchObject({ state: { state: "failed" } });
+  expect((done.event as { state: { reason: string } }).state.reason).toMatch(
+    /there-is-no-such-folder-here/,
+  );
+  expect(existsSync(spawned)).toBe(false);
+});
+
+it("refuses a run on a platform it cannot confine, naming the platform, and spawns nothing", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const spawned = markerIn(data, "adapter-was-spawned");
+  process.env.LYKEION_STUB_SESSION_NEW_MARKER = spawned;
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ emit: "agent_message_chunk", text: "hi" }]);
+  const lab = await stubLab([
+    {
+      type: "start-run",
+      runId: "run_no_backend",
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: "se_no_backend",
+      agent: "claude",
+      prompt: "go",
+      grants: [],
+    },
+  ]);
+  const r = startRuns({
+    lab: lab.base,
+    token: "machine-token",
+    workDir: `${data}-work`,
+    dataDir: data,
+    platform: "linux",
+    adapterFor: () => ({ command: process.execPath, args: ["--experimental-strip-types", STUB] }),
+  });
+  running.push(r);
+  await until(
+    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
+    "a refusal",
+  );
+  const done = lab.events.flatMap((e) => e.frames).find((f) => f.event.event === "completed")!;
+  expect((done.event as { state: { reason: string } }).state.reason).toMatch(/linux/);
+  expect(existsSync(spawned)).toBe(false);
+});
+
+it("opens a new session rather than running a later turn inside an older turn's boundary", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const opened = markerIn(data, "sessions-opened");
+  const granted = mkdtempSync(join(tmpdir(), "lykeion-granted-"));
+  dirs.push(granted);
+  process.env.LYKEION_STUB_SESSION_NEW_MARKER = opened;
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ emit: "agent_message_chunk", text: "hi" }]);
+  const lab = await stubLab([
+    {
+      type: "start-run",
+      runId: "run_grant_a",
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: "se_shared",
+      agent: "claude",
+      prompt: "first",
+      grants: [{ path: granted, mode: "write" }],
+    },
+  ]);
+  subsystem(lab.base, data);
+  await until(
+    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
+    "the first turn",
+  );
+  expect(readFileSync(opened, "utf8").trim().split("\n")).toHaveLength(1);
+
+  // The same session, with the grant taken away. The boundary the first turn
+  // was rendered with no longer describes what the researcher allows, so the
+  // subprocess it belongs to cannot be the one this turn runs in.
+  lab.send({
+    type: "start-run",
+    runId: "run_grant_b",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_shared",
+    agent: "claude",
+    prompt: "second",
+    grants: [],
+  });
+  await until(
+    () =>
+      lab.events.filter((e) => e.frames.some((f) => f.event.event === "completed")).length === 2,
+    "the second turn",
+  );
+  expect(readFileSync(opened, "utf8").trim().split("\n")).toHaveLength(2);
+});
+
+it("keeps one session across turns whose boundary has not changed", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const opened = markerIn(data, "sessions-opened");
+  process.env.LYKEION_STUB_SESSION_NEW_MARKER = opened;
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ emit: "agent_message_chunk", text: "hi" }]);
+  const start = {
+    type: "start-run",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_stable",
+    agent: "claude",
+    prompt: "go",
+    grants: [],
+  };
+  const lab = await stubLab([{ ...start, runId: "run_same_a" }]);
+  subsystem(lab.base, data);
+  await until(
+    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
+    "the first turn",
+  );
+  lab.send({ ...start, runId: "run_same_b" });
+  await until(
+    () =>
+      lab.events.filter((e) => e.frames.some((f) => f.event.event === "completed")).length === 2,
+    "the second turn",
+  );
+  // One subprocess, and therefore one conversation: nothing about the
+  // boundary changed, so nothing had to be given up to keep it honest.
+  expect(readFileSync(opened, "utf8").trim().split("\n")).toHaveLength(1);
 });

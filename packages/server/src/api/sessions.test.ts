@@ -10,6 +10,7 @@ import { openStore } from "../store/sqlite";
 import { migrate } from "../store/migrations";
 import { createChannel } from "../channel";
 import { createRunRelay, type RunCommand, type RunRelay } from "../run-relay";
+import { createRevertRegistry } from "../run-revert";
 import { createRequestListener } from "../http";
 import { apiFor, signUpOwner } from "../test-support/server-api";
 import { changeRecorder } from "./changes";
@@ -52,7 +53,8 @@ function freshLabServer(now: () => number): Promise<RawServer> {
   const config = { ...readConfig({}), host: "127.0.0.1", port: 0, dataDir: dir, uiDir };
 
   const listener = createRequestListener({
-    store, config, secure: false, indexHtml, channel, openStreams, runs: relay, now,
+    store, config, secure: false, indexHtml, channel, openStreams, runs: relay,
+    reverts: createRevertRegistry(), now,
   });
   const server = createHttpServer(listener);
 
@@ -225,6 +227,14 @@ async function labWithPairedMachine(): Promise<SessionsLab> {
       },
     },
   };
+}
+
+async function until(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if (check()) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error("it never happened");
 }
 
 async function completeRun(lab: SessionsLab, runId: string): Promise<Response> {
@@ -770,6 +780,7 @@ it("wires the returned handle's onEvent/submit/close to the relay for an in-proc
     config: readConfig({}),
     channel,
     runs: lab.relay,
+    reverts: createRevertRegistry(),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
 
@@ -819,6 +830,7 @@ it("stops a fresh handle's queued replay when its callback detaches", async () =
     config: readConfig({}),
     channel,
     runs: lab.relay,
+    reverts: createRevertRegistry(),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
   const handle = await sessionsApi(deps).startRun({
@@ -880,6 +892,7 @@ it("resumed in-process handles use their durable cursor, route decisions per run
     config: readConfig({}),
     channel,
     runs: lab.relay,
+    reverts: createRevertRegistry(),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
   const resumed = [
@@ -946,6 +959,7 @@ it("stops synchronous replay when a resumed handle closes from its first frame",
     config: readConfig({}),
     channel,
     runs: lab.relay,
+    reverts: createRevertRegistry(),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   });
   const [resumed] = await api.resumeRuns(lab.taskId);
@@ -993,6 +1007,7 @@ it("does not queue handle or RPC commands after a run is already terminal", asyn
     config: readConfig({}),
     channel,
     runs: lab.relay,
+    reverts: createRevertRegistry(),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   });
   const handle = await api.startRun({
@@ -1036,4 +1051,102 @@ it("refuses a decision on a run id nobody holds, the same way an unowned one is 
   await expect(
     lab.ownerApi.submitRunDecision("run_nope", { action: "cancel" }),
   ).rejects.toMatchObject({ code: "forbidden" });
+});
+
+// ---- discarding a turn and putting the files back ------------------------
+
+/** What a machine posts about a turn's working directory before the turn
+ *  ran, and afterwards about a restore it was asked for. */
+function daemonPost(lab: SessionsLab, path: string, body: unknown): Promise<Response> {
+  return fetch(`${lab.base}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify(body),
+  });
+}
+
+async function settledRunWithSnapshot(
+  lab: SessionsLab,
+  prompt: string,
+  snapshot: { taken: boolean; reason?: string } = { taken: true },
+): Promise<string> {
+  const { runId } = await lab.ownerApi.startRun({
+    studyId: lab.studyId,
+    taskId: lab.taskId,
+    prompt,
+    options: { planMode: false, agent: "claude" },
+  });
+  await daemonPost(lab, "/daemon/run/snapshot", { runId, ...snapshot });
+  await completeRun(lab, runId);
+  return runId;
+}
+
+it("offers revert on a turn whose files were snapshotted, and names why when they were not", async () => {
+  const lab = await labWithPairedMachine();
+  await settledRunWithSnapshot(lab, "first");
+  await settledRunWithSnapshot(lab, "second", {
+    taken: false,
+    reason: "this volume cannot clone",
+  });
+
+  const { turns } = await lab.ownerApi.getTask(lab.taskId);
+  expect(turns[0].revert).toEqual({ available: true });
+  expect(turns[1].revert).toEqual({ available: false, reason: "this volume cannot clone" });
+});
+
+it("discards the newest turn once the machine says the files are back", async () => {
+  const lab = await labWithPairedMachine();
+  await settledRunWithSnapshot(lab, "first");
+  const newest = await settledRunWithSnapshot(lab, "second");
+
+  const taken: RunCommand[] = [];
+  lab.relay.attach(lab.runtimeId, (_seq, c) => taken.push(c));
+  const reverting = lab.ownerApi.revertTurn(newest);
+  await until(() => taken.some((c) => c.type === "revert"));
+  expect(taken.find((c) => c.type === "revert")).toMatchObject({
+    runId: newest,
+    studyId: lab.studyId,
+    taskId: lab.taskId,
+  });
+
+  await daemonPost(lab, "/daemon/run/reverted", { runId: newest, ok: true });
+  await reverting;
+
+  const { turns } = await lab.ownerApi.getTask(lab.taskId);
+  expect(turns.map((t) => t.prompt)).toEqual(["first"]);
+});
+
+it("keeps the turn in the record when the machine could not put the files back", async () => {
+  const lab = await labWithPairedMachine();
+  const newest = await settledRunWithSnapshot(lab, "only");
+
+  lab.relay.attach(lab.runtimeId, () => {});
+  const reverting = lab.ownerApi
+    .revertTurn(newest)
+    .then(() => undefined, (err: unknown) => err);
+  await daemonPost(lab, "/daemon/run/reverted", {
+    runId: newest,
+    ok: false,
+    error: "the snapshot could not be read back",
+  });
+  expect(String(await reverting)).toMatch(/could not be read back/);
+
+  const { turns } = await lab.ownerApi.getTask(lab.taskId);
+  expect(turns.map((t) => t.prompt)).toEqual(["only"]);
+});
+
+it("refuses a turn that is not the newest, and one with no snapshot", async () => {
+  const lab = await labWithPairedMachine();
+  const older = await settledRunWithSnapshot(lab, "first");
+  await settledRunWithSnapshot(lab, "second", { taken: false, reason: "too large" });
+
+  await expect(lab.ownerApi.revertTurn(older)).rejects.toThrow(/newest/);
+  const newest = (await lab.ownerApi.getTask(lab.taskId)).turns[1].runId;
+  await expect(lab.ownerApi.revertTurn(newest)).rejects.toThrow(/no snapshot/);
+});
+
+it("refuses a revert from anyone but the member who started the run", async () => {
+  const lab = await labWithPairedMachine();
+  const newest = await settledRunWithSnapshot(lab, "only");
+  await expect(lab.memberApi.revertTurn(newest)).rejects.toThrow(/only the member/);
 });

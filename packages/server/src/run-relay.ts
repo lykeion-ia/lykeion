@@ -9,12 +9,15 @@ import type { StandingGrant } from "./store/sessions";
  * envelope — only `runId` is ever guaranteed present.
  */
 export interface RunCommand {
-  type: "start-run" | "decision" | "cancel";
+  type: "start-run" | "decision" | "cancel" | "revert";
   runId: string;
   studyId?: string;
+  taskId?: string;
   sessionId?: string;
   agent?: string;
   prompt?: string;
+  /** Which of the agent's own advertised choices this turn asked for. */
+  model?: string;
   grants?: StandingGrant[];
   decision?: RunDecision;
 }

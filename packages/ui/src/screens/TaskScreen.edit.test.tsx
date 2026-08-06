@@ -1,41 +1,24 @@
 /**
- * Edit a past prompt back into the composer.
+ * What a researcher can do to a message they already sent.
  *
- * Edit refills the composer with a turn's prompt and hands focus back without
- * touching the transcript: the recorded turn stays exactly where it is. It is
- * offered on historic/graduated turns AND on the turn that just finished (the
- * one still drawn by the live-region bubble), but never while a run is in
- * flight — a live run's (disabled) composer must not be fought over.
+ * Copy is on every bubble and confirms nothing. Edit and Revert are on the
+ * newest recorded turn alone, each behind a confirmation naming what is
+ * lost — the turn, the Task's files, and the agent's memory of the
+ * conversation. Neither is offered while a run is in flight: a turn cannot
+ * be pulled out from under one still working, and Stop is the control that
+ * belongs there.
  */
 
-import { describe, expect, it, beforeEach } from "vitest";
-import {
-  act,
-  cleanup,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { describe, expect, it, beforeEach, vi } from "vitest";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
-import type {
-  LykeionApi,
-  RunEvent,
-  RunRecord,
-  RunHandle,
-  TaskTurn,
-} from "@lykeion/api";
+import type { LykeionApi, RunEvent, RunHandle, TaskTurn } from "@lykeion/api";
 import App from "../App";
 
-// A fresh Task in CMP — nobody has spoken in it, so each test says
-// exactly what its transcript holds.
 const ROUTE = "#/studies/s_cmp/tasks/t_5";
 
-/**
- * An API whose `startRun` records every prompt it is called with (indexed by
- * call order) and whose events the test drives by hand.
- */
+/** An API whose `startRun` records every prompt it is called with. */
 function scriptedApi() {
   const startCalls: string[] = [];
   const runSubs: Set<(e: RunEvent) => void>[] = [];
@@ -77,180 +60,132 @@ function scriptedApi() {
       };
     },
   };
-
-  /** Emit an event on the `i`th `startRun` call's subscribers. */
-  const emit = (i: number, e: RunEvent) =>
-    act(() => {
-      for (const cb of [...runSubs[i]]) cb(e);
-    });
-
-  return { api, base, startCalls, runSubs, emit };
+  return { api, base, startCalls, runSubs };
 }
 
-const runRecord = (command: string, text: string): RunRecord => ({
-  runId: "run-x",
-  ts: 1,
-  command,
+const turn = (over: Partial<TaskTurn> & Pick<TaskTurn, "runId" | "sequence" | "prompt">): TaskTurn => ({
+  ts: over.sequence,
+  messages: [],
   status: "ok",
   code: [],
   outputs: [],
-  stream: [{ kind: "text", text }],
+  ...over,
 });
+
+const OLDER = turn({
+  runId: "run-older",
+  sequence: 1,
+  prompt: "what's in the dataset?",
+  messages: ["It has 42 rows."],
+  revert: { available: true },
+});
+const NEWEST = turn({
+  runId: "run-newest",
+  sequence: 2,
+  prompt: "count the reads",
+  messages: ["Counted."],
+  revert: { available: true },
+});
+
+function apiWithHistory(turns: TaskTurn[], revertTurn?: LykeionApi["revertTurn"]) {
+  const scripted = scriptedApi();
+  const api: LykeionApi = {
+    ...scripted.api,
+    async getTask(taskId: string) {
+      const detail = await scripted.base.getTask(taskId);
+      return { ...detail, turns };
+    },
+    ...(revertTurn ? { revertTurn } : {}),
+  };
+  return { ...scripted, api };
+}
 
 beforeEach(cleanup);
 
-describe("edit refills the composer without touching the transcript", () => {
-  const HISTORIC: TaskTurn = {
-    runId: "run-historic",
-    sequence: 1,
-    ts: 1,
-    prompt: "what's in the dataset?",
-    messages: ["It has 42 rows."],
-    status: "ok",
-    code: [],
-    outputs: [],
-  };
+describe("the controls a recorded message carries", () => {
+  it("offers Copy on every turn, and Edit and Revert on the newest alone", async () => {
+    const { api } = apiWithHistory([OLDER, NEWEST]);
+    window.location.hash = ROUTE;
+    render(<App api={api} />);
+    await screen.findByText("Counted.");
 
-  function apiWithHistory() {
-    const scripted = scriptedApi();
-    const api: LykeionApi = {
-      ...scripted.api,
-      async getTask(taskId: string) {
-        // The real Task, with a transcript this test dictates.
-        const detail = await scripted.base.getTask(taskId);
-        return { ...detail, turns: [HISTORIC] };
-      },
-    };
-    return { ...scripted, api };
-  }
+    const stream = screen.getByTestId("conv-stream");
+    expect(within(stream).getAllByRole("button", { name: /copy/i })).toHaveLength(2);
+    expect(within(stream).getAllByRole("button", { name: /^edit$/i })).toHaveLength(1);
+    expect(within(stream).getAllByRole("button", { name: /^revert$/i })).toHaveLength(1);
+  });
 
-  it("fills the composer with the bubble's prompt and focuses it, leaving the transcript untouched", async () => {
-    const { api } = apiWithHistory();
+  it("names what is lost, and discards the turn only once that is confirmed", async () => {
+    const revertTurn = vi.fn(async () => {});
+    const { api } = apiWithHistory([OLDER, NEWEST], revertTurn);
     const user = userEvent.setup();
     window.location.hash = ROUTE;
     render(<App api={api} />);
-    await screen.findByText("It has 42 rows.");
+    await screen.findByText("Counted.");
 
-    const composer = screen.getByLabelText(
-      "Message the agent",
-    ) as HTMLTextAreaElement;
-    expect(composer.value).toBe("");
+    await user.click(screen.getByRole("button", { name: /^revert$/i }));
+    const confirm = screen.getByTestId("turn-confirm");
+    expect(confirm.textContent).toMatch(/files/i);
+    expect(confirm.textContent).toMatch(/no memory/i);
+    expect(revertTurn).not.toHaveBeenCalled();
 
-    await user.click(
-      await screen.findByRole("button", { name: "Edit prompt" }),
-    );
+    await user.click(screen.getByRole("button", { name: /discard the turn/i }));
+    await waitFor(() => expect(revertTurn).toHaveBeenCalledWith("run-newest"));
+  });
 
-    expect(composer.value).toBe(HISTORIC.prompt);
-    expect(composer).toHaveFocus();
+  it("sends the corrected text after discarding, so Edit is one destructive path", async () => {
+    const revertTurn = vi.fn(async () => {});
+    const { api, startCalls } = apiWithHistory([OLDER, NEWEST], revertTurn);
+    const user = userEvent.setup();
+    window.location.hash = ROUTE;
+    render(<App api={api} />);
+    await screen.findByText("Counted.");
 
-    // Nothing about the recorded turn moved: the same prompt bubble and the
-    // same reply are still exactly where they were — Edit only refills the
-    // composer, it never deletes or rewrites the turn. Scoped to the
-    // transcript stream specifically (excluding the composer dock, which now
-    // legitimately echoes the same text, and the sidebar’s Task row).
-    const stream = screen.getByTestId("conv-stream");
-    expect(within(stream).getByText(HISTORIC.prompt)).toBeInTheDocument();
-    expect(within(stream).getByText("It has 42 rows.")).toBeInTheDocument();
-    expect(within(stream).getAllByText(HISTORIC.prompt)).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    const box = screen.getByLabelText("Corrected prompt");
+    await user.clear(box);
+    await user.type(box, "count the writes");
+    await user.click(screen.getByRole("button", { name: /discard and resend/i }));
+
+    await waitFor(() => expect(revertTurn).toHaveBeenCalledWith("run-newest"));
+    await waitFor(() => expect(startCalls).toContain("count the writes"));
+  });
+
+  it("disables both, naming why, when no snapshot of the files was taken", async () => {
+    const { api } = apiWithHistory([
+      OLDER,
+      turn({
+        runId: "run-newest",
+        sequence: 2,
+        prompt: "count the reads",
+        messages: ["Counted."],
+        revert: { available: false, reason: "this volume cannot clone them" },
+      }),
+    ]);
+    window.location.hash = ROUTE;
+    render(<App api={api} />);
+    await screen.findByText("Counted.");
+
+    const revert = screen.getByRole("button", { name: /^revert$/i });
+    expect(revert).toBeDisabled();
+    expect(revert).toHaveAttribute("title", expect.stringContaining("cannot clone"));
   });
 });
 
-describe("edit stays off the surface while a run is live", () => {
-  const HISTORIC: TaskTurn = {
-    runId: "run-historic",
-    sequence: 1,
-    ts: 1,
-    prompt: "what's in the dataset?",
-    messages: ["It has 42 rows."],
-    status: "ok",
-    code: [],
-    outputs: [],
-  };
-
-  function apiWithHistory() {
-    const scripted = scriptedApi();
-    const api: LykeionApi = {
-      ...scripted.api,
-      async getTask(taskId: string) {
-        // The real Task, with a transcript this test dictates.
-        const detail = await scripted.base.getTask(taskId);
-        return { ...detail, turns: [HISTORIC] };
-      },
-    };
-    return { ...scripted, api };
-  }
-
-  it("shows no Edit affordance once a new turn is in flight", async () => {
-    const { api, runSubs } = apiWithHistory();
+describe("neither is offered while a run is live", () => {
+  it("shows Stop instead, on every bubble on the surface", async () => {
+    const { api, runSubs } = apiWithHistory([OLDER, NEWEST]);
     const user = userEvent.setup();
     window.location.hash = ROUTE;
     render(<App api={api} />);
-    await screen.findByText("It has 42 rows.");
+    await screen.findByText("Counted.");
 
     await user.type(screen.getByLabelText("Message the agent"), "and now?");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(runSubs).toHaveLength(1));
 
-    // Mid-run: Edit is not offered anywhere on the surface, not even on the
-    // now-historic bubble that would offer it once idle.
-    expect(screen.queryByRole("button", { name: "Edit prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^revert$/i })).toBeNull();
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
-  });
-});
-
-/**
- * The review gap this guards against: Edit was wired onto historic/graduated
- * turns (via `TurnView`'s `onEditPrompt`) but NOT onto the turn that JUST
- * finished — the one still drawn by the live-region bubble. Without the fix,
- * the turn can't be edited until some other action (e.g. sending the next
- * message) graduates it into `viewTurns` — past the moment the researcher
- * wanted it.
- */
-describe("edit reaches the turn that just finished, in place", () => {
-  it("offers Edit on the live bubble once a run completes, refilling the composer without graduating the turn", async () => {
-    const { api, emit } = scriptedApi();
-    const user = userEvent.setup();
-    window.location.hash = ROUTE;
-    render(<App api={api} />);
-
-    const typed = "how many rows are there?";
-    await user.type(await screen.findByLabelText("Message the agent"), typed);
-    await user.click(screen.getByRole("button", { name: "Send" }));
-
-    emit(0, {
-      event: "assistant-text",
-      text: "There are 42 rows.",
-      partial: false,
-    });
-    emit(0, {
-      event: "completed",
-      state: { state: "completed" },
-      run: runRecord(typed, "There are 42 rows."),
-    });
-    await screen.findByText("Run complete");
-
-    const composer = screen.getByLabelText(
-      "Message the agent",
-    ) as HTMLTextAreaElement;
-    // The composer was cleared on send — Edit is the only thing that refills it.
-    expect(composer.value).toBe("");
-
-    // The just-finished turn's OWN bubble — still in the live region, not yet
-    // graduated into `viewTurns` — now offers Edit.
-    await user.click(
-      await screen.findByRole("button", { name: "Edit prompt" }),
-    );
-
-    expect(composer.value).toBe(typed);
-    expect(composer).toHaveFocus();
-
-    // Nothing graduated: still exactly one bubble with the typed text, and
-    // the turn's own reply is still on screen — Edit only refilled the
-    // composer, it never moved the turn or left a second copy of it. Scoped
-    // to the transcript stream specifically (excluding the composer dock,
-    // which now legitimately echoes the same text).
-    const stream = screen.getByTestId("conv-stream");
-    expect(within(stream).getAllByText(typed)).toHaveLength(1);
-    expect(within(stream).getByText("There are 42 rows.")).toBeInTheDocument();
   });
 });

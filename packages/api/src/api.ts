@@ -351,6 +351,28 @@ export interface LykeionApi {
   submitRunDecision(runId: string, decision: RunDecision): Promise<void>;
 
   /**
+   * Discard the newest turn of a Task and restore its working directory to
+   * the state it was in before that turn ran. Refuses a turn that is not the
+   * newest, and a turn whose snapshot is absent.
+   *
+   * The files are put back first and the record is truncated second: a
+   * record truncated over an un-restored directory describes a state that
+   * never existed. Only the member who started the run may revert it — it
+   * ran on their machine, in a directory only they can run in.
+   *
+   * The agent's session ends with the turn. The protocol carries no way to
+   * take a turn out of what an agent remembers, so the next Send opens a new
+   * conversation in the same working directory, with no memory of the
+   * earlier turns either. Files the agent wrote into a granted folder are
+   * NOT rolled back: a grant points at the researcher's own directory, and
+   * what is restored is the Task's own.
+   *
+   * Editing a turn is this method followed by an ordinary `startRun` with
+   * the corrected prompt. It is not a second operation.
+   */
+  revertTurn(runId: string): Promise<void>;
+
+  /**
    * Delegate a scoped sub-task to a subagent (an Agent persona) as an isolated
    * child run. Returns a live `RunHandle` streaming the child's events; the
    * completed run yields a `SubagentResult`. A subagent turn nests inside its

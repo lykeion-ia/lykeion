@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, expect, it } from "vitest";
 import { build } from "esbuild";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -208,9 +208,16 @@ process.exit(0);
  */
 function writeAdapterStub(binDir: string): void {
   mkdirSync(binDir, { recursive: true });
+  // The agent it drives is copied in beside it rather than reached for
+  // where this repository keeps it. A run is confined, and what it may read
+  // is the program it was told to run and where commands are looked up —
+  // an adapter that reaches somewhere else entirely is not what a real one
+  // does, and would only be testing the boundary's absence.
+  const agent = join(binDir, "stub-acp-agent.ts");
+  copyFileSync(stubAgent, agent);
   const script = `#!/usr/bin/env node
 const { spawnSync } = require("node:child_process");
-const result = spawnSync(${JSON.stringify(process.execPath)}, ["--experimental-strip-types", ${JSON.stringify(stubAgent)}], { stdio: "inherit" });
+const result = spawnSync(${JSON.stringify(process.execPath)}, ["--experimental-strip-types", ${JSON.stringify(agent)}], { stdio: "inherit" });
 process.exit(result.status === null ? 1 : result.status);
 `;
   for (const command of ["claude-agent-acp", "claude-code-acp"])
