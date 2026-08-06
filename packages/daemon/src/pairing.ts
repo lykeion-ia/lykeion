@@ -8,6 +8,17 @@ import { DAEMON_VERSION, type DaemonConfig } from "./config";
 import { platformTag } from "./probe";
 import { labLabel, writeState, type PairedState } from "./state";
 import { exchangeCode } from "./lab";
+import {
+  renderExchangeFailurePage,
+  renderExpiredLinkPage,
+  renderExpiredRequestPage,
+  renderForeignCallbackPage,
+  renderMissingCodePage,
+  renderNoSessionPage,
+  renderRefusedPage,
+  renderSetupPage,
+  renderSuccessPage,
+} from "./pairing-pages";
 import { secretsMatch } from "./secrets";
 
 /** How long an unclicked link stays good for, and how long the request
@@ -88,15 +99,6 @@ export interface StartPairingOptions {
    *  — that is what expiring means — so the new link has to be announced
    *  rather than waited for. */
   onRequestExpired?: (link: string) => void;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 function readCookie(req: IncomingMessage): string | undefined {
@@ -203,10 +205,6 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-function page(title: string, body: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head><body>${body}</body></html>`;
-}
-
 /**
  * Starts the loopback setup server: the nonce-guarded page a researcher's
  * browser lands on, the form that names the lab and this machine, and the
@@ -245,15 +243,21 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
   let nonceMintedAt = 0;
   let nonceSpent = false;
   let currentLab = options.lab;
+  /** The request whose first successful `/connect` already chose its lab.
+   *  Kept separate from `currentLab`: a lab supplied on the command line is
+   *  merely a prefilled choice and remains editable until the browser
+   *  actually commits this request. A later request has a different state
+   *  and can choose again. */
+  let committedState: string | undefined;
   /** Counts down to the open request being replaced. Re-armed by every step
    *  that shows somebody is still working through the flow. */
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /** The one call this server makes outward, and the only way to take it
-   *  back. A lab that accepts the exchange and then never answers would
-   *  otherwise hold this session — and the daemon waiting on it — for the
-   *  runtime's own request timeout, which no `close` here can shorten. */
-  const exchanges = new AbortController();
+  /** Every call this server makes outward, and the one way to take them
+   *  back. A lab that accepts a reachability probe or exchange and then
+   *  never answers would otherwise outlive this session — and the daemon
+   *  waiting on it — for the runtime's own request timeout. */
+  const outboundCalls = new AbortController();
 
   let resolvePaired!: (state: PairedState) => void;
   let rejectPaired!: (err: Error) => void;
@@ -345,72 +349,6 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
     return cookie !== undefined && secretsMatch(cookie, nonce);
   }
 
-  function setupPage(): string {
-    const redirect = `${base}/paired`;
-    return page(
-      "Pair this machine",
-      `
-      <h1>Pair this machine</h1>
-      <p>Approving in your lab will send this browser back here to finish.</p>
-      <form id="connect">
-        <label>Lab address <input name="lab" value="${escapeHtml(currentLab ?? "")}" placeholder="https://lab.example.edu" required></label><br>
-        <label>Machine name <input name="name" value="${escapeHtml(hostname())}" required></label><br>
-        <button type="submit">Continue</button>
-      </form>
-      <p id="error" style="color:#a00"></p>
-      <script>
-        // A cross-origin redirect's Location header cannot be read back
-        // from fetch — the response comes back opaque on purpose, whatever
-        // the redirect mode. So this page does not ask the server where to
-        // go next: it already has everything except the lab address and
-        // name the researcher is about to type, and builds the same target
-        // itself once they do, sending the browser there as a real
-        // navigation rather than anything a script mediates.
-        const CHALLENGE = ${JSON.stringify(challenge)};
-        const STATE = ${JSON.stringify(state)};
-        const PLATFORM = ${JSON.stringify(platformTag())};
-        const VERSION = ${JSON.stringify(DAEMON_VERSION)};
-        const REDIRECT = ${JSON.stringify(redirect)};
-        document.getElementById("connect").addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const form = event.target;
-          const lab = form.lab.value.trim().replace(/\\/$/, "");
-          const name = form.name.value.trim();
-          try {
-            const res = await fetch("/connect", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ lab, name }),
-              redirect: "manual",
-            });
-            if (res.type !== "opaqueredirect" && !res.ok) {
-              const body = await res.json().catch(() => ({}));
-              throw new Error(body.error || "the daemon refused that");
-            }
-          } catch (err) {
-            document.getElementById("error").textContent = err instanceof Error ? err.message : String(err);
-            return;
-          }
-          const query = new URLSearchParams({
-            name, platform: PLATFORM, version: VERSION, challenge: CHALLENGE, state: STATE, redirect: REDIRECT,
-          });
-          window.location.assign(lab + "/#/pair?" + query.toString());
-        });
-      </script>
-      `,
-    );
-  }
-
-  /** The last thing this flow says to a researcher, so it says something
-   *  true: a lab that has never been named is named by its address rather
-   *  than by the empty string the exchange answered with. */
-  function pairedPage(result: PairedState): string {
-    return page(
-      "Paired",
-      `<h1>This machine is paired</h1><p>${escapeHtml(result.machineName)} is now paired with ${escapeHtml(labLabel(result))}. You can close this tab.</p>`,
-    );
-  }
-
   const server = createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -424,39 +362,71 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
         // narrower claim of the two — this daemon handed it to one tab —
         // so a request that can make it is not a second browser following a
         // link, whatever else its URL still carries.
-        if (authorized(req)) return sendHtml(res, 200, setupPage());
+        if (authorized(req))
+          return sendHtml(
+            res,
+            200,
+            renderSetupPage({
+              lab: currentLab ?? "",
+              machineName: hostname(),
+              challenge,
+              state,
+              platform: platformTag(),
+              version: DAEMON_VERSION,
+              redirect: `${base}/paired`,
+            }),
+          );
         const suppliedNonce = url.searchParams.get("nonce");
         if (suppliedNonce !== null) {
           const expired = now() - nonceMintedAt > ttl;
           if (!secretsMatch(suppliedNonce, nonce) || nonceSpent || expired)
-            return sendHtml(
-              res,
-              403,
-              page(
-                "Link no longer valid",
-                `<p>That link has already been used, or has expired. Run <code>lykeion-daemon status</code> for a fresh one.</p>`,
-              ),
-            );
+            return sendHtml(res, 403, renderExpiredLinkPage());
           nonceSpent = true;
           res.setHeader("set-cookie", `${COOKIE_NAME}=${nonce}; HttpOnly; SameSite=Lax; Path=/`);
-          return sendHtml(res, 200, setupPage());
-        }
-        if (!authorized(req))
           return sendHtml(
             res,
-            403,
-            page(
-              "Nothing to see here",
-              `<p>Run <code>lykeion-daemon status</code> for a fresh link.</p>`,
-            ),
+            200,
+            renderSetupPage({
+              lab: currentLab ?? "",
+              machineName: hostname(),
+              challenge,
+              state,
+              platform: platformTag(),
+              version: DAEMON_VERSION,
+              redirect: `${base}/paired`,
+            }),
           );
-        return sendHtml(res, 200, setupPage());
+        }
+        if (!authorized(req)) return sendHtml(res, 403, renderNoSessionPage());
+        return sendHtml(
+          res,
+          200,
+          renderSetupPage({
+            lab: currentLab ?? "",
+            machineName: hostname(),
+            challenge,
+            state,
+            platform: platformTag(),
+            version: DAEMON_VERSION,
+            redirect: `${base}/paired`,
+          }),
+        );
       }
 
       if (path === "/connect" && req.method === "POST") {
         if (!authorized(req)) return sendJson(res, 403, { error: "run lykeion-daemon status for a fresh link" });
-        if (!(req.headers["content-type"] ?? "").includes("application/json"))
+        const mediaType = (req.headers["content-type"] ?? "")
+          .split(";", 1)[0]!
+          .trim()
+          .toLowerCase();
+        if (mediaType !== "application/json")
           return sendJson(res, 415, { error: "that call is application/json" });
+        const origin = req.headers.origin;
+        if (origin !== undefined && origin !== new URL(base).origin)
+          return sendJson(res, 403, { error: "that call must come from this daemon page" });
+        const fetchSite = req.headers["sec-fetch-site"];
+        if (fetchSite !== undefined && fetchSite !== "same-origin")
+          return sendJson(res, 403, { error: "that call must come from this daemon page" });
         let body: unknown;
         try {
           body = await readJsonBody(req);
@@ -468,6 +438,36 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
         const name = typeof record.name === "string" ? record.name : "";
         if (!lab || !name)
           return sendJson(res, 400, { error: "a lab address and a machine name are required" });
+        let labUrl: URL;
+        try {
+          labUrl = new URL(lab);
+        } catch {
+          return sendJson(res, 400, { error: "the lab address must use http or https" });
+        }
+        if (labUrl.protocol !== "http:" && labUrl.protocol !== "https:")
+          return sendJson(res, 400, { error: "the lab address must use http or https" });
+        const preflightState = state;
+        const preflightNonce = nonce;
+        try {
+          await fetch(labUrl, {
+            method: "HEAD",
+            redirect: "manual",
+            signal: AbortSignal.any([outboundCalls.signal, AbortSignal.timeout(5_000)]),
+          });
+        } catch {
+          return sendJson(res, 400, { error: `could not reach ${lab}` });
+        }
+        if (
+          !secretsMatch(preflightState, state) ||
+          !secretsMatch(preflightNonce, nonce) ||
+          !authorized(req)
+        )
+          return sendJson(res, 403, { error: "run lykeion-daemon status for a fresh link" });
+        if (committedState !== undefined && secretsMatch(committedState, state))
+          return sendJson(res, 409, {
+            error: "this pairing request is already continuing to a lab",
+          });
+        committedState = state;
         currentLab = lab;
         // The handoff is the last thing this daemon sees of a researcher
         // until they come back approved, and everything between the two —
@@ -507,15 +507,7 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
           return sendHtml(
             res,
             400,
-            stale
-              ? page(
-                  "That request expired",
-                  `<p>This machine stopped waiting on that request and opened another. A fresh link is in the terminal the daemon is running in, or run <code>lykeion-daemon status</code> for one.</p>`,
-                )
-              : page(
-                  "Not this machine's request",
-                  `<p>That did not come from this machine's own pairing session.</p>`,
-                ),
+            stale ? renderExpiredRequestPage() : renderForeignCallbackPage(),
           );
         }
         // Before the code is looked for, because a refusal arrives without
@@ -526,26 +518,32 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
           return finishPaired(
             res,
             200,
-            page(
-              "Refused",
-              `<p>That request was refused in the lab. This machine has not been paired, and the daemon is stopping.</p>`,
-            ),
+            renderRefusedPage(),
             { ok: false, error: new PairingRefused("that request was refused in the lab") },
           );
         const code = url.searchParams.get("code") ?? "";
-        if (!currentLab || !code)
-          return sendHtml(res, 400, page("Nothing to exchange", `<p>No pairing code arrived with that callback.</p>`));
+        if (!currentLab || !code) return sendHtml(res, 400, renderMissingCodePage());
         try {
-          const result = await exchangeCode(currentLab, code, verifier, exchanges.signal);
+          const result = await exchangeCode(currentLab, code, verifier, outboundCalls.signal);
           const paired: PairedState = { lab: currentLab, ...result };
           writeState(dataDir, paired);
-          await finishPaired(res, 200, pairedPage(paired), { ok: true, state: paired });
+          await finishPaired(
+            res,
+            200,
+            renderSuccessPage({ machineName: paired.machineName, labLabel: labLabel(paired) }),
+            { ok: true, state: paired },
+          );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          await finishPaired(res, 502, page("Pairing failed", `<p>${escapeHtml(message)}</p>`), {
-            ok: false,
-            error: new Error(message),
-          });
+          await finishPaired(
+            res,
+            502,
+            renderExchangeFailurePage(message, [nonce, verifier, code, state, suppliedState ?? ""]),
+            {
+              ok: false,
+              error: new Error(message),
+            },
+          );
         }
         return;
       }
@@ -597,9 +595,9 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
     close: () =>
       new Promise<void>((resolve) => {
         // First, because the sockets below are not the only thing this
-        // session can be holding: an exchange still out at the lab is a
-        // handle too, and one no amount of closing servers reaches.
-        exchanges.abort();
+        // session can be holding: a preflight or exchange still out at the
+        // lab is a handle too, and one no amount of closing servers reaches.
+        outboundCalls.abort();
         // Before the server, so a session closed between the timer firing
         // and this running cannot mint a request onto a dead listener.
         if (expiryTimer) clearTimeout(expiryTimer);

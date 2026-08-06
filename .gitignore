@@ -9,3 +9,4 @@ node_modules/
 
 # Agent worktrees — a live checkout, not source
 .claude/worktrees/
+.worktrees/

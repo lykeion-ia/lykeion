@@ -118,6 +118,30 @@ async function stubLab(options: {
   return handle;
 }
 
+async function closedLoopbackBase(): Promise<string> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return `http://127.0.0.1:${port}`;
+}
+
+async function labServer(
+  handler: (req: IncomingMessage, res: ServerResponse) => void,
+): Promise<{ base: string; close(): Promise<void> }> {
+  const server = createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  const handle = {
+    base: `http://127.0.0.1:${port}`,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+  labs.push(handle);
+  return handle;
+}
+
 it("admits one tab on the nonce and refuses the second", async () => {
   const session = await pairing();
   const first = await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" });
@@ -206,7 +230,9 @@ it("ends the pairing when the lab's screen says the member refused it", async ()
   const session = await pairing();
   const res = await fetch(`${session.base}/paired?state=${session.state}&refused=1`);
   expect(res.status).toBe(200);
-  expect(await res.text()).toContain("refused");
+  const body = await res.text();
+  expect(body).toContain("This machine was not connected");
+  expect(body).toContain("Confirm nothing connected; start the daemon again when ready to retry.");
   await expect(session.paired).rejects.toThrow(PairingRefused);
 });
 
@@ -266,18 +292,21 @@ it("tells a browser its approval was for a request that has since expired", asyn
   const res = await fetch(`${session.base}/paired?code=abc&state=${wasApproving}`);
   expect(res.status).toBe(400);
   const body = await res.text();
-  expect(body).toContain("expired");
+  expect(body).toContain("This pairing request has expired");
+  expect(body).toContain("Use the fresh link printed in the daemon terminal");
+  expect(body).toContain("lykeion-daemon status");
   // The other answer is for a callback that was never this machine's, and
   // telling the two apart is the whole reason the previous state is kept.
-  expect(body).not.toContain("did not come from this machine");
+  expect(body).not.toContain("This callback does not match the pairing request");
 });
 
 it("does not mistake an unrelated callback for an expired one", async () => {
   const session = await pairing();
   session.rotateRequest();
   const body = await (await fetch(`${session.base}/paired?code=abc&state=never-minted-here`)).text();
-  expect(body).toContain("did not come from this machine");
-  expect(body).not.toContain("expired");
+  expect(body).toContain("This callback does not match the pairing request");
+  expect(body).toContain("Please restart the daemon and begin pairing from the link it prints.");
+  expect(body).not.toContain("This pairing request has expired");
 });
 
 it("gives the researcher a full span again when they leave for the lab", async () => {
@@ -287,6 +316,7 @@ it("gives the researcher a full span again when they leave for the lab", async (
   // against the real one: the span this pushes is a real timer, and a test
   // driving the injected clock instead would pass whether it pushed or not.
   const announced: string[] = [];
+  const lab = await stubLab({ expectVerifier: () => true });
   const session = await pairing({
     ttlSeconds: 0.4,
     onRequestExpired: (link) => announced.push(link),
@@ -298,7 +328,7 @@ it("gives the researcher a full span again when they leave for the lab", async (
   const res = await fetch(`${session.base}/connect`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie },
-    body: JSON.stringify({ lab: "https://lab.uni.edu", name: "ana-macbook" }),
+    body: JSON.stringify({ lab: lab.base, name: "ana-macbook" }),
     redirect: "manual",
   });
   expect(res.status).toBe(302);
@@ -312,13 +342,21 @@ it("gives the researcher a full span again when they leave for the lab", async (
 
 it("refuses a request carrying neither nonce nor cookie", async () => {
   const session = await pairing();
-  expect((await fetch(`${session.base}/`)).status).toBe(403);
+  const res = await fetch(`${session.base}/`);
+  expect(res.status).toBe(403);
+  const body = await res.text();
+  expect(body).toContain("No pairing session is available");
+  expect(body).toContain("lykeion-daemon status");
 });
 
 it("refuses a nonce older than three minutes", async () => {
   const session = await pairing();
   clock += 181;
-  expect((await fetch(`${session.base}/?nonce=${session.nonce}`)).status).toBe(403);
+  const res = await fetch(`${session.base}/?nonce=${session.nonce}`);
+  expect(res.status).toBe(403);
+  const body = await res.text();
+  expect(body).toContain("This link has expired");
+  expect(body).toContain("lykeion-daemon status");
 });
 
 it("serves the setup page to a tab admitted by cookie, without a nonce", async () => {
@@ -326,6 +364,11 @@ it("serves the setup page to a tab admitted by cookie, without a nonce", async (
   const cookie = await admit(session);
   const res = await fetch(`${session.base}/`, { headers: { cookie } });
   expect(res.status).toBe(200);
+  const body = await res.text();
+  expect(body).toContain("Lykeion lab address");
+  expect(body).toContain("Machine name");
+  expect(body).toContain("Continue to approval");
+  expect(body).toContain('role="alert"');
 });
 
 it("serves the setup page again when the admitted tab reloads the link it arrived on", async () => {
@@ -354,22 +397,350 @@ it("still refuses the spent link to a browser that has no cookie", async () => {
 });
 
 it("sends the browser to the lab with everything the approval screen needs", async () => {
+  const lab = await stubLab({ expectVerifier: () => true });
   const session = await pairing();
   const cookie = await admit(session);
   const res = await fetch(`${session.base}/connect`, {
     method: "POST",
-    headers: { "content-type": "application/json", cookie },
-    body: JSON.stringify({ lab: "https://lab.uni.edu", name: "ana-macbook" }),
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      cookie,
+      origin: session.base,
+      "sec-fetch-site": "same-origin",
+    },
+    body: JSON.stringify({ lab: lab.base, name: "ana-macbook" }),
     redirect: "manual",
   });
   expect(res.status).toBe(302);
   const target = new URL(res.headers.get("location")!);
   const params = new URLSearchParams(target.hash.slice(target.hash.indexOf("?")));
-  expect(target.origin).toBe("https://lab.uni.edu");
+  expect(target.origin).toBe(lab.base);
   expect(params.get("name")).toBe("ana-macbook");
   expect(params.get("challenge")).toBe(session.challenge);
   expect(params.get("state")).toBe(session.state);
   expect(params.get("redirect")).toBe(`${session.base}/paired`);
+});
+
+it("returns JSON 400 when the lab connection is refused", async () => {
+  const session = await pairing();
+  const cookie = await admit(session);
+  const unreachable = await closedLoopbackBase();
+  const res = await fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ lab: unreachable, name: "ana-macbook" }),
+    redirect: "manual",
+  });
+
+  expect(res.status).toBe(400);
+  expect(res.headers.get("content-type")).toContain("application/json");
+  expect(await res.json()).toEqual({
+    error: `could not reach ${unreachable}`,
+  });
+});
+
+it("rejects a non-HTTP lab without retaining it", async () => {
+  const session = await pairing();
+  const cookie = await admit(session);
+  const asked = session.state;
+  const res = await fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ lab: "data:text/plain,not-a-lab", name: "ana-macbook" }),
+    redirect: "manual",
+  });
+
+  expect(res.status).toBe(400);
+  expect(await res.json()).toEqual({ error: "the lab address must use http or https" });
+  expect(session.state).toBe(asked);
+  const setup = await (await fetch(`${session.base}/`, { headers: { cookie } })).text();
+  expect(setup).toContain('name="lab" type="url" value=""');
+});
+
+it("probes the lab with a material-free HEAD and does not follow redirects", async () => {
+  let observed:
+    | {
+        method: string | undefined;
+        url: string | undefined;
+        headers: IncomingMessage["headers"];
+        body: string;
+      }
+    | undefined;
+  const lab = await labServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      observed = { method: req.method, url: req.url, headers: req.headers, body };
+      res.writeHead(302, { location: "http://127.0.0.1:1/should-not-be-followed" });
+      res.end();
+    });
+  });
+  const session = await pairing();
+  const cookie = await admit(session);
+
+  const res = await fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ lab: lab.base, name: "ana-macbook" }),
+    redirect: "manual",
+  });
+
+  expect(res.status).toBe(302);
+  expect(observed).toMatchObject({ method: "HEAD", url: "/", body: "" });
+  expect(JSON.stringify(observed)).not.toMatch(/ana-macbook|challenge|state|redirect|verifier|code/i);
+});
+
+it("rejects cross-origin and safelisted connect attempts before probing or extending the request", async () => {
+  let probes = 0;
+  const lab = await labServer((_req, res) => {
+    probes += 1;
+    res.writeHead(204);
+    res.end();
+  });
+  const announced: string[] = [];
+  const session = await pairing({
+    ttlSeconds: 0.7,
+    onRequestExpired: (link) => announced.push(link),
+  });
+  const cookie = await admit(session);
+  const asked = session.state;
+  await sleep(450);
+  const body = JSON.stringify({ lab: lab.base, name: "poisoned-machine" });
+
+  const safelisted = await fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "text/plain;foo=application/json", cookie },
+    body,
+    redirect: "manual",
+  });
+  const crossOrigin = await fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      cookie,
+      origin: "http://127.0.0.1:65535",
+    },
+    body,
+    redirect: "manual",
+  });
+  const crossSite = await fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      cookie,
+      "sec-fetch-site": "cross-site",
+    },
+    body,
+    redirect: "manual",
+  });
+
+  expect(safelisted.status).toBe(415);
+  expect(crossOrigin.status).toBe(403);
+  expect(crossSite.status).toBe(403);
+  expect(probes).toBe(0);
+  expect(session.state).toBe(asked);
+  const setup = await (await fetch(`${session.base}/`, { headers: { cookie } })).text();
+  expect(setup).toContain('name="lab" type="url" value=""');
+  await sleep(350);
+  expect(announced).toHaveLength(1);
+  expect(session.state).not.toBe(asked);
+});
+
+it("commits the first completed connect and conflicts an overlapping slower one", async () => {
+  let releaseSlowHead!: () => void;
+  let slowHeadArrived!: () => void;
+  const sawSlowHead = new Promise<void>((resolve) => (slowHeadArrived = resolve));
+  let slowExchanges = 0;
+  const slow = await labServer((req, res) => {
+    if (req.method === "HEAD") {
+      slowHeadArrived();
+      releaseSlowHead = () => {
+        res.writeHead(204);
+        res.end();
+      };
+      return;
+    }
+    slowExchanges += 1;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        token: "slow-token",
+        runtimeId: "rt_slow",
+        machineName: "slow-machine",
+        labName: "Slow Lab",
+      }),
+    );
+  });
+  let fastExchanges = 0;
+  const fast = await labServer((req, res) => {
+    if (req.method === "HEAD") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    fastExchanges += 1;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        token: "fast-token",
+        runtimeId: "rt_fast",
+        machineName: "fast-machine",
+        labName: "Fast Lab",
+      }),
+    );
+  });
+  const announced: string[] = [];
+  const session = await pairing({
+    lab: slow.base,
+    ttlSeconds: 0.7,
+    onRequestExpired: (link) => announced.push(link),
+  });
+  const cookie = await admit(session);
+  const slowConnect = fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ lab: slow.base, name: "slow-machine" }),
+    redirect: "manual",
+  });
+  await sawSlowHead;
+
+  const fastConnect = await fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ lab: fast.base, name: "fast-machine" }),
+    redirect: "manual",
+  });
+  expect(fastConnect.status).toBe(302);
+  expect(new URL(fastConnect.headers.get("location")!).origin).toBe(fast.base);
+
+  await sleep(450);
+  releaseSlowHead();
+  const lateSlow = await slowConnect;
+  expect(lateSlow.status).toBe(409);
+  expect(lateSlow.headers.get("location")).toBeNull();
+  expect(await lateSlow.json()).toEqual({
+    error: "this pairing request is already continuing to a lab",
+  });
+
+  const callback = await fetch(`${session.base}/paired?code=approved&state=${session.state}`);
+  expect(callback.status).toBe(200);
+  expect(readState(session.dataDir)).toMatchObject({ lab: fast.base, token: "fast-token" });
+  expect(fastExchanges).toBe(1);
+  expect(slowExchanges).toBe(0);
+  await sleep(350);
+  expect(announced).toHaveLength(1);
+});
+
+it("does not refresh the request deadline when lab reachability fails", async () => {
+  const announced: string[] = [];
+  const session = await pairing({
+    ttlSeconds: 0.5,
+    onRequestExpired: (link) => announced.push(link),
+  });
+  const cookie = await admit(session);
+  const asked = session.state;
+  await sleep(350);
+  const unreachable = await closedLoopbackBase();
+
+  const res = await fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ lab: unreachable, name: "ana-macbook" }),
+    redirect: "manual",
+  });
+  expect(res.status).toBe(400);
+  await sleep(250);
+
+  expect(announced).toHaveLength(1);
+  expect(session.state).not.toBe(asked);
+});
+
+it("rejects a preflight that finishes after the request rotated", async () => {
+  let headArrived!: () => void;
+  const sawHead = new Promise<void>((resolve) => (headArrived = resolve));
+  let releaseHead!: () => void;
+  let requestExpired!: () => void;
+  const expired = new Promise<void>((resolve) => (requestExpired = resolve));
+  let exchangeCalls = 0;
+  const lab = await labServer((req, res) => {
+    if (req.method === "HEAD") {
+      headArrived();
+      releaseHead = () => {
+        res.writeHead(204);
+        res.end();
+      };
+      return;
+    }
+    exchangeCalls += 1;
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "should not exchange" }));
+  });
+  const session = await pairing({
+    ttlSeconds: 0.3,
+    onRequestExpired: () => requestExpired(),
+  });
+  const cookie = await admit(session);
+  const asked = session.state;
+  const connecting = fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ lab: lab.base, name: "ana-macbook" }),
+    redirect: "manual",
+  });
+  await sawHead;
+  await expired;
+  releaseHead();
+
+  const res = await connecting;
+  expect(session.state).not.toBe(asked);
+  expect(res.status).toBe(403);
+  expect(res.headers.get("location")).toBeNull();
+  expect(await res.json()).toEqual({ error: "run lykeion-daemon status for a fresh link" });
+
+  const callback = await fetch(`${session.base}/paired?code=must-not-exchange&state=${session.state}`);
+  expect(callback.status).toBe(400);
+  expect(await callback.text()).toContain("The authorization code is missing");
+  expect(exchangeCalls).toBe(0);
+});
+
+it("aborts a silent lab preflight when the pairing session closes", async () => {
+  const sockets = new Set<Socket>();
+  let headArrived!: () => void;
+  const sawHead = new Promise<void>((resolve) => (headArrived = resolve));
+  const server = createServer((req) => {
+    if (req.method === "HEAD") headArrived();
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  const session = await pairing();
+  const cookie = await admit(session);
+  const connecting = fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ lab: `http://127.0.0.1:${port}`, name: "ana-macbook" }),
+  }).catch(() => undefined);
+  await sawHead;
+
+  const started = Date.now();
+  await session.close();
+  await connecting;
+  const closed = new Promise<"closed">((resolve) => server.close(() => resolve("closed")));
+  const outcome = await Promise.race([
+    closed,
+    sleep(750).then(() => "still open" as const),
+  ]);
+
+  if (outcome !== "closed") {
+    for (const socket of sockets) socket.destroy();
+    await closed;
+  }
+  expect(outcome).toBe("closed");
+  expect(Date.now() - started).toBeLessThan(750);
 });
 
 it("refuses to connect without the admission cookie", async () => {
@@ -391,7 +762,18 @@ it("recognises only its own state on the callback", async () => {
   const session = await pairing({ lab: "http://127.0.0.1:1" });
   const res = await fetch(`${session.base}/paired?code=abc&state=somebody-elses`);
   expect(res.status).toBe(400);
-  expect(await res.text()).toContain("own pairing session");
+  const body = await res.text();
+  expect(body).toContain("This callback does not match the pairing request");
+  expect(body).toContain("Please restart the daemon and begin pairing from the link it prints.");
+});
+
+it("renders the missing-code recovery page for a valid callback without a code", async () => {
+  const session = await pairing({ lab: "http://127.0.0.1:1" });
+  const res = await fetch(`${session.base}/paired?state=${session.state}`);
+  expect(res.status).toBe(400);
+  const body = await res.text();
+  expect(body).toContain("The authorization code is missing");
+  expect(body).toContain("Please restart the daemon and begin again from its printed link.");
 });
 
 it("exchanges the code and writes the token", async () => {
@@ -416,7 +798,14 @@ it("says on the page which lab the machine now belongs to", async () => {
   const session = await pairing({ lab: lab.base });
   verifier = session.verifier;
   const res = await fetch(`${session.base}/paired?code=abc&state=${session.state}`);
-  expect(await res.text()).toContain("ana-macbook is now paired with Ana&#39;s Lab.");
+  const body = await res.text();
+  expect(res.status).toBe(200);
+  expect(body).toContain("Lykeion");
+  expect(body).toContain("This machine is ready");
+  expect(body).toContain("Pairing is complete. It&#39;s safe to close this tab.");
+  expect(body).toContain("ana-macbook");
+  expect(body).toContain("Ana&#39;s Lab");
+  expect(body).not.toMatch(/<button|Open Lykeion|View runtime/i);
 });
 
 it("names the lab by its address on that page when the lab has no name of its own", async () => {
@@ -431,8 +820,23 @@ it("names the lab by its address on that page when the lab has no name of its ow
   verifier = session.verifier;
   const res = await fetch(`${session.base}/paired?code=abc&state=${session.state}`);
   const body = await res.text();
-  expect(body).toContain(`ana-macbook is now paired with ${lab.base}.`);
-  expect(body).not.toContain("paired with .");
+  expect(body).toContain("ana-macbook");
+  expect(body).toContain(lab.base);
+});
+
+it("renders a safe recovery page when the lab exchange fails", async () => {
+  const session = await pairing({ lab: "http://127.0.0.1:1" });
+  const code = "abc";
+  const state = session.state;
+  const res = await fetch(`${session.base}/paired?code=${code}&state=${state}`);
+  const body = await res.text();
+  expect(res.status).toBe(502);
+  expect(body).toContain("The machine could not connect");
+  expect(body).toContain("return to the daemon terminal");
+  expect(body).not.toContain(session.nonce);
+  expect(body).not.toContain(session.verifier);
+  expect(body).not.toContain(code);
+  expect(body).not.toContain(state);
 });
 
 it("refuses a nonce of the same length that is not the one it minted", async () => {
@@ -452,7 +856,7 @@ it("refuses a callback carrying a state of the same length that it never minted"
   expect(forged).toHaveLength(session.state.length);
   const res = await fetch(`${session.base}/paired?code=abc&state=${forged}`);
   expect(res.status).toBe(400);
-  expect(await res.text()).toContain("own pairing session");
+  expect(await res.text()).toContain("This callback does not match the pairing request");
 });
 
 it("refuses a cookie of the same length as the one it handed out", async () => {
