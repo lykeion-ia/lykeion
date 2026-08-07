@@ -106,6 +106,8 @@ export const Commands = {
 } as const;
 
 /** The event channel carrying `{ runId, event: RunEvent }` payloads. */
+export { MAX_TURNS_OUTSTANDING } from "./run";
+
 export const RUN_EVENT_CHANNEL = "lykeion://run-event";
 
 /** The event channel carrying managed-env provisioning progress: one

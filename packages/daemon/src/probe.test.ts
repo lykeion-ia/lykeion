@@ -443,3 +443,20 @@ it(
   },
   60_000,
 );
+
+it("runs a command in the directory its boundary was rendered for, not the one the daemon was started in", async () => {
+  // A command whose "version" is wherever it was run. The profile allows the
+  // throwaway workspace and nothing else, so a child left in the daemon's own
+  // directory cannot reach the directory it is standing in — and a program
+  // that cannot do that never gets as far as printing anything.
+  const clis = await probeAgentClis({
+    dataDir: stateDir(),
+    path: pathRunning({ claude: "pwd" }),
+    timeoutMs: 30_000,
+  });
+  const claude = clis.find((c) => c.id === "claude")!;
+  expect(claude.available).toBe(true);
+  expect(claude.version).not.toBe("");
+  expect(claude.version).toContain("lykeion-probe-");
+  expect(claude.version).not.toBe(process.cwd());
+});

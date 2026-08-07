@@ -3,7 +3,15 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalPath, confine, policyFor, type SandboxPolicy } from "./sandbox";
+import {
+  canonicalPath,
+  confine,
+  NO_AGENT_HOME,
+  policyFor,
+  type SandboxPolicy,
+} from "./sandbox";
+import { createServer } from "node:net";
+import { confinementFor } from "./agent-home";
 import { snapshotPathFor, takeSnapshot } from "./snapshot";
 import { ensureTaskDir } from "./workspace";
 
@@ -29,10 +37,13 @@ function fresh(): string {
  *  the kernel let it do. `/bin/sh -c` is the subject here, not a way of
  *  building a command line: nothing outside this file reaches a shell. */
 function inside(
-  policy: SandboxPolicy,
+  policy: Omit<SandboxPolicy, "home"> & { home?: SandboxPolicy["home"] },
   script: string,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const confined = confine("darwin", policy, { command: "/bin/sh", args: ["-c", script] });
+  const confined = confine("darwin", { home: NO_AGENT_HOME, ...policy }, {
+    command: "/bin/sh",
+    args: ["-c", script],
+  });
   return new Promise((resolve) => {
     const child = spawn(confined.command, confined.args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -114,6 +125,7 @@ onDarwin("the boundary the kernel actually enforces", () => {
       workspace,
       grants: [{ path: granted, mode: "write" }],
       denied: [secrets],
+      home: NO_AGENT_HOME,
     };
 
     const ordinary = await inside(policy, `cat ${granted}/counts.csv`);
@@ -152,6 +164,7 @@ onDarwin("the boundary the kernel actually enforces", () => {
       workspace,
       grants: [{ path: granted, mode: "read" }],
       denied: [],
+      home: NO_AGENT_HOME,
     };
     const read = await inside(policy, `cat ${granted}/paper.md`);
     expect(read.stdout).toContain("bridge rna");
@@ -173,6 +186,7 @@ onDarwin("the snapshot is out of the agent's reach", () => {
       workspace: canonicalPath(task),
       grants: [],
       denied: [],
+      home: NO_AGENT_HOME,
     };
     const overwrite = await inside(policy, `echo tampered > ${snapshot}/counts.csv`);
     expect(overwrite.code).not.toBe(0);
@@ -238,5 +252,211 @@ onDarwin("the policy a real run is given, asked of the kernel", () => {
     const read = await inside(policy, `cat ${elsewhere}/somebody-elses.csv`);
     expect(read.stdout).not.toContain("NOT THIS RUN'S");
     expect(read.code).not.toBe(0);
+  });
+});
+
+/**
+ * What the boundary has to leave intact for the agent to be an agent at all:
+ * the connection its model is on the other end of, the directory it keeps its
+ * own state in, and the store it authenticates from. A boundary that denies
+ * these is airtight against the agent as well as for it, and no turn finishes.
+ */
+onDarwin("the profile a real agent is confined by is one this machine accepts", () => {
+  // A rule the sandbox cannot parse is not a rule it ignores — it refuses the
+  // whole profile, and the child never starts. From outside that looks exactly
+  // like an agent nobody has installed, which is how a malformed pattern
+  // reached a running product: every assertion about the profile's TEXT
+  // passed, because the text was fine and only the kernel disagreed.
+  //
+  // Built from the real declaration each agent actually runs with, never a
+  // hand-written one, for the same reason the policy below is.
+  for (const agent of ["claude", "codex", "stub"]) {
+    it(`starts a child under the policy "${agent}" is given`, async () => {
+      const root = fresh();
+      const workspace = join(root, "task");
+      mkdirSync(workspace);
+      const dataDir = join(root, "daemon-state");
+      mkdirSync(dataDir);
+
+      const policy = policyFor({
+        workspace,
+        grants: [],
+        dataDir,
+        ...confinementFor(agent, workspace),
+      });
+      const ran = await inside(policy, "echo the profile parsed");
+      expect(ran.stderr).not.toMatch(/sandbox-exec/);
+      expect(ran.stdout).toContain("the profile parsed");
+      expect(ran.code).toBe(0);
+    });
+  }
+});
+
+onDarwin("what a run needs in order to be a run", () => {
+  it("lets a run open a connection, since its model is not on this machine", async () => {
+    const root = fresh();
+    const workspace = join(root, "task");
+    mkdirSync(workspace);
+
+    // A listener on this machine, so the claim under test is that the kernel
+    // permitted the connection and nothing at all about the internet.
+    const server = createServer((socket) => socket.end());
+    const port = await new Promise<number>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port));
+    });
+    try {
+      const ran = await inside({ workspace, grants: [], denied: [] }, `nc -z 127.0.0.1 ${port}`);
+      expect(ran.code).toBe(0);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("lets an agent write the directory it was declared to own", async () => {
+    const root = fresh();
+    const workspace = join(root, "task");
+    mkdirSync(workspace);
+    const state = join(root, ".agent");
+    mkdirSync(state);
+
+    const ran = await inside(
+      {
+        workspace,
+        grants: [],
+        denied: [],
+        home: { state: [state], credentials: [], sealed: [], private: [], patterns: [] },
+      },
+      `echo session > ${state}/history.jsonl && cat ${state}/history.jsonl`,
+    );
+    expect(ran.stdout).toContain("session");
+    expect(ran.code).toBe(0);
+  });
+
+  it("keeps an agent from writing an entry sealed inside its own home", async () => {
+    const root = fresh();
+    const workspace = join(root, "task");
+    mkdirSync(workspace);
+    const state = join(root, ".agent");
+    mkdirSync(state);
+    const sealed = join(state, "settings.json");
+    writeFileSync(sealed, '{"hooks":{}}\n');
+
+    const policy = {
+      workspace,
+      grants: [],
+      denied: [],
+      home: { state: [state], credentials: [], sealed: [sealed], private: [], patterns: [] },
+    };
+    const wrote = await inside(policy, `echo TAMPERED > ${sealed}`);
+    expect(wrote.code).not.toBe(0);
+    expect(readFileSync(sealed, "utf8")).not.toContain("TAMPERED");
+    // Sealed against writing only — an agent still reads its own configuration.
+    const read = await inside(policy, `cat ${sealed}`);
+    expect(read.code).toBe(0);
+  });
+
+  it("keeps an agent out of a store it did not declare", async () => {
+    const root = fresh();
+    const workspace = join(root, "task");
+    mkdirSync(workspace);
+    const mine = join(root, "mine");
+    const theirs = join(root, "theirs");
+    mkdirSync(mine);
+    mkdirSync(theirs);
+    writeFileSync(join(theirs, "token"), "ANOTHER AGENTS TOKEN\n");
+
+    const read = await inside(
+      {
+        workspace,
+        grants: [],
+        denied: [],
+        home: { state: [], credentials: [mine], sealed: [], private: [], patterns: [] },
+      },
+      `cat ${theirs}/token`,
+    );
+    expect(read.stdout).not.toContain("ANOTHER AGENTS TOKEN");
+    expect(read.code).not.toBe(0);
+  });
+
+  it("keeps this Task's own record while the ones beside it stay out of reach", async () => {
+    // The agent's directory holds the researcher's account of every other
+    // thing they have done with the same program. A run writes its own and
+    // reads none of theirs — which is one wide deny and one narrow allow
+    // after it, and only the kernel can say whether that ordering holds.
+    const root = fresh();
+    const workspace = join(root, "task");
+    mkdirSync(workspace);
+    const state = join(root, ".agent");
+    const records = join(state, "projects");
+    const mine = join(records, "-this-task");
+    const theirs = join(records, "-another-task");
+    mkdirSync(mine, { recursive: true });
+    mkdirSync(theirs, { recursive: true });
+    writeFileSync(join(theirs, "transcript.jsonl"), "SOMEBODY ELSES CONVERSATION\n");
+
+    const policy = {
+      workspace,
+      grants: [],
+      denied: [],
+      home: { state: [state, mine], credentials: [], sealed: [], private: [records], patterns: [] },
+    };
+
+    const own = await inside(policy, `echo turn > ${mine}/transcript.jsonl && cat ${mine}/transcript.jsonl`);
+    expect(own.stdout).toContain("turn");
+    expect(own.code).toBe(0);
+
+    const other = await inside(policy, `cat ${theirs}/transcript.jsonl`);
+    expect(other.stdout).not.toContain("SOMEBODY ELSES CONVERSATION");
+    expect(other.code).not.toBe(0);
+  });
+
+  it("gives an agent its own scratch beneath a root it cannot otherwise touch", async () => {
+    // The shell tool creates a working directory of its own before it runs
+    // anything, under a root shared with every other run on this machine.
+    const root = fresh();
+    const workspace = join(root, "task");
+    mkdirSync(workspace);
+    const shared = join(root, "shared-scratch");
+    mkdirSync(shared);
+    writeFileSync(join(shared, "another-runs.txt"), "NOT THIS RUNS SCRATCH\n");
+    const mine = join(shared, "-this-task");
+
+    const policy = {
+      workspace,
+      grants: [],
+      denied: [],
+      home: { state: [mine], credentials: [], sealed: [], private: [], patterns: [] },
+    };
+
+    // Created by the run itself, the way the tool does, into a directory that
+    // does not exist yet.
+    const made = await inside(policy, `mkdir -p ${mine} && echo ok > ${mine}/probe && cat ${mine}/probe`);
+    expect(made.stdout).toContain("ok");
+    expect(made.code).toBe(0);
+
+    const sibling = await inside(policy, `cat ${shared}/another-runs.txt`);
+    expect(sibling.stdout).not.toContain("NOT THIS RUNS SCRATCH");
+    expect(sibling.code).not.toBe(0);
+  });
+
+  it("gives a credential store reading and no writing, whatever else the run may do", async () => {
+    const root = fresh();
+    const workspace = join(root, "task");
+    mkdirSync(workspace);
+    const store = join(root, "store");
+    mkdirSync(store);
+    writeFileSync(join(store, "token"), "THE AGENTS OWN TOKEN\n");
+
+    const policy = {
+      workspace,
+      grants: [],
+      denied: [],
+      home: { state: [], credentials: [store], sealed: [], private: [], patterns: [] },
+    };
+    const read = await inside(policy, `cat ${store}/token`);
+    expect(read.stdout).toContain("THE AGENTS OWN TOKEN");
+    const wrote = await inside(policy, `echo REPLACED > ${store}/token`);
+    expect(wrote.code).not.toBe(0);
+    expect(readFileSync(join(store, "token"), "utf8")).not.toContain("REPLACED");
   });
 });

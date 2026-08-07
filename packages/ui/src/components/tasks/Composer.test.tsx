@@ -225,3 +225,26 @@ describe("Composer blocker", () => {
     expect(screen.queryByText(/no runtime is connected/i)).toBeNull();
   });
 });
+
+it("keeps Send while a run is live, so the next thing can be said while it is being thought", () => {
+  // Waiting for the agent to finish before you may type is the whole defect:
+  // a researcher watching a turn go the wrong way wants to say the next thing
+  // now. Stop stays too, on the turn that is actually running.
+  render(
+    <Composer variant="docked" onSend={() => {}} running onStop={() => {}} />,
+  );
+  expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Message the agent")).not.toBeDisabled();
+});
+
+it("sends while a run is live rather than swallowing the message", async () => {
+  const sent: string[] = [];
+  const user = userEvent.setup();
+  render(
+    <Composer variant="docked" onSend={(text) => sent.push(text)} running onStop={() => {}} />,
+  );
+  await user.type(screen.getByLabelText("Message the agent"), "and also this");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  expect(sent).toEqual(["and also this"]);
+});

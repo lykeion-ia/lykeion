@@ -264,7 +264,7 @@ it("opens a session, records a turn, and hands the machine a start-run", async (
   expect(lab.store.get(`SELECT status FROM turns WHERE id = ?`, [runId])?.status).toBe("running");
 });
 
-it("refuses a second active run for the same Task", async () => {
+it("takes a second turn on a Task already working, onto the same session", async () => {
   const lab = await labWithPairedMachine();
   const input = {
     studyId: lab.studyId,
@@ -275,13 +275,37 @@ it("refuses a second active run for the same Task", async () => {
     options: { planMode: false, agent: "claude" },
   } as const;
 
-  await lab.ownerApi.startRun(input);
-  await expect(
-    lab.ownerApi.startRun({ ...input, prompt: "second" }),
-  ).rejects.toMatchObject({ code: "conflict" });
+  const first = await lab.ownerApi.startRun(input);
+  const queued = await lab.ownerApi.startRun({ ...input, prompt: "second" });
 
+  // Both turns are recorded, and both belong to the SAME session — which is
+  // what makes the second wait for the first rather than run beside it.
   expect(lab.store.all(`SELECT id FROM turns WHERE task_id = ?`, [lab.taskId]))
-    .toHaveLength(1);
+    .toHaveLength(2);
+  const sessions = lab.store.all(
+    `SELECT DISTINCT session_id FROM turns WHERE task_id = ?`,
+    [lab.taskId],
+  );
+  expect(sessions).toHaveLength(1);
+  expect(queued.runId).not.toBe(first.runId);
+});
+
+it("refuses a turn that would switch agent mid-conversation, naming the one it is with", async () => {
+  const lab = await labWithPairedMachine();
+  const input = {
+    studyId: lab.studyId,
+    taskId: lab.taskId,
+    prompt: "first",
+    options: { planMode: false, agent: "claude" },
+  } as const;
+  await lab.ownerApi.startRun(input);
+
+  // The Task's conversation belongs to the agent already holding it. A second
+  // agent would open a session of its own and write the same files beside it.
+  lab.store.run(`UPDATE runtime_clis SET cli_id = 'codex' WHERE cli_id = 'claude'`);
+  await expect(
+    lab.ownerApi.startRun({ ...input, prompt: "second", options: { planMode: false, agent: "codex" } }),
+  ).rejects.toMatchObject({ code: "conflict" });
 });
 
 it("allows different Tasks in one Study to run concurrently", async () => {

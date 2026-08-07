@@ -241,10 +241,39 @@ export type TurnItem =
  * to resume.
  */
 export type TurnState =
+  /**
+   * Taken, and not started: a researcher typed ahead while an earlier turn
+   * was still working, and this one waits its place in that Task's queue.
+   *
+   * Its own state rather than `planning`, which is what a turn does once it
+   * HAS begun. A waiting turn drawn as planning tells a researcher the agent
+   * is thinking about a prompt it has not yet been given.
+   *
+   * `ahead` is how many turns are in front of this one, as of now, and it
+   * falls as they settle. Zero means this turn is next.
+   */
+  | { state: "queued"; ahead: number }
   | { state: "planning" }
   | { state: "awaiting-plan-approval"; plan: Plan }
   | { state: "executing"; plan: Plan }
-  | { state: "awaiting-permission"; plan?: Plan; request: PermissionRequest }
+  /**
+   * `queue` places this card in the batch of gates the turn has open. A single
+   * assistant turn can issue many permission-gated calls at once, and only one
+   * card is ever put in front of a researcher at a time; the rest wait their
+   * turn. The field is ABSENT (like `plan` above) when this is the only gate
+   * open, so nothing ever renders "1 of 1".
+   *
+   * `total` is the count as of now, and MAY GROW: an agent is free to raise
+   * another gate while this card is still on screen, and a counter that
+   * quietly held its first reading would tell a researcher the batch was
+   * smaller than it is.
+   */
+  | {
+      state: "awaiting-permission";
+      plan?: Plan;
+      request: PermissionRequest;
+      queue?: { position: number; total: number };
+    }
   | { state: "awaiting-question"; plan?: Plan; request: QuestionRequest }
   | { state: "completed" }
   | { state: "failed"; reason: string }
@@ -503,3 +532,15 @@ export interface ResumedRun extends RunHandle {
 
 /** Re-export so `TaskStatus`/`Stage`/`Priority` are reachable from here. */
 export type { Priority, Stage, TaskStatus };
+
+/**
+ * How many turns one Task may hold at once: the one being worked on, and the
+ * rest waiting behind it.
+ *
+ * A queue is a researcher typing ahead of an agent, not a backlog of work.
+ * Past a handful it is a runaway or a mistake, and every turn waiting holds a
+ * prompt written against what its author expected the turn in front of it to
+ * do — the longer the queue, the less likely that still holds. A send past
+ * this is refused, naming the limit, rather than silently dropped.
+ */
+export const MAX_TURNS_OUTSTANDING = 10;

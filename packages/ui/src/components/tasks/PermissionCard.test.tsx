@@ -29,6 +29,32 @@ describe("PermissionCard", () => {
     expect(screen.getByText("rm -rf build")).toBeInTheDocument();
   });
 
+  it("places the card in its batch when the turn raised more than one gate", () => {
+    render(
+      <PermissionCard
+        request={REQUEST}
+        queue={{ position: 2, total: 4 }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("perm-queue")).toHaveTextContent("2 of 4");
+    // A bare pair of numbers says nothing to a screen reader, so the chip
+    // carries the sentence alongside it.
+    expect(
+      screen.getByText("Decision 2 of 4 this turn is asking for."),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing about a batch when this is the only gate open", () => {
+    render(
+      <PermissionCard request={REQUEST} onAllow={() => {}} onDeny={() => {}} />,
+    );
+    // "1 of 1" is a count of nothing, and a card that shows it invites the
+    // researcher to look for a batch that does not exist.
+    expect(screen.queryByTestId("perm-queue")).not.toBeInTheDocument();
+  });
+
   it("Allow, clicked with no menu interaction, calls onAllow('conversation')", async () => {
     const user = userEvent.setup();
     const onAllow = vi.fn();

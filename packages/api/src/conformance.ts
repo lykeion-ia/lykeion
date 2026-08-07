@@ -47,6 +47,7 @@ import type { LykeionApi } from "./api";
 import { isLykeionError } from "./errors";
 import type { ErrorCode } from "./errors";
 import type { RunEvent } from "./run";
+import { MAX_TURNS_OUTSTANDING } from "./run";
 import { MAX_AVATAR_BYTES } from "./account";
 
 /** A real 1×1 PNG, as a data URL. The avatar tests need bytes an
@@ -1894,10 +1895,15 @@ export function runDecisionConformance(makeLab: () => Promise<ConformanceLab>): 
 }
 
 /** Active runs are discoverable only to the actor whose runtime owns them.
- *  One Task has one active run; different Tasks may each have one. */
+ *  A Task may hold several at once — one working and the rest waiting behind
+ *  it — and a Task's runs are its own. */
 export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): void {
   describe("resumeRuns discovers an owned active run", () => {
-    it("refuses a second active run for one Task while revealing concurrent Task runs only to their owner", async () => {
+    it("takes a second turn on a Task already working, and reveals concurrent Task runs only to their owner", async () => {
+      // A researcher watching a turn go the wrong way says the next thing
+      // while they are thinking it, rather than waiting for the agent or
+      // stopping the work to correct it. The turn is taken now and waits its
+      // place; nothing about it runs beside the one already going.
       const { owner, member } = await makeLab();
       const study = await owner.createStudy({ title: "Resume", key: "RSM" });
       const task = await owner.createTask({
@@ -1916,12 +1922,13 @@ export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): vo
         prompt: "first",
         options: { planMode: false },
       });
-      await expect(owner.startRun({
+      const queued = await owner.startRun({
         studyId: study.id,
         taskId: task.id,
-        prompt: "second attempt",
+        prompt: "and also this",
         options: { planMode: false },
-      })).rejects.toMatchObject({ code: "conflict" });
+      });
+      expect(queued.runId).not.toBe(first.runId);
       const second = await owner.startRun({
         studyId: study.id,
         taskId: sibling.id,
@@ -1931,16 +1938,54 @@ export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): vo
 
       const firstResumed = await owner.resumeRuns(task.id);
       const secondResumed = await owner.resumeRuns(sibling.id);
-      expect(firstResumed.map((run) => run.runId)).toEqual([first.runId]);
+      // Both of the Task's turns come back, oldest first: the one working and
+      // the one waiting, which is what a reload has to be able to show.
+      expect(firstResumed.map((run) => run.runId)).toEqual([first.runId, queued.runId]);
       expect(secondResumed.map((run) => run.runId)).toEqual([second.runId]);
       expect(firstResumed[0]!.snapshot.prompt).toBe("first");
+      expect(firstResumed[1]!.snapshot.prompt).toBe("and also this");
       expect(secondResumed[0]!.snapshot.prompt).toBe("second");
       expect(await member.resumeRuns(task.id)).toEqual([]);
       expect(await member.resumeRuns(sibling.id)).toEqual([]);
 
       first.detach();
+      queued.detach();
       second.detach();
       for (const run of [...firstResumed, ...secondResumed]) run.detach();
+    });
+
+    it("refuses a turn past the queue's depth, naming the limit", async () => {
+      // A queue is someone typing ahead, not a work backlog. Past a handful
+      // it is a runaway or a mistake, and every turn waiting holds a prompt
+      // the agent will act on much later than it was written.
+      const { owner } = await makeLab();
+      const study = await owner.createStudy({ title: "Depth", key: "DPT" });
+      const task = await owner.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "typed ahead too far",
+      });
+      const started = [];
+      for (let i = 0; i < MAX_TURNS_OUTSTANDING; i += 1)
+        started.push(
+          await owner.startRun({
+            studyId: study.id,
+            taskId: task.id,
+            prompt: `turn ${i}`,
+            options: { planMode: false },
+          }),
+        );
+
+      await expect(
+        owner.startRun({
+          studyId: study.id,
+          taskId: task.id,
+          prompt: "one too many",
+          options: { planMode: false },
+        }),
+      ).rejects.toMatchObject({ code: "conflict" });
+
+      for (const run of started) run.detach();
     });
   });
 }

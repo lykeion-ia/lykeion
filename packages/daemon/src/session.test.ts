@@ -38,6 +38,7 @@ async function session(
       command: process.execPath,
       args: ["--experimental-strip-types", STUB],
     },
+    agent: "stub",
     cwd,
     dataDir,
     grants,
@@ -206,6 +207,48 @@ it("leaves the permission gate as soon as the researcher answers it", async () =
   expect(settled(events)).toBe(false);
 });
 
+it("answers a card with an option the agent itself offered, so an approved call actually runs", async () => {
+  // An agent names its own permission options, and no two name them alike.
+  // Answering with an id this machine invented selects nothing: the call is
+  // never decided, and the researcher who pressed Allow watches it fail
+  // anyway. The only answer that means anything is one of the agent's own.
+  const { s, events } = await session([
+    { ask: "permission", toolCallId: "t1", title: "Write out.csv", followUpContent: "wrote it" },
+  ]);
+  s.prompt("go");
+  await until(() => events.some((event) => event.event === "permission-card"));
+  const card = events.find((event) => event.event === "permission-card") as {
+    request: { id: string };
+  };
+
+  s.decide({
+    action: "permission",
+    requestId: card.request.id,
+    decision: { decision: "allow", scope: "once" },
+  });
+  await until(() => settled(events));
+
+  const step = events
+    .flatMap((event) => (event.event === "log-entry" ? [event.entry] : []))
+    .filter((entry) => entry.toolUseId === "t1").at(-1);
+  expect(step).toBeDefined();
+  expect(step!.decision).toBe("allowed-once");
+  expect(step!.isError).not.toBe(true);
+});
+
+it("refuses a card visibly when the agent offered nothing this machine can answer with", async () => {
+  const { s, events } = await session([
+    { ask: "permission", toolCallId: "t1", title: "Write out.csv", options: [] },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  const step = events
+    .flatMap((event) => (event.event === "log-entry" ? [event.entry] : []))
+    .filter((entry) => entry.toolUseId === "t1").at(-1);
+  expect(step?.isError).toBe(true);
+  expect(String(step?.result)).toMatch(/offered no/i);
+});
+
 it("never asks about a folder the Study already granted", async () => {
   // The standing grant is the whole point: a researcher who said "this
   // Study" once must not be asked the same question next session.
@@ -329,6 +372,217 @@ it("remembers a conversation-scope grant for the rest of this session, without r
   expect(granted).toEqual([]);
 });
 
+/** Every card raised, in the order they were put in front of the researcher. */
+const cardsOf = (events: RunEvent[]) =>
+  events.flatMap((e) => (e.event === "permission-card" ? [e.request] : []));
+
+/** The batch counter carried by the most recent `awaiting-permission` state. */
+const queueOf = (events: RunEvent[]) =>
+  events
+    .flatMap((e) =>
+      e.event === "state" && e.state.state === "awaiting-permission" ? [e.state] : [],
+    )
+    .at(-1)?.queue;
+
+/** Whether this session's LATEST word is that it is back at work rather than
+ *  waiting on anyone — the state that ends a gate. Read from the last state
+ *  and not from any of them, because every turn opens on `planning`: a search
+ *  for one anywhere in the stream matches before a card has even been raised. */
+const leftTheGate = (events: RunEvent[]) => {
+  const last = events.flatMap((e) => (e.event === "state" ? [e.state.state] : [])).at(-1);
+  return last === "executing" || last === "planning";
+};
+
+/** What each call's log entry ended up saying about how it was decided. */
+const decisionsOf = (events: RunEvent[]) => {
+  const final = new Map<string, string>();
+  for (const e of events) if (e.event === "log-entry") final.set(e.entry.toolUseId, e.entry.decision);
+  return final;
+};
+
+/** Answers whichever card is on screen now, then waits for this session to
+ *  move on from it — to the next card, or off the gate entirely. */
+async function decideShown(
+  s: LiveSession,
+  events: RunEvent[],
+  verdict: "allow" | "deny",
+): Promise<void> {
+  const before = cardsOf(events).length;
+  const card = cardsOf(events).at(-1)!;
+  s.decide({
+    action: "permission",
+    requestId: card.id,
+    decision: verdict === "allow" ? { decision: "allow", scope: "once" } : { decision: "deny" },
+  });
+  await until(
+    () => cardsOf(events).length > before || leftTheGate(events) || settled(events),
+  );
+}
+
+it("raises one card at a time when a turn asks for several calls at once", async () => {
+  const { s, events } = await session([
+    {
+      askAll: [
+        { toolCallId: "t1", title: "Write /work/a.csv" },
+        { toolCallId: "t2", title: "Write /work/b.csv" },
+        { toolCallId: "t3", title: "Write /work/c.csv" },
+        { toolCallId: "t4", title: "Write /work/d.csv" },
+      ],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => queueOf(events)?.total === 4);
+
+  // The defect this exists for: four requests in flight at once used to emit
+  // four cards into one slot, and three were overwritten before anyone saw
+  // them — then refused, in the researcher's name, when the turn was stopped.
+  expect(cardsOf(events)).toHaveLength(1);
+  expect(queueOf(events)).toEqual({ position: 1, total: 4 });
+});
+
+it("advances to the next card instead of leaving the gate, until the batch is done", async () => {
+  const { s, events } = await session([
+    {
+      askAll: [
+        { toolCallId: "t1", title: "Write /work/a.csv" },
+        { toolCallId: "t2", title: "Write /work/b.csv" },
+        { toolCallId: "t3", title: "Write /work/c.csv" },
+      ],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => queueOf(events)?.total === 3);
+
+  const counters = [queueOf(events)];
+  await decideShown(s, events, "allow");
+  counters.push(queueOf(events));
+  await decideShown(s, events, "allow");
+  counters.push(queueOf(events));
+
+  expect(counters).toEqual([
+    { position: 1, total: 3 },
+    { position: 2, total: 3 },
+    { position: 3, total: 3 },
+  ]);
+  // One card per call, in the order they were asked — none skipped, none
+  // shown twice.
+  expect(cardsOf(events).map((card) => card.tool)).toEqual(["t1", "t2", "t3"]);
+  // Still held: the third card is unanswered, so this session has not told
+  // anyone it is back at work.
+  expect(leftTheGate(events)).toBe(false);
+
+  await decideShown(s, events, "allow");
+  await until(() => settled(events));
+  expect(leftTheGate(events)).toBe(true);
+});
+
+it("gives each call in a batch the decision made about it, and no other", async () => {
+  const { s, events } = await session([
+    {
+      askAll: [
+        { toolCallId: "t1", title: "Write /work/a.csv" },
+        { toolCallId: "t2", title: "Write /work/b.csv" },
+        { toolCallId: "t3", title: "Write /work/c.csv" },
+        { toolCallId: "t4", title: "Write /work/d.csv" },
+      ],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => queueOf(events)?.total === 4);
+
+  await decideShown(s, events, "allow");
+  await decideShown(s, events, "deny");
+  await decideShown(s, events, "deny");
+  await decideShown(s, events, "allow");
+  await until(() => settled(events));
+
+  // Read off what each call's row finally says. An answer given to one card
+  // has to land on that call and nothing else.
+  const decisions = decisionsOf(events);
+  expect([
+    decisions.get("t1"),
+    decisions.get("t2"),
+    decisions.get("t3"),
+    decisions.get("t4"),
+  ]).toEqual(["allowed-once", "denied", "denied", "allowed-once"]);
+});
+
+it("tells the researcher the batch grew when a call joins one already on screen", async () => {
+  const { s, events } = await session([
+    {
+      askAll: [
+        { toolCallId: "t1", title: "Write /work/a.csv" },
+        { toolCallId: "t2", title: "Write /work/b.csv", delayMs: 250 },
+      ],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => cardsOf(events).length === 1);
+  // A lone gate places itself in no batch, because there is not one yet.
+  expect(queueOf(events)).toBeUndefined();
+
+  await until(() => queueOf(events) !== undefined);
+  // Same card, still unanswered — but the researcher is now told it is one of
+  // two, rather than deciding it believing it is the only thing being asked.
+  expect(queueOf(events)).toEqual({ position: 1, total: 2 });
+  expect(cardsOf(events)).toHaveLength(1);
+});
+
+it("settles every card in an open batch when the turn ends, not just the visible one", async () => {
+  const { s, events } = await session([
+    {
+      askAll: [
+        { toolCallId: "t1", title: "Write /work/a.csv" },
+        { toolCallId: "t2", title: "Write /work/b.csv" },
+        { toolCallId: "t3", title: "Write /work/c.csv" },
+      ],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => queueOf(events)?.total === 3);
+  s.cancel();
+  await until(() => settled(events));
+
+  // A card nobody was ever shown is not a call the researcher refused. All
+  // three were abandoned at the gate, and each says so on its own row.
+  const decisions = decisionsOf(events);
+  expect([decisions.get("t1"), decisions.get("t2"), decisions.get("t3")]).toEqual([
+    "cancelled",
+    "cancelled",
+    "cancelled",
+  ]);
+});
+
+it("drops a queued card an answer to its sibling already covered", async () => {
+  const { s, events } = await session([
+    {
+      askAll: [
+        { toolCallId: "t1", title: "Write /work/out.csv" },
+        { toolCallId: "t2", title: "Write /work/out.csv" },
+      ],
+    },
+  ]);
+  s.prompt("go");
+  await until(() => queueOf(events)?.total === 2);
+  const card = cardsOf(events).at(-1)!;
+  s.decide({
+    action: "permission",
+    requestId: card.id,
+    decision: { decision: "allow", scope: "conversation" },
+  });
+  await until(() => settled(events));
+
+  // `t2` was queued behind `t1` and asks for the same path. The grant `t1`
+  // created covers it, so it is allowed on that consent rather than raised as
+  // a second question about something just answered.
+  const decisions = decisionsOf(events);
+  expect([decisions.get("t1"), decisions.get("t2")]).toEqual([
+    "allowed-conversation",
+    "allowed-conversation",
+  ]);
+  expect(cardsOf(events)).toHaveLength(1);
+});
+
 it("settles a card still open when the turn ends, instead of leaving it a ghost", async () => {
   const { s, events } = await session([{ ask: "permission", toolCallId: "t1", title: "Write /work/out.csv" }]);
   s.prompt("go");
@@ -422,6 +676,7 @@ it("fails the turn with the adapter's own words when it will not start", async (
   await expect(
     startSession({
       adapter: { command: process.execPath, args: ["-e", "process.stderr.write('bad flag\\n');process.exit(3)"] },
+      agent: "stub",
       cwd: tmpdir(),
       dataDir: tmpdir(),
       grants: [],
@@ -832,6 +1087,7 @@ async function advertisingSession(
   const events: RunEvent[] = [];
   const s = await startSession({
     adapter: { command: process.execPath, args: ["--experimental-strip-types", STUB] },
+    agent: "stub",
     cwd,
     dataDir,
     grants: [],
@@ -914,6 +1170,7 @@ it("confines the adapter itself, so an unconfined spawn is not something a calle
   const events: RunEvent[] = [];
   const s = await startSession({
     adapter: { command: process.execPath, args: ["--experimental-strip-types", STUB] },
+    agent: "stub",
     cwd,
     dataDir,
     grants: [],
@@ -942,6 +1199,7 @@ it("refuses to open a session at all where this platform cannot be confined", as
   await expect(
     startSession({
       adapter: { command: process.execPath, args: ["--experimental-strip-types", STUB] },
+      agent: "stub",
       cwd,
       dataDir,
       grants: [],
@@ -952,4 +1210,38 @@ it("refuses to open a session at all where this platform cannot be confined", as
     }),
   ).rejects.toThrow(/linux/);
   expect(existsSync(spawned)).toBe(false);
+});
+
+it("gives a run a temporary directory inside the one directory it may write", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "lykeion-tmp-"));
+  dirs.push(cwd);
+  const dataDir = mkdtempSync(join(tmpdir(), "lykeion-tmp-state-"));
+  dirs.push(dataDir);
+  const reported = join(cwd, "reported.txt");
+
+  // An adapter that says where it was told to put a scratch file, then stops.
+  // The session never opens; what is under test is what reached the child.
+  await expect(
+    startSession({
+      adapter: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `require("fs").writeFileSync(${JSON.stringify(reported)}, process.env.TMPDIR ?? "");process.exit(3)`,
+        ],
+      },
+      agent: "stub",
+      cwd,
+      dataDir,
+      grants: [],
+      onEvent: () => {},
+      onGrant: () => {},
+    }),
+  ).rejects.toThrow();
+
+  const told = readFileSync(reported, "utf8");
+  expect(told).toBe(join(cwd, ".lykeion", "tmp"));
+  expect(existsSync(told)).toBe(true);
+  // The machine's shared temporary directory is not what a run is handed.
+  expect(told).not.toBe(tmpdir());
 });

@@ -42,7 +42,26 @@ type Directive =
       title: string;
       followUp?: boolean;
       followUpContent?: string;
+      /** Overrides what this agent offers to answer with. An empty array is
+       *  an agent offering nothing answerable, which a client has to say out
+       *  loud rather than guess its way past. */
+      options?: Array<{ optionId: string; name: string; kind: string }>;
+      /** Holds this request back this many milliseconds before sending it.
+       *  Inside an `askAll`, what staggers a batch so one request lands while
+       *  a sibling is already in front of the researcher — an agent does not
+       *  decide everything it needs at once, and a client that only ever sees
+       *  a batch arrive in one tick is never asked what a late arrival does to
+       *  a question already on screen. */
+      delayMs?: number;
     }
+  /** Several permission requests in flight AT ONCE — every one sent before any
+   *  answer is awaited, the way a real adapter issues a batch of independent
+   *  tool calls in a single assistant turn. The `ask` step above cannot express
+   *  this: it awaits its own answer before the script advances, so a script
+   *  built from it can only ever put ONE request in front of the client at a
+   *  time. That limit is why a client bug specific to concurrent requests could
+   *  not be reached from this stub at all. */
+  | { askAll: Array<Omit<Extract<Directive, { ask: "permission" }>, "ask">> }
   /** Pauses the script for up to `timeoutMs`, or until `session/cancel`
    *  arrives, whichever comes first — the one way a script can put the stub
    *  into the same mid-turn state a real adapter is in when a researcher
@@ -117,6 +136,54 @@ function ask(method: string, params: unknown): Promise<unknown> {
   });
 }
 
+/** One permission request, from asking through reporting what the answer did
+ *  to the call. Shared by the `ask` step and every entry of an `askAll` step,
+ *  so a batched request is the same request in every respect except that
+ *  nothing awaited it before its siblings were sent. */
+async function askPermission(
+  step: Omit<Extract<Directive, { ask: "permission" }>, "ask">,
+): Promise<void> {
+  if (step.delayMs !== undefined)
+    await new Promise<void>((resolve) => setTimeout(resolve, step.delayMs));
+  const answer = (await ask("session/request_permission", {
+    sessionId,
+    toolCall: { toolCallId: step.toolCallId, title: step.title },
+    // Deliberately arbitrary ids. An agent names its own options and no
+    // two name them alike, so a client that answers with an id it made
+    // up rather than one of these is answering nothing — which is what
+    // these ids exist to catch. Anything recognisable here would let a
+    // hardcoded guess pass this suite and fail every real agent.
+    options: step.options ?? [
+      { optionId: "opt-7f1", name: "Allow once", kind: "allow_once" },
+      { optionId: "opt-7f2", name: "Allow always", kind: "allow_always" },
+      { optionId: "opt-7f3", name: "Deny", kind: "reject_once" },
+    ],
+  })) as { outcome?: { outcome?: string; optionId?: string } };
+  if (step.followUp === false) return;
+  send({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: step.toolCallId,
+        // Only an id this agent actually offered counts as an answer.
+        // One it never offered is not a denial and not an allowance —
+        // it is a call that was never decided, and reporting it as
+        // completed would hide exactly the defect this catches.
+        status:
+          answer.outcome?.optionId === "opt-7f1" || answer.outcome?.optionId === "opt-7f2"
+            ? "completed"
+            : "failed",
+        ...(step.followUpContent === undefined
+          ? {}
+          : { content: [{ content: { text: step.followUpContent } }] }),
+      },
+    },
+  });
+}
+
 async function play(script: Directive[]): Promise<string> {
   // Reset per prompt: `cancelled` marks this turn as stopped, not this
   // process, so a script driving more than one prompt through one stub must
@@ -152,31 +219,15 @@ async function play(script: Directive[]): Promise<string> {
       continue;
     }
     if ("ask" in step) {
-      const answer = (await ask("session/request_permission", {
-        sessionId,
-        toolCall: { toolCallId: step.toolCallId, title: step.title },
-        options: [
-          { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
-          { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
-          { optionId: "reject-once", name: "Deny", kind: "reject_once" },
-        ],
-      })) as { outcome?: { outcome?: string; optionId?: string } };
-      if (step.followUp !== false)
-        send({
-          jsonrpc: "2.0",
-          method: "session/update",
-          params: {
-            sessionId,
-            update: {
-              sessionUpdate: "tool_call_update",
-              toolCallId: step.toolCallId,
-              status: answer.outcome?.optionId === "reject-once" ? "failed" : "completed",
-              ...(step.followUpContent === undefined
-                ? {}
-                : { content: [{ content: { text: step.followUpContent } }] }),
-            },
-          },
-        });
+      await askPermission(step);
+      continue;
+    }
+    if ("askAll" in step) {
+      // Every request sent before ANY answer is awaited — the whole point of
+      // this step. Mapping first and awaiting the array afterwards is what
+      // keeps them concurrent; a `for` loop with an `await` inside would
+      // quietly turn this back into the sequential `ask` above.
+      await Promise.all(step.askAll.map((one) => askPermission(one)));
       continue;
     }
     const update: Record<string, unknown> = { sessionUpdate: step.emit };

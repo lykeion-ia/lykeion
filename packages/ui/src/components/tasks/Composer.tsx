@@ -505,7 +505,7 @@ export function Composer({
           {showStop ? (
             <button
               type="button"
-              className="composer-send"
+              className="composer-send composer-send--stop"
               title="Stop"
               aria-label="Stop"
               onClick={onStop}
@@ -521,7 +521,8 @@ export function Composer({
                 />
               </svg>
             </button>
-          ) : (
+          ) : null}
+          {(
             <div className="composer-send-group" ref={sendMenuRef}>
               <button
                 type="button"

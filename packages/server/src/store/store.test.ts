@@ -533,7 +533,7 @@ it("reconciles duplicate v12 active turns by keeping the newest turn active", ()
   )).toEqual({ run_count: 1, last_run_status: "failed" });
 });
 
-it("durably rejects a second active turn after upgrading a v12 database", () => {
+it("takes a second active turn after upgrading a v12 database, rather than refusing it", () => {
   const store = freshStore();
   for (const migration of MIGRATIONS.filter((entry) => entry.version <= 12)) {
     store.tx(() => {
@@ -557,7 +557,13 @@ it("durably rejects a second active turn after upgrading a v12 database", () => 
 
   migrate(store);
 
-  expect(store.all(`PRAGMA index_list(turns)`).map((row) => row.name)).toContain(
+  // A Task holds several turns at once now — one being worked on and the rest
+  // waiting behind it — so the index that allowed only one is gone, and an
+  // upgraded database has to accept the second rather than refuse it at the
+  // storage layer. What kept two agents off one Task's files was never this
+  // index: every turn lands on the session already open, and a session runs
+  // one turn at a time.
+  expect(store.all(`PRAGMA index_list(turns)`).map((row) => row.name)).not.toContain(
     "one_active_turn_per_task",
   );
   expect(() =>
@@ -569,7 +575,7 @@ it("durably rejects a second active turn after upgrading a v12 database", () => 
                '{"version":1,"state":{"state":"planning"},"stream":[],"live":{},"reviewing":false}')`,
       [nextSeq(store)],
     ),
-  ).toThrow(/UNIQUE/);
+  ).not.toThrow();
 });
 
 it("keeps the highest-sequence settled status when an older active turn is failed by migration", () => {

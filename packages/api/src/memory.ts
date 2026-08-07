@@ -62,6 +62,7 @@ import type {
   TaskTurn,
   TurnItem,
 } from "./run";
+import { MAX_TURNS_OUTSTANDING } from "./run";
 
 interface SimulatedRun extends RunHandle {
   onEventFrom(cursor: number, cb: (event: RunEvent) => void): () => void;
@@ -1541,8 +1542,18 @@ export function createInMemoryLab(
       return [];
     },
     async startRun(input: StartRunInput) {
-      if ([...activeRuns.values()].some((run) => run.taskId === input.taskId))
-        throw new LykeionError("conflict", `task ${input.taskId} already has an active run`);
+      // A Task may hold several turns at once: one being worked on and the
+      // rest waiting behind it, so a researcher can say the next thing while
+      // they are still thinking it. What is bounded is how far ahead they may
+      // type — past that it is a runaway rather than a queue.
+      const outstanding = [...activeRuns.values()].filter(
+        (run) => run.taskId === input.taskId,
+      ).length;
+      if (outstanding >= MAX_TURNS_OUTSTANDING)
+        throw new LykeionError(
+          "conflict",
+          `task ${input.taskId} already has ${outstanding} turns waiting, which is as far ahead as this lab lets you type`,
+        );
       // Starting genuinely new work after an explicit Done reopens the Task.
       // This boundary lets completion preserve a later Done written while a
       // sibling was already running without making Done permanent forever.

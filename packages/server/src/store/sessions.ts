@@ -113,6 +113,48 @@ export function liveSessionFor(
   return row ? (row.id as string) : undefined;
 }
 
+/**
+ * The turn a Task is already working in, and the session it belongs to.
+ *
+ * A later send joins THIS session rather than looking one up by agent, which
+ * is what makes it queue behind the running turn instead of starting beside
+ * it — two sessions on one Task would be two agents writing one directory at
+ * the same time. The oldest outstanding turn is the one that names it: they
+ * all share a session, and the oldest is the one actually running.
+ */
+export function activeTurnForTask(
+  store: Store,
+  taskId: string,
+): { runId: string; sessionId: string; agent: string } | undefined {
+  const row = store.get(
+    `SELECT t.id AS id, t.session_id AS session_id, s.agent AS agent
+       FROM turns t
+       JOIN sessions s ON s.id = t.session_id
+      WHERE t.task_id = ? AND t.ended_ts IS NULL
+      ORDER BY t.seq ASC
+      LIMIT 1`,
+    [taskId],
+  );
+  return row
+    ? {
+        runId: row.id as string,
+        sessionId: row.session_id as string,
+        agent: row.agent as string,
+      }
+    : undefined;
+}
+
+/** How many turns a Task has outstanding: one running and the rest waiting
+ *  behind it. What bounds the queue, and what tells a waiting turn how many
+ *  are in front of it. */
+export function openTurnCountForTask(store: Store, taskId: string): number {
+  const row = store.get(
+    `SELECT COUNT(*) AS open FROM turns WHERE task_id = ? AND ended_ts IS NULL`,
+    [taskId],
+  );
+  return Number(row?.open ?? 0);
+}
+
 /** The Task's sole active run, or undefined when it is idle. */
 export function activeRunIdForTask(store: Store, taskId: string): string | undefined {
   const row = store.get(
@@ -318,17 +360,23 @@ export function finishTurn(
       [turn.task_id],
     );
     const taskRunStatus = latestSettled?.status === "ok" ? "ok" : "failed";
+    // A turn ending is not the work ending. A researcher who typed ahead has
+    // more turns waiting on this same Task, and moving it to review now would
+    // ask them to look at something still being written. The run count and the
+    // last status are facts about the turn that just ended and are recorded
+    // either way; only the invitation to review waits.
+    const stillWorking = openTurnCountForTask(store, turn.task_id as string) > 0;
     store.run(
       `UPDATE tasks
           SET run_count = run_count + 1,
               last_run_status = ?,
               updated_ts = ?,
               status = CASE
-                WHEN ? = 'ok' AND status <> 'done' THEN 'in-review'
+                WHEN ? = 'ok' AND ? = 0 AND status <> 'done' THEN 'in-review'
                 ELSE status
               END
         WHERE id = ?`,
-      [taskRunStatus, params.endedTs, params.status, turn.task_id],
+      [taskRunStatus, params.endedTs, params.status, stillWorking ? 1 : 0, turn.task_id],
     );
   });
 }

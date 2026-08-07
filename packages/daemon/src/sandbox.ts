@@ -17,6 +17,55 @@ export interface SandboxGrant {
 }
 
 /**
+ * An agent's own installation: not the researcher's data, but the places the
+ * program itself keeps its credentials, its configuration and its state.
+ *
+ * A boundary drawn around the researcher's data alone denies all of this, and
+ * an agent that cannot read its own token or write its own state is not an
+ * agent — it starts, it opens a session, and then it reports itself as signed
+ * out. This is declared per agent rather than granted to every run, so one
+ * agent's store is never opened for another.
+ */
+export interface AgentHome {
+  /** Directories the agent owns outright: read and write. */
+  state: string[];
+  /** Stores this agent authenticates from. Read only — a run proves who it
+   *  is, and never edits the record of who it is. */
+  credentials: string[];
+  /** Entries inside `state` that stay read-only. An agent reads its own
+   *  configuration to run at all, but a write here outlives the run: what an
+   *  agent leaves in its own settings is what the next, unconfined start of
+   *  that program executes. */
+  sealed: string[];
+  /** Shapes of scratch files an agent's shell makes and removes around every
+   *  command it runs — the working directory it reports back afterwards, and
+   *  its like. They carry a fresh random name each time, so there is no path
+   *  to grant, only a shape. Anchored regexes over already-resolved paths.
+   *
+   *  A command that succeeds and a shell that then cannot tidy up is a step
+   *  drawn as failed over output that worked, which is worse than either
+   *  outcome on its own. */
+  patterns: string[];
+  /** Entries inside `state` a run may neither read nor write. An agent's own
+   *  directory also holds the researcher's account of every other thing they
+   *  have done with that program, and this run has no business in any of it.
+   *  A `state` entry beneath one of these is re-allowed afterwards, which is
+   *  how a run keeps its own record of this Task and nothing else's. */
+  private: string[];
+}
+
+/** What an agent this machine knows nothing about reaches of its own, which
+ *  is nothing. Named rather than left to an optional field, so declaring no
+ *  home is something a caller does on purpose. */
+export const NO_AGENT_HOME: AgentHome = {
+  state: [],
+  credentials: [],
+  sealed: [],
+  private: [],
+  patterns: [],
+};
+
+/**
  * What a run may touch, with no platform in it. A backend renders it and
  * spawns the adapter inside it, so a second platform is a second backend
  * rather than a second policy.
@@ -29,6 +78,10 @@ export interface SandboxPolicy {
   grants: SandboxGrant[];
   /** Paths denied whatever the grants say. Rendered last. */
   denied: string[];
+  /** The agent's own installation, canonicalized. Separate from `grants`
+   *  because nothing the researcher answers can widen or narrow it: it is a
+   *  property of which program is being run, not of what it may reach. */
+  home: AgentHome;
 }
 
 export interface SandboxBackend {
@@ -199,6 +252,15 @@ export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] =
   lines.push("(allow sysctl-read)");
   lines.push("(allow file-read-metadata)");
   lines.push("(allow mach-lookup)");
+  // An agent's model is not on this machine. Reaching it is the one thing
+  // every turn does, so a boundary that denies it denies the turn — and does
+  // so in the agent's own words rather than in the kernel's, which is how
+  // this went unnoticed: the adapter reported not being signed in.
+  //
+  // Outbound only, and it is not an egress boundary: this says a run may
+  // open a connection, and nothing about where to. What a run may take with
+  // it is decided by what it can read, which is the file rules above.
+  lines.push("(allow network-outbound)");
   lines.push(`(allow file-read* (literal ${literal(sep)}))`);
   // Written where the kernel will look. It canonicalizes the path being
   // accessed and not the path in the filter, so a rule naming a directory
@@ -239,6 +301,23 @@ export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] =
     );
   lines.push("");
 
+  // What this particular agent needs in order to be itself. Written after the
+  // researcher's grants and before every deny, so a seal below still holds.
+  if (
+    policy.home.state.length > 0 ||
+    policy.home.credentials.length > 0 ||
+    policy.home.patterns.length > 0
+  ) {
+    lines.push("; the agent's own installation");
+    for (const path of shallowToDeep(policy.home.state, (p) => p))
+      lines.push(`(allow file-read* file-write* (subpath ${literal(path)}))`);
+    for (const path of shallowToDeep(policy.home.credentials, (p) => p))
+      lines.push(`(allow file-read* (subpath ${literal(path)}))`);
+    for (const pattern of [...policy.home.patterns].sort())
+      lines.push(`(allow file-read* file-write* (regex ${literal(pattern)}))`);
+    lines.push("");
+  }
+
   lines.push("; denies last, so a deny survives an allow on its ancestor");
   // A credential store is denied wherever it is, not only where this policy
   // happened to name one. A researcher grants a folder because of the data
@@ -250,6 +329,31 @@ export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] =
   );
   for (const path of shallowToDeep(policy.denied, (p) => p))
     lines.push(`(deny file-read* file-write* (subpath ${literal(path)}))`);
+  // Writing only. An agent reads its own configuration to start at all; what
+  // it may not do is edit the file that decides what runs the next time this
+  // program starts outside any boundary of ours.
+  for (const path of shallowToDeep(policy.home.sealed, (p) => p))
+    lines.push(`(deny file-write* (subpath ${literal(path)}))`);
+  // Neither reading nor writing. The researcher's own account of everything
+  // else they have done with this program sits inside the same directory the
+  // program needs, and a run has no business in any of it.
+  for (const path of shallowToDeep(policy.home.private, (p) => p))
+    lines.push(`(deny file-read* file-write* (subpath ${literal(path)}))`);
+
+  // Last, and only what is both the agent's own and beneath something denied
+  // above: this Task's record, inside the directory holding every Task's. The
+  // last rule that matches is the one that decides, so the narrow allow has to
+  // come after the wide deny — the same ordering that lets a seal beat the
+  // state directory it sits in, read the other way round.
+  const reopened = policy.home.state.filter((path) =>
+    policy.home.private.some((denied) => beneath(denied, path) && path !== denied),
+  );
+  if (reopened.length > 0) {
+    lines.push("");
+    lines.push("; what the agent keeps inside what it is denied");
+    for (const path of shallowToDeep(reopened, (p) => p))
+      lines.push(`(allow file-read* file-write* (subpath ${literal(path)}))`);
+  }
 
   return `${lines.join("\n")}\n`;
 }
@@ -364,6 +468,15 @@ export function boundaryOf(policy: SandboxPolicy): string {
     workspace: policy.workspace,
     grants: policy.grants.map((grant) => `${grant.mode}:${grant.path}`).sort(),
     denied: [...policy.denied].sort(),
+    // Two agents confined for the same Task are not confined the same way,
+    // and a session opened for one is not a session the other may reuse.
+    home: [
+      ...policy.home.state.map((path) => `state:${path}`),
+      ...policy.home.credentials.map((path) => `credentials:${path}`),
+      ...policy.home.sealed.map((path) => `sealed:${path}`),
+      ...policy.home.private.map((path) => `private:${path}`),
+      ...policy.home.patterns.map((pattern) => `pattern:${pattern}`),
+    ].sort(),
   });
 }
 
@@ -390,6 +503,13 @@ export function confine(
  *
  * A store this machine does not happen to have is still named, so nothing
  * turns on whether it existed at the moment a run started.
+ *
+ * These are all flat files, which is the whole reason a deny belongs here: a
+ * file rule is the only gate they have. The operating system's own credential
+ * service is deliberately absent — nothing in the baseline allows the
+ * directory holding it, so it is already out of reach by default, and naming
+ * it here as well would outlive the allow an agent's own home renders and
+ * take that agent's credential down with it.
  */
 export function deniedPaths(dataDir: string): string[] {
   const home = homedir();
@@ -402,7 +522,6 @@ export function deniedPaths(dataDir: string): string[] {
     join(home, ".kube"),
     join(home, ".netrc"),
     join(home, ".config", "gcloud"),
-    join(home, "Library", "Keychains"),
   ];
   return [...new Set(candidates.map(canonicalPrefix).filter((path): path is string => !!path))];
 }
@@ -421,11 +540,40 @@ export function policyFor(input: {
   workspace: string;
   grants: SandboxGrant[];
   dataDir: string;
+  home?: AgentHome;
+  /** Other agents' installations, denied whatever else this policy allows. */
+  foreign?: string[];
 }): SandboxPolicy {
   const workspace = canonicalPath(input.workspace);
   const grants = input.grants.map((grant) => ({
     path: canonicalPath(grant.path),
     mode: grant.mode,
   }));
-  return { workspace, grants, denied: deniedPaths(input.dataDir) };
+  // An agent's own home is resolved as far as it exists rather than being
+  // required to. A researcher who has never run one of these programs has no
+  // such directory yet, and a rule written where it will be is what lets the
+  // program create it — while a grant, which names something the researcher
+  // is looking at, still refuses when it will not resolve.
+  const declared = input.home ?? NO_AGENT_HOME;
+  const home: AgentHome = {
+    state: resolveEachThatCan(declared.state),
+    credentials: resolveEachThatCan(declared.credentials),
+    sealed: resolveEachThatCan(declared.sealed),
+    private: resolveEachThatCan(declared.private),
+    // Already written against resolved paths by whoever declared them: there
+    // is no file here to resolve, only the shape of one that does not exist
+    // yet and will not exist for long.
+    patterns: [...declared.patterns],
+  };
+  const denied = [
+    ...deniedPaths(input.dataDir),
+    ...resolveEachThatCan(input.foreign ?? []),
+  ];
+  return { workspace, grants, denied: [...new Set(denied)], home };
+}
+
+/** Each path written where the kernel will look, dropping the ones this
+ *  machine cannot place at all. */
+function resolveEachThatCan(paths: string[]): string[] {
+  return [...new Set(paths.map(canonicalPrefix).filter((path): path is string => !!path))];
 }

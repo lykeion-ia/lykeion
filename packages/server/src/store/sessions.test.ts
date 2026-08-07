@@ -3,13 +3,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "./sqlite";
-import { migrate } from "./migrations";
+import { migrate, nextSeq } from "./migrations";
 import * as sessionsStore from "./sessions";
 import {
   openSession,
   recordTurn,
   recordRunFrames,
   finishTurn,
+  activeTurnForTask,
+  openTurnCountForTask,
   appendStep,
   taskTurnsForTask,
   runSnapshot,
@@ -283,6 +285,42 @@ it("makes permission and question cards recoverable without a separate state fra
       .recovery_snapshot as string,
   );
   expect(recovery.state).toEqual({ state: "awaiting-question", request: question });
+});
+
+it("recovers a gate still holding its place in the batch it was raised with", () => {
+  // A turn can raise several permission-gated calls at once, and they are put
+  // to the researcher one at a time. A reload mid-batch has to come back to
+  // the same question AND the same standing in the batch — a card recovered
+  // as if it were the only one asks for a decision under a description that
+  // stopped being true.
+  const store = freshStore();
+  const { turnId } = freshTurn(store);
+  const request = {
+    id: "perm-2",
+    access: { kind: "write-path" as const, target: "results.csv" },
+    tool: "t2",
+  };
+
+  recordRunFrames(store, turnId, [
+    { seq: 1, event: { event: "permission-card", request } },
+    {
+      seq: 2,
+      event: {
+        event: "state",
+        state: { state: "awaiting-permission", request, queue: { position: 2, total: 4 } },
+      },
+    },
+  ], 10);
+
+  const recovery = JSON.parse(
+    store.get(`SELECT recovery_snapshot FROM turns WHERE id = ?`, [turnId])!
+      .recovery_snapshot as string,
+  );
+  expect(recovery.state).toEqual({
+    state: "awaiting-permission",
+    request,
+    queue: { position: 2, total: 4 },
+  });
 });
 
 it("ignores duplicate frames and rejects a sequence gap without changing the snapshot", () => {
@@ -663,4 +701,66 @@ it("gives back the same step it was given, for every shape an output takes", () 
   expect((turn.stream ?? []).flatMap((item) => (item.kind === "step" ? [item.entry] : []))).toEqual(
     sent,
   );
+});
+
+it("keeps a Task working while a sibling turn is still outstanding", () => {
+  // A turn settling does not mean the Task is waiting on a person: a
+  // researcher who typed ahead has more turns queued behind this one, and a
+  // Task that says "in review" while it is still working asks them to look at
+  // something that is not finished.
+  const store = freshStore();
+  // A real Task row, because what is under test is the status written onto
+  // one. Every other test here works on turns alone and never needs it.
+  store.run(
+    `INSERT INTO users (id, email, display_name, password, created_ts, seq)
+     VALUES ('u_1', 'owner@example.test', 'Owner', 'x', 1, ?)`,
+    [nextSeq(store)],
+  );
+  store.run(
+    `INSERT INTO studies (id, key, title, created_by, created_ts, updated_ts, seq)
+     VALUES ('s_1', 'ONE', 'One', 'u_1', 1, 1, ?)`,
+    [nextSeq(store)],
+  );
+  store.run(
+    `INSERT INTO tasks
+       (id, number, study_id, stage, title, status, priority, created_by,
+        created_ts, updated_ts, seq)
+     VALUES ('t_1', 1, 's_1', 'background', 'Typed ahead', 'in-progress',
+             'no-priority', 'u_1', 1, 1, ?)`,
+    [nextSeq(store)],
+  );
+  const first = freshTurn(store, { prompt: "first" });
+  const second = recordTurn(store, {
+    sessionId: first.sessionId, taskId: "t_1", prompt: "second", startedTs: 4,
+  });
+
+  finishTurn(store, first.turnId, { endedTs: 7, status: "ok" });
+  expect(store.get(`SELECT status FROM tasks WHERE id = ?`, ["t_1"])?.status).toBe("in-progress");
+
+  finishTurn(store, second, { endedTs: 8, status: "ok" });
+  expect(store.get(`SELECT status FROM tasks WHERE id = ?`, ["t_1"])?.status).toBe("in-review");
+});
+
+it("counts what a Task still has outstanding, so a queue can be bounded and placed", () => {
+  const store = freshStore();
+  const first = freshTurn(store, { prompt: "first" });
+  expect(openTurnCountForTask(store, "t_1")).toBe(1);
+  recordTurn(store, { sessionId: first.sessionId, taskId: "t_1", prompt: "second", startedTs: 4 });
+  expect(openTurnCountForTask(store, "t_1")).toBe(2);
+  finishTurn(store, first.turnId, { endedTs: 7, status: "ok" });
+  expect(openTurnCountForTask(store, "t_1")).toBe(1);
+});
+
+it("names the session a Task is already working in, so a later turn joins it", () => {
+  // What makes a second send queue rather than run beside the first: it lands
+  // on the session that is already open, whatever agent the picker last named.
+  const store = freshStore();
+  const first = freshTurn(store, { agent: "claude", runtimeId: "rt_1", prompt: "first" });
+  expect(activeTurnForTask(store, "t_1")).toEqual({
+    runId: first.turnId,
+    sessionId: first.sessionId,
+    agent: "claude",
+  });
+  finishTurn(store, first.turnId, { endedTs: 7, status: "ok" });
+  expect(activeTurnForTask(store, "t_1")).toBeUndefined();
 });

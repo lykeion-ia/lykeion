@@ -714,6 +714,20 @@ export const MIGRATIONS: Migration[] = [
       store.run(`ALTER TABLE runtime_clis ADD COLUMN options TEXT`);
     },
   },
+  {
+    version: 18,
+    up(store) {
+      // A Task may now hold several turns at once: one running and the rest
+      // waiting behind it, which is what lets a researcher say the next thing
+      // while they are still thinking it rather than waiting for the agent.
+      //
+      // They queue rather than run together — every turn on a Task lands on
+      // the session already open for it, and a session runs one turn at a
+      // time — so what this index was protecting, two agents writing one
+      // Task's directory at once, is still not something that can happen.
+      store.run(`DROP INDEX IF EXISTS one_active_turn_per_task`);
+    },
+  },
 ];
 
 assertAscending(MIGRATIONS);

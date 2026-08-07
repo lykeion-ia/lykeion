@@ -142,6 +142,10 @@ function Probe() {
           run.state?.state === "cancelled" && !!run.state.unacknowledged,
         )}
       </span>
+      <span data-testid="pending-card">{run.pendingCard?.id ?? "none"}</span>
+      <span data-testid="pending-queue">
+        {run.pendingQueue ? `${run.pendingQueue.position}/${run.pendingQueue.total}` : "none"}
+      </span>
       <span data-testid="plan-status">
         {(run.plan?.steps ?? []).map((s) => s.status ?? "none").join(",")}
       </span>
@@ -786,6 +790,63 @@ describe("cancel's late-completion watch", () => {
     expect(unsubscribeCalls).toBe(1);
     expect(closes).toBe(0);
   });
+});
+
+it("carries a gate's place in its batch, and drops it when the gate ends", async () => {
+  // A turn that raised several permission-gated calls at once shows them one
+  // at a time. The counter is how the researcher knows the card in front of
+  // them is one of four rather than the whole request.
+  const user = userEvent.setup();
+  const { api, emit } = drivenApi();
+  render(<Harness api={api} />);
+
+  await user.click(screen.getByRole("button", { name: "start" }));
+  await act(() => new Promise((r) => setTimeout(r, 0)));
+
+  const request = {
+    id: "perm-1",
+    access: { kind: "write-path", target: "/work/a.csv" },
+    tool: "t1",
+  } as const;
+  await act(async () => {
+    emit({ event: "permission-card", request });
+    emit({
+      event: "state",
+      state: { state: "awaiting-permission", request, queue: { position: 2, total: 4 } },
+    });
+  });
+
+  expect(screen.getByTestId("pending-card")).toHaveTextContent("perm-1");
+  expect(screen.getByTestId("pending-queue")).toHaveTextContent("2/4");
+
+  // Off the gate, nothing is being asked, so there is no place in a batch to
+  // report — a stale "2 of 4" beside no card would describe nothing.
+  await act(async () => {
+    emit({ event: "state", state: { state: "planning" } });
+  });
+  expect(screen.getByTestId("pending-queue")).toHaveTextContent("none");
+});
+
+it("leaves a lone gate placed in no batch at all", async () => {
+  const user = userEvent.setup();
+  const { api, emit } = drivenApi();
+  render(<Harness api={api} />);
+
+  await user.click(screen.getByRole("button", { name: "start" }));
+  await act(() => new Promise((r) => setTimeout(r, 0)));
+
+  const request = {
+    id: "perm-solo",
+    access: { kind: "write-path", target: "/work/a.csv" },
+    tool: "t1",
+  } as const;
+  await act(async () => {
+    emit({ event: "permission-card", request });
+    emit({ event: "state", state: { state: "awaiting-permission", request } });
+  });
+
+  expect(screen.getByTestId("pending-card")).toHaveTextContent("perm-solo");
+  expect(screen.getByTestId("pending-queue")).toHaveTextContent("none");
 });
 
 describe("planOf", () => {

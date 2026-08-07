@@ -270,6 +270,21 @@ async function openRunStream(
   })();
 }
 
+/**
+ * What the two rollover behaviours below are given, rather than the default
+ * every other test here runs happily inside.
+ *
+ * They are the only tests that must overrun the relay's own frame limit to
+ * mean anything, so each writes more than five hundred frames through the
+ * store and then waits for every one of them to arrive. That is real work
+ * measured in hundreds of milliseconds on an idle machine, and this suite
+ * runs beside three other packages' suites — on a machine already saturated
+ * by them, the same work takes long enough to overrun a budget sized for
+ * tests that post one frame. A budget that a correct implementation can miss
+ * because of what else the machine is doing tests the machine, not the code.
+ */
+const ROLLOVER_TEST_TIMEOUT_MS = 30_000;
+
 /** Polls `predicate` until it holds, the way a subscriber with no signal for
  *  "nothing more is coming right now" has to. */
 async function until(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -404,7 +419,7 @@ it("resumes from the durable snapshot after the relay replay window has rolled o
       snapshot: expect.objectContaining({ lastEventSeq: 501 }),
     }),
   }));
-});
+}, ROLLOVER_TEST_TIMEOUT_MS);
 
 it("gates a fresh stream before the snapshot read so racing frames survive relay rollover", async () => {
   const lab = await labWithRunInFlight();
@@ -422,7 +437,7 @@ it("gates a fresh stream before the snapshot read so racing frames survive relay
 
   const seen: RunEventFrame[] = [];
   await openRunStream(lab, lab.runId, undefined, (frame) => seen.push(frame));
-  await until(() => seen.length === 502);
+  await until(() => seen.length === 502, ROLLOVER_TEST_TIMEOUT_MS);
   expect(seen[0]).toEqual(expect.objectContaining({
     seq: 1,
     event: expect.objectContaining({ event: "snapshot" }),
@@ -430,7 +445,7 @@ it("gates a fresh stream before the snapshot read so racing frames survive relay
   expect(seen.slice(1).map((frame) => frame.seq)).toEqual(
     Array.from({ length: 501 }, (_, index) => index + 2),
   );
-});
+}, ROLLOVER_TEST_TIMEOUT_MS);
 
 it("maps a daemon frame sequence gap to conflict without publishing it", async () => {
   const lab = await labWithRunInFlight();

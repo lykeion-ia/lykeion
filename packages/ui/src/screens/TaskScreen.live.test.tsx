@@ -170,7 +170,8 @@ describe("the live turn", () => {
     render(<App api={api} />);
 
     expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+    // Beside it, not instead of it: typing ahead is the point.
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
   });
 
   it("renders a tool card while the turn is still running", async () => {

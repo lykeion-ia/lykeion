@@ -1,10 +1,16 @@
-import { LykeionError, type ActiveRunSnapshot, type LykeionApi } from "@lykeion/api";
+import {
+  LykeionError,
+  MAX_TURNS_OUTSTANDING,
+  type ActiveRunSnapshot,
+  type LykeionApi,
+} from "@lykeion/api";
 import type { Deps } from "./index";
 import type { Store } from "../store/store";
 import { healthFor } from "../runtime-health";
 import {
   openSession,
-  activeRunIdForTask,
+  activeTurnForTask,
+  openTurnCountForTask,
   activeRunSnapshotsForTask,
   liveSessionFor,
   recordTurn,
@@ -111,14 +117,25 @@ export function sessionsApi(deps: Deps): SessionsApi {
         );
 
       const { runId, sessionId } = store.tx(() => {
-        const activeRunId = activeRunIdForTask(store, input.taskId);
-        if (activeRunId !== undefined)
+        // What the Task is already working in, if anything. A later turn joins
+        // THAT session rather than opening one of its own, which is what makes
+        // it wait its place: a session runs one turn at a time, so the queue is
+        // the session's own and two agents never write this directory at once.
+        const working = activeTurnForTask(store, input.taskId);
+        if (working !== undefined && working.agent !== resolved.agent)
           throw new LykeionError(
             "conflict",
-            `task ${input.taskId} already has an active run`,
+            `this Task is mid-conversation with ${working.agent} — stop that turn before switching agent, or the new one would start a second conversation over the same files`,
+          );
+        const outstanding = openTurnCountForTask(store, input.taskId);
+        if (outstanding >= MAX_TURNS_OUTSTANDING)
+          throw new LykeionError(
+            "conflict",
+            `task ${input.taskId} already has ${outstanding} turns waiting, which is as far ahead as this lab lets you type`,
           );
         const ts = now();
         const sessionId =
+          working?.sessionId ??
           liveSessionFor(store, input.taskId, resolved.runtimeId, resolved.agent) ??
           openSession(store, {
             studyId: input.studyId,

@@ -14,6 +14,7 @@ import {
 } from "./lab";
 import { createRetryLoop } from "./retry";
 import { ensureTaskDir } from "./workspace";
+import { confinementFor } from "./agent-home";
 import { boundaryOf, policyFor } from "./sandbox";
 import { restoreSnapshot, takeSnapshot } from "./snapshot";
 import { startSession, type LiveSession, type StandingGrant } from "./session";
@@ -574,6 +575,7 @@ export function startRuns(options: {
     sessionId: string,
     studyId: string,
     taskId: string,
+    agent: string,
     adapter: { command: string; args: string[] },
     prompt: string,
     grants: StandingGrant[],
@@ -608,6 +610,7 @@ export function startRuns(options: {
           workspace: ensureTaskDir(options.workDir, studyId, taskId),
           grants,
           dataDir: options.dataDir,
+          ...confinementFor(agent, ensureTaskDir(options.workDir, studyId, taskId)),
         }),
       );
     } catch (err) {
@@ -657,6 +660,7 @@ export function startRuns(options: {
         let created: LiveSession | undefined;
         created = await startSession({
           adapter,
+          agent,
           cwd,
           dataDir: options.dataDir,
           ...(options.platform === undefined ? {} : { platform: options.platform }),
@@ -756,7 +760,7 @@ export function startRuns(options: {
     addBounded(startedRuns, runId, STARTED_RUNS_LIMIT);
 
     const adapter = agent === undefined ? undefined : options.adapterFor(agent);
-    if (!adapter) {
+    if (agent === undefined || !adapter) {
       refuse(runId, `this machine has no adapter for "${agent ?? "no agent named"}"`);
       return;
     }
@@ -772,10 +776,19 @@ export function startRuns(options: {
     const grants = command.grants ?? [];
 
     sessionOfRun.set(runId, sessionId);
+    // Everything this session has taken and not yet finished, this turn
+    // excluded. A researcher who typed ahead is owed the difference between a
+    // turn that has begun and one that is still waiting for its place: drawn
+    // as `planning`, a waiting turn says the agent is thinking about a prompt
+    // it has not been handed.
+    const ahead = [...sessionOfRun.entries()].filter(
+      ([other, session]) => session === sessionId && other !== runId,
+    ).length;
+    if (ahead > 0) emit(runId, { event: "state", state: { state: "queued", ahead } });
     const tail = turnQueues.get(sessionId) ?? Promise.resolve();
     const next = tail
       .catch(() => {})
-      .then(() => runTurn(runId, sessionId, studyId, taskId, adapter, prompt, grants, model));
+      .then(() => runTurn(runId, sessionId, studyId, taskId, agent, adapter, prompt, grants, model));
     turnQueues.set(sessionId, next);
   }
 

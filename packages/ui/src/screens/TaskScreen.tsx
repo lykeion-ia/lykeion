@@ -133,6 +133,7 @@ function LiveRunBlock({
       {run.state.state === "awaiting-permission" && card && (
         <PermissionCard
           request={card}
+          queue={run.pendingQueue}
           onAllow={(scope) =>
             run.decide(card.id, { decision: "allow", scope })
           }
@@ -947,7 +948,11 @@ export function TaskScreen({
       <Composer
         variant="docked"
         onSend={send}
-        disabled={!recoveryReady || runState.starting}
+        // `starting` is deliberately not here. It is true for as long as a
+        // send is crossing to the lab, and disabling on it is what stopped a
+        // researcher typing the next thing while the agent was still on the
+        // last one. A turn taken during another simply waits its place.
+        disabled={!recoveryReady}
         blocker={blocker}
         running={activeRun !== undefined}
         onStop={activeRun?.cancel}

@@ -18,6 +18,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEvent } from "@lykeion/api";
 import { connectAcp } from "./acp";
+import { confinementFor } from "./agent-home";
+import { confine, policyFor } from "./sandbox";
 import { startSession, type LiveSession } from "./session";
 
 /** Vitest's own timeout for a single test — long enough that a real agent's
@@ -64,7 +66,16 @@ const INITIALIZE_PARAMS = {
   clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
 };
 
-type AdapterFactory = () => { command: string; args: string[]; env?: NodeJS.ProcessEnv };
+type AdapterFactory = () => {
+  command: string;
+  args: string[];
+  env?: NodeJS.ProcessEnv;
+  /** Which agent this adapter speaks for, so a conformance session is
+   *  confined exactly as a real one is — its own credentials and state
+   *  included, without which the adapter answers every prompt by saying it
+   *  is not signed in. */
+  agent: string;
+};
 
 /** How much of the events a behaviour actually saw are worth keeping in a
  *  failure message — enough to show the shape of what happened, bounded so a
@@ -170,6 +181,28 @@ function autoApprove(session: LiveSession, events: RunEvent[], answered: Set<str
   }
 }
 
+/**
+ * The adapter command, wrapped so even a behaviour that drives ACP directly
+ * runs inside a boundary. Two of the checks below talk to the connection
+ * rather than to a `LiveSession`, and a real adapter spawned that way is
+ * still the researcher's own agent CLI executing on their machine — "never
+ * launch an unsandboxed run" is not a rule about which caller asked.
+ */
+function confinedFor(
+  agent: string,
+  cwd: string,
+  command: string,
+  args: string[],
+): [string, string[]] {
+  const dataDir = mkdtempSync(join(tmpdir(), "lykeion-acp-conformance-state-"));
+  const confined = confine(
+    process.platform,
+    policyFor({ workspace: cwd, grants: [], dataDir, ...confinementFor(agent, cwd) }),
+    { command, args },
+  );
+  return [confined.command, confined.args];
+}
+
 export function acpConformance(name: string, adapter: AdapterFactory): void {
   describe(name, () => {
     const dirs: string[] = [];
@@ -200,10 +233,12 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
     }
 
     async function openSession(deadline: number): Promise<{ session: LiveSession; events: RunEvent[] }> {
-      const { command, args, env } = adapter();
+      const { command, args, env, agent } = adapter();
       const events: RunEvent[] = [];
       const starting = startSession({
         adapter: { command, args },
+
+        agent,
         cwd: workspace(),
         dataDir: mkdtempSync(join(tmpdir(), "lykeion-acp-conformance-state-")),
         grants: [],
@@ -231,8 +266,12 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
       "completes initialize",
       async () => {
         const deadline = deadlineFor(TEST_TIMEOUT_MS);
-        const { command, args, env } = adapter();
-        const connection = await connectAcp(command, args, { cwd: workspace(), env });
+        const { command, args, env, agent } = adapter();
+        const cwd = workspace();
+        const connection = await connectAcp(...confinedFor(agent, cwd, command, args), {
+          cwd,
+          env,
+        });
         try {
           const result = await withTimeout(
             connection.request("initialize", INITIALIZE_PARAMS),
@@ -253,9 +292,12 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
       "returns a session from session/new",
       async () => {
         const deadline = deadlineFor(TEST_TIMEOUT_MS);
-        const { command, args, env } = adapter();
+        const { command, args, env, agent } = adapter();
         const cwd = workspace();
-        const connection = await connectAcp(command, args, { cwd, env });
+        const connection = await connectAcp(...confinedFor(agent, cwd, command, args), {
+          cwd,
+          env,
+        });
         try {
           await withTimeout(
             connection.request("initialize", INITIALIZE_PARAMS),

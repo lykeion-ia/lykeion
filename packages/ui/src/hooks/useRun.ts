@@ -45,6 +45,10 @@ export interface ManagedRun {
   messages: string[];
   log: ExecutionLogEntry[];
   pendingCard: PermissionRequest | null;
+  /** Where `pendingCard` sits in the batch of gates this turn has open, when
+   *  there is more than one. `null` for a lone card — there is no batch to
+   *  place it in. */
+  pendingQueue: { position: number; total: number } | null;
   pendingQuestion: QuestionRequest | null;
   approvePlan: () => void;
   rejectPlan: (reason?: string) => void;
@@ -90,6 +94,10 @@ export interface UseRun {
   prompt: string | null;
   plan: Plan | null;
   pendingCard: PermissionRequest | null;
+  /** Where `pendingCard` sits in the batch of gates this turn has open, when
+   *  there is more than one. `null` for a lone card — there is no batch to
+   *  place it in. */
+  pendingQueue: { position: number; total: number } | null;
   pendingQuestion: QuestionRequest | null;
   log: ExecutionLogEntry[];
   liveStream: TurnItem[];
@@ -641,6 +649,10 @@ export function useRun(
             entry.state.state === "awaiting-permission"
               ? entry.state.request
               : null,
+          pendingQueue:
+            entry.state.state === "awaiting-permission"
+              ? (entry.state.queue ?? null)
+              : null,
           pendingQuestion:
             entry.state.state === "awaiting-question"
               ? entry.state.request
@@ -717,6 +729,7 @@ export function useRun(
     prompt: latest?.prompt ?? null,
     plan: latest?.plan ?? null,
     pendingCard: latest?.pendingCard ?? null,
+    pendingQueue: latest?.pendingQueue ?? null,
     pendingQuestion: latest?.pendingQuestion ?? null,
     log: latest?.log ?? [],
     liveStream: latest?.stream ?? [],

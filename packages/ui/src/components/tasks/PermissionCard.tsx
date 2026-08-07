@@ -95,10 +95,14 @@ const ALLOW_SUFFIX: Record<PermissionScope, string> = {
  */
 export function PermissionCard({
   request,
+  queue,
   onAllow,
   onDeny,
 }: {
   request: PermissionRequest;
+  /** Where this card sits in a batch of gates the turn raised at once, when
+   *  there is more than one. Absent for a lone card. */
+  queue?: { position: number; total: number } | null;
   onAllow: (scope: PermissionScope) => void;
   onDeny: () => void;
 }) {
@@ -131,6 +135,22 @@ export function PermissionCard({
 
   return (
     <div className="card perm-card">
+      {/* What ELSE this turn is waiting to ask. A researcher deciding the
+          first of four calls is deciding one of four, and a card that said
+          nothing would let them answer it believing it was the whole request.
+          The visible chip is short; the sentence beside it is for a screen
+          reader, which a bare "1 of 4" tells nothing at all. */}
+      {queue && (
+        <div className="perm-queue" data-testid="perm-queue">
+          <span aria-hidden="true">
+            {queue.position} of {queue.total}
+          </span>
+          <span className="sr-only">
+            Decision {queue.position} of {queue.total} this turn is asking for.
+          </span>
+        </div>
+      )}
+
       {/* The headline names what is about to happen, as a question. The old
           "Permission requested" eyebrow said only THAT consent was wanted, never
           for what — the target lived in the code block alone. */}

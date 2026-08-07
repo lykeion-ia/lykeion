@@ -39,7 +39,9 @@ describe("Composer Stop", () => {
     await user.click(screen.getByRole("button", { name: "Plan first" }));
 
     const stop = await screen.findByRole("button", { name: "Stop" });
-    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+    // Send stays: a researcher may say the next thing while this turn runs,
+    // and it waits its place rather than being refused.
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
     expect(within(await screen.findByTestId("live-turn"))
       .queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();

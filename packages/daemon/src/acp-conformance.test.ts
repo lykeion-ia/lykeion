@@ -41,6 +41,10 @@ acpConformance("stub", () => ({
   command: process.execPath,
   args: ["--experimental-strip-types", STUB],
   env: { ...process.env, LYKEION_STUB_SCRIPT: JSON.stringify(SCRIPT) },
+  // The stub authenticates against nothing and keeps no state of its own, so
+  // it is confined with no home at all — which is also what keeps this suite
+  // from quietly running with a real agent's credentials in reach.
+  agent: "stub",
 }));
 
 // Real adapters need credentials and a network, so they cannot gate a commit
@@ -55,7 +59,7 @@ acpConformance("stub", () => ({
 // `claude` is a separate question, and not this suite's to answer.
 const certify = process.env.LYKEION_CERTIFY_ADAPTERS === "1";
 (certify ? describe : describe.skip)("certified adapters", () => {
-  acpConformance("claude-code-acp", () => ({ command: "claude-code-acp", args: [] }));
-  acpConformance("claude-agent-acp", () => ({ command: "claude-agent-acp", args: [] }));
-  acpConformance("codex-acp", () => ({ command: "codex-acp", args: [] }));
+  acpConformance("claude-code-acp", () => ({ command: "claude-code-acp", args: [], agent: "claude" }));
+  acpConformance("claude-agent-acp", () => ({ command: "claude-agent-acp", args: [], agent: "claude" }));
+  acpConformance("codex-acp", () => ({ command: "codex-acp", args: [], agent: "codex" }));
 });

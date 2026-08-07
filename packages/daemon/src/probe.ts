@@ -5,6 +5,7 @@ import type { AgentCli, AgentOption } from "@lykeion/api";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { connectAcp } from "./acp";
+import { confinementFor } from "./agent-home";
 import { confine, noBackendReason, policyFor, sandboxBackendFor } from "./sandbox";
 import { readAdvertised } from "./agent-options";
 
@@ -165,6 +166,7 @@ function readVersion(
   signal: AbortSignal | undefined,
   platform: string,
   dataDir: string,
+  agent: string,
 ): Promise<string> {
   // Asking a program what it is means running it, and it is the
   // researcher's agent CLI — the same code a turn drives. It is confined
@@ -173,7 +175,7 @@ function readVersion(
   const workspace = throwawayWorkspace();
   const confined = confine(
     platform,
-    policyFor({ workspace, grants: [], dataDir }),
+    policyFor({ workspace, grants: [], dataDir, ...confinementFor(agent, workspace) }),
     { command: resolved, args: ["--version"] },
   );
   return new Promise((resolvePromise) => {
@@ -184,7 +186,12 @@ function readVersion(
     execFile(
       confined.command,
       confined.args,
-      { timeout: timeoutMs, signal },
+      // In the directory the boundary was rendered for. Without this the
+      // child inherits whichever directory this daemon happens to have been
+      // started in, which the profile does not allow — and a program that
+      // cannot reach its own working directory does not get as far as
+      // printing its version, so every build reads as unknown.
+      { timeout: timeoutMs, signal, cwd: workspace },
       (error, stdout, stderr) => {
         if (error) {
           done("");
@@ -222,6 +229,7 @@ async function probeCliVersion(
   signal: AbortSignal | undefined,
   platform: string,
   dataDir: string,
+  agent: string,
 ): Promise<{ available: boolean; version: string }> {
   const resolved = await resolveOnPath(command, pathValue);
   if (resolved === undefined) return { available: false, version: "" };
@@ -232,7 +240,7 @@ async function probeCliVersion(
   if (sandboxBackendFor(platform) === undefined) return { available: true, version: "" };
   return {
     available: true,
-    version: await readVersion(resolved, timeoutMs, signal, platform, dataDir),
+    version: await readVersion(resolved, timeoutMs, signal, platform, dataDir, agent),
   };
 }
 
@@ -339,7 +347,7 @@ async function probeAdapter(
   const workspace = throwawayWorkspace();
   const confined = confine(
     platform,
-    policyFor({ workspace, grants: [], dataDir }),
+    policyFor({ workspace, grants: [], dataDir, ...confinementFor(agentId, workspace) }),
     { command: resolved, args: [] },
   );
   const connection = await connectAcp(confined.command, confined.args, { cwd: workspace });
@@ -396,7 +404,7 @@ async function probeOne(
   dataDir: string,
 ): Promise<ProbedCli> {
   const [cli, adapter] = await Promise.all([
-    probeCliVersion(entry.command, pathValue, timeoutMs, signal, platform, dataDir),
+    probeCliVersion(entry.command, pathValue, timeoutMs, signal, platform, dataDir, entry.id),
     probeAdapter(entry.id, pathValue, timeoutMs, signal, onResolved, platform, dataDir),
   ]);
   return { id: entry.id, name: entry.name, command: entry.command, ...cli, ...adapter };

@@ -8,7 +8,10 @@ import type {
   ToolOutputPart,
 } from "@lykeion/api";
 import { isToolKind } from "@lykeion/api";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { connectAcp, type AcpConnection } from "./acp";
+import { confinementFor } from "./agent-home";
 import { boundaryOf, confine, covers, policyFor, type SandboxGrant } from "./sandbox";
 import {
   confirmationOf,
@@ -198,12 +201,73 @@ function grantFrom(request: PermissionRequest): StandingGrant | undefined {
   return undefined;
 }
 
+/** One of the answers an agent offered, as it described it. `kind` is the
+ *  part of this the protocol fixes; `optionId` is the agent's own name for
+ *  it and is never the same twice. */
+interface PermissionOption {
+  optionId?: unknown;
+  kind?: unknown;
+}
+
+/** What the researcher decided, before it is expressed in any one agent's
+ *  vocabulary. */
+type Verdict = "allow" | "reject";
+
+/** Which already-given consent covers a call, or `undefined` for one nobody
+ *  has consented to yet — the answer that decides whether a call has to be
+ *  asked about at all. Named as the decision it will be recorded under, so a
+ *  call allowed on a standing grant and one allowed on this conversation's own
+ *  grant never end up indistinguishable in the log. */
+type Covered = "allowed-conversation" | "allowed-study" | undefined;
+
+/**
+ * The id to answer with, chosen from what this agent actually offered.
+ *
+ * An agent names its own options, and no two name them alike. An id this
+ * machine invented selects nothing at all — the call is neither allowed nor
+ * denied, and a researcher who pressed Allow watches it fail anyway. So the
+ * kind, which the protocol fixes, is what is matched on, and the id is only
+ * ever copied back out of what arrived.
+ *
+ * Allowing once is preferred over allowing always even when the researcher
+ * said "for this conversation". What repeats a grant is this machine's own
+ * record of it, which answers the next request without asking; "always" is
+ * the agent widening its own permissions to something this machine does not
+ * hold and could not later take back.
+ *
+ * Undefined when nothing offered fits, which is a thing to say rather than
+ * to guess past.
+ */
+export function permissionAnswer(
+  offered: unknown,
+  verdict: Verdict,
+): string | undefined {
+  const options = Array.isArray(offered) ? (offered as PermissionOption[]) : [];
+  const named = options.filter(
+    (option): option is { optionId: string; kind?: unknown } =>
+      typeof option.optionId === "string" && option.optionId.length > 0,
+  );
+  const kindOf = (option: { kind?: unknown }): string =>
+    typeof option.kind === "string" ? option.kind : "";
+  const exact = verdict === "allow" ? "allow_once" : "reject_once";
+  const prefix = verdict === "allow" ? "allow" : "reject";
+  const match =
+    named.find((option) => kindOf(option) === exact) ??
+    named.find((option) => kindOf(option).startsWith(prefix));
+  return match?.optionId;
+}
+
 export async function startSession(options: {
   /** The adapter to run. It is confined HERE rather than by the caller, so
    *  spawning one outside a boundary is not something a caller can express:
    *  there is no argument that asks for it and no path through this
    *  function that does it. */
   adapter: { command: string; args: string[] };
+  /** Which agent this adapter speaks for. Decides the one thing the boundary
+   *  cannot infer from a command line: where this program keeps its own
+   *  credentials and state, without which it starts and then reports itself
+   *  signed out. */
+  agent: string;
   /** The Task directory this session works in, and the one directory the
    *  boundary lets it write. */
   cwd: string;
@@ -237,11 +301,24 @@ export async function startSession(options: {
   // cannot be: `policyFor` throws on a path that will not resolve and
   // `confine` throws on a platform with no backend, both before the first
   // line below that starts a process.
-  const policy = policyFor({ workspace: cwd, grants: options.grants, dataDir: options.dataDir });
+  const policy = policyFor({
+    workspace: cwd,
+    grants: options.grants,
+    dataDir: options.dataDir,
+    ...confinementFor(options.agent, cwd),
+  });
   const confined = confine(options.platform ?? process.platform, policy, options.adapter);
+  // Somewhere to put a scratch file. The machine's shared temporary directory
+  // is deliberately not granted — it is one directory for every process here,
+  // so granting it would let a run read what another left behind — and a
+  // program handed no writable temporary directory at all fails in ways that
+  // have nothing to do with what it was asked to do. This one is inside the
+  // workspace, which is already the one directory this run may write.
+  const scratch = join(cwd, ".lykeion", "tmp");
+  mkdirSync(scratch, { recursive: true });
   const connection: AcpConnection = await connectAcp(confined.command, confined.args, {
     cwd,
-    env: options.env,
+    env: { ...(options.env ?? process.env), TMPDIR: scratch },
   });
   let aborting: Promise<void> | undefined;
   const abortInitialization = () => {
@@ -264,10 +341,31 @@ export async function startSession(options: {
   let plan: Plan | undefined;
   const steps = new Map<string, ExecutionLogEntry>();
   const publishedStepFingerprints = new Map<string, string>();
-  const waiting = new Map<string, (optionId: string) => void>();
+  // Resolved with what the researcher decided, not with any agent's word for
+  // it. Turning a verdict into one of the offered ids happens where the offer
+  // is in scope, so nothing downstream can invent one.
+  const waiting = new Map<string, (verdict: Verdict) => void>();
   // Every card raised while it is still open, so a later `decide` can recover
   // what it was asking about — a decision only carries the request id back.
   const cards = new Map<string, PermissionRequest>();
+  // Whether consent the researcher has given SINCE this card was raised already
+  // covers it. Asked of the card's own raise site, which is the only place that
+  // still knows what the original check looked at. A turn raises a whole batch
+  // at once, so a card can be sitting in the queue when the answer that covers
+  // it is given to one of its siblings.
+  const coverage = new Map<string, () => Covered>();
+  // The one card currently in front of the researcher. Every other open gate
+  // waits its turn in `waiting`'s own insertion order — one question at a time,
+  // because a turn that raises four calls at once is still four separate things
+  // to consent to, and a surface with one slot for them can only lose three.
+  let shown: string | undefined;
+  // How many gates the batch in front of the researcher has already settled.
+  // What makes the counter read "2 of 4" rather than restarting at "1 of 3".
+  // Reset when the queue drains, so it counts the batch and not the session.
+  let settledInGate = 0;
+  // The last card and counter actually published, so re-publishing something
+  // unchanged emits nothing.
+  let published: { id: string; position: number; total: number } | undefined;
   let nextRequest = 1;
 
   const emitLive = (): void => {
@@ -459,10 +557,47 @@ export async function startSession(options: {
   });
 
   connection.onRequest("session/request_permission", async (raw) => {
-    const params = raw as { toolCall?: { toolCallId?: string; title?: string } };
+    const params = raw as {
+      toolCall?: { toolCallId?: string; title?: string };
+      options?: unknown;
+    };
     const title = params.toolCall?.title ?? "";
+    /** The agent's own id for a verdict, or a refusal saying it offered none
+     *  this machine could answer with. */
+    const answer = (
+      verdict: Verdict,
+    ): { outcome: { outcome: "selected"; optionId: string } } | undefined => {
+      const optionId = permissionAnswer(params.options, verdict);
+      return optionId === undefined ? undefined : { outcome: { outcome: "selected", optionId } };
+    };
+    const unanswerable = (): { outcome: { outcome: "cancelled" } } => {
+      const entry: ExecutionLogEntry = {
+        ts: Math.floor(Date.now() / 1000),
+        toolUseId: params.toolCall?.toolCallId ?? "tool",
+        tool: "other",
+        ...(title !== "" ? { title } : {}),
+        input: {},
+        decision: "denied",
+        isError: true,
+        result:
+          "this agent offered no answer this machine could give, so the call was left undecided",
+      };
+      emitStep(entry);
+      return { outcome: { outcome: "cancelled" } };
+    };
     const target = pathFrom(title);
     const mode: "read" | "write" = /write|edit|create|delete/i.test(title) ? "write" : "read";
+
+    // Before anything is asked of anyone. A card offering Allow and Deny is a
+    // promise that either answer can be delivered, and an agent that offered
+    // no way to say one of them cannot have it delivered — so the refusal
+    // belongs here, where nobody has been asked yet, rather than after a
+    // researcher has answered a question that was never answerable.
+    if (
+      permissionAnswer(params.options, "allow") === undefined ||
+      permissionAnswer(params.options, "reject") === undefined
+    )
+      return unanswerable();
 
     // Checked first, regardless of which turn this request could even be
     // attributed to: a standing grant is the researcher's own prior
@@ -485,8 +620,10 @@ export async function startSession(options: {
         tool: params.toolCall?.toolCallId ?? "tool",
         detail: title,
       };
+      const allowed = answer("allow");
+      if (allowed === undefined) return unanswerable();
       emitStep(recordDecision(card, sessionGrant ? "allowed-conversation" : "allowed-study"));
-      return { outcome: { outcome: "selected", optionId: "allow-once" } };
+      return allowed;
     }
 
     // Unlike `session/update`'s notifications, a wrongly-attributed answer
@@ -519,7 +656,7 @@ export async function startSession(options: {
       // second row claiming the call executed, directly after the row
       // saying it was refused.
       emitStep(entry);
-      return { outcome: { outcome: "selected", optionId: "reject-once" } };
+      return answer("reject") ?? { outcome: { outcome: "cancelled" } };
     }
 
     const id = `pr_${nextRequest++}`;
@@ -533,12 +670,21 @@ export async function startSession(options: {
       tool: params.toolCall?.toolCallId ?? "tool",
       detail: title,
     };
-    cards.set(id, request);
-    onEvent({ event: "permission-card", request });
-    onEvent({ event: "state", state: { state: "awaiting-permission", request, ...(plan ? { plan } : {}) } });
-
-    const optionId = await new Promise<string>((resolve) => waiting.set(id, resolve));
-    return { outcome: { outcome: "selected", optionId } };
+    // The same two questions the fast path above asked, asked again if this
+    // card ever reaches the head of the queue. A batch is raised all at once,
+    // so a sibling's answer can arrive after this card was already waiting —
+    // and the grant it created covers this call exactly as it would have if it
+    // had existed when the call first arrived.
+    const verdict = await gated(request, () =>
+      target === undefined
+        ? undefined
+        : covers(sessionGrants, target, mode)
+          ? "allowed-conversation"
+          : covers(standing, target, mode)
+            ? "allowed-study"
+            : undefined,
+    );
+    return answer(verdict) ?? unanswerable();
   });
 
   /** Merges a decision about a permission-gated call into its execution-log
@@ -568,15 +714,101 @@ export async function startSession(options: {
     return entry;
   };
 
-  // A permission card is a transient execution gate. Once its decision is
-  // recorded, publish the resumed state before releasing the ACP request so
-  // a persisted recovery snapshot cannot keep offering an already-spent
-  // decision after a reload.
-  const leavePermissionGate = (): void => {
+  /**
+   * Puts the head of the queue in front of the researcher, or leaves the gate
+   * once there is nothing left to ask about.
+   *
+   * A permission card is a transient execution gate, and a turn may hold
+   * several at once: an agent asked to batch independent tool calls into one
+   * block raises one request per call, all of them before any is answered.
+   * Only ONE is ever published, because the turn state has one slot for a
+   * question and a second card written into it would erase the first — which
+   * is not a display defect but a silent loss of consent: the researcher never
+   * sees the request, and the agent is eventually told they refused it.
+   *
+   * So the rest wait here, and each decision publishes the next instead of
+   * ending the gate. The gate ends when the queue is actually empty.
+   *
+   * Called after a decision is recorded and before the ACP request it settles
+   * is released, so a persisted recovery snapshot cannot keep offering an
+   * already-spent decision after a reload.
+   */
+  const publishGate = (): void => {
+    // A card whose answer arrived while it waited is not a question any more.
+    // Drained here rather than shown, because asking a researcher to allow
+    // something they just allowed teaches them their last answer meant less
+    // than it said.
+    while (shown === undefined || !waiting.has(shown)) {
+      const [next] = waiting.keys();
+      if (next === undefined) {
+        shown = undefined;
+        published = undefined;
+        settledInGate = 0;
+        onEvent({
+          event: "state",
+          state: plan ? { state: "executing", plan } : { state: "planning" },
+        });
+        return;
+      }
+      const already = coverage.get(next)?.();
+      if (already === undefined) {
+        shown = next;
+        break;
+      }
+      const settle = waiting.get(next);
+      const covered = cards.get(next);
+      waiting.delete(next);
+      cards.delete(next);
+      coverage.delete(next);
+      if (covered) emitStep(recordDecision(covered, already));
+      settle?.("allow");
+    }
+
+    const head = shown;
+    if (head === undefined) return;
+    const request = cards.get(head);
+    if (request === undefined) return;
+    const position = settledInGate + 1;
+    const total = settledInGate + waiting.size;
+    if (
+      published !== undefined &&
+      published.id === head &&
+      published.position === position &&
+      published.total === total
+    )
+      return;
+    // Only a card the researcher has not been shown yet is a new card. The
+    // same card re-published with a grown `total` — a sibling raised while
+    // this one was still on screen — is the same question, and announcing it
+    // twice would put two of it in a log that records one per gate.
+    const first = published?.id !== head;
+    published = { id: head, position, total };
+    if (first) onEvent({ event: "permission-card", request });
     onEvent({
       event: "state",
-      state: plan ? { state: "executing", plan } : { state: "planning" },
+      state: {
+        state: "awaiting-permission",
+        request,
+        // Absent for a lone gate: there is no batch to place it in, and "1 of
+        // 1" is a count of nothing.
+        ...(total > 1 ? { queue: { position, total } } : {}),
+        ...(plan ? { plan } : {}),
+      },
     });
+  };
+
+  /** Holds a raised card until it is answered — by the researcher, or by
+   *  consent `covered` reports has since arrived for it. Every gate in this
+   *  session goes through here, so there is one queue and one place that
+   *  decides what is on screen. */
+  const gated = (request: PermissionRequest, covered: () => Covered): Promise<Verdict> => {
+    cards.set(request.id, request);
+    coverage.set(request.id, covered);
+    // The executor runs synchronously, so `waiting` has this card before
+    // `publishGate` below goes looking for the head of the queue.
+    const verdict = new Promise<Verdict>((resolve) => waiting.set(request.id, resolve));
+    publishGate();
+    return verdict;
   };
 
   /** Settles every card still open when the turn ends underneath it. A card
@@ -588,12 +820,19 @@ export async function startSession(options: {
    *  card with no resolution a consumer would otherwise have to guess at. */
   const abandonCards = (): void => {
     for (const [id, resolve] of waiting) {
-      resolve("reject-once");
+      resolve("reject");
       const card = cards.get(id);
       if (card) emitStep(recordDecision(card, "cancelled"));
     }
     waiting.clear();
     cards.clear();
+    coverage.clear();
+    // Deliberately not `publishGate()`: the caller is ending the turn and
+    // emits `completed` next, and a `planning` state slipped in between would
+    // say this session went back to work.
+    shown = undefined;
+    published = undefined;
+    settledInGate = 0;
   };
 
   // Bumped once per `prompt()` call — the epoch the turn that call started
@@ -737,11 +976,16 @@ export async function startSession(options: {
       waiting.delete(decision.requestId);
       const card = cards.get(decision.requestId);
       cards.delete(decision.requestId);
+      coverage.delete(decision.requestId);
+      // Counted whichever way this card goes. The counter names the
+      // researcher's place in the batch, and a denial is as much a decision
+      // made as an allowance.
+      settledInGate += 1;
 
       if (decision.decision.decision === "deny") {
         if (card) emitStep(recordDecision(card, "denied"));
-        leavePermissionGate();
-        resolve("reject-once");
+        publishGate();
+        resolve("reject");
         return;
       }
       const scope = decision.decision.scope;
@@ -756,8 +1000,8 @@ export async function startSession(options: {
               "a grant for every Study needs the lab's grant store, which this lab does not have yet",
             ),
           );
-        leavePermissionGate();
-        resolve("reject-once");
+        publishGate();
+        resolve("reject");
         return;
       }
       const grant = card ? grantFrom(card) : undefined;
@@ -774,8 +1018,8 @@ export async function startSession(options: {
                 : "allowed-study",
           ),
         );
-      leavePermissionGate();
-      resolve("allow-once");
+      publishGate();
+      resolve("allow");
     },
     cancel() {
       cancelTurn();

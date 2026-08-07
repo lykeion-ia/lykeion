@@ -782,6 +782,16 @@
 
 /* Permission card. */
 
+/* Where this card sits in a batch of gates the turn raised at once. Quiet —
+   it is context for the question below, not the question. */
+.perm-queue {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-subtle);
+}
+
 /* The headline: what is about to happen, as a question. */
 .perm-title {
   margin: 0;

@@ -1356,8 +1356,13 @@ it("cancels a queued same-session run durably without ever invoking its prompt",
   const secondFrames = lab.events
     .filter((post) => post.runId === "run_second")
     .flatMap((post) => post.frames);
+  // It said it was waiting, and then it said it was cancelled. Nothing
+  // between the two: no prose, no tool call, no plan — the prompt was never
+  // handed to the agent at all, which is what this test is about. Saying it
+  // was waiting is not running it.
   expect(secondFrames).toEqual([
-    { seq: 1, event: { event: "completed", state: { state: "cancelled" } } },
+    { seq: 1, event: { event: "state", state: { state: "queued", ahead: 1 } } },
+    { seq: 2, event: { event: "completed", state: { state: "cancelled" } } },
   ]);
 
   lab.send({
@@ -1887,4 +1892,70 @@ it("keeps one session across turns whose boundary has not changed", async () => 
   // One subprocess, and therefore one conversation: nothing about the
   // boundary changed, so nothing had to be given up to keep it honest.
   expect(readFileSync(opened, "utf8").trim().split("\n")).toHaveLength(1);
+});
+
+it("says a turn is waiting rather than working, until its place in the queue comes up", async () => {
+  // A researcher who typed ahead has a turn that has been taken and has not
+  // begun. Reported as `planning` it would read as the agent thinking about a
+  // prompt it has not been given yet; `queued` says what is true, and `ahead`
+  // is how many turns are in front of it.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { ask: "permission", toolCallId: "t1", title: "Write /tmp/somewhere" },
+  ]);
+  const lab = await stubLab([
+    {
+      type: "start-run",
+      runId: "run_head",
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: "se_wait",
+      agent: "claude",
+      prompt: "first",
+      grants: [],
+    },
+    {
+      type: "start-run",
+      runId: "run_waiting",
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: "se_wait",
+      agent: "claude",
+      prompt: "and also this",
+      grants: [],
+    },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const r = subsystem(lab.base, data);
+
+  await until(
+    () =>
+      lab.events.some(
+        (e) =>
+          e.runId === "run_waiting" &&
+          e.frames.some(
+            (f) => f.event.event === "state" && f.event.state.state === "queued",
+          ),
+      ),
+    "the second turn reporting itself as waiting",
+  );
+
+  const waiting = lab.events
+    .filter((e) => e.runId === "run_waiting")
+    .flatMap((e) => e.frames)
+    .find((f) => f.event.event === "state") as
+    | { event: { state: { state: string; ahead: number } } }
+    | undefined;
+  expect(waiting?.event.state).toEqual({ state: "queued", ahead: 1 });
+
+  // And the turn in front of it never says it is waiting: it is the one
+  // actually working.
+  expect(
+    lab.events
+      .filter((e) => e.runId === "run_head")
+      .flatMap((e) => e.frames)
+      .some((f) => f.event.event === "state" && f.event.state.state === "queued"),
+  ).toBe(false);
+
+  await r.stop();
 });

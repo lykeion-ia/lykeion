@@ -3,9 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  boundaryOf,
   canonicalPath,
   confine,
   covers,
+  deniedPaths,
+  NO_AGENT_HOME,
   renderSeatbeltProfile,
   sandboxBackendFor,
   type SandboxPolicy,
@@ -26,6 +29,7 @@ const policy = (over: Partial<SandboxPolicy> = {}): SandboxPolicy => ({
   workspace: "/work/task",
   grants: [],
   denied: [],
+  home: NO_AGENT_HOME,
   ...over,
 });
 
@@ -183,4 +187,115 @@ it("never grants a program location broad enough to swallow the boundary", () =>
   expect(profile).not.toContain(`(subpath "${canonicalPath(process.env.HOME ?? "/")}")`);
   // What a program genuinely needs is still there.
   expect(profile).toContain('(subpath "/bin/sh")');
+});
+
+it("lets a run open a connection, since the model it is reaching for is not on this machine", () => {
+  expect(renderSeatbeltProfile(policy())).toContain("(allow network-outbound)");
+});
+
+it("gives an agent read and write over the directory it was declared to own", () => {
+  const profile = renderSeatbeltProfile(
+    policy({ home: { state: ["/home/.agent"], credentials: [], sealed: [], private: [], patterns: [] } }),
+  );
+  expect(profile).toContain('(allow file-read* file-write* (subpath "/home/.agent"))');
+});
+
+it("gives an agent read alone over the store it authenticates from", () => {
+  const profile = renderSeatbeltProfile(
+    policy({ home: { state: [], credentials: ["/home/Library/Keychains"], sealed: [], private: [], patterns: [] } }),
+  );
+  expect(profile).toContain('(allow file-read* (subpath "/home/Library/Keychains"))');
+  expect(profile).not.toContain('file-write* (subpath "/home/Library/Keychains")');
+});
+
+it("seals an entry inside an agent's own home after the allow that would cover it", () => {
+  const profile = renderSeatbeltProfile(
+    policy({
+      home: {
+        state: ["/home/.agent"],
+        credentials: [],
+        sealed: ["/home/.agent/settings.json"],
+        private: [],
+        patterns: [],
+      },
+    }),
+  );
+  const allow = profile.indexOf('(subpath "/home/.agent")');
+  const deny = profile.indexOf('(subpath "/home/.agent/settings.json")');
+  expect(allow).toBeGreaterThan(-1);
+  expect(deny).toBeGreaterThan(allow);
+  expect(profile).toContain('(deny file-write* (subpath "/home/.agent/settings.json"))');
+});
+
+it("denies a private entry both ways, unlike a sealed one", () => {
+  const profile = renderSeatbeltProfile(
+    policy({
+      home: {
+        state: ["/home/.agent"],
+        credentials: [],
+        sealed: [],
+        private: ["/home/.agent/projects"],
+        patterns: [],
+      },
+    }),
+  );
+  expect(profile).toContain('(deny file-read* file-write* (subpath "/home/.agent/projects"))');
+});
+
+it("reopens this Task's own record last, so the narrow allow is what matches", () => {
+  // The directory holding every Task's record is denied; the one entry in it
+  // that belongs to this run is allowed again afterwards. Last match wins, so
+  // the order is the whole rule.
+  const profile = renderSeatbeltProfile(
+    policy({
+      home: {
+        state: ["/home/.agent", "/home/.agent/projects/-work-t-1"],
+        credentials: [],
+        sealed: [],
+        private: ["/home/.agent/projects"],
+        patterns: [],
+      },
+    }),
+  );
+  const deny = profile.indexOf('(deny file-read* file-write* (subpath "/home/.agent/projects"))');
+  // The last one, not the first: this path is also rendered among the agent's
+  // own allows further up, and what decides is whichever rule the kernel reads
+  // last.
+  const reopened = profile.lastIndexOf(
+    '(allow file-read* file-write* (subpath "/home/.agent/projects/-work-t-1"))',
+  );
+  expect(deny).toBeGreaterThan(-1);
+  expect(reopened).toBeGreaterThan(deny);
+});
+
+it("reopens nothing that was never denied, so an ordinary home renders no trailing allows", () => {
+  const profile = renderSeatbeltProfile(
+    policy({ home: { state: ["/home/.agent"], credentials: [], sealed: [], private: [], patterns: [] } }),
+  );
+  expect(profile).not.toContain("what the agent keeps inside what it is denied");
+});
+
+it("leaves an agent that declared no home reaching nothing of its own", () => {
+  const profile = renderSeatbeltProfile(policy());
+  expect(profile).not.toContain("Keychains");
+});
+
+it("does not deny the machine's credential service unconditionally, since a deny would outlive the allow", () => {
+  // Nothing in the baseline allows the enclosing directory, so this store is
+  // already out of reach by default. Naming it among the denies as well would
+  // survive the allow an agent's own home renders, and take the agent's
+  // credential with it.
+  expect(deniedPaths("/tmp/data").some((path) => path.includes("Keychains"))).toBe(false);
+});
+
+it("still denies the flat-file credential stores, where a deny is the only gate there is", () => {
+  const denied = deniedPaths(join(fresh(), "data"));
+  expect(denied.some((path) => path.endsWith(".ssh"))).toBe(true);
+  expect(denied.some((path) => path.endsWith("data"))).toBe(true);
+});
+
+it("tells two agents' boundaries apart, so one is never reused for the other", () => {
+  const one = boundaryOf(policy({ home: { state: ["/home/.a"], credentials: [], sealed: [], private: [], patterns: [] } }));
+  const other = boundaryOf(policy({ home: { state: ["/home/.b"], credentials: [], sealed: [], private: [], patterns: [] } }));
+  expect(one).not.toBe(other);
 });
