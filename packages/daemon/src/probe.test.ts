@@ -210,6 +210,53 @@ it("falls back to the compatibility Claude adapter when it is the only bridge on
   expect(claude.sessionReady).toBe(true);
 });
 
+/** An adapter that handshakes, then advertises a mode named `witnessed` only
+ *  when the isolation under test actually reached it — a probe's boundary
+ *  denies writes outside its throwaway workspace, so what the adapter saw is
+ *  answered back through `session/new` rather than dropped in a file. */
+function witnessingAdapterScript(check: string): string {
+  return [
+    "read -r line",
+    'printf \'{"jsonrpc":"2.0","id":1,"result":{}}\\n\'',
+    "read -r line",
+    `if ${check}; then marker=witnessed; else marker=missed; fi`,
+    'printf \'{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","modes":{"currentModeId":"%s","availableModes":[{"id":"%s","name":"Witness"},{"id":"other","name":"Other"}]}}}\\n\' "$marker" "$marker"',
+    "read -r line || true",
+  ].join("\n");
+}
+
+it("opens its throwaway claude session with the same isolation a real one carries", async () => {
+  // A probe's session is a real session an agent could act in, so the
+  // owner's registries are shut out of it the same way: the `_meta` that
+  // empties the settings sources and holds MCP config strict rides the
+  // probe's `session/new` too.
+  const path = pathRunning({
+    claude: 'echo "2.1.220"',
+    "claude-agent-acp": witnessingAdapterScript(
+      'case "$line" in *\'"settingSources":[]\'*\'"strictMcpConfig":true\'*) true ;; *) false ;; esac',
+    ),
+  });
+  const claude = (await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000 })).find(
+    (c) => c.id === "claude",
+  )!;
+  expect(claude.sessionReady).toBe(true);
+  const mode = claude.options?.find((option) => option.id === "mode");
+  expect(mode?.currentValue).toBe("witnessed");
+});
+
+it("spawns its throwaway codex session with the registryless base config a real one gets", async () => {
+  const path = pathRunning({
+    codex: 'echo "0.146.0"',
+    "codex-acp": witnessingAdapterScript('[ "$CODEX_CONFIG" = \'{"mcp_servers":{}}\' ]'),
+  });
+  const codex = (await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000 })).find(
+    (c) => c.id === "codex",
+  )!;
+  expect(codex.sessionReady).toBe(true);
+  const mode = codex.options?.find((option) => option.id === "mode");
+  expect(mode?.currentValue).toBe("witnessed");
+});
+
 it("says the CLI is there but the adapter is not, rather than calling it absent", async () => {
   const claude = (await probeAgentClis({ dataDir: stateDir(), path: pathWith({ claude: "2.1.220" }) })).find(
     (c) => c.id === "claude",

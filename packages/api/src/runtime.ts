@@ -181,11 +181,13 @@ export interface NotebookCell {
   ts: number;
   /** The cell's output messages, in arrival order. */
   outputs: KernelMessage[];
-  /** The tool call this cell arrived as. Absent on a cell the researcher
-   *  typed, which is not a tool call — and absent on an agent's as well:
-   *  the tools a machine publishes take a cell's source and nothing else,
-   *  an agent's own id for a call never travels as far as a kernel, and
-   *  nothing sets this. So a cell and its Execution Log entry stand
-   *  separately, and nothing joins them. */
+  /** The tool call this cell arrived as, joining it to the Execution Log
+   *  entry carrying the same `toolUseId`. Set on an agent's cell one of two
+   *  ways: the provider forwards its own id for the call in the MCP call's
+   *  `_meta` and the kernel keeps it on the cell, or — when a provider
+   *  forwards none — the daemon reads the session's own log and names the
+   *  kernel call the cell arrived as. Absent on a cell the researcher
+   *  typed, which is not a tool call, and on an agent's cell neither path
+   *  could join truthfully. */
   toolUseId?: string;
 }

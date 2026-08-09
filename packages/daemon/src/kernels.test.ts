@@ -333,6 +333,7 @@ it("routes a cell notification to the run of the session it names", () => {
     host,
     (sessionId) => (sessionId === "sess_1" ? "run_1" : undefined),
     (runId, event) => events.push({ runId, event }),
+    () => undefined,
   );
 
   announce("cell", cellAnnouncement("sess_1"));
@@ -357,6 +358,7 @@ it("drops a cell notification for a session with no run currently taking its tur
     host,
     () => undefined,
     (runId, event) => events.push({ runId, event }),
+    () => undefined,
   );
 
   announce("cell", cellAnnouncement("sess_1"));
@@ -372,6 +374,7 @@ it("routes a cell to whichever run is current when a session's kernel outlives m
     host,
     (sessionId) => (sessionId === "sess_1" ? current : undefined),
     (runId, event) => events.push({ runId, event }),
+    () => undefined,
   );
 
   announce("cell", cellAnnouncement("sess_1"));
@@ -389,6 +392,7 @@ it("keeps two sessions' cells apart", () => {
     host,
     (sessionId) => runFor[sessionId],
     (runId, event) => events.push({ runId, event }),
+    () => undefined,
   );
 
   announce("cell", cellAnnouncement("sess_1"));
@@ -409,6 +413,7 @@ it("drops a cell the researcher's own REPL ran, which reaches the lab its own wa
     host,
     () => "run_1",
     (runId, event) => events.push({ runId, event }),
+    () => undefined,
   );
 
   announce("cell", {
@@ -420,6 +425,63 @@ it("drops a cell the researcher's own REPL ran, which reaches the lab its own wa
   // The agent's own cell, on the same session and the same run, still travels.
   announce("cell", cellAnnouncement("sess_1"));
   expect(events).toHaveLength(1);
+});
+
+it("asks the session which kernel call a cell with no toolUseId arrived as", () => {
+  const { host, announce } = fakeHost();
+  const events: Array<{ runId: string; event: RunEvent }> = [];
+  const asked: Array<[string, string]> = [];
+  forwardKernelCells(
+    host,
+    () => "run_1",
+    (runId, event) => events.push({ runId, event }),
+    (sessionId, source) => {
+      asked.push([sessionId, source]);
+      return "toolu_9";
+    },
+  );
+
+  announce("cell", cellAnnouncement("sess_1"));
+
+  expect(asked).toEqual([["sess_1", "1 + 1"]]);
+  const forwarded = events[0]!.event as Extract<RunEvent, { event: "cell" }>;
+  expect(forwarded.cell.toolUseId).toBe("toolu_9");
+});
+
+it("keeps the toolUseId a cell announced itself, without asking the session", () => {
+  // A provider that forwarded its own id down the MCP channel named its own
+  // call, and is the authority on it.
+  const { host, announce } = fakeHost();
+  const events: Array<{ runId: string; event: RunEvent }> = [];
+  forwardKernelCells(
+    host,
+    () => "run_1",
+    (runId, event) => events.push({ runId, event }),
+    () => {
+      throw new Error("an announced id is not a question");
+    },
+  );
+
+  announce("cell", { ...cellAnnouncement("sess_1"), toolUseId: "toolu_own" });
+
+  const forwarded = events[0]!.event as Extract<RunEvent, { event: "cell" }>;
+  expect(forwarded.cell.toolUseId).toBe("toolu_own");
+});
+
+it("forwards a cell nothing could join with no toolUseId at all", () => {
+  const { host, announce } = fakeHost();
+  const events: Array<{ runId: string; event: RunEvent }> = [];
+  forwardKernelCells(
+    host,
+    () => "run_1",
+    (runId, event) => events.push({ runId, event }),
+    () => undefined,
+  );
+
+  announce("cell", cellAnnouncement("sess_1"));
+
+  const forwarded = events[0]!.event as Extract<RunEvent, { event: "cell" }>;
+  expect("toolUseId" in forwarded.cell).toBe(false);
 });
 
 /** The working directory a machine has on an ordinary install: the default

@@ -702,7 +702,12 @@ export function startRuns(options: {
     const reaching = async (): Promise<void> => {
       const host = options.kernelHost!();
       if (cellRoutingHost !== host) {
-        forwardKernelCells(host, (sid) => runOfSession.get(sid), emit);
+        forwardKernelCells(
+          host,
+          (sid) => runOfSession.get(sid),
+          emit,
+          (sid, source) => liveSessions.get(sid)?.claimKernelCall(source),
+        );
         cellRoutingHost = host;
       }
       const hello = (await host.call("host.hello", {})) as {

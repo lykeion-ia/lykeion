@@ -7,7 +7,9 @@ no field on either tool that names one.
 
 A tool answers with the cell, twice over. The structured half is the record
 the lab keeps; the text half is what the agent reads, which is the cell's own
-output and nothing about how it was run.
+output and nothing about how it was run. When a call's `_meta` carries the
+caller's own id for it, the cell keeps that id too, so the record the lab
+keeps and the record the agent's transcript keeps name the same event.
 """
 
 from __future__ import annotations
@@ -135,12 +137,42 @@ def _text(arguments: dict[str, Any] | None, key: str) -> str:
     return value
 
 
-def cell_for(reach: Reach, source: str) -> dict[str, Any]:
+# The keys a caller's own id for this call is looked for under, in the order
+# they are tried. Claude Code forwards its tool-use id under a vendor key;
+# the bare spellings are for any adapter that says the same thing plainly.
+TOOL_USE_ID_KEYS = ("claudecode/toolUseId", "toolUseId", "toolCallId")
+
+
+def tool_use_id_from(meta: Any) -> str | None:
+    """The caller's own id for this call, when its `_meta` carried one.
+
+    A provider that forwards its tool-use id here names the very record its
+    transcript keeps for the call, so the cell and that record can be read as
+    one event. Absent, non-string, or empty is answered with None rather than
+    a guess — the daemon may still join the cell to its step by observation.
+    """
+    for key in TOOL_USE_ID_KEYS:
+        value: Any = None
+        if isinstance(meta, dict):
+            value = meta.get(key)
+        elif meta is not None:
+            value = getattr(meta, key, None)
+            if value is None:
+                extra = getattr(meta, "model_extra", None)
+                if isinstance(extra, dict):
+                    value = extra.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def cell_for(reach: Reach, source: str, tool_use_id: str | None) -> dict[str, Any]:
     """One cell, run in the kernel this server is bound to."""
     return reach.registry.execute(
         reach.identity,
         source,
         origin={"surface": "agent", "by": reach.agent},
+        tool_use_id=tool_use_id,
     )
 
 
@@ -164,7 +196,8 @@ def server_for(reach: Reach) -> Server[Any]:
             source = shell_source(_text(params.arguments, "command"))
         else:
             raise ValueError(f"this machine publishes no tool named {params.name}")
-        return _answer(await asyncio.to_thread(cell_for, reach, source))
+        tool_use_id = tool_use_id_from(getattr(params, "meta", None))
+        return _answer(await asyncio.to_thread(cell_for, reach, source, tool_use_id))
 
     return Server(
         "lykeion",

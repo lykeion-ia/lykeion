@@ -8,6 +8,7 @@ import { connectAcp } from "./acp";
 import { confinementFor } from "./agent-home";
 import { confine, noBackendReason, policyFor, sandboxBackendFor } from "./sandbox";
 import { readAdvertised } from "./agent-options";
+import { adapterEnvFor, sessionMetaFor } from "./session";
 
 /**
  * What a probe of this machine can say about a catalogue entry, before it is
@@ -343,14 +344,19 @@ async function probeAdapter(
 
   // Confined exactly as a real session is. A probe that opens a session
   // opens one an agent could act in, and "never launch an unsandboxed run"
-  // is not a rule about which caller asked.
+  // is not a rule about which caller asked — and the same goes for the
+  // isolation a real session carries: the per-agent adapter env rides the
+  // spawn here just as it does in `startSession`.
   const workspace = throwawayWorkspace();
   const confined = confine(
     platform,
     policyFor({ workspace, grants: [], dataDir, ...confinementFor(agentId, workspace) }),
     { command: resolved, args: [] },
   );
-  const connection = await connectAcp(confined.command, confined.args, { cwd: workspace });
+  const connection = await connectAcp(confined.command, confined.args, {
+    cwd: workspace,
+    env: { ...process.env, ...adapterEnvFor(agentId) },
+  });
   // A throwaway session, opened and closed on every path. Options are
   // advertised on `session/new` rather than on `initialize`, and a Task
   // holds no session until its first Send — so without this the picker would
@@ -363,8 +369,15 @@ async function probeAdapter(
     onResolved?.(agentId, resolved);
     let options: AgentOption[] | undefined;
     try {
+      // A throwaway session is still a session the owner's registries could
+      // leak into, so it carries the same `_meta` a real one does.
+      const meta = sessionMetaFor(agentId);
       const created = await raced(
-        connection.request("session/new", { cwd: workspace, mcpServers: [] }),
+        connection.request("session/new", {
+          cwd: workspace,
+          mcpServers: [],
+          ...(meta === undefined ? {} : { _meta: meta }),
+        }),
         timeoutMs,
         signal,
       );

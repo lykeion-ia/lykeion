@@ -101,14 +101,16 @@ it("tells an agent about no servers when it was given none", async () => {
   expect(newSessionParams()).toMatchObject({ mcpServers: [] });
 });
 
-it("empties a claude session's settings sources so the owner's own config stays out of the run", async () => {
+it("empties a claude session's settings sources and holds it to strict MCP config", async () => {
   // Both shipped claude adapters load the machine owner's user scope unless
   // told otherwise — their personal MCP servers and account connectors
-  // included. This machine tells them otherwise on every session, so the
-  // tools a run reaches are exactly the ones named on session/new.
+  // included. Emptied settings sources close the filesystem scopes; strict
+  // MCP config closes the CLI's own user-scope registry and the connectors
+  // its account delivers. Together they hold the tools a run reaches to
+  // exactly the ones named on session/new.
   const { newSessionParams } = await session([], [], { agent: "claude" });
   expect(newSessionParams()).toMatchObject({
-    _meta: { claudeCode: { options: { settingSources: [] } } },
+    _meta: { claudeCode: { options: { settingSources: [], strictMcpConfig: true } } },
   });
 });
 
@@ -159,6 +161,81 @@ it("carries thinking on its own channel, never glued to prose", async () => {
   const prose = events.filter((e) => e.event === "assistant-text") as Array<{ text: string }>;
   expect(prose.map((p) => p.text).join("")).toBe("done");
   expect(events.filter((e) => e.event === "assistant-text-final")).toHaveLength(1);
+});
+
+it("joins a cell to the kernel call whose input is the cell's source, at most once", async () => {
+  const { s, events } = await session([
+    {
+      emit: "tool_call",
+      toolCallId: "toolu_k1",
+      title: "mcp__lykeion__run_python",
+      rawInput: { code: "1 + 1" },
+    },
+    { emit: "tool_call_update", toolCallId: "toolu_k1", status: "completed", content: "2" },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(s.claimKernelCall("1 + 1")).toBe("toolu_k1");
+  // Claimed once: a second cell with the same source needs a call of its own,
+  // and answering the same call twice would join two cells to one step.
+  expect(s.claimKernelCall("1 + 1")).toBeUndefined();
+});
+
+it("joins a shell cell to its call by the command carried inside the source", async () => {
+  const { s, events } = await session([
+    {
+      emit: "tool_call",
+      toolCallId: "exec-9f",
+      title: "mcp__lykeion__run_shell",
+      rawInput: { command: "echo eleven rows" },
+    },
+    { emit: "tool_call_update", toolCallId: "exec-9f", status: "completed", content: "eleven rows" },
+  ]);
+  s.prompt("go");
+  await until(() => settled(events));
+  // The kernel runs a shell command wrapped in a subprocess template, so the
+  // cell's source carries the command without being equal to it.
+  const source = "import subprocess as _r\n_r.run(['/bin/sh', '-c', 'echo eleven rows'])\n";
+  expect(s.claimKernelCall(source)).toBe("exec-9f");
+});
+
+it("joins a cell to the one still-pending kernel call when its input answers nothing", async () => {
+  const { s, events } = await session([
+    { emit: "tool_call", toolCallId: "t-read", title: "Read counts.csv", rawInput: { path: "counts.csv" } },
+    { emit: "tool_call", toolCallId: "exec-p", title: "mcp__lykeion__run_python" },
+    { sleep: 200 },
+    { emit: "tool_call_update", toolCallId: "exec-p", status: "completed", content: "" },
+  ]);
+  s.prompt("go");
+  await until(
+    () =>
+      events.filter((e) => e.event === "log-entry").length >= 2 && !settled(events),
+  );
+  // Two calls are pending, but only one names the kernel server — an
+  // adapter that carried no input for the call still gets its cell joined.
+  expect(s.claimKernelCall("x = 1")).toBe("exec-p");
+  await until(() => settled(events));
+});
+
+it("forgets last turn's kernel calls when a new turn begins", async () => {
+  const script = [
+    {
+      emit: "tool_call",
+      toolCallId: "toolu_k1",
+      title: "mcp__lykeion__run_python",
+      rawInput: { code: "1 + 1" },
+    },
+    { emit: "tool_call_update", toolCallId: "toolu_k1", status: "completed", content: "2" },
+  ];
+  const { s, events } = await session(script);
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(s.claimKernelCall("1 + 1")).toBe("toolu_k1");
+  s.prompt("again");
+  await until(() => events.filter((e) => e.event === "completed").length === 2);
+  // The turn's log was reset and replayed, so the call is claimable afresh
+  // rather than still spent from the turn before.
+  expect(s.claimKernelCall("1 + 1")).toBe("toolu_k1");
 });
 
 it("turns a tool call and its result into one logical log entry that ran", async () => {

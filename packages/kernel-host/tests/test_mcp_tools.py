@@ -12,6 +12,7 @@ from __future__ import annotations
 
 
 import ast
+import functools
 import io
 import json
 import shutil
@@ -90,8 +91,14 @@ def mcp(registry: Registry, tmp_path) -> Iterator[Calling]:
     with anyio.from_thread.start_blocking_portal() as portal:
         with portal.wrap_async_context_manager(_session(reach)) as session:
 
-            def call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-                answer = portal.call(session.call_tool, name, arguments)
+            def call(
+                name: str,
+                arguments: dict[str, Any],
+                meta: dict[str, Any] | None = None,
+            ) -> dict[str, Any]:
+                answer = portal.call(
+                    functools.partial(session.call_tool, name, arguments, meta=meta)
+                )
                 return {
                     "cell": answer.structured_content["cell"],
                     "text": "".join(
@@ -121,6 +128,30 @@ def test_a_tool_call_carries_its_identity_into_the_cell(mcp: Calling):
     cell = mcp.call("run_python", {"code": "1"})["cell"]
     assert cell["name"] == "main"
     assert cell["origin"] == {"surface": "agent", "by": "claude"}
+
+
+def test_a_call_whose_meta_names_its_tool_use_id_leaves_it_on_the_cell(mcp: Calling):
+    # Claude Code forwards the id its own transcript keeps for the call, under
+    # a vendor key. The cell keeps it, so the notebook record and the agent's
+    # execution log name the same event.
+    cell = mcp.call(
+        "run_python", {"code": "1"}, meta={"claudecode/toolUseId": "toolu_01x"}
+    )["cell"]
+    assert cell["toolUseId"] == "toolu_01x"
+
+
+def test_a_shell_call_carries_its_tool_use_id_the_same_way(mcp: Calling):
+    cell = mcp.call(
+        "run_shell", {"command": "true"}, meta={"toolUseId": "exec-4f"}
+    )["cell"]
+    assert cell["toolUseId"] == "exec-4f"
+
+
+def test_a_call_with_no_meta_leaves_the_cell_without_a_tool_use_id(mcp: Calling):
+    # Absent rather than null: a provider that forwarded nothing said nothing,
+    # and the daemon may still join the cell to its step by observation.
+    cell = mcp.call("run_python", {"code": "1"})["cell"]
+    assert "toolUseId" not in cell
 
 
 def test_both_calls_reach_the_same_kernel(mcp: Calling):

@@ -271,6 +271,9 @@ export interface CellAnnouncement {
   wallMs: number;
   ts: number;
   outputs: NotebookCell["outputs"];
+  /** The caller's own id for the tool call this cell arrived as, when the
+   *  provider forwarded one in the call's `_meta`. Absent otherwise — the
+   *  forwarder may still fill it in from the session's own log. */
   toolUseId?: string;
 }
 
@@ -295,17 +298,26 @@ export interface CellAnnouncement {
  * will be known by: this machine has no durable store of its own, and the
  * lab mints the one that lasts when it records the cell. What travels here
  * only has to be distinct enough to satisfy the shape a `RunEvent` carries.
+ *
+ * A cell that arrives without a `toolUseId` — a provider that forwarded no
+ * id of its own down the MCP channel — is offered to `claimToolUseId`, the
+ * session's own view of which kernel call is in flight, so the recorded
+ * cell still names the Execution Log step it arrived as. An announced id
+ * always wins: the provider naming its own call is the authority on it.
  */
 export function forwardKernelCells(
   host: KernelHost,
   runIdForSession: (sessionId: string) => string | undefined,
   emit: (runId: string, event: RunEvent) => void,
+  claimToolUseId: (sessionId: string, source: string) => string | undefined,
 ): void {
   host.on("cell", (params) => {
     const announced = params as CellAnnouncement;
     if (announced.origin?.surface !== "agent") return;
     const runId = runIdForSession(announced.sessionId);
     if (runId === undefined) return;
+    const toolUseId =
+      announced.toolUseId ?? claimToolUseId(announced.sessionId, announced.source);
     emit(runId, {
       event: "cell",
       cell: {
@@ -321,7 +333,7 @@ export function forwardKernelCells(
         wallMs: announced.wallMs,
         ts: announced.ts,
         outputs: announced.outputs,
-        ...(announced.toolUseId === undefined ? {} : { toolUseId: announced.toolUseId }),
+        ...(toolUseId === undefined ? {} : { toolUseId }),
       },
     });
   });

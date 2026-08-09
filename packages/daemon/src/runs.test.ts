@@ -233,10 +233,13 @@ it("gives a session a kernel before it starts the agent it names one to", async 
   // real adapters silently drop an entry without it — a session that opens
   // with no kernel tools and no error anywhere.
   expect(params.mcpServers[0]?.env).toEqual([]);
-  // Alongside the bridge, the run's settings sources are emptied — a claude
-  // adapter left to its defaults loads the machine owner's own MCP servers
-  // into the very session the bridge was supposed to be the whole tool set of.
-  expect(params._meta).toMatchObject({ claudeCode: { options: { settingSources: [] } } });
+  // Alongside the bridge, the run's settings sources are emptied and its MCP
+  // config held strict — a claude adapter left to its defaults loads the
+  // machine owner's own MCP servers and account connectors into the very
+  // session the bridge was supposed to be the whole tool set of.
+  expect(params._meta).toMatchObject({
+    claudeCode: { options: { settingSources: [], strictMcpConfig: true } },
+  });
   expect(params.mcpServers[0]?.args).toContain("--session");
   expect(params.mcpServers[0]?.args).toContain("se_1");
   // The word the relay carries is the one the host was told to expect, and
@@ -307,6 +310,79 @@ it("forwards a cell the kernel host announces to the run currently taking its se
   // than the routing decision itself.
   expect("sessionId" in forwarded.cell).toBe(false);
   expect("taskId" in forwarded.cell).toBe(false);
+  // A turn whose log holds no kernel call leaves the cell unjoined rather
+  // than joined to a guess.
+  expect("toolUseId" in forwarded.cell).toBe(false);
+});
+
+it("joins a forwarded cell to the kernel call the session's own log says it arrived as", async () => {
+  // The announcement below carries no toolUseId of its own — a provider that
+  // forwarded nothing down the MCP channel — so the daemon reads the turn's
+  // log instead, where the adapter announced the very call the cell ran as.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    {
+      emit: "tool_call",
+      toolCallId: "toolu_x",
+      title: "mcp__lykeion__run_python",
+      rawInput: { code: "1 + 1" },
+    },
+    { sleep: 500 },
+    { endTurn: "end_turn" },
+  ]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_joined_cell"));
+  await until(() => existsSync(named), "the session opening");
+  // The claim reads the turn's log, so the call has to have reached it —
+  // announced to the lab is announced to the log, and later than it.
+  await until(
+    () =>
+      lab.events.some(
+        (post) =>
+          post.runId === "run_joined_cell" &&
+          post.frames.some((frame) => frame.event.event === "log-entry"),
+      ),
+    "the kernel call reaching the log",
+  );
+
+  kernels.announceCell({
+    sessionId: "se_1",
+    taskId: "t_cmp",
+    kernelId: "k_1",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 1,
+    source: "1 + 1",
+    origin: { surface: "agent", by: "a_claude" },
+    ok: true,
+    wallMs: 4,
+    ts: 99,
+    outputs: [],
+  });
+
+  await until(
+    () =>
+      lab.events.some(
+        (post) =>
+          post.runId === "run_joined_cell" &&
+          post.frames.some((frame) => frame.event.event === "cell"),
+      ),
+    "the cell reaching the lab",
+  );
+
+  const forwarded = lab.events
+    .filter((post) => post.runId === "run_joined_cell")
+    .flatMap((post) => post.frames)
+    .map((frame) => frame.event)
+    .find((event): event is Extract<RunEvent, { event: "cell" }> => event.event === "cell")!;
+  expect(forwarded.cell.toolUseId).toBe("toolu_x");
 });
 
 it("drops a cell the kernel host announces for a session with no run currently taking its turn", async () => {

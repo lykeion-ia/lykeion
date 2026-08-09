@@ -64,7 +64,12 @@ acpConformance("stub", () => ({
 // `claude` is a separate question, and not this suite's to answer.
 const certify = process.env.LYKEION_CERTIFY_ADAPTERS === "1";
 (certify ? describe : describe.skip)("certified adapters", () => {
-  acpConformance("claude-code-acp", () => ({ command: "claude-code-acp", args: [], agent: "claude" }));
-  acpConformance("claude-agent-acp", () => ({ command: "claude-agent-acp", args: [], agent: "claude" }));
-  acpConformance("codex-acp", () => ({ command: "codex-acp", args: [], agent: "codex" }));
+  // Retried, unlike the stub: these behaviours ride a real model's choices,
+  // and one unlucky turn — prose where a plan was asked for, a refusal where
+  // an escalation was — must not certify an adapter broken. The stub's
+  // script is deterministic, so its failures stay loud on the first try.
+  const retried = { retry: 2 };
+  acpConformance("claude-code-acp", () => ({ command: "claude-code-acp", args: [], agent: "claude" }), retried);
+  acpConformance("claude-agent-acp", () => ({ command: "claude-agent-acp", args: [], agent: "claude" }), retried);
+  acpConformance("codex-acp", () => ({ command: "codex-acp", args: [], agent: "codex" }), retried);
 });

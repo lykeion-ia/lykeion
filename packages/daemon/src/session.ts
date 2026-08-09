@@ -10,7 +10,7 @@ import type {
 import { isToolKind } from "@lykeion/api";
 import { connectAcp, type AcpConnection } from "./acp";
 import { confinementFor } from "./agent-home";
-import { daemonProgramPaths } from "./kernels";
+import { daemonProgramPaths, KERNEL_SERVER_NAME } from "./kernels";
 import { boundaryOf, confine, covers, policyFor, type SandboxGrant } from "./sandbox";
 import {
   confirmationOf,
@@ -70,13 +70,23 @@ export interface McpServer {
  * settings sources — user, project, local — which folds the owner's personal
  * MCP servers and account connectors into a run the daemon meant to hand
  * exactly one tool server. Both adapters spread `_meta.claudeCode.options`
- * over that default, so naming an empty list here is what makes `mcpServers`
- * mean what this file says it means: the servers this session's agent is
- * told it may reach, and no others. Credentials are untouched — sign-in does
- * not ride a settings source.
+ * over that default. The empty `settingSources` closes the filesystem
+ * sources; `strictMcpConfig` closes what rides outside them — the user-scope
+ * registry the CLI keeps for itself and the connectors its account delivers —
+ * by holding the session to the `mcpServers` handed to it programmatically,
+ * which the adapter assembles from `session/new`. Together they are what
+ * makes `mcpServers` mean what this file says it means: the servers this
+ * session's agent is told it may reach, and no others. Credentials are
+ * untouched — sign-in rides neither channel. The conformance suite observes
+ * the outcome rather than assuming it; if an adapter pins an SDK too old for
+ * the typed option, `extraArgs: { "strict-mcp-config": null }` reaches the
+ * CLI flag directly, and if connectors were ever to survive strict config, a
+ * per-session config dir seeded with auth but no registries is the remaining
+ * lever.
  */
 export function sessionMetaFor(agent: string): Record<string, unknown> | undefined {
-  if (agent === "claude") return { claudeCode: { options: { settingSources: [] } } };
+  if (agent === "claude")
+    return { claudeCode: { options: { settingSources: [], strictMcpConfig: true } } };
   return undefined;
 }
 
@@ -89,7 +99,10 @@ export function sessionMetaFor(agent: string): Record<string, unknown> | undefin
  * table is this machine's word that the servers a thread reaches are the
  * ones named on `session/new` — whether codex honours it over the owner's
  * own `config.toml` is its merge semantics' to decide, and the conformance
- * suite is what observes the answer rather than assuming one.
+ * suite is what observes the answer rather than assuming one. Should it
+ * answer no, the levers left are adapter argv (`-c mcp_servers={}` replaces
+ * at the key path rather than merging) and, past that, a per-session
+ * `CODEX_HOME` seeded with the owner's auth and a registryless config.
  */
 export function adapterEnvFor(agent: string): Record<string, string> {
   if (agent === "codex") return { CODEX_CONFIG: JSON.stringify({ mcp_servers: {} }) };
@@ -125,6 +138,21 @@ export interface LiveSession {
    */
   cancel(): void;
   close(): Promise<void>;
+  /**
+   * The ACP tool-call id of the kernel call a cell with this source arrived
+   * as, claimed at most once per call. For the daemon's kernel-cell
+   * forwarder, on a cell whose provider forwarded no id of its own down the
+   * MCP channel: ACP itself carries no correlation id between a `tool_call`
+   * update and the MCP call it announces, but the kernel runs one cell at a
+   * time in send order and a call's announcement precedes the whole of its
+   * cell's runtime, so the turn's own log is consulted instead — an exact
+   * `code` match first (a `run_python` call's input is the cell's source,
+   * verbatim), then a `command` carried inside the source (`run_shell` wraps
+   * the command in a subprocess template), then the one still-pending call
+   * whose title names the kernel server. No match answers undefined: an
+   * unjoined cell over a misjoined one.
+   */
+  claimKernelCall(source: string): string | undefined;
   /** What this session is confined by. A caller holding a live session
    *  compares this against the boundary the next turn needs: a profile is
    *  fixed when the process is spawned, so a turn whose grants no longer
@@ -411,6 +439,9 @@ export async function startSession(options: {
   let plan: Plan | undefined;
   const steps = new Map<string, ExecutionLogEntry>();
   const publishedStepFingerprints = new Map<string, string>();
+  // Kernel calls already joined to a cell, so two cells with one source in a
+  // turn each claim their own call rather than both claiming the first.
+  const claimedKernelCalls = new Set<string>();
   // Resolved with what the researcher decided, not with any agent's word for
   // it. Turning a verdict into one of the offered ids happens where the offer
   // is in scope, so nothing downstream can invent one.
@@ -1002,6 +1033,33 @@ export async function startSession(options: {
     graceTimer.unref?.();
   };
 
+  const claimKernelCall = (source: string): string | undefined => {
+    const open = [...steps.values()].filter(
+      (entry) =>
+        !claimedKernelCalls.has(entry.toolUseId) &&
+        entry.decision !== "denied" &&
+        entry.decision !== "cancelled",
+    );
+    const claim = (entry: ExecutionLogEntry): string => {
+      claimedKernelCalls.add(entry.toolUseId);
+      return entry.toolUseId;
+    };
+    for (const entry of open)
+      if (isRecord(entry.input) && entry.input.code === source) return claim(entry);
+    for (const entry of open)
+      if (
+        isRecord(entry.input) &&
+        typeof entry.input.command === "string" &&
+        entry.input.command.length > 0 &&
+        source.includes(entry.input.command)
+      )
+        return claim(entry);
+    const pending = open.filter(
+      (entry) => entry.decision === "pending" && (entry.title ?? "").includes(KERNEL_SERVER_NAME),
+    );
+    return pending.length === 1 && pending[0] !== undefined ? claim(pending[0]) : undefined;
+  };
+
   return {
     prompt(body) {
       const myEpoch = ++epoch;
@@ -1011,6 +1069,7 @@ export async function startSession(options: {
       lastVisibleUpdate = undefined;
       steps.clear();
       publishedStepFingerprints.clear();
+      claimedKernelCalls.clear();
       // No grace timer can still be pending here: `completed` — the
       // caller's own signal that it may call `prompt` again — is only ever
       // fired from inside `finish`, which always clears one first.
@@ -1103,6 +1162,7 @@ export async function startSession(options: {
       abandonCards();
       return connection.close();
     },
+    claimKernelCall,
     boundary: boundaryOf(policy),
     stderrTail() {
       return connection.stderrTail();

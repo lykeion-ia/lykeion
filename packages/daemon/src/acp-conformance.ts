@@ -3,6 +3,7 @@
  * pipeline depends on: that a session actually opens, that a prompt produces
  * prose, that a tool call and a permission request land the way `session.ts`
  * turns them into an `ExecutionLogEntry` and a `PermissionRequest`, that a
+ * session's tools are the ones named on `session/new` and no others, that a
  * plan surfaces, and that a turn a researcher stops actually stops.
  *
  * The stub every other daemon test drives is one adapter this is pointed at.
@@ -14,7 +15,7 @@
  */
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEvent } from "@lykeion/api";
 import { connectAcp } from "./acp";
@@ -32,14 +33,15 @@ import { startSession, type LiveSession, type McpServer } from "./session";
  *  worth of time. */
 const TEST_TIMEOUT_MS = 60_000;
 
-/** Behaviour 5 waits twice in series against a real model: a card appearing,
- *  then — a real adapter told to write outside its workspace can plausibly
- *  gate the same write more than once, a stat or a read of the target before
- *  the write itself — answering however many cards that takes, and only
+/** The permission behaviour waits twice in series against a real model: a card appearing
+ *  — which a real adapter may spend a whole model turn deciding to raise,
+ *  trying the write inside its own sandbox first and only then escalating —
+ *  then answering however many cards the write takes (a stat or a read of
+ *  the target before the write itself is a plausible second ask), and only
  *  then a full turn actually finishing. `TEST_TIMEOUT_MS` split across all
  *  of that is tight; this gives it real room without lengthening the other
  *  six. */
-const PERMISSION_TEST_TIMEOUT_MS = 90_000;
+const PERMISSION_TEST_TIMEOUT_MS = 150_000;
 
 /** How much slack this suite's own deadline leaves inside Vitest's own test
  *  timeout, so THIS suite's diagnostic — which behaviour, and what was
@@ -233,6 +235,37 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 });
 `;
 
+/** The MCP server names the machine owner's own registries hold, read by the
+ *  test process itself — which runs unconfined, as the owner. What they name
+ *  is exactly what must never surface inside a session: the user-scope
+ *  registry (`~/.claude.json`) and codex's `config.toml` are the two files
+ *  the per-agent isolation channels exist to shut out. Silently empty where
+ *  a registry is absent — a CI machine, the stub — since a name that does
+ *  not exist cannot leak. */
+function ownRegistryServers(agent: string): string[] {
+  try {
+    if (agent === "claude") {
+      const parsed = JSON.parse(readFileSync(join(homedir(), ".claude.json"), "utf8")) as {
+        mcpServers?: Record<string, unknown>;
+      };
+      return Object.keys(parsed.mcpServers ?? {});
+    }
+    if (agent === "codex") {
+      const config = readFileSync(join(homedir(), ".codex", "config.toml"), "utf8");
+      return [...config.matchAll(/\[mcp_servers\.([^.\]]+)\]/g)]
+        .map((match) => match[1] ?? "")
+        .filter((name) => name.length > 0);
+    }
+  } catch {
+    // Unreadable is indistinguishable from absent for this purpose.
+  }
+  return [];
+}
+
+function escapedForRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * The adapter command, wrapped so even a behaviour that drives ACP directly
  * runs inside a boundary. Two of the checks below talk to the connection
@@ -255,7 +288,22 @@ function confinedFor(
   return [confined.command, confined.args];
 }
 
-export function acpConformance(name: string, adapter: AdapterFactory): void {
+export function acpConformance(
+  name: string,
+  adapter: AdapterFactory,
+  opts?: {
+    /** How many times a failed behaviour is retried before it counts as
+     *  red. Zero for the stub, whose script is deterministic and whose
+     *  failures must stay loud on the first try; the certified adapters
+     *  answer through a real model, and one unlucky turn — prose where a
+     *  plan was asked for, a refusal where an escalation was — must not be
+     *  read as a broken adapter. Vitest does not run `afterEach` between
+     *  retries; `openings`/`live` already tolerate several sessions per
+     *  test, and the hooks close them all. */
+    retry?: number;
+  },
+): void {
+  const retry = opts?.retry ?? 0;
   describe(name, () => {
     const dirs: string[] = [];
     const live: LiveSession[] = [];
@@ -341,7 +389,7 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
           await connection.close();
         }
       },
-      TEST_TIMEOUT_MS,
+      { timeout: TEST_TIMEOUT_MS, retry },
     );
 
     it(
@@ -373,7 +421,7 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
           await connection.close();
         }
       },
-      TEST_TIMEOUT_MS,
+      { timeout: TEST_TIMEOUT_MS, retry },
     );
 
     it(
@@ -393,7 +441,7 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
         await waitFor("a prompt produces assistant-text", hasProse, events, deadline, () => session.stderrTail());
         expect(hasProse()).toBe(true);
       },
-      TEST_TIMEOUT_MS,
+      { timeout: TEST_TIMEOUT_MS, retry },
     );
 
     it(
@@ -417,7 +465,7 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
           () => session.stderrTail(),
         );
       },
-      TEST_TIMEOUT_MS,
+      { timeout: TEST_TIMEOUT_MS, retry },
     );
 
     it(
@@ -508,7 +556,73 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
           `a server nothing named on session/new started in this session.\n${eventsDump(foreign)}`,
         ).toEqual([]);
       },
-      TEST_TIMEOUT_MS,
+      { timeout: TEST_TIMEOUT_MS, retry },
+    );
+
+    it(
+      "offers exactly the tools named on session/new",
+      async () => {
+        // The behaviour above proves the named server is reachable and that
+        // a *settings-source* decoy stays out. This one is aimed at the two
+        // channels a decoy in the workspace cannot reach: the CLI's own
+        // user-scope registry and whatever an authenticated account delivers
+        // — the servers `ownRegistryServers` reads off this machine's real
+        // config, which no test fixture plants. The observation is the
+        // agent's own report of its tool set, which is a model's word rather
+        // than an API's — retried in certify mode like every behaviour here,
+        // and honest about being the strongest observation available without
+        // redirecting the owner's config dir (see the comment above on why
+        // that sabotage is avoided).
+        const deadline = deadlineFor(TEST_TIMEOUT_MS);
+        const cwd = workspace();
+        const probe = join(cwd, "probe-mcp.cjs");
+        writeFileSync(probe, PROBE_MCP_SOURCE);
+        const { session, events } = await openSession(deadline, {
+          cwd,
+          mcpServers: [
+            { name: "probe", command: process.execPath, args: [probe, cwd], env: [] },
+          ],
+        });
+        const answered = new Set<string>();
+        session.prompt(
+          "List the full name of every tool you can call right now, one per line, exactly as each " +
+            "tool is named. Do not call any tool.",
+        );
+        await waitFor(
+          "the tool-listing turn finishes",
+          () => {
+            autoApprove(session, events, answered);
+            return events.some((event) => event.event === "completed");
+          },
+          events,
+          deadline,
+          () => session.stderrTail(),
+        );
+        const prose = events
+          .filter(
+            (event): event is Extract<RunEvent, { event: "assistant-text" }> =>
+              event.event === "assistant-text",
+          )
+          .map((event) => event.text)
+          .join("");
+        expect(prose.trim().length).toBeGreaterThan(0);
+        const foreign = prose.match(/\bmcp__(?!probe\b|lykeion\b)\w+/g) ?? [];
+        expect(
+          foreign,
+          `this session reports tools from servers nothing named on session/new.\n${eventsDump(events)}`,
+        ).toEqual([]);
+        const leaked = ownRegistryServers(adapter().agent).filter(
+          (name) =>
+            name !== "probe" &&
+            name !== "lykeion" &&
+            new RegExp(`\\b${escapedForRegex(name)}\\b`, "i").test(prose),
+        );
+        expect(
+          leaked,
+          `this session reports servers out of the machine owner's own registry.\n${eventsDump(events)}`,
+        ).toEqual([]);
+      },
+      { timeout: TEST_TIMEOUT_MS, retry },
     );
 
     it(
@@ -519,9 +633,20 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
         const outside = mkdtempSync(join(tmpdir(), "lykeion-acp-conformance-outside-"));
         dirs.push(outside);
         const target = join(outside, "conformance-probe.txt");
+        // The write itself is expected to be refused by the OS boundary even
+        // after approval — the shared temp directory is deliberately outside
+        // it — and that is fine: what this behaviour certifies is the
+        // permission flow, so the prompt pins the two places a real agent
+        // otherwise stalls it. An agent whose own sandbox refuses the write
+        // must escalate rather than give up (no card ever appears), and one
+        // whose approved write then fails must report and finish rather than
+        // retry (the turn never settles).
         session.prompt(
           `Write the text "conformance" to a new file at the absolute path ${target}. ` +
-            "That path is outside your working directory — ask first if your tools require it before writing there.",
+            "That path is outside your working directory. If your tools block the write, " +
+            "request permission or sandbox escalation rather than giving up. Make exactly one " +
+            "attempt after any approval; whether it succeeds or fails, state the outcome in one " +
+            "sentence and finish. Do not retry.",
         );
         await waitFor(
           "a permission request becomes a card",
@@ -563,7 +688,7 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
           ),
         ).toBe(true);
       },
-      PERMISSION_TEST_TIMEOUT_MS,
+      { timeout: PERMISSION_TEST_TIMEOUT_MS, retry },
     );
 
     it(
@@ -572,9 +697,16 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
         const deadline = deadlineFor(TEST_TIMEOUT_MS);
         const { session, events } = await openSession(deadline);
         const answered = new Set<string>();
+        // The `plan-proposed` event only exists when the adapter sends an ACP
+        // `plan` update, which every certified adapter translates from its
+        // agent's own plan/todo tool — a plan written as prose produces
+        // nothing. So the prompt names the tool rather than hoping the model
+        // reaches for it: asked merely to "write out a plan", a real model
+        // answers in prose often enough to read as a broken adapter.
         session.prompt(
-          "Before doing anything else, write out a short numbered plan — three to five steps — for how you " +
-            "would approach organizing files in this directory. Present the plan and then stop without executing it.",
+          "Use your plan tool (your todo/plan list) to record a three-to-five step plan for how you " +
+            "would approach organizing files in this directory. Create the plan entries with that tool — " +
+            "do not merely write them as prose — then stop without executing any step.",
         );
         await waitFor(
           "a plan is proposed",
@@ -587,7 +719,7 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
           () => session.stderrTail(),
         );
       },
-      TEST_TIMEOUT_MS,
+      { timeout: TEST_TIMEOUT_MS, retry },
     );
 
     it(
@@ -621,7 +753,7 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
           `conformance: "session/cancel lands the turn cancelled" saw ${completed.state.state}.\n${eventsDump(events)}\nstderr: ${session.stderrTail()}`,
         ).toBe("cancelled");
       },
-      TEST_TIMEOUT_MS,
+      { timeout: TEST_TIMEOUT_MS, retry },
     );
   });
 }
