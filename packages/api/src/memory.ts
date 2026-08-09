@@ -1462,21 +1462,15 @@ export function createInMemoryLab(
       // honest empty list; a real env appears only once provisioned.
       return [];
     },
-    async kernelEnvSetup(name?: string) {
+    async kernelEnvSetup() {
       // No `uv` and no filesystem in the browser core: provisioning isn't
-      // possible here. Report the unchanged absent state, honestly — the
-      // in-memory core provisions nothing regardless of which env was
-      // requested.
-      return {
-        state: "absent" as const,
-        name: name ?? "python",
-        // The contract names `"r"` as the R toolchain's env; every other
-        // name is the Python one this core defaults to.
-        language: name === "r" ? ("r" as const) : ("python" as const),
-        manager: "uv" as const,
-        platform: "unknown",
-        root: "",
-      };
+      // possible here, and a resolved answer would report an install that
+      // never happened. The refusal a machineless lab gives — same code,
+      // same reason — so the two cores stay one contract.
+      throw new LykeionError(
+        "unsupported",
+        "no runtime is connected to this lab — install the Lykeion daemon on the machine you want to run on.",
+      );
     },
     async listRunningKernels() {
       // No machine behind a browser core, so nothing is holding a kernel.

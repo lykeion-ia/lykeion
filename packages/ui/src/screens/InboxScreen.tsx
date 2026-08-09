@@ -173,7 +173,7 @@ export function InboxScreen() {
           {listMessage ? (
             <p
               className={cn(
-                "px-3 py-6 text-center text-[13px]",
+                "px-3 py-6 text-center text-ui",
                 listMessage.tone,
               )}
             >
@@ -200,7 +200,7 @@ export function InboxScreen() {
         ) : (
           // Nothing to invite a click on when there is nothing in the list.
           summaries.length > 0 && (
-            <div className="flex flex-1 items-center justify-center text-[13px] text-fg-subtle">
+            <div className="flex flex-1 items-center justify-center text-ui text-fg-subtle">
               Select a conversation to read it
             </div>
           )

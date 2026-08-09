@@ -45,11 +45,55 @@ export type StandingGrant = SandboxGrant;
  * writes them, so what an agent reaches through the server is settled here
  * and not by anything the agent says.
  */
+/** One variable a named tool server's process is started with. */
+export interface EnvVariable {
+  name: string;
+  value: string;
+}
+
 export interface McpServer {
   /** What the agent calls this server's tools by. */
   name: string;
   command: string;
   args: string[];
+  /** Always present, even when empty: the ACP schema requires `env`, and the
+   *  shipped adapters silently drop an entry without it — the session opens,
+   *  nothing errors, and the server's tools are simply never offered. */
+  env: EnvVariable[];
+}
+
+/**
+ * What `session/new` carries in `_meta` for this agent, or undefined when
+ * its adapter has no such channel.
+ *
+ * The claude adapters build their SDK options with the machine owner's own
+ * settings sources — user, project, local — which folds the owner's personal
+ * MCP servers and account connectors into a run the daemon meant to hand
+ * exactly one tool server. Both adapters spread `_meta.claudeCode.options`
+ * over that default, so naming an empty list here is what makes `mcpServers`
+ * mean what this file says it means: the servers this session's agent is
+ * told it may reach, and no others. Credentials are untouched — sign-in does
+ * not ride a settings source.
+ */
+export function sessionMetaFor(agent: string): Record<string, unknown> | undefined {
+  if (agent === "claude") return { claudeCode: { options: { settingSources: [] } } };
+  return undefined;
+}
+
+/**
+ * Variables a spawn adds to this agent's adapter process, beyond the
+ * daemon's own environment.
+ *
+ * Codex has no per-session channel: its adapter reads `CODEX_CONFIG` once at
+ * startup and merges it into every thread's config. An empty `mcp_servers`
+ * table is this machine's word that the servers a thread reaches are the
+ * ones named on `session/new` — whether codex honours it over the owner's
+ * own `config.toml` is its merge semantics' to decide, and the conformance
+ * suite is what observes the answer rather than assuming one.
+ */
+export function adapterEnvFor(agent: string): Record<string, string> {
+  if (agent === "codex") return { CODEX_CONFIG: JSON.stringify({ mcp_servers: {} }) };
+  return {};
 }
 
 export interface LiveSession {
@@ -344,7 +388,7 @@ export async function startSession(options: {
   const scratch = ensureTmpDir(cwd);
   const connection: AcpConnection = await connectAcp(confined.command, confined.args, {
     cwd,
-    env: { ...(options.env ?? process.env), TMPDIR: scratch },
+    env: { ...(options.env ?? process.env), TMPDIR: scratch, ...adapterEnvFor(options.agent) },
   });
   let aborting: Promise<void> | undefined;
   const abortInitialization = () => {
@@ -435,9 +479,11 @@ export async function startSession(options: {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
     });
+    const meta = sessionMetaFor(options.agent);
     const created = await connection.request("session/new", {
       cwd,
       mcpServers: options.mcpServers ?? [],
+      ...(meta === undefined ? {} : { _meta: meta }),
     });
     sessionId = (created as { sessionId?: string }).sessionId ?? sessionId;
     advertised = readAdvertised(created);

@@ -32,7 +32,7 @@ function ServerBadge({ server }: { server: McpServer }) {
     : [server.command, ...server.args].filter(Boolean).join(" ");
   return (
     <span
-      className="truncate font-mono text-[11.5px] text-fg-tertiary"
+      className="truncate font-mono text-meta text-fg-tertiary"
       title={label}
     >
       {label}
@@ -139,14 +139,14 @@ export function ConnectorsScreen() {
 
       <div>
         <section data-testid="your-connectors" className="mb-6">
-          <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.4px] text-fg-tertiary">
+          <h2 className="mb-2 text-meta font-semibold uppercase tracking-[0.4px] text-fg-tertiary">
             Your connectors
           </h2>
           {yours.error && (
-            <p className="text-[13px] text-danger">{yours.error}</p>
+            <p className="text-ui text-danger">{yours.error}</p>
           )}
           {yours.loading ? null : yourList.length === 0 ? (
-            <p className="py-4 text-[13px] text-fg-subtle">
+            <p className="py-4 text-ui text-fg-subtle">
               No connectors yet — add one from the catalog below.
             </p>
           ) : (
@@ -176,11 +176,11 @@ export function ConnectorsScreen() {
         </section>
 
         <section data-testid="connector-catalog">
-          <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.4px] text-fg-tertiary">
+          <h2 className="mb-2 text-meta font-semibold uppercase tracking-[0.4px] text-fg-tertiary">
             Catalog
           </h2>
           {catalog.error && (
-            <p className="text-[13px] text-danger">{catalog.error}</p>
+            <p className="text-ui text-danger">{catalog.error}</p>
           )}
           <div>
             {(catalog.data ?? []).map((entry) => {
@@ -191,14 +191,14 @@ export function ConnectorsScreen() {
                   className="flex items-center justify-between gap-4 border-b border-line py-2.5 last:border-b-0"
                 >
                   <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-[14px] text-fg">{entry.name}</span>
-                    <span className="truncate text-[12px] text-fg-subtle">
+                    <span className="text-read text-fg">{entry.name}</span>
+                    <span className="truncate text-sub text-fg-subtle">
                       {entry.description}
                     </span>
                     <ServerBadge server={entry.server} />
                   </span>
                   <span className="flex shrink-0 items-center gap-2">
-                    <span className="rounded border border-line bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-subtle">
+                    <span className="rounded border border-line bg-surface-2 px-1.5 py-0.5 text-meta text-fg-subtle">
                       {entry.category}
                     </span>
                     <button
@@ -207,7 +207,7 @@ export function ConnectorsScreen() {
                       disabled={added || adding === entry.name}
                       onClick={() => add(entry)}
                       className={cn(
-                        "rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-[12.5px] text-fg hover:bg-surface-3",
+                        "rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-sub text-fg hover:bg-surface-3",
                         (added || adding === entry.name) &&
                           "cursor-not-allowed opacity-50",
                       )}
@@ -279,8 +279,8 @@ function ConnectorRow({
               !connector.enabled && "opacity-50",
             )}
           >
-            <span className="text-[14px] text-fg">{connector.name}</span>
-            <span className="truncate text-[12px] text-fg-subtle">
+            <span className="text-read text-fg">{connector.name}</span>
+            <span className="truncate text-sub text-fg-subtle">
               {connector.description}
             </span>
           </span>
@@ -328,10 +328,10 @@ function ConnectorDetail({
     <div className="mb-3 ml-6 flex flex-col gap-3 rounded-lg border border-line bg-surface-2 p-3">
       <div className="flex items-center justify-between gap-4">
         <span className="flex flex-col">
-          <span className="text-[13px] font-medium text-fg">
+          <span className="text-ui font-medium text-fg">
             Skip approvals
           </span>
-          <span className="text-[12px] text-fg-subtle">
+          <span className="text-sub text-fg-subtle">
             Allow the agent to use every tool from this connector without an
             approval card each time.
           </span>
@@ -344,23 +344,23 @@ function ConnectorDetail({
       </div>
 
       <div>
-        <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.4px] text-fg-tertiary">
+        <h3 className="mb-1.5 text-meta font-semibold uppercase tracking-[0.4px] text-fg-tertiary">
           Tools
         </h3>
         {tools.loading && (
-          <p className="text-[12.5px] text-fg-subtle">Discovering tools…</p>
+          <p className="text-sub text-fg-subtle">Discovering tools…</p>
         )}
         {tools.error &&
           (DISCOVERY_UNAVAILABLE.some((reason) => tools.error!.includes(reason)) ? (
-            <p className="text-[12.5px] text-fg-subtle">
+            <p className="text-sub text-fg-subtle">
               Tool preview isn&rsquo;t available for remote connectors yet (they
               still run).
             </p>
           ) : (
-            <p className="text-[12.5px] text-danger">{tools.error}</p>
+            <p className="text-sub text-danger">{tools.error}</p>
           ))}
         {tools.data && tools.data.length === 0 && (
-          <p className="text-[12.5px] text-fg-subtle">No tools reported.</p>
+          <p className="text-sub text-fg-subtle">No tools reported.</p>
         )}
         {tools.data && tools.data.length > 0 && (
           <div className="flex flex-col gap-1.5">
@@ -369,9 +369,9 @@ function ConnectorDetail({
                 key={tool.name}
                 className="rounded-md border border-line bg-surface px-2.5 py-1.5"
               >
-                <p className="font-mono text-[12.5px] text-fg">{tool.name}</p>
+                <p className="font-mono text-sub text-fg">{tool.name}</p>
                 {tool.description && (
-                  <p className="text-[12px] text-fg-subtle">
+                  <p className="text-sub text-fg-subtle">
                     {tool.description}
                   </p>
                 )}

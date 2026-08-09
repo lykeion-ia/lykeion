@@ -94,7 +94,7 @@ export function Calendar({ value, onSelect }: CalendarProps) {
         >
           <ChevronLeftIcon width={14} height={14} />
         </button>
-        <span className="text-[13px] font-medium text-fg">
+        <span className="text-ui font-medium text-fg">
           {MONTH_NAMES[view.month]} {view.year}
         </span>
         <button
@@ -111,7 +111,7 @@ export function Calendar({ value, onSelect }: CalendarProps) {
         {WEEKDAYS.map((w) => (
           <span
             key={w}
-            className="grid h-7 place-items-center text-[11px] text-fg-tertiary"
+            className="grid h-7 place-items-center text-meta text-fg-tertiary"
           >
             {w}
           </span>
@@ -126,7 +126,7 @@ export function Calendar({ value, onSelect }: CalendarProps) {
               type="button"
               onClick={() => onSelect(cellIso)}
               className={cn(
-                "grid h-7 place-items-center rounded-md text-[12px] tabular-nums transition-colors",
+                "grid h-7 place-items-center rounded-md text-sub tabular-nums transition-colors",
                 !c.inMonth && "text-fg-tertiary/60",
                 c.inMonth && !isSelected && "text-fg-muted hover:bg-surface-2",
                 isToday &&
@@ -145,7 +145,7 @@ export function Calendar({ value, onSelect }: CalendarProps) {
         <button
           type="button"
           onClick={() => onSelect(undefined)}
-          className="mt-1.5 w-full rounded-md px-2 py-1 text-[12px] text-fg-subtle hover:bg-surface-2 hover:text-fg"
+          className="mt-1.5 w-full rounded-md px-2 py-1 text-sub text-fg-subtle hover:bg-surface-2 hover:text-fg"
         >
           Clear date
         </button>

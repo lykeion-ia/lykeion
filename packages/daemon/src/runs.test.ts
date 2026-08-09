@@ -220,7 +220,8 @@ it("gives a session a kernel before it starts the agent it names one to", async 
 
   await until(() => existsSync(named), "the session opening");
   const params = JSON.parse(readFileSync(named, "utf8")) as {
-    mcpServers: Array<{ name: string; args: string[] }>;
+    mcpServers: Array<{ name: string; args: string[]; env: Array<{ name: string; value: string }> }>;
+    _meta?: unknown;
   };
   expect(kernels.asked).toEqual([
     "host.hello",
@@ -228,6 +229,14 @@ it("gives a session a kernel before it starts the agent it names one to", async 
     "the boundary landed",
   ]);
   expect(params.mcpServers.map((server) => server.name)).toEqual(["lykeion"]);
+  // Present and empty, not absent: the ACP schema requires `env`, and the
+  // real adapters silently drop an entry without it — a session that opens
+  // with no kernel tools and no error anywhere.
+  expect(params.mcpServers[0]?.env).toEqual([]);
+  // Alongside the bridge, the run's settings sources are emptied — a claude
+  // adapter left to its defaults loads the machine owner's own MCP servers
+  // into the very session the bridge was supposed to be the whole tool set of.
+  expect(params._meta).toMatchObject({ claudeCode: { options: { settingSources: [] } } });
   expect(params.mcpServers[0]?.args).toContain("--session");
   expect(params.mcpServers[0]?.args).toContain("se_1");
   // The word the relay carries is the one the host was told to expect, and

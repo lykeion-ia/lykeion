@@ -112,7 +112,7 @@ export function MyTasksScreen() {
               onClick={toggle}
               aria-expanded={open}
               className={cn(
-                "inline-flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-[12.5px] transition-colors",
+                "inline-flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-sub transition-colors",
                 filters.targetDate ? "text-fg" : "text-fg-subtle hover:text-fg",
               )}
             >
@@ -176,11 +176,11 @@ export function MyTasksScreen() {
         </div>
       </div>
 
-      {ioMsg && <p className="px-5 pb-1 text-[12px] text-fg-subtle">{ioMsg}</p>}
-      {q.error && <p className="px-5 text-[13px] text-danger">{q.error}</p>}
+      {ioMsg && <p className="px-5 pb-1 text-sub text-fg-subtle">{ioMsg}</p>}
+      {q.error && <p className="px-5 text-ui text-danger">{q.error}</p>}
 
       {!q.loading && tasks.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-[13px] text-fg-subtle">
+        <div className="flex flex-1 items-center justify-center text-ui text-fg-subtle">
           Nothing assigned to you yet — work you own shows up here.
         </div>
       ) : view === "board" ? (

@@ -7,7 +7,7 @@ import { cn } from "../../lib/utils";
  * Workflows, Connectors, My Tasks). One definition keeps them identical.
  */
 export const primaryActionClass =
-  "inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-[12.5px] font-medium text-white transition-opacity hover:opacity-90";
+  "inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-sub font-medium text-white transition-opacity hover:opacity-90";
 
 export function PrimaryButton({
   className,

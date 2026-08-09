@@ -14,14 +14,14 @@ export function WorkflowDetailScreen({ workflowId }: { workflowId: string }) {
 
   if (q.error) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center text-[13px] text-danger">
+      <div className="flex min-h-0 flex-1 items-center justify-center text-ui text-danger">
         {q.error}
       </div>
     );
   }
   if (!q.loading && !workflow) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center text-[13px] text-fg-subtle">
+      <div className="flex min-h-0 flex-1 items-center justify-center text-ui text-fg-subtle">
         Workflow not found
       </div>
     );
@@ -34,14 +34,14 @@ export function WorkflowDetailScreen({ workflowId }: { workflowId: string }) {
       <div className="flex-1 overflow-auto px-5 pb-8">
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-6">
           <div className="flex flex-col gap-2">
-            <span className="flex items-center gap-2 text-[12px] text-fg-muted">
+            <span className="flex items-center gap-2 text-sub text-fg-muted">
               <span
                 className="h-2 w-2 shrink-0 rounded-full"
                 style={{ backgroundColor: DISCIPLINE_COLOR[workflow.discipline] }}
               />
               {DISCIPLINE_LABELS[workflow.discipline]}
             </span>
-            <p className="text-[13px] leading-relaxed text-fg-subtle">
+            <p className="text-ui leading-relaxed text-fg-subtle">
               {workflow.description}
             </p>
           </div>
@@ -89,13 +89,13 @@ function RunForm({ workflow }: { workflow: Workflow }) {
 
   return (
     <form className="flex flex-col gap-3" onSubmit={build}>
-      <h2 className="text-[13px] font-medium text-fg">Inputs</h2>
+      <h2 className="text-ui font-medium text-fg">Inputs</h2>
 
       {workflow.placeholders.map((ph) => {
         const id = `ph-${workflow.id}-${ph.key}`;
         return (
           <label className="flex flex-col gap-1" key={ph.key} htmlFor={id}>
-            <span className="text-[12.5px] font-medium text-fg-muted">
+            <span className="text-sub font-medium text-fg-muted">
               {ph.label}
               {ph.required && (
                 <span className="text-danger" aria-hidden="true">
@@ -118,7 +118,7 @@ function RunForm({ workflow }: { workflow: Workflow }) {
               }
               autoComplete="off"
               spellCheck={false}
-              className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
+              className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
             />
           </label>
         );
@@ -128,25 +128,25 @@ function RunForm({ workflow }: { workflow: Workflow }) {
         <button
           type="submit"
           disabled={busy}
-          className="rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           Build prompt
         </button>
       </div>
 
       {error && (
-        <p className="text-[12px] text-danger" role="alert">
+        <p className="text-sub text-danger" role="alert">
           {error}
         </p>
       )}
 
       {prompt !== null && (
         <div className="flex flex-col gap-1.5">
-          <div className="text-[10.5px] font-semibold uppercase tracking-[0.5px] text-fg-tertiary">
+          <div className="text-micro font-semibold uppercase tracking-[0.5px] text-fg-tertiary">
             Prompt
           </div>
           <pre
-            className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-line bg-surface-2 p-3 text-[12.5px] leading-relaxed text-fg"
+            className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-line bg-surface-2 p-3 text-sub leading-relaxed text-fg"
             data-testid="expanded-prompt"
           >
             {prompt}

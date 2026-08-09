@@ -18,7 +18,7 @@ export function ResearchGroupsView({
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3">
         <UsersIcon width={40} height={40} className="text-fg-tertiary" />
-        <p className="text-[13px] text-fg-subtle">
+        <p className="text-ui text-fg-subtle">
           No research groups yet. Create one to get started.
         </p>
       </div>
@@ -38,18 +38,18 @@ export function ResearchGroupsView({
               <UsersIcon width={16} height={16} />
             </span>
             <span className="flex min-w-0 flex-col">
-              <span className="truncate text-[13px] font-medium text-fg">
+              <span className="truncate text-ui font-medium text-fg">
                 {group.name}
               </span>
-              <span className="truncate text-[12px] text-fg-subtle">
+              <span className="truncate text-sub text-fg-subtle">
                 {group.description}
               </span>
             </span>
-            <span className="ml-auto flex items-center gap-1.5 text-[12.5px] text-fg-muted">
+            <span className="ml-auto flex items-center gap-1.5 text-sub text-fg-muted">
               {lead && (
                 <>
                   <span
-                    className="grid h-4 w-4 shrink-0 place-items-center rounded-[5px] text-[9px] font-semibold text-white"
+                    className="grid h-4 w-4 shrink-0 place-items-center rounded-[5px] text-micro font-semibold text-white"
                     style={{
                       backgroundImage: `linear-gradient(135deg, ${lead.gradient[0]}, ${lead.gradient[1]})`,
                     }}
@@ -60,7 +60,7 @@ export function ResearchGroupsView({
                 </>
               )}
             </span>
-            <span className="w-16 shrink-0 text-right text-[12px] text-fg-tertiary">
+            <span className="w-16 shrink-0 text-right text-sub text-fg-tertiary">
               {formatAgo(group.updatedTs)}
             </span>
           </div>

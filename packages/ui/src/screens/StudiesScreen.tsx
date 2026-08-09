@@ -130,7 +130,7 @@ export function StudiesScreen() {
       </div>
 
       {(q.error || actionError) && (
-        <p className="px-5 text-[13px] text-danger">{q.error ?? actionError}</p>
+        <p className="px-5 text-ui text-danger">{q.error ?? actionError}</p>
       )}
       {/* An empty table has two quite different causes now that the archive is
           always loaded: a Lab with no Studies at all, and a filter — "Archived"
@@ -138,11 +138,11 @@ export function StudiesScreen() {
           ones it has. Saying which is which is the difference between an
           invitation and a dead end. */}
       {!q.loading && studies.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-[13px] text-fg-subtle">
+        <div className="flex flex-1 items-center justify-center text-ui text-fg-subtle">
           No studies yet — create one to start a research line.
         </div>
       ) : !q.loading && shown.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-[13px] text-fg-subtle">
+        <div className="flex flex-1 items-center justify-center text-ui text-fg-subtle">
           No studies match these filters.
         </div>
       ) : (

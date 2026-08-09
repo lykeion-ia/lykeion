@@ -10,6 +10,38 @@
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
 
+  /* Type scale (utility names → Lykeion vars). `--text-*: initial` first
+     retires Tailwind's own xs/sm/base/… scale: leaving it in place would give
+     the app a second, unowned set of sizes that nothing here derives from,
+     and `text-sm` would keep working as a way to bypass the rungs. The names
+     on the left are Tailwind's namespace, the ones on the right are ours —
+     kept distinct on purpose, the way every colour below is. `--font-sans`
+     above shows what happens otherwise: a variable defined as itself, which
+     only resolves because tokens.css is imported second.
+
+     Each rung carries its line-height pair. Tailwind emits
+     `line-height: var(--tw-leading, var(--text-X--line-height))` for every
+     size utility, and `--tw-leading` is registered with no initial value —
+     so without the pair that declaration is invalid and the line-height
+     quietly falls back to whatever it inherits. */
+  --text-*: initial;
+  --text-micro: var(--type-micro);
+  --text-micro--line-height: var(--type-micro--lh);
+  --text-meta: var(--type-meta);
+  --text-meta--line-height: var(--type-meta--lh);
+  --text-sub: var(--type-sub);
+  --text-sub--line-height: var(--type-sub--lh);
+  --text-ui: var(--type-ui);
+  --text-ui--line-height: var(--type-ui--lh);
+  --text-read: var(--type-read);
+  --text-read--line-height: var(--type-read--lh);
+  --text-title: var(--type-title);
+  --text-title--line-height: var(--type-title--lh);
+  --text-display: var(--type-display);
+  --text-display--line-height: var(--type-display--lh);
+  --text-hero: var(--type-hero);
+  --text-hero--line-height: var(--type-hero--lh);
+
   /* Surfaces + ink (utility names → Lykeion vars) */
   --color-canvas: var(--canvas);
   --color-sidebar: var(--sidebar);
@@ -64,8 +96,9 @@
   ::before {
     border-color: var(--hairline);
   }
+  /* Size lives on the unlayered `body` rule in tokens.css, which outranks
+     anything layered here — a font-size in this block never applied. */
   body {
-    font-size: 14px;
     letter-spacing: -0.05px;
   }
   ::selection {

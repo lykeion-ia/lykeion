@@ -85,7 +85,7 @@ function RuntimeRow({
   return (
     <li
       className={cn(
-        "grid items-center gap-3 border-b border-line-soft px-3 py-2.5 text-[13px]",
+        "grid items-center gap-3 border-b border-line-soft px-3 py-2.5 text-ui",
         GRID_COLS,
       )}
     >
@@ -100,7 +100,7 @@ function RuntimeRow({
         {formatAgo(runtime.lastSeenTs)}
       </span>
       <span className="truncate text-fg-subtle">{runtime.platform}</span>
-      <span className="flex flex-col gap-0.5 text-[11.5px] text-fg-tertiary">
+      <span className="flex flex-col gap-0.5 text-meta text-fg-tertiary">
         {/* Absent and empty mean different things here, and an empty cell
             would read as the second whichever one it was: a machine that is
             not the caller's own carries no `clis` key at all, because the
@@ -120,7 +120,7 @@ function RuntimeRow({
             type="button"
             onClick={() => onRemove(runtime)}
             aria-label={`Remove ${runtime.name}`}
-            className="shrink-0 rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg hover:bg-surface"
+            className="shrink-0 rounded-md border border-line-strong px-2.5 py-1 text-sub text-fg hover:bg-surface"
           >
             Remove
           </button>
@@ -151,7 +151,7 @@ function RuntimeTable({
       <ul aria-labelledby={headingId}>
         <li
           className={cn(
-            "grid items-center gap-3 border-b border-line px-3 py-2 text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary",
+            "grid items-center gap-3 border-b border-line px-3 py-2 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary",
             GRID_COLS,
           )}
         >
@@ -222,7 +222,7 @@ function RemoveMachineModal({
         className="w-full max-w-[460px] overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between px-5 pb-3 pt-4">
-          <h2 className="text-[15px] font-semibold text-fg">
+          <h2 className="text-read font-semibold text-fg">
             Remove this machine?
           </h2>
           <button
@@ -236,21 +236,21 @@ function RemoveMachineModal({
         </div>
 
         <div className="space-y-3 px-5 pb-1">
-          <p className="truncate text-[13px] font-medium text-fg">
+          <p className="truncate text-ui font-medium text-fg">
             {runtime.name}
           </p>
-          <p className="text-[12.5px] leading-snug text-fg-subtle">
+          <p className="text-sub leading-snug text-fg-subtle">
             Its daemon loses access to this lab immediately and has to be
             paired again to come back.
           </p>
-          {error && <p className="text-[12px] text-danger">{error}</p>}
+          {error && <p className="text-sub text-danger">{error}</p>}
         </div>
 
         <div className="mt-4 flex items-center justify-end gap-2 border-t border-line px-5 py-3">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted hover:text-fg"
+            className="rounded-md px-3 py-1.5 text-ui text-fg-muted hover:text-fg"
           >
             Cancel
           </button>
@@ -259,7 +259,7 @@ function RemoveMachineModal({
             autoFocus
             disabled={busy}
             onClick={submit}
-            className="rounded-md bg-danger px-3.5 py-1.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="rounded-md bg-danger px-3.5 py-1.5 text-ui font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             Remove
           </button>
@@ -289,8 +289,11 @@ export function RuntimesList({
     invalidate();
   };
 
+  // The screen around this owns the scroll, so that the kernel tree above and
+  // the environments below move with the roster rather than each holding a
+  // viewport of its own.
   return (
-    <div className="flex-1 overflow-auto px-5 pb-5">
+    <div>
       {meId !== null && (
         <>
           <RuntimeTable
@@ -310,12 +313,12 @@ export function RuntimesList({
           <MonitorIcon width={16} height={16} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-medium text-fg">Add a computer</div>
+          <div className="text-ui font-medium text-fg">Add a computer</div>
           {/* What a daemon actually does today, and no more. The composer
               tells a researcher their own machine cannot run a session yet;
               a card promising queued work here would contradict it on the
               same build. */}
-          <p className="mt-0.5 text-[12px] leading-relaxed text-fg-subtle">
+          <p className="mt-0.5 text-sub leading-relaxed text-fg-subtle">
             Run the local runtime daemon on any machine — laptop, workstation,
             or cloud instance — and it pairs with this lab, reports which
             coding-agent commands it found, and keeps saying it is still
@@ -326,13 +329,13 @@ export function RuntimesList({
               click is somewhere they still have to be told how to get to.
               The lab's own address is filled in because it is the one part
               of this they would otherwise have to go and find. */}
-          <p className="mt-1.5 text-[12px] leading-relaxed text-fg-subtle">
+          <p className="mt-1.5 text-sub leading-relaxed text-fg-subtle">
             In a checkout of this workspace, on the machine you want to pair:
           </p>
-          <p className="mt-1 select-all font-mono text-[11.5px] leading-relaxed text-fg-tertiary">
+          <p className="mt-1 select-all font-mono text-meta leading-relaxed text-fg-tertiary">
             pnpm daemon --lab {window.location.origin}
           </p>
-          <p className="mt-1.5 text-[12px] leading-relaxed text-fg-subtle">
+          <p className="mt-1.5 text-sub leading-relaxed text-fg-subtle">
             The same checkout has{" "}
             <span className="font-mono text-fg-tertiary">
               docs/running-the-daemon.md

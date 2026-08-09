@@ -37,7 +37,7 @@
   background: transparent;
   color: var(--ink-subtle);
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   padding: 3px 10px;
   cursor: pointer;
 }
@@ -62,7 +62,7 @@
 }
 
 .viz-meta {
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
   margin-left: auto;
   font-variant-numeric: tabular-nums;
@@ -73,7 +73,7 @@
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--ink-subtle);
-  font-size: 12px;
+  font-size: var(--type-sub);
   padding: 14px 12px;
   text-align: center;
 }
@@ -89,7 +89,7 @@
 .data-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 11.5px;
+  font-size: var(--type-meta);
 }
 
 .data-table th,
@@ -106,7 +106,7 @@
   background: var(--surface-3);
   color: var(--ink-muted);
   font-weight: 600;
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   letter-spacing: 0.02em;
 }
 
@@ -137,7 +137,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
   margin-top: 8px;
 }
@@ -172,20 +172,20 @@
 .viz-tick {
   fill: var(--ink-subtle);
   font-family: var(--font-sans);
-  font-size: 10px;
+  font-size: var(--type-micro);
 }
 
 .viz-axis-title {
   fill: var(--ink-muted);
   font-family: var(--font-sans);
-  font-size: 11px;
+  font-size: var(--type-meta);
   font-weight: 500;
 }
 
 .viz-datalabel {
   fill: var(--ink);
   font-family: var(--font-sans);
-  font-size: 10px;
+  font-size: var(--type-micro);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -243,7 +243,7 @@
 .image-path,
 .pdf-open {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-muted);
 }
 
@@ -295,7 +295,7 @@
   padding: 10px 12px;
   background: var(--surface-1);
   color: var(--ink-muted);
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   line-height: 1.55;
   white-space: pre-wrap;
 }
@@ -313,7 +313,7 @@
 .nb-gutter {
   flex: none;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   color: var(--ink-tertiary);
   padding-top: 1px;
   user-select: none;
@@ -323,7 +323,7 @@
   margin: 0;
   flex: 1;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   color: var(--ink);
   line-height: 1.5;
   white-space: pre-wrap;
@@ -335,7 +335,7 @@
   padding: 7px 10px 7px 44px;
   border-top: 1px solid var(--hairline);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-x: auto;
@@ -367,7 +367,7 @@
   margin-top: 8px;
   padding: 10px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-muted);
   background: var(--surface-2);
   border: 1px solid var(--hairline);
@@ -386,7 +386,7 @@
   margin: 0;
   padding: 10px 12px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   color: var(--ink-muted);
   line-height: 1.55;
   background: var(--surface-2);
@@ -406,13 +406,13 @@
 }
 
 .unsupported-title {
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   font-weight: 600;
   color: var(--ink);
 }
 
 .unsupported-detail {
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
   margin-top: 5px;
 }
@@ -422,7 +422,7 @@
 }
 
 .unsupported-note {
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
   margin-top: 8px;
   line-height: 1.5;

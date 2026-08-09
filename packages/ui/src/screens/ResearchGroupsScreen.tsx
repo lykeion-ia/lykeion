@@ -40,7 +40,7 @@ export function ResearchGroupsScreen() {
           </PrimaryButton>
         }
       />
-      {q.error && <p className="px-5 text-[13px] text-danger">{q.error}</p>}
+      {q.error && <p className="px-5 text-ui text-danger">{q.error}</p>}
       <ResearchGroupsView groups={data.groups} loading={q.loading} />
       {open && (
         <CreateResearchGroupModal

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { RunArtifact } from "@lykeion/api";
 import { cn } from "../../lib/utils";
+import { formatBytes } from "../../lib/format";
 
 /**
  * The "Files" surface: header ("Files" + optional close) · controls (search ·
@@ -57,13 +58,6 @@ export function fileKind(path: string): FileKind {
 export function toFileItem(a: RunArtifact): FileItem {
   const name = a.path.split("/").pop() || a.path;
   return { name, path: a.path, size: a.size, kind: fileKind(a.path) };
-}
-
-function fmtSize(bytes: number): string {
-  if (!bytes) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function KindGlyph({ kind }: { kind: FileKind }) {
@@ -141,7 +135,7 @@ function ArtifactCard({
       </div>
       <div className="art-card-foot">
         <div className="art-card-name">{item.name}</div>
-        <div className="art-card-meta">{fmtSize(item.size)}</div>
+        <div className="art-card-meta">{formatBytes(item.size)}</div>
       </div>
     </button>
   );
@@ -334,7 +328,7 @@ export function ArtifactsPanel({
                         </span>
                         <span className="art-list-name">{item.name}</span>
                         <span className="art-list-size">
-                          {fmtSize(item.size)}
+                          {formatBytes(item.size)}
                         </span>
                       </button>
                     ))}

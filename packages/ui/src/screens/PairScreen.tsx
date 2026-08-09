@@ -94,12 +94,12 @@ function SpentLink() {
       title="That link has already been used"
       subtitle="A pairing link is good for exactly one approval, and this one is spent."
     >
-      <p className="text-[13px] text-fg-muted">
+      <p className="text-ui text-fg-muted">
         The machine it names may be paired already — Runtimes lists every
         machine this lab knows. If it is not, nothing is waiting on the far
         end of this link: the request behind it is finished either way.
       </p>
-      <p className="mt-2.5 text-[13px] text-fg-muted">
+      <p className="mt-2.5 text-ui text-fg-muted">
         To pair that machine, restart its daemon — stop the one running there,
         with Ctrl-C in the terminal it is running in or{" "}
         <span className="font-mono text-fg-subtle">lykeion-daemon stop</span>,
@@ -142,7 +142,7 @@ export function PairScreen({ params }: { params: PairParams }) {
         title="Nothing to approve"
         subtitle="This link doesn't say what machine is asking to join — open the one the daemon printed, not a shortened or hand-edited copy of it."
       >
-        <p className="text-[13px] text-fg-muted">
+        <p className="text-ui text-fg-muted">
           A pairing link names the machine asking to join and where to send
           the result back. This one is missing at least part of that.
         </p>
@@ -224,7 +224,7 @@ export function PairScreen({ params }: { params: PairParams }) {
       title="Approve this machine?"
       subtitle={`Signed in as ${identity}. A daemon on another machine is asking to join this lab.`}
     >
-      <dl className="mb-4 flex flex-col gap-1.5 text-[13px]">
+      <dl className="mb-4 flex flex-col gap-1.5 text-ui">
         <div className="flex items-baseline justify-between gap-3">
           <dt className="text-fg-subtle">Name</dt>
           <dd className="truncate text-fg">{params.name}</dd>
@@ -238,13 +238,13 @@ export function PairScreen({ params }: { params: PairParams }) {
           <dd className="truncate text-fg">{params.version}</dd>
         </div>
       </dl>
-      {error && <p className="mb-3 text-[12.5px] text-danger">{error}</p>}
+      {error && <p className="mb-3 text-sub text-danger">{error}</p>}
       <div className="flex gap-2">
         <button
           type="button"
           onClick={refuse}
           disabled={busy}
-          className="rounded-md border border-line px-3.5 py-1.5 text-[13px] font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-md border border-line px-3.5 py-1.5 text-ui font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
         >
           Refuse
         </button>
@@ -252,7 +252,7 @@ export function PairScreen({ params }: { params: PairParams }) {
           type="button"
           onClick={approve}
           disabled={busy}
-          className="rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? "Approving…" : "Approve"}
         </button>

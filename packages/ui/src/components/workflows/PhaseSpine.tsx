@@ -16,8 +16,8 @@ export function PhaseSpine({ workflow }: { workflow: Workflow }) {
   return (
     <section aria-label="Method phases">
       <div className="flex items-baseline gap-2 pb-2">
-        <h2 className="text-[13px] font-medium text-fg">Method</h2>
-        <span className="text-[12px] tabular-nums text-fg-subtle">
+        <h2 className="text-ui font-medium text-fg">Method</h2>
+        <span className="text-sub tabular-nums text-fg-subtle">
           {workflow.phases.length} of {workflow.phases.length + skipped.length}{" "}
           phases
         </span>
@@ -31,19 +31,19 @@ export function PhaseSpine({ workflow }: { workflow: Workflow }) {
               key={phase}
               className="flex items-center gap-3 border-b border-line-soft py-2 last:border-b-0"
             >
-              <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-line text-[10px] tabular-nums text-fg-tertiary">
+              <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-line text-micro tabular-nums text-fg-tertiary">
                 {index + 1}
               </span>
               <span
                 className={cn(
-                  "shrink-0 rounded border px-1.5 py-0.5 text-[11px]",
+                  "shrink-0 rounded border px-1.5 py-0.5 text-meta",
                   meta.badgeClass,
                 )}
               >
                 {meta.label}
               </span>
               <span className="flex-1" />
-              <span className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[11px] text-fg-muted">
+              <span className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-meta text-fg-muted">
                 {meta.skill}
               </span>
             </li>
@@ -52,7 +52,7 @@ export function PhaseSpine({ workflow }: { workflow: Workflow }) {
       </ol>
 
       {skipped.length > 0 && (
-        <p className="pt-2 text-[12px] leading-relaxed text-fg-subtle">
+        <p className="pt-2 text-sub leading-relaxed text-fg-subtle">
           Skips: {skipped.map((p) => METHOD_PHASE_LABELS[p]).join(", ")}.
         </p>
       )}

@@ -20,9 +20,9 @@ function validConnectorName(name: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(name) && !name.includes("__");
 }
 
-const LABEL = "text-[12.5px] font-medium text-fg-muted";
+const LABEL = "text-sub font-medium text-fg-muted";
 const INPUT =
-  "w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong";
+  "w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong";
 
 /**
  * Split a shell-command string into `command` + `args` (the Local form).
@@ -154,7 +154,7 @@ export function AddConnectorModal({
         className="flex max-h-[90vh] w-full max-w-[520px] flex-col rounded-xl border border-line bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between px-5 pb-1 pt-4">
-          <h2 className="text-[15px] font-semibold text-fg">
+          <h2 className="text-read font-semibold text-fg">
             {kind === "remote" ? "Add remote connector" : "Add local connector"}
           </h2>
           <button
@@ -166,7 +166,7 @@ export function AddConnectorModal({
             <CloseIcon width={15} height={15} />
           </button>
         </div>
-        <p className="px-5 text-[13px] text-fg-subtle">
+        <p className="px-5 text-ui text-fg-subtle">
           Only add connectors from developers you trust — a connector&rsquo;s
           server can read data and take actions on the agent&rsquo;s behalf.
         </p>
@@ -186,7 +186,7 @@ export function AddConnectorModal({
                 className={INPUT}
               />
               {nameError && (
-                <span className="text-[12px] text-danger">{nameError}</span>
+                <span className="text-sub text-danger">{nameError}</span>
               )}
             </label>
 
@@ -220,7 +220,7 @@ export function AddConnectorModal({
               type="button"
               onClick={() => setAdvancedOpen((v) => !v)}
               aria-expanded={advancedOpen}
-              className="flex items-center gap-1.5 self-start text-[12.5px] font-medium text-fg-muted hover:text-fg"
+              className="flex items-center gap-1.5 self-start text-sub font-medium text-fg-muted hover:text-fg"
             >
               <ChevronDownIcon
                 width={13}
@@ -324,7 +324,7 @@ export function AddConnectorModal({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted hover:text-fg"
+              className="rounded-md px-3 py-1.5 text-ui text-fg-muted hover:text-fg"
             >
               Cancel
             </button>
@@ -332,7 +332,7 @@ export function AddConnectorModal({
               type="submit"
               disabled={!canSubmit}
               className={cn(
-                "rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity",
+                "rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity",
                 canSubmit
                   ? "hover:opacity-90"
                   : "cursor-not-allowed opacity-50",

@@ -11,13 +11,13 @@ export interface StatCardProps {
 export function StatCard({ label, value, sub }: StatCardProps) {
   return (
     <div className="rounded-xl border border-line bg-surface p-4">
-      <div className="text-[10.5px] font-semibold uppercase tracking-[0.6px] text-fg-tertiary">
+      <div className="text-micro font-semibold uppercase tracking-[0.6px] text-fg-tertiary">
         {label}
       </div>
-      <div className="mb-2 mt-2.5 text-[30px] font-semibold tracking-tight tabular-nums text-fg">
+      <div className="mb-2 mt-2.5 text-hero font-semibold tracking-tight tabular-nums text-fg">
         {value}
       </div>
-      <div className="text-[12px] text-fg-subtle [&_b]:font-medium [&_b]:text-fg-muted">
+      <div className="text-sub text-fg-subtle [&_b]:font-medium [&_b]:text-fg-muted">
         {sub}
       </div>
     </div>

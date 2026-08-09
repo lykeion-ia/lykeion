@@ -41,7 +41,7 @@ function Seg<T extends string>({
             aria-pressed={isActive}
             onClick={() => onChange(option)}
             className={cn(
-              "whitespace-nowrap rounded-md px-2.5 py-1 text-[12px] transition-colors duration-[120ms]",
+              "whitespace-nowrap rounded-md px-2.5 py-1 text-sub transition-colors duration-[120ms]",
               isActive ? "bg-surface-3 text-fg" : "text-fg-subtle",
               !isActive && "cursor-not-allowed opacity-40",
             )}
@@ -139,7 +139,7 @@ export function ProfileScreen({
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <button
             type="button"
-            className="inline-flex h-8 items-center gap-[7px] rounded-lg border border-line bg-surface px-[11px] text-[12.5px] text-fg"
+            className="inline-flex h-8 items-center gap-[7px] rounded-lg border border-line bg-surface px-[11px] text-sub text-fg"
           >
             <FlaskIcon width={14} height={14} className="text-fg-subtle" />
             All studies
@@ -156,7 +156,7 @@ export function ProfileScreen({
           />
           <Seg options={RANGE_OPTIONS} value={range} onChange={setRange} />
         </div>
-        {q.error && <p className="mb-4 text-[13px] text-danger">{q.error}</p>}
+        {q.error && <p className="mb-4 text-ui text-danger">{q.error}</p>}
 
         <div className="mb-4 grid grid-cols-4 gap-3.5">
           <StatCard

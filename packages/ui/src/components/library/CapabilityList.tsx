@@ -39,7 +39,7 @@ export function CapabilityList({
   return (
     <div>
       <div className="mb-4 flex items-center gap-2">
-        <span className="inline-flex h-8 shrink-0 items-center rounded-md border border-line bg-surface-2 px-2.5 text-[13px] text-fg-muted">
+        <span className="inline-flex h-8 shrink-0 items-center rounded-md border border-line bg-surface-2 px-2.5 text-ui text-fg-muted">
           All ({items.length})
         </span>
         <div className="flex h-8 flex-1 items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5">
@@ -52,20 +52,20 @@ export function CapabilityList({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={searchPlaceholder}
-            className="w-full bg-transparent text-[13px] text-fg outline-none placeholder:text-fg-subtle"
+            className="w-full bg-transparent text-ui text-fg outline-none placeholder:text-fg-subtle"
           />
         </div>
       </div>
 
-      <div className="mb-1 flex items-center gap-1 text-[14px] font-medium text-fg">
+      <div className="mb-1 flex items-center gap-1 text-read font-medium text-fg">
         {sectionTitle}
         <ChevronDownIcon width={14} height={14} className="text-fg-subtle" />
       </div>
-      <p className="mb-2 text-[12px] text-fg-subtle">{sectionSubtitle}</p>
+      <p className="mb-2 text-sub text-fg-subtle">{sectionSubtitle}</p>
 
       {items.length === 0 ? (
         loading ? null : (
-          <p className="py-6 text-[13px] text-fg-subtle">{emptyLabel}</p>
+          <p className="py-6 text-ui text-fg-subtle">{emptyLabel}</p>
         )
       ) : (
         <div>
@@ -75,9 +75,9 @@ export function CapabilityList({
               className="flex items-center justify-between gap-4 border-b border-line py-2.5 last:border-b-0"
             >
               <span className="flex min-w-0 flex-col">
-                <span className="text-[14px] text-fg">{it.name}</span>
+                <span className="text-read text-fg">{it.name}</span>
                 {it.detail && (
-                  <span className="truncate text-[12px] text-fg-subtle">
+                  <span className="truncate text-sub text-fg-subtle">
                     {it.detail}
                   </span>
                 )}

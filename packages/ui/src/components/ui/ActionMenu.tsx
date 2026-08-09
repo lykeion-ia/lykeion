@@ -187,12 +187,12 @@ function ItemBody({
       />
       <span className="flex min-w-0 flex-1 flex-col">
         <span
-          className={cn("text-[12px]", item.danger ? "text-danger" : "text-fg")}
+          className={cn("text-sub", item.danger ? "text-danger" : "text-fg")}
         >
           {item.label}
         </span>
         {item.detail && (
-          <span className="truncate text-[11px] text-fg-subtle">
+          <span className="truncate text-meta text-fg-subtle">
             {item.detail}
           </span>
         )}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { HighlighterCore } from "shiki/core";
 import { CheckIcon, CopyIcon } from "../icons";
 
@@ -109,10 +109,28 @@ export function CodeBlock({
   code,
   lang,
   live = false,
+  lineNumbers = false,
+  meta,
 }: {
   code: string;
   lang?: string;
   live?: boolean;
+  /**
+   * A numbered gutter down the left of the code. Off by default: a fenced
+   * block inside an answer is prose, and numbering it invites a reader to
+   * cite a line of something nobody can run. A notebook cell is the other
+   * case — it ran, its failures name line numbers, and the gutter is what
+   * makes those names resolvable.
+   */
+  lineNumbers?: boolean;
+  /**
+   * What stands to the left of Copy in the block's own header, in place of
+   * the bare language name. A caller with more to say about this block than
+   * its grammar — which cell it is, who ran it — says it here rather than
+   * in a second row above, so the language is named once on screen instead
+   * of twice.
+   */
+  meta?: ReactNode;
 }) {
   const [html, setHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -152,9 +170,9 @@ export function CodeBlock({
   }
 
   return (
-    <div className="code-block">
+    <div className={`code-block${lineNumbers ? " code-block--numbered" : ""}`}>
       <div className="code-block-head">
-        {lang && <span className="code-block-lang">{lang}</span>}
+        {meta ?? (lang && <span className="code-block-lang">{lang}</span>)}
         <button
           type="button"
           className="code-block-copy"
@@ -184,7 +202,24 @@ export function CodeBlock({
         />
       ) : (
         <pre className="code-block-pre" data-testid="code-block-pre">
-          <code>{code}</code>
+          {/* The numbered gutter is drawn by a CSS counter over per-line
+              elements, and the highlighter emits exactly those. This is the
+              unhighlighted path, so it emits them too — otherwise a cell in a
+              grammar this build does not bundle, or one still waiting on the
+              highlighter, would lose its numbering the moment it needed it
+              most, which is when something has gone wrong with it. */}
+          {lineNumbers ? (
+            <code>
+              {code.replace(/\n$/, "").split("\n").map((line, i) => (
+                <span className="line" key={i}>
+                  {line}
+                  {"\n"}
+                </span>
+              ))}
+            </code>
+          ) : (
+            <code>{code}</code>
+          )}
         </pre>
       )}
     </div>

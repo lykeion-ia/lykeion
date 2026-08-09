@@ -59,7 +59,7 @@ export function DeleteStudyModal({
         className="w-full max-w-[460px] overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between px-5 pb-3 pt-4">
-          <h2 className="text-[15px] font-semibold text-fg">Delete study?</h2>
+          <h2 className="text-read font-semibold text-fg">Delete study?</h2>
           <button
             type="button"
             aria-label="Close"
@@ -71,28 +71,28 @@ export function DeleteStudyModal({
         </div>
 
         <div className="space-y-3 px-5 pb-1">
-          <p className="flex min-w-0 items-center gap-2 text-[13px]">
+          <p className="flex min-w-0 items-center gap-2 text-ui">
             <span className="truncate font-medium text-fg">{study.title}</span>
-            <span className="shrink-0 rounded border border-line bg-surface-3 px-1.5 py-0.5 text-[10px] text-fg-subtle">
+            <span className="shrink-0 rounded border border-line bg-surface-3 px-1.5 py-0.5 text-micro text-fg-subtle">
               {study.key}
             </span>
           </p>
-          <p className="text-[12.5px] leading-snug text-fg-muted">
+          <p className="text-sub leading-snug text-fg-muted">
             {taskCount === 1 ? "1 task" : `${taskCount} tasks`}, every
             transcript, and the Study's files leave the workspace with it.
           </p>
-          <p className="text-[12.5px] leading-snug text-fg-subtle">
+          <p className="text-sub leading-snug text-fg-subtle">
             This removes the Study and everything it holds. In this session it
             cannot be undone.
           </p>
-          {error && <p className="text-[12px] text-danger">{error}</p>}
+          {error && <p className="text-sub text-danger">{error}</p>}
         </div>
 
         <div className="mt-4 flex items-center justify-end gap-2 border-t border-line px-5 py-3">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted hover:text-fg"
+            className="rounded-md px-3 py-1.5 text-ui text-fg-muted hover:text-fg"
           >
             Cancel
           </button>
@@ -101,7 +101,7 @@ export function DeleteStudyModal({
             autoFocus
             disabled={busy}
             onClick={submit}
-            className="rounded-md bg-danger px-3.5 py-1.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="rounded-md bg-danger px-3.5 py-1.5 text-ui font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             Delete
           </button>

@@ -21,10 +21,10 @@ export function WorkspaceSwitcher() {
         onClick={() => setOpen((v) => !v)}
         className="mx-0.5 flex items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-surface"
       >
-        <span className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-gradient-to-br from-accent-focus to-iris text-[11px] font-semibold text-white">
+        <span className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-gradient-to-br from-accent-focus to-iris text-meta font-semibold text-white">
           L
         </span>
-        <span className="truncate text-[13px] font-semibold tracking-[-0.1px] text-fg">
+        <span className="truncate text-ui font-semibold tracking-[-0.1px] text-fg">
           Lykeion
         </span>
         <ChevronDownIcon

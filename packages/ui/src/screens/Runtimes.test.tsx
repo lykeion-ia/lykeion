@@ -27,9 +27,11 @@ it("Runtimes surfaces the managed Python environment, absent on a fresh core", a
   render(<App api={createInMemoryApi()} />);
   await user.click(await screen.findByRole("link", { name: /Runtimes/i }));
   // kernelEnvStatus() reports the honest first-install default — nothing faked.
-  expect(
-    await screen.findByText("Managed Python environment"),
-  ).toBeInTheDocument();
+  // The row names the environment and what provisions it, and says where it
+  // stands; nothing here claims anything is bound to it, because nothing is.
+  expect(await screen.findByText("Environments")).toBeInTheDocument();
+  expect(await screen.findByText("python")).toBeInTheDocument();
+  expect(await screen.findByText("Python · uv")).toBeInTheDocument();
   expect(await screen.findByText("Not set up")).toBeInTheDocument();
 });
 
@@ -147,11 +149,13 @@ it("clears its interval on unmount, rather than leaking one that fires forever",
     await vi.advanceTimersByTimeAsync(0);
   });
 
-  // One timer outstanding — this screen's own refresh interval. Asserted on
-  // the timer queue itself, not on a later fetch count: React drops a state
-  // update targeting an already-unmounted component either way, so a fetch
-  // count would keep passing whether or not the interval was ever cleared.
-  expect(vi.getTimerCount()).toBe(1);
+  // Two timers outstanding — the roster's refresh and the kernel tree's,
+  // which runs faster because a kernel changes state inside one turn while a
+  // machine's health changes on a heartbeat. Asserted on the timer queue
+  // itself, not on a later fetch count: React drops a state update targeting
+  // an already-unmounted component either way, so a fetch count would keep
+  // passing whether or not the intervals were ever cleared.
+  expect(vi.getTimerCount()).toBe(2);
   unmount();
   expect(vi.getTimerCount()).toBe(0);
 });

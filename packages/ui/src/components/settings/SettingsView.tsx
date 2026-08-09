@@ -63,7 +63,7 @@ export function SettingsNav({ tab, onTabChange, className }: SettingsNavProps) {
     <nav className={cn("overflow-y-auto px-2 py-3", className)}>
       {SETTINGS_NAV.map((group) => (
         <div key={group.group} className="mb-4">
-          <div className="px-2 pb-1 text-[11px] text-fg-subtle">
+          <div className="px-2 pb-1 text-meta text-fg-subtle">
             {group.group}
           </div>
           {group.items.map((item) => (
@@ -71,7 +71,7 @@ export function SettingsNav({ tab, onTabChange, className }: SettingsNavProps) {
               key={item.key}
               onClick={() => onTabChange(item.key)}
               className={cn(
-                "flex w-full items-center rounded-md px-2 py-1.5 text-left text-[13px] transition-colors",
+                "flex w-full items-center rounded-md px-2 py-1.5 text-left text-ui transition-colors",
                 tab === item.key
                   ? "bg-surface text-fg"
                   : "text-fg-muted hover:bg-surface hover:text-fg",
@@ -115,7 +115,7 @@ export function SettingsBody({ tab, user, settings, role }: SettingsBodyProps) {
 
 function Pill({ children }: { children: ReactNode }) {
   return (
-    <button className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-2 px-2.5 h-8 text-[13px] text-fg hover:bg-surface">
+    <button className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-2 px-2.5 h-8 text-ui text-fg hover:bg-surface">
       {children}
       <ChevronDownIcon width={14} height={14} className="text-fg-subtle" />
     </button>
@@ -176,7 +176,7 @@ function GeneralTab({ settings }: { settings: WorkspaceSettings }) {
             label="Use intent"
             desc="Selects which license notice you see for skills that restrict non-commercial use."
             control={
-              <span className="flex items-center gap-2 text-[13px] text-fg">
+              <span className="flex items-center gap-2 text-ui text-fg">
                 <span className="grid h-4 w-4 place-items-center rounded-full border-2 border-accent">
                   <span className="h-1.5 w-1.5 rounded-full bg-accent" />
                 </span>
@@ -202,17 +202,17 @@ function StorageTab({ settings }: { settings: WorkspaceSettings }) {
           <div className="flex items-start justify-between">
             <div>
               <SectionTitle>Data location</SectionTitle>
-              <p className="-mt-2 mb-2 text-[12px] text-fg-subtle">
+              <p className="-mt-2 mb-2 text-sub text-fg-subtle">
                 Where your studies and generated files are stored.
               </p>
             </div>
             <OutlineButton>Change location</OutlineButton>
           </div>
           <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5">
-            <div className="font-mono text-[13px] text-fg">
+            <div className="font-mono text-ui text-fg">
               {orNotSet(settings.dataLocation)}
             </div>
-            <div className="mt-0.5 text-[12px] text-fg-subtle">
+            <div className="mt-0.5 text-sub text-fg-subtle">
               default location
             </div>
           </div>
@@ -222,7 +222,7 @@ function StorageTab({ settings }: { settings: WorkspaceSettings }) {
           <SectionTitle>Disk usage</SectionTitle>
           {/* Nothing measures this, so nothing is under way — and a line that
               says otherwise is a wait with no end at the other side of it. */}
-          <p className="text-[13px] text-fg-subtle">
+          <p className="text-ui text-fg-subtle">
             Not measured. Nothing in this lab reports the space it takes up yet.
           </p>
         </section>
@@ -231,13 +231,13 @@ function StorageTab({ settings }: { settings: WorkspaceSettings }) {
           <div className="flex items-start justify-between">
             <div>
               <SectionTitle>Cloud storage</SectionTitle>
-              <p className="-mt-2 text-[12px] text-fg-subtle">
+              <p className="-mt-2 text-sub text-fg-subtle">
                 Browse and manage bucket connections
               </p>
             </div>
             <OutlineButton>Go to Credentials</OutlineButton>
           </div>
-          <p className="mt-3 text-[13px] text-fg-subtle">
+          <p className="mt-3 text-ui text-fg-subtle">
             No cloud storage configured. Add credentials with bucket access in
             the Credentials tab to connect cloud storage.
           </p>
@@ -256,10 +256,10 @@ function PlaceholderTab({ title }: { title: string }) {
       <SettingsSectionHeader title={title} />
       <div className="grid h-[360px] place-items-center rounded-xl border border-dashed border-line text-center">
         <div>
-          <p className="text-[14px] text-fg-muted">
+          <p className="text-read text-fg-muted">
             Nothing configured in {title} yet.
           </p>
-          <p className="mt-1 text-[12px] text-fg-subtle">
+          <p className="mt-1 text-sub text-fg-subtle">
             This section is part of the workbench UI.
           </p>
         </div>

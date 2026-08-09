@@ -138,10 +138,10 @@ export function TaskDetailsModal({
         className="flex max-h-[86vh] w-full max-w-[560px] flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
       >
         <div className="flex items-center gap-2 px-4 pb-2 pt-3">
-          <span className="font-mono text-[11px] text-fg-tertiary">
+          <span className="font-mono text-meta text-fg-tertiary">
             {taskCode(study, task)}
           </span>
-          <span className="truncate text-[13px] font-medium text-fg">
+          <span className="truncate text-ui font-medium text-fg">
             {task.title}
           </span>
           <span className="flex-1" />
@@ -165,7 +165,7 @@ export function TaskDetailsModal({
                 aria-label="File into a Study"
                 value={fileInto}
                 onChange={(e) => setFileInto(e.target.value)}
-                className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[12.5px] text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
+                className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-sub text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
               >
                 <option value="">Unfiled — belongs to no Study</option>
                 {studies.map((s) => (
@@ -174,7 +174,7 @@ export function TaskDetailsModal({
                   </option>
                 ))}
               </select>
-              <p className="mt-1.5 text-[11.5px] text-fg-tertiary">
+              <p className="mt-1.5 text-meta text-fg-tertiary">
                 Filing gives this task a code and a workspace. An unfiled task
                 can be opened and written in, but not run — a run needs a
                 Study's workspace.
@@ -219,7 +219,7 @@ export function TaskDetailsModal({
                     type="button"
                     onClick={() => toggleLabel(label.id)}
                     className={cn(
-                      "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[12px] transition-colors",
+                      "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-sub transition-colors",
                       on
                         ? "border-line-strong bg-surface-3 text-fg"
                         : "border-line bg-surface-2 text-fg-subtle hover:text-fg",
@@ -252,7 +252,7 @@ export function TaskDetailsModal({
                 <button
                   type="button"
                   onClick={toggle}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-[12.5px] text-fg-muted hover:bg-surface-3 hover:text-fg"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-sub text-fg-muted hover:bg-surface-3 hover:text-fg"
                 >
                   <CalendarIcon
                     width={14}
@@ -285,7 +285,7 @@ export function TaskDetailsModal({
                     height={13}
                     className="shrink-0 text-fg-subtle"
                   />
-                  <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg-muted">
+                  <span className="min-w-0 flex-1 truncate text-sub text-fg-muted">
                     {l}
                   </span>
                   <button
@@ -306,7 +306,7 @@ export function TaskDetailsModal({
                     e.key === "Enter" && (e.preventDefault(), addLink())
                   }
                   placeholder="https://…"
-                  className="min-w-0 flex-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-[12.5px] text-fg outline-none placeholder:text-fg-tertiary focus:border-line-strong"
+                  className="min-w-0 flex-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-sub text-fg outline-none placeholder:text-fg-tertiary focus:border-line-strong"
                 />
                 <button
                   type="button"
@@ -356,7 +356,7 @@ export function TaskDetailsModal({
                   </button>
                   <span
                     className={cn(
-                      "min-w-0 flex-1 truncate text-[12.5px]",
+                      "min-w-0 flex-1 truncate text-sub",
                       s.done
                         ? "text-fg-tertiary line-through"
                         : "text-fg-muted",
@@ -382,7 +382,7 @@ export function TaskDetailsModal({
                     e.key === "Enter" && (e.preventDefault(), addSubtask())
                   }
                   placeholder="Add a subtask…"
-                  className="min-w-0 flex-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-[12.5px] text-fg outline-none placeholder:text-fg-tertiary focus:border-line-strong"
+                  className="min-w-0 flex-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-sub text-fg outline-none placeholder:text-fg-tertiary focus:border-line-strong"
                 />
                 <button
                   type="button"
@@ -398,7 +398,7 @@ export function TaskDetailsModal({
         </div>
 
         {error && (
-          <p className="px-4 pb-1 text-[12.5px] text-danger">{error}</p>
+          <p className="px-4 pb-1 text-sub text-danger">{error}</p>
         )}
 
         <div className="flex items-center gap-3 border-t border-line px-4 py-3">
@@ -406,7 +406,7 @@ export function TaskDetailsModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-[13px] text-fg-subtle hover:text-fg"
+            className="rounded-md px-3 py-1.5 text-ui text-fg-subtle hover:text-fg"
           >
             Cancel
           </button>
@@ -415,7 +415,7 @@ export function TaskDetailsModal({
             disabled={busy}
             onClick={save}
             className={cn(
-              "rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity",
+              "rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity",
               busy ? "cursor-not-allowed opacity-40" : "hover:opacity-90",
             )}
           >
@@ -436,7 +436,7 @@ function Section({
 }) {
   return (
     <div>
-      <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary">
+      <div className="mb-1.5 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary">
         {title}
       </div>
       {children}
@@ -452,7 +452,7 @@ function Pill({
   onRemove: () => void;
 }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-[12px] text-fg-muted">
+    <span className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-sub text-fg-muted">
       {children}
       {/* The padding is the pointer target: an 11px glyph is far under the
           ~24px a click can be aimed at, and every miss lands on inert pill

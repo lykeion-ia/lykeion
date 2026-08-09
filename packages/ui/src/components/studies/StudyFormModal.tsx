@@ -72,7 +72,7 @@ export function StudyFormModal({
         className="w-full max-w-[560px] overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between px-5 pb-3 pt-4">
-          <h2 className="text-[15px] font-semibold text-fg">
+          <h2 className="text-read font-semibold text-fg">
             {editing ? "Edit Study" : "New Study"}
           </h2>
           <button
@@ -87,7 +87,7 @@ export function StudyFormModal({
 
         <div className="space-y-4 px-5 pb-1">
           <label className="flex flex-col gap-1.5">
-            <span className="text-[12.5px] font-medium text-fg-muted">
+            <span className="text-sub font-medium text-fg-muted">
               Name
             </span>
             {/* Named explicitly rather than by the wrapping label: the two
@@ -103,15 +103,15 @@ export function StudyFormModal({
               }}
               placeholder="Study name"
               autoComplete="off"
-              className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
+              className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
             />
           </label>
 
           <label className="flex flex-col gap-1.5">
-            <span className="text-[12.5px] font-medium text-fg-muted">
+            <span className="text-sub font-medium text-fg-muted">
               Description
             </span>
-            <span className="text-[12px] leading-snug text-fg-subtle">
+            <span className="text-sub leading-snug text-fg-subtle">
               Shown in the study list for your reference — not included in the
               agent's prompt.
             </span>
@@ -121,15 +121,15 @@ export function StudyFormModal({
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Describe what this study is about…"
               rows={3}
-              className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
+              className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
             />
           </label>
 
           <label className="flex flex-col gap-1.5">
-            <span className="text-[12.5px] font-medium text-fg-muted">
+            <span className="text-sub font-medium text-fg-muted">
               Agent Context
             </span>
-            <span className="text-[12px] leading-snug text-fg-subtle">
+            <span className="text-sub leading-snug text-fg-subtle">
               This context will be included in every agent's system prompt for
               this study. Use it to provide background information, conventions,
               or instructions that all agents should follow.
@@ -140,18 +140,18 @@ export function StudyFormModal({
               onChange={(e) => setAgentContext(e.target.value)}
               placeholder="e.g., This study examines the effects of compound X on gene Y in cell line Z. Always use GRCh38 for genome references…"
               rows={4}
-              className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
+              className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
             />
           </label>
 
-          {error && <p className="text-[12px] text-danger">{error}</p>}
+          {error && <p className="text-sub text-danger">{error}</p>}
         </div>
 
         <div className="mt-4 flex items-center justify-end gap-2 border-t border-line px-5 py-3">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted hover:text-fg"
+            className="rounded-md px-3 py-1.5 text-ui text-fg-muted hover:text-fg"
           >
             Cancel
           </button>
@@ -159,7 +159,7 @@ export function StudyFormModal({
             type="button"
             disabled={!canSubmit}
             onClick={submit}
-            className="rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {editing ? "Save" : "Create"}
           </button>

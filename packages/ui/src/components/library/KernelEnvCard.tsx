@@ -23,56 +23,55 @@ function languageLabel(language: Language): string {
 }
 
 /**
- * The managed environment's status card — Lykeion's own uv-provisioned
- * interpreter, shared by the agent and the Notebook. Renders whatever the core
- * reports: `absent` on a fresh install (nothing faked), `ready` with the
- * resolved version + package count once provisioned. Read-only: the Set-up
- * action is the Notebook surface's, not this card's.
+ * One managed environment, as a row under the machines that run kernels in
+ * it. Renders whatever the core reports and nothing else: `absent` on a fresh
+ * install, `ready` with the resolved version and package count once
+ * provisioned, `broken` for a provision that was interrupted. Read-only — the
+ * Set-up action belongs to the surface a researcher is held up on, which is
+ * the Notebook rail.
  */
 export function KernelEnvCard({ status }: { status: KernelEnvStatus }) {
   const meta = STATE_META[status.state];
+  // The language is already named beside the environment's own name, so the
+  // version stands on its own here rather than repeating it.
   const facts = [
-    status.version ? `${languageLabel(status.language)} ${status.version}` : null,
+    status.version,
     status.packageCount != null ? `${status.packageCount} packages` : null,
     status.platform && status.platform !== "unknown" ? status.platform : null,
-  ].filter((f): f is string => f !== null);
+  ].filter((f): f is string => f !== null && f !== undefined);
 
   return (
-    <div className="mb-4 flex items-start gap-3 rounded-lg border border-line bg-surface p-4">
-      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-line bg-surface-2 text-fg-subtle">
-        <ChipIcon width={16} height={16} />
+    <div className="flex items-center gap-3 border-b border-line-soft py-2.5">
+      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-line bg-surface-2 text-fg-tertiary">
+        <ChipIcon width={13} height={13} />
       </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-[13px] font-medium text-fg">
-            Managed {languageLabel(status.language)} environment
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span className="flex items-center gap-2">
+          <span className="truncate font-mono text-meta text-fg">{status.name}</span>
+          <span className="shrink-0 text-meta text-fg-tertiary">
+            {languageLabel(status.language)} · {status.manager}
           </span>
-          <span
-            className={cn(
-              "inline-flex items-center gap-1.5 text-[12px]",
-              meta.textClass,
-            )}
-          >
-            <span
-              className={cn("h-2 w-2 shrink-0 rounded-full", meta.dotClass)}
-            />
-            {meta.label}
-          </span>
-        </div>
-        <p className="mt-0.5 text-[12px] leading-relaxed text-fg-subtle">
-          Lykeion&rsquo;s own isolated interpreter and scientific stack — the
-          agent and your Notebook share it, and every run records its exact
-          packages.
-        </p>
-        {facts.length > 0 && (
-          <p className="mt-1 text-[12px] text-fg-muted">{facts.join(" · ")}</p>
-        )}
+        </span>
+        {/* The env's own path, and nothing about who is bound to it. Whether
+            a kernel is running in this environment is a fact about a kernel,
+            and the rows above are where a kernel says so — a line here
+            claiming the agent and the Notebook share it would be asserting a
+            binding this card cannot see. */}
         {status.root && (
-          <p className="mt-1 truncate font-mono text-[11px] text-fg-tertiary">
-            {status.root}
-          </p>
+          <span className="truncate font-mono text-meta text-fg-tertiary">{status.root}</span>
         )}
       </div>
+      {facts.length > 0 && (
+        <span className="shrink-0 text-meta tabular-nums text-fg-tertiary">
+          {facts.join(" · ")}
+        </span>
+      )}
+      <span
+        className={cn("inline-flex shrink-0 items-center gap-1.5 text-meta", meta.textClass)}
+      >
+        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", meta.dotClass)} />
+        {meta.label}
+      </span>
     </div>
   );
 }

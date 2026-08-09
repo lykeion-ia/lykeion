@@ -111,7 +111,7 @@ export function SkillsScreen() {
       )}
 
       {skills.error && (
-        <p className="text-[13px] text-danger">{skills.error}</p>
+        <p className="text-ui text-danger">{skills.error}</p>
       )}
 
       <CapabilityList
@@ -163,7 +163,7 @@ function NewSkillForm({
   };
 
   const input =
-    "w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong";
+    "w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong";
 
   return (
     <form
@@ -197,14 +197,14 @@ function NewSkillForm({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted hover:text-fg"
+          className="rounded-md px-3 py-1.5 text-ui text-fg-muted hover:text-fg"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={busy || !name.trim()}
-          className="rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           Create skill
         </button>

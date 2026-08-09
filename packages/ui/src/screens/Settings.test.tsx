@@ -155,9 +155,13 @@ it("titles a tab a size above the sections inside it", async () => {
   await user.click(await screen.findByRole("link", { name: /^Settings$/i }));
   await user.click(await screen.findByRole("button", { name: "Profile" }));
 
+  // Matched against the rung names rather than a `text-` prefix: `text-fg` is
+  // a colour on these same headings, and a prefix test would pass on it while
+  // the sizes underneath had quietly folded together.
+  const rungs = /^text-(micro|meta|sub|ui|read|title|display|hero)$/;
   const typeOf = (name: string) =>
     [...screen.getByRole("heading", { name }).classList]
-      .filter((c) => c.startsWith("text-["))
+      .filter((c) => rungs.test(c))
       .join(" ");
 
   // The Profile tab carries both levels at once, so one render settles it.

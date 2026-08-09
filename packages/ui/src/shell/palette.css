@@ -30,7 +30,7 @@
   outline: none;
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--type-ui);
 }
 
 .palette-input::placeholder {
@@ -51,7 +51,7 @@
   height: 34px;
   padding: 0 10px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--type-ui);
   color: var(--ink-muted);
 }
 
@@ -70,7 +70,7 @@
 
 .palette-hint {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--ink-tertiary);
@@ -79,7 +79,7 @@
 
 .palette-empty {
   padding: 14px;
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-tertiary);
   text-align: center;
 }

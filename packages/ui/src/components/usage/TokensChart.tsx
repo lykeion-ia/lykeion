@@ -43,11 +43,11 @@ export function TokensChart({ series }: TokensChartProps) {
   return (
     <div className="rounded-xl border border-line bg-surface px-5 py-[18px]">
       <div className="mb-[18px] flex items-center">
-        <div className="text-[14px] font-semibold tracking-tight text-fg">
+        <div className="text-read font-semibold tracking-tight text-fg">
           Daily tokens
         </div>
         <div className="flex-1" />
-        <div className="mr-3.5 flex items-center gap-3.5 text-[11.5px] text-fg-subtle">
+        <div className="mr-3.5 flex items-center gap-3.5 text-meta text-fg-subtle">
           <span className="inline-flex items-center gap-1.5">
             <span className="h-[9px] w-[9px] rounded-[2px] bg-accent-focus" />
             Input
@@ -69,7 +69,7 @@ export function TokensChart({ series }: TokensChartProps) {
                 aria-pressed={isActive}
                 onClick={() => setMetric(m)}
                 className={cn(
-                  "rounded-md px-2.5 py-1 text-[12px] transition-colors duration-[120ms]",
+                  "rounded-md px-2.5 py-1 text-sub transition-colors duration-[120ms]",
                   isActive ? "bg-surface-3 text-fg" : "text-fg-subtle",
                   isInert ? "cursor-not-allowed opacity-40" : "hover:text-fg",
                 )}
@@ -82,7 +82,7 @@ export function TokensChart({ series }: TokensChartProps) {
       </div>
 
       <div className="flex gap-3">
-        <div className="flex h-[230px] w-10 shrink-0 flex-col justify-between pb-[18px] text-right text-[11px] text-fg-tertiary">
+        <div className="flex h-[230px] w-10 shrink-0 flex-col justify-between pb-[18px] text-right text-meta text-fg-tertiary">
           {yLabels.map((label, i) => (
             <span key={`${label}-${i}`}>{label}</span>
           ))}
@@ -111,7 +111,7 @@ export function TokensChart({ series }: TokensChartProps) {
               );
             })}
           </div>
-          <div className="mt-2 flex justify-between px-0.5 text-[11px] text-fg-tertiary">
+          <div className="mt-2 flex justify-between px-0.5 text-meta text-fg-tertiary">
             {xTicks.map((label, i) => (
               <span key={`${label}-${i}`}>{label}</span>
             ))}

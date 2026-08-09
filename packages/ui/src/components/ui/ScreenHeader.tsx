@@ -11,7 +11,7 @@ import type { ReactNode } from "react";
  * is one size across the app by construction rather than by everyone
  * remembering.
  */
-export const screenTitleClass = "text-[17px] font-semibold text-fg";
+export const screenTitleClass = "text-title font-semibold text-fg";
 
 /**
  * The fixed title row every section screen uses — Studies, Research Groups,

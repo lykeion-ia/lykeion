@@ -979,3 +979,19 @@ it("refuses a cell report whose taskId names a Task the session never ran a turn
   expect(res.status).toBe(403);
   await expect(lab.ownerApi.taskNotebook(untouchedTask.id)).resolves.toEqual([]);
 });
+
+it("refuses environment setup honestly while a machine is online", async () => {
+  const lab = await freshLab();
+  // A paired machine is right there, Online — "no runtime is connected"
+  // would be false, and the remediation it names is one the researcher has
+  // already done. What is actually missing is the capability itself.
+  const setup = lab.ownerApi.kernelEnvSetup();
+  await expectRejection(setup, "unsupported", /cannot set up managed environments yet/);
+  await expect(setup).rejects.not.toThrow(/no runtime is connected/);
+});
+
+it("falls back to the no-runtime refusal once every machine has gone silent", async () => {
+  const lab = await freshLab();
+  lab.advanceClock(46);
+  await expectRejection(lab.ownerApi.kernelEnvSetup(), "unsupported", /no runtime is connected/);
+});

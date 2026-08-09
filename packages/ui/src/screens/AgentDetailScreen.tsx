@@ -10,14 +10,14 @@ export function AgentDetailScreen({ agentId }: { agentId: string }) {
 
   if (q.error) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center text-[13px] text-danger">
+      <div className="flex min-h-0 flex-1 items-center justify-center text-ui text-danger">
         {q.error}
       </div>
     );
   }
   if (!q.loading && !agent) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center text-[13px] text-fg-subtle">
+      <div className="flex min-h-0 flex-1 items-center justify-center text-ui text-fg-subtle">
         Agent not found
       </div>
     );

@@ -38,11 +38,11 @@ const VISIBILITY = [
   },
 ] as const;
 
-const LABEL = "text-[12.5px] font-medium text-fg-muted";
+const LABEL = "text-sub font-medium text-fg-muted";
 const LABEL_UPPER =
-  "text-[10.5px] font-semibold uppercase tracking-[0.5px] text-fg-tertiary";
+  "text-micro font-semibold uppercase tracking-[0.5px] text-fg-tertiary";
 const MENU_ITEM =
-  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-fg-muted hover:bg-surface-2 hover:text-fg";
+  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui text-fg-muted hover:bg-surface-2 hover:text-fg";
 
 function useCloseOnOutside(
   ref: RefObject<HTMLDivElement | null>,
@@ -80,7 +80,7 @@ function DropdownField({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5 py-2 text-left text-[13px] text-fg-muted hover:bg-surface-3"
+        className="flex w-full items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5 py-2 text-left text-ui text-fg-muted hover:bg-surface-3"
       >
         {trigger({ open })}
         <ChevronDownIcon
@@ -184,7 +184,7 @@ export function CreateAgentModal({
         className="flex max-h-[90vh] w-full max-w-[600px] flex-col rounded-xl border border-line bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between px-5 pb-1 pt-4">
-          <h2 className="text-[15px] font-semibold text-fg">Create Agent</h2>
+          <h2 className="text-read font-semibold text-fg">Create Agent</h2>
           <button
             type="button"
             aria-label="Close"
@@ -194,7 +194,7 @@ export function CreateAgentModal({
             <CloseIcon width={15} height={15} />
           </button>
         </div>
-        <p className="px-5 text-[13px] text-fg-subtle">
+        <p className="px-5 text-ui text-fg-subtle">
           Create a new AI agent for your workspace.
         </p>
 
@@ -215,7 +215,7 @@ export function CreateAgentModal({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Deep Research Agent"
-                className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
+                className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
               />
             </label>
           </div>
@@ -228,9 +228,9 @@ export function CreateAgentModal({
               maxLength={255}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What does this agent do?"
-              className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
+              className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
             />
-            <span className="self-end text-[11px] text-fg-tertiary">
+            <span className="self-end text-meta text-fg-tertiary">
               {description.length} / 255
             </span>
           </label>
@@ -263,10 +263,10 @@ export function CreateAgentModal({
                       )}
                     />
                     <span className="flex flex-col">
-                      <span className="text-[13px] font-medium text-fg">
+                      <span className="text-ui font-medium text-fg">
                         {v.title}
                       </span>
-                      <span className="text-[11.5px] leading-snug text-fg-subtle">
+                      <span className="text-meta leading-snug text-fg-subtle">
                         {v.sub}
                       </span>
                     </span>
@@ -289,10 +289,10 @@ export function CreateAgentModal({
                   />
                   {runtime ? (
                     <span className="flex flex-1 flex-col">
-                      <span className="text-[13px] font-medium text-fg">
+                      <span className="text-ui font-medium text-fg">
                         {runtime.name}
                       </span>
-                      <span className="text-[11.5px] text-fg-subtle">
+                      <span className="text-meta text-fg-subtle">
                         {runtime.platform}
                       </span>
                     </span>
@@ -306,7 +306,7 @@ export function CreateAgentModal({
             >
               {(close) =>
                 runtimes.length === 0 ? (
-                  <div className="px-2 py-1.5 text-[12.5px] text-fg-subtle">
+                  <div className="px-2 py-1.5 text-sub text-fg-subtle">
                     No machine of yours is paired with this lab yet.
                   </div>
                 ) : (
@@ -326,8 +326,8 @@ export function CreateAgentModal({
                         className="shrink-0 text-iris"
                       />
                       <span className="flex flex-1 flex-col">
-                        <span className="text-[13px] text-fg">{r.name}</span>
-                        <span className="text-[11.5px] text-fg-subtle">
+                        <span className="text-ui text-fg">{r.name}</span>
+                        <span className="text-meta text-fg-subtle">
                           {r.platform}
                         </span>
                       </span>
@@ -395,13 +395,13 @@ export function CreateAgentModal({
                 onChange={(e) => setInstructions(e.target.value)}
                 placeholder="Describe how this agent should work…"
                 rows={4}
-                className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
+                className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
               />
             ) : (
               <button
                 type="button"
                 onClick={() => setInstrOpen(true)}
-                className="flex w-full items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5 py-2 text-left text-[13px] hover:bg-surface-3"
+                className="flex w-full items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5 py-2 text-left text-ui hover:bg-surface-3"
               >
                 <FileIcon
                   width={15}
@@ -441,7 +441,7 @@ export function CreateAgentModal({
                       {skills.map((s) => (
                         <span
                           key={s}
-                          className="rounded bg-surface-3 px-1.5 py-0.5 text-[11.5px] text-fg"
+                          className="rounded bg-surface-3 px-1.5 py-0.5 text-meta text-fg"
                         >
                           {s}
                         </span>
@@ -453,7 +453,7 @@ export function CreateAgentModal({
             >
               {() =>
                 skillNames.length === 0 ? (
-                  <div className="px-2 py-1.5 text-[12.5px] text-fg-subtle">
+                  <div className="px-2 py-1.5 text-sub text-fg-subtle">
                     No skills in the workspace yet.
                   </div>
                 ) : (
@@ -510,7 +510,7 @@ export function CreateAgentModal({
                       {connectors.map((c) => (
                         <span
                           key={c}
-                          className="rounded bg-surface-3 px-1.5 py-0.5 text-[11.5px] text-fg"
+                          className="rounded bg-surface-3 px-1.5 py-0.5 text-meta text-fg"
                         >
                           {c}
                         </span>
@@ -522,7 +522,7 @@ export function CreateAgentModal({
             >
               {() =>
                 connectorNames.length === 0 ? (
-                  <div className="px-2 py-1.5 text-[12.5px] text-fg-subtle">
+                  <div className="px-2 py-1.5 text-sub text-fg-subtle">
                     No connectors — add one in Settings › Connectors.
                   </div>
                 ) : (
@@ -555,7 +555,7 @@ export function CreateAgentModal({
                 )
               }
             </DropdownField>
-            <p className="text-[11.5px] leading-snug text-fg-subtle">
+            <p className="text-meta leading-snug text-fg-subtle">
               A specialist sees only the connectors you assign here (intersected
               with what's enabled). Leave empty to inherit all enabled
               connectors.
@@ -567,7 +567,7 @@ export function CreateAgentModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted hover:text-fg"
+            className="rounded-md px-3 py-1.5 text-ui text-fg-muted hover:text-fg"
           >
             Cancel
           </button>
@@ -576,7 +576,7 @@ export function CreateAgentModal({
             disabled={!canCreate}
             onClick={submit}
             className={cn(
-              "rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity",
+              "rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity",
               canCreate ? "hover:opacity-90" : "cursor-not-allowed opacity-50",
             )}
           >

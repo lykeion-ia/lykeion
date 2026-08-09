@@ -139,7 +139,7 @@ export function TaskSidebar({
       <div className="tsb-menu">
         <button type="button" className={railRow()} onClick={onNew}>
           <RailGlyph>
-            <span aria-hidden="true" className="text-[16px] leading-none">
+            <span aria-hidden="true" className="text-read leading-none">
               +
             </span>
           </RailGlyph>

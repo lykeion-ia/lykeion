@@ -14,9 +14,9 @@ import { CloseIcon } from "../icons";
 import { DISCIPLINE_COLOR } from "../../lib/workflow-meta";
 import { cn } from "../../lib/utils";
 
-const LABEL = "text-[12.5px] font-medium text-fg-muted";
+const LABEL = "text-sub font-medium text-fg-muted";
 const FIELD =
-  "w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong";
+  "w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong";
 
 /** Turn a name into a stable id token. */
 export function slugId(name: string): string {
@@ -118,7 +118,7 @@ export function CreateWorkflowModal({
         className="flex max-h-[90vh] w-full max-w-[600px] flex-col rounded-xl border border-line bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between px-5 pb-1 pt-4">
-          <h2 className="text-[15px] font-semibold text-fg">Create Workflow</h2>
+          <h2 className="text-read font-semibold text-fg">Create Workflow</h2>
           <button
             type="button"
             aria-label="Close"
@@ -128,7 +128,7 @@ export function CreateWorkflowModal({
             <CloseIcon width={15} height={15} />
           </button>
         </div>
-        <p className="px-5 text-[13px] text-fg-subtle">
+        <p className="px-5 text-ui text-fg-subtle">
           A research procedure, and the phases of the method it runs.
         </p>
 
@@ -166,7 +166,7 @@ export function CreateWorkflowModal({
                     onClick={() => setDiscipline(option)}
                     aria-pressed={selected}
                     className={cn(
-                      "flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left text-[12px] transition-colors",
+                      "flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left text-sub transition-colors",
                       selected
                         ? "border-line-strong bg-surface-2 text-fg"
                         : "border-line text-fg-muted hover:bg-surface-2",
@@ -194,7 +194,7 @@ export function CreateWorkflowModal({
               placeholder="Load {counts_file} and compare {group_a} vs {group_b}…"
               className={cn(FIELD, "resize-y")}
             />
-            <span className="text-[11px] text-fg-tertiary">
+            <span className="text-meta text-fg-tertiary">
               Wrap fillable slots in braces, e.g. {"{group_a}"}.
               {placeholders.length > 0 &&
                 ` Detected: ${placeholders.map((p) => p.key).join(", ")}.`}
@@ -213,7 +213,7 @@ export function CreateWorkflowModal({
                     onClick={() => togglePhase(phase)}
                     aria-pressed={selected}
                     className={cn(
-                      "rounded-lg border px-2.5 py-1.5 text-left text-[12px] transition-colors",
+                      "rounded-lg border px-2.5 py-1.5 text-left text-sub transition-colors",
                       selected
                         ? "border-line-strong bg-surface-2 text-fg"
                         : "border-line text-fg-muted hover:bg-surface-2",
@@ -224,13 +224,13 @@ export function CreateWorkflowModal({
                 );
               })}
             </div>
-            <span className="text-[11px] text-fg-tertiary">
+            <span className="text-meta text-fg-tertiary">
               Leave out the phases this procedure has nothing to do in.
             </span>
           </div>
 
           {error && (
-            <p className="text-[12px] text-danger" role="alert">
+            <p className="text-sub text-danger" role="alert">
               {error}
             </p>
           )}
@@ -240,7 +240,7 @@ export function CreateWorkflowModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted hover:text-fg"
+            className="rounded-md px-3 py-1.5 text-ui text-fg-muted hover:text-fg"
           >
             Cancel
           </button>
@@ -249,7 +249,7 @@ export function CreateWorkflowModal({
             disabled={!canCreate}
             onClick={submit}
             className={cn(
-              "rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity",
+              "rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity",
               canCreate ? "hover:opacity-90" : "cursor-not-allowed opacity-50",
             )}
           >

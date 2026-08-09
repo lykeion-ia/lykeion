@@ -31,7 +31,7 @@ function NavLink({
         // an unlabelled number that could as easily be the Inbox's total.
         <span
           aria-label={`${unread} unread conversations`}
-          className="ml-auto shrink-0 rounded-full bg-accent/20 px-1.5 text-[10px] font-semibold text-accent"
+          className="ml-auto shrink-0 rounded-full bg-accent/20 px-1.5 text-micro font-semibold text-accent"
         >
           {unread}
         </span>
@@ -79,7 +79,7 @@ export function Rail({ onOpenPalette }: { onOpenPalette: () => void }) {
       >
         <SearchIcon className="shrink-0" width={16} height={16} />
         <span className="truncate">Search…</span>
-        <span className="ml-auto shrink-0 rounded border border-line px-[5px] py-px font-mono text-[10px] text-fg-tertiary">
+        <span className="ml-auto shrink-0 rounded border border-line px-[5px] py-px font-mono text-micro text-fg-tertiary">
           ⌘K
         </span>
       </button>
@@ -92,7 +92,7 @@ export function Rail({ onOpenPalette }: { onOpenPalette: () => void }) {
       >
         <ComposeIcon className="shrink-0 opacity-90" width={16} height={16} />
         <span className="truncate">New Task</span>
-        <span className="ml-auto shrink-0 rounded border border-line px-[5px] py-px font-mono text-[10px] text-fg-tertiary">
+        <span className="ml-auto shrink-0 rounded border border-line px-[5px] py-px font-mono text-micro text-fg-tertiary">
           C
         </span>
       </button>
@@ -120,7 +120,7 @@ export function Rail({ onOpenPalette }: { onOpenPalette: () => void }) {
 
       {!hasWorkspaceServer() && (
         <div
-          className="mx-0.5 mb-1 rounded-md bg-surface-2 px-2.5 py-1 text-[10.5px] font-medium uppercase tracking-[0.5px] text-fg-tertiary"
+          className="mx-0.5 mb-1 rounded-md bg-surface-2 px-2.5 py-1 text-micro font-medium uppercase tracking-[0.5px] text-fg-tertiary"
           title="Seeded data that lives for this session. Nothing here is saved."
         >
           Demo
@@ -130,7 +130,7 @@ export function Rail({ onOpenPalette }: { onOpenPalette: () => void }) {
       <button
         type="button"
         aria-label="Help"
-        className="mr-0.5 self-end px-2.5 py-2 text-base text-fg-tertiary hover:text-fg-subtle"
+        className="mr-0.5 self-end px-2.5 py-2 text-read text-fg-tertiary hover:text-fg-subtle"
       >
         ?
       </button>

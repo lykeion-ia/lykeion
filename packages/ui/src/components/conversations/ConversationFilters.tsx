@@ -44,7 +44,7 @@ export function ConversationFilters({
           // Labelled rather than left to the placeholder, which stops being
           // readable the moment anything is typed into the field.
           aria-label="Search conversations"
-          className="h-full w-full bg-transparent text-[13px] text-fg placeholder:text-fg-subtle focus:outline-none"
+          className="h-full w-full bg-transparent text-ui text-fg placeholder:text-fg-subtle focus:outline-none"
         />
       </div>
 
@@ -60,7 +60,7 @@ export function ConversationFilters({
               aria-pressed={active}
               onClick={() => onChip(id)}
               className={cn(
-                "rounded-full border px-2.5 py-[3px] text-[12px] transition-colors duration-[120ms]",
+                "rounded-full border px-2.5 py-[3px] text-sub transition-colors duration-[120ms]",
                 active
                   ? "border-accent bg-accent/15 text-accent"
                   : "border-line text-fg-subtle hover:bg-surface hover:text-fg",

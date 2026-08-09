@@ -138,7 +138,7 @@ export function NewTaskModal({
       >
         <div className="flex items-center gap-2 px-4 pb-1 pt-3">
           <ComposeIcon width={15} height={15} className="text-fg-subtle" />
-          <span className="text-[13px] font-medium text-fg">New task</span>
+          <span className="text-ui font-medium text-fg">New task</span>
           <span className="flex-1" />
           <button
             type="button"
@@ -156,14 +156,14 @@ export function NewTaskModal({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Task title"
-            className="w-full bg-transparent text-[19px] font-semibold tracking-[-0.2px] text-fg outline-none focus-visible:outline-none! placeholder:text-fg-subtle"
+            className="w-full bg-transparent text-title font-semibold tracking-[-0.2px] text-fg outline-none focus-visible:outline-none! placeholder:text-fg-subtle"
           />
           <textarea
             rows={3}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Add a description…"
-            className="mt-2 w-full resize-none bg-transparent text-[14px] leading-relaxed text-fg-muted outline-none focus-visible:outline-none! placeholder:text-fg-subtle"
+            className="mt-2 w-full resize-none bg-transparent text-read leading-relaxed text-fg-muted outline-none focus-visible:outline-none! placeholder:text-fg-subtle"
           />
         </div>
 
@@ -173,7 +173,7 @@ export function NewTaskModal({
             <select
               value={studyId}
               onChange={(e) => setStudyId(e.target.value)}
-              className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[12.5px] text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
+              className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-sub text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
             >
               <option value="">
                 {studies.length === 0
@@ -191,7 +191,7 @@ export function NewTaskModal({
             <select
               value={stage}
               onChange={(e) => setStage(e.target.value as Stage)}
-              className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[12.5px] text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
+              className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-sub text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
             >
               {STAGES.map((s) => (
                 <option key={s} value={s}>
@@ -204,7 +204,7 @@ export function NewTaskModal({
             <select
               value={priority}
               onChange={(e) => setPriority(e.target.value as Priority)}
-              className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[12.5px] text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
+              className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-sub text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
             >
               {PRIORITY_ORDER.map((p) => (
                 <option key={p} value={p}>
@@ -217,7 +217,7 @@ export function NewTaskModal({
 
         {/* assignees */}
         <div className="px-4 pb-3">
-          <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary">
+          <div className="mb-1.5 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary">
             Assignees
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -231,7 +231,7 @@ export function NewTaskModal({
             {assignees.map((a) => (
               <span
                 key={assigneeKey(a)}
-                className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-[12px] text-fg-muted"
+                className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-sub text-fg-muted"
               >
                 {displayName(a, dir)}
                 {/* The padding is the pointer target: an 11px glyph is far
@@ -254,7 +254,7 @@ export function NewTaskModal({
         </div>
 
         {error && (
-          <p className="px-4 pb-2 text-[12.5px] text-danger">{error}</p>
+          <p className="px-4 pb-2 text-sub text-danger">{error}</p>
         )}
 
         <div className="flex items-center gap-3 border-t border-line px-4 py-3">
@@ -262,7 +262,7 @@ export function NewTaskModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-[13px] text-fg-subtle hover:text-fg"
+            className="rounded-md px-3 py-1.5 text-ui text-fg-subtle hover:text-fg"
           >
             Cancel
           </button>
@@ -271,7 +271,7 @@ export function NewTaskModal({
             disabled={!canSubmit}
             onClick={submit}
             className={cn(
-              "rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity",
+              "rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity",
               canSubmit ? "hover:opacity-90" : "cursor-not-allowed opacity-40",
             )}
           >
@@ -292,7 +292,7 @@ function Field({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary">
+      <span className="text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary">
         {label}
       </span>
       {children}

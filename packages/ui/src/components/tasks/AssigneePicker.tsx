@@ -129,7 +129,7 @@ export function AssigneePicker({ value, onChange }: AssigneePickerProps) {
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className="rounded-md border border-line bg-surface-2 px-2 py-1 text-[12px] text-fg-muted hover:bg-surface-3 hover:text-fg"
+        className="rounded-md border border-line bg-surface-2 px-2 py-1 text-sub text-fg-muted hover:bg-surface-3 hover:text-fg"
       >
         {label}
       </button>
@@ -179,7 +179,7 @@ function GroupLabel({
 }) {
   return (
     <p
-      className={`${spaced ? "mt-1 " : ""}px-2 py-1 text-[10px] font-medium uppercase tracking-[0.4px] text-fg-tertiary`}
+      className={`${spaced ? "mt-1 " : ""}px-2 py-1 text-micro font-medium uppercase tracking-[0.4px] text-fg-tertiary`}
     >
       {children}
     </p>
@@ -205,7 +205,7 @@ function Option({
       role="option"
       aria-selected={chosen.has(assigneeKey(assignee))}
       onClick={() => onToggle(assignee)}
-      className="block w-full rounded px-2 py-1 text-left text-[12.5px] text-fg-muted hover:bg-surface-2 hover:text-fg aria-selected:text-fg aria-selected:font-medium"
+      className="block w-full rounded px-2 py-1 text-left text-sub text-fg-muted hover:bg-surface-2 hover:text-fg aria-selected:text-fg aria-selected:font-medium"
     >
       {label}
     </button>

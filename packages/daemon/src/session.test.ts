@@ -26,7 +26,7 @@ function grantedDir(): string {
 async function session(
   script: unknown[],
   grants: StandingGrant[] = [],
-  options: { cancelGraceMs?: number; mcpServers?: McpServer[] } = {},
+  options: { cancelGraceMs?: number; mcpServers?: McpServer[]; agent?: string } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "lykeion-sess-"));
   dirs.push(cwd);
@@ -38,12 +38,13 @@ async function session(
   // adapter write — a path anywhere else would be refused by the kernel
   // rather than answered.
   const opening = join(cwd, "session-new.json");
+  const spawnedWith = join(cwd, "adapter-env.json");
   const s = await startSession({
     adapter: {
       command: process.execPath,
       args: ["--experimental-strip-types", STUB],
     },
-    agent: "stub",
+    agent: options.agent ?? "stub",
     cwd,
     dataDir,
     grants,
@@ -53,6 +54,7 @@ async function session(
       ...process.env,
       LYKEION_STUB_SCRIPT: JSON.stringify(script),
       LYKEION_STUB_SESSION_NEW_PARAMS: opening,
+      LYKEION_STUB_ENV_MARKER: spawnedWith,
     },
     ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
     ...(options.cancelGraceMs !== undefined ? { cancelGraceMs: options.cancelGraceMs } : {}),
@@ -62,7 +64,12 @@ async function session(
    *  of the wire — so a value dropped between the option and the call shows
    *  up here rather than passing on what was intended. */
   const newSessionParams = () => JSON.parse(readFileSync(opening, "utf8")) as Record<string, unknown>;
-  return { s, events, granted, newSessionParams };
+  /** The environment the adapter process was actually started with, read
+   *  back from inside that process — the daemon's own env plus whatever the
+   *  spawn added for this agent, as the adapter itself saw it. */
+  const adapterEnv = () =>
+    JSON.parse(readFileSync(spawnedWith, "utf8")) as Record<string, string | undefined>;
+  return { s, events, granted, newSessionParams, adapterEnv };
 }
 
 const settled = (events: RunEvent[]) =>
@@ -78,16 +85,44 @@ async function until(check: () => boolean): Promise<void> {
 
 it("names the kernel bridge to the agent it starts", async () => {
   const { newSessionParams } = await session([], [], {
-    mcpServers: [{ name: "lykeion", command: "/x/bridge", args: ["--socket", "/w/sockets/k.sock"] }],
+    mcpServers: [
+      { name: "lykeion", command: "/x/bridge", args: ["--socket", "/w/sockets/k.sock"], env: [] },
+    ],
   });
   expect(newSessionParams()).toMatchObject({
-    mcpServers: [{ name: "lykeion", command: "/x/bridge", args: ["--socket", "/w/sockets/k.sock"] }],
+    mcpServers: [
+      { name: "lykeion", command: "/x/bridge", args: ["--socket", "/w/sockets/k.sock"], env: [] },
+    ],
   });
 });
 
 it("tells an agent about no servers when it was given none", async () => {
   const { newSessionParams } = await session([]);
   expect(newSessionParams()).toMatchObject({ mcpServers: [] });
+});
+
+it("empties a claude session's settings sources so the owner's own config stays out of the run", async () => {
+  // Both shipped claude adapters load the machine owner's user scope unless
+  // told otherwise — their personal MCP servers and account connectors
+  // included. This machine tells them otherwise on every session, so the
+  // tools a run reaches are exactly the ones named on session/new.
+  const { newSessionParams } = await session([], [], { agent: "claude" });
+  expect(newSessionParams()).toMatchObject({
+    _meta: { claudeCode: { options: { settingSources: [] } } },
+  });
+});
+
+it("hands a codex adapter a base config that names no servers of the machine owner's", async () => {
+  const { newSessionParams, adapterEnv } = await session([], [], { agent: "codex" });
+  expect(JSON.parse(adapterEnv().CODEX_CONFIG ?? "null")).toEqual({ mcp_servers: {} });
+  // The claude channel is claude's own; a codex session carries no meta.
+  expect(newSessionParams()._meta).toBeUndefined();
+});
+
+it("adds no per-agent config for an agent it knows no channel for", async () => {
+  const { newSessionParams, adapterEnv } = await session([]);
+  expect(adapterEnv().CODEX_CONFIG).toBeUndefined();
+  expect(newSessionParams()._meta).toBeUndefined();
 });
 
 it("confines an agent inside a boundary that still lets it start this machine's own program", async () => {

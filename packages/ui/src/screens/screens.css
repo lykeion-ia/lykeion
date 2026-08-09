@@ -26,7 +26,7 @@
    its 15px — one section quietly a size down from the other twelve. Keep the
    two in step; there is no way for the compiler to do it across this boundary. */
 .screen-title {
-  font-size: 17px;
+  font-size: var(--type-title);
   font-weight: 600;
   letter-spacing: -0.01em;
   overflow: hidden;
@@ -36,7 +36,7 @@
 
 .screen-count {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 17px;
   color: var(--ink-subtle);
   background: var(--surface-2);
@@ -50,7 +50,7 @@
 .screen-empty {
   padding: 20px;
   color: var(--ink-subtle);
-  font-size: 13px;
+  font-size: var(--type-ui);
 }
 
 .list {
@@ -80,7 +80,7 @@ a.crumb:hover {
 
 .crumb--code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-muted);
 }
 
@@ -105,7 +105,7 @@ a.crumb:hover {
 }
 
 .stage-label {
-  font-size: 11px;
+  font-size: var(--type-meta);
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -115,13 +115,13 @@ a.crumb:hover {
 .stage-label--title {
   text-transform: none;
   letter-spacing: 0;
-  font-size: 12px;
+  font-size: var(--type-sub);
   font-weight: 500;
 }
 
 .stage-count {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
 }
 
@@ -131,7 +131,7 @@ a.crumb:hover {
   align-items: center;
   padding: 0 20px;
   color: var(--ink-tertiary);
-  font-size: 12px;
+  font-size: var(--type-sub);
   border-bottom: 1px solid var(--hairline);
 }
 
@@ -165,7 +165,7 @@ a.crumb:hover {
 
 .inbox-kind {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--ink-tertiary);
@@ -189,7 +189,7 @@ a.crumb:hover {
 }
 
 .stub-eyebrow {
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -197,7 +197,7 @@ a.crumb:hover {
 }
 
 .stub-body {
-  font-size: 13px;
+  font-size: var(--type-ui);
   color: var(--ink-subtle);
   line-height: 1.6;
 }
@@ -208,7 +208,7 @@ a.crumb:hover {
   border-top: 1px solid var(--hairline);
   padding-top: 10px;
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--type-sub);
 }
 
 .stub-meta-label {
@@ -230,7 +230,7 @@ a.crumb:hover {
   padding: 0 20px;
   border-top: 1px solid var(--hairline);
   color: var(--ink-tertiary);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .hint-sep {
@@ -316,7 +316,7 @@ a.crumb:hover {
   border-radius: 4px;
   background: var(--surface-2);
   padding: 2px 6px;
-  font-size: 10px;
+  font-size: var(--type-micro);
   color: var(--ink-tertiary);
 }
 
@@ -363,7 +363,7 @@ a.crumb:hover {
 .study-title {
   margin: 0;
   text-align: center;
-  font-size: 24px;
+  font-size: var(--type-display);
   font-weight: 600;
   letter-spacing: -0.015em;
   line-height: 1.25;
@@ -382,7 +382,7 @@ a.crumb:hover {
   /* It already fills the main column, so this centres it on the composer's
      axis — the same line the name above it is centred on. */
   text-align: center;
-  font-size: 13px;
+  font-size: var(--type-ui);
   line-height: 1.6;
   color: var(--ink-muted);
 }
@@ -408,7 +408,7 @@ a.crumb:hover {
 .study-tasks-label {
   margin: 0 0 2px;
   padding: 0;
-  font-size: 12px;
+  font-size: var(--type-sub);
   font-weight: 500;
   color: var(--ink-tertiary);
 }
@@ -428,7 +428,7 @@ a.crumb:hover {
   border-radius: 8px;
   color: var(--ink);
   text-decoration: none;
-  font-size: 13.5px;
+  font-size: var(--type-ui);
 }
 
 .study-task:hover {
@@ -480,7 +480,7 @@ a.crumb:hover {
      place rather than a reflow. */
   min-width: 22px;
   text-align: right;
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
 }
 
@@ -549,14 +549,14 @@ a.crumb:hover {
   background: var(--surface-1);
   color: var(--ink);
   font: inherit;
-  font-size: 13.5px;
+  font-size: var(--type-ui);
   outline: none;
 }
 
 .study-tasks-empty {
   margin: 0;
   padding: 8px 0;
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   color: var(--ink-tertiary);
 }
 
@@ -601,7 +601,7 @@ a.crumb:hover {
 
 .study-card-title {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   font-weight: 500;
   color: var(--ink);
 }
@@ -610,7 +610,7 @@ a.crumb:hover {
   flex-shrink: 0;
   padding: 2px 6px;
   border-radius: 6px;
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
   background: transparent;
   border: none;
@@ -624,7 +624,7 @@ a.crumb:hover {
 
 .study-card-prose {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--type-sub);
   line-height: 1.6;
   color: var(--ink-muted);
   white-space: pre-wrap;
@@ -632,7 +632,7 @@ a.crumb:hover {
 
 .study-card-empty {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--type-sub);
   line-height: 1.6;
   color: var(--ink-tertiary);
 }
@@ -645,7 +645,7 @@ a.crumb:hover {
   background: var(--surface-2);
   padding: 8px 10px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-sub);
   line-height: 1.55;
   color: var(--ink);
 }
@@ -662,7 +662,7 @@ a.crumb:hover {
 }
 
 .study-card-note {
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
   line-height: 1.5;
   margin: 8px 0 0;
@@ -684,7 +684,7 @@ a.crumb:hover {
   justify-content: space-between;
   gap: 8px;
   min-height: 24px;
-  font-size: 12px;
+  font-size: var(--type-sub);
 }
 
 .study-stage-label {
@@ -693,6 +693,6 @@ a.crumb:hover {
 
 .study-stage-count {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
 }

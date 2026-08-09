@@ -54,7 +54,7 @@ export function ConversationList({
                     shows, and its result would look arbitrary. */}
                 <span
                   className={cn(
-                    "min-w-0 flex-1 truncate text-[13px]",
+                    "min-w-0 flex-1 truncate text-ui",
                     unread > 0
                       ? "font-medium text-fg"
                       : "font-normal text-fg-muted",
@@ -62,7 +62,7 @@ export function ConversationList({
                 >
                   {conversation.title}
                 </span>
-                <span className="shrink-0 text-[11px] text-fg-tertiary">
+                <span className="shrink-0 text-meta text-fg-tertiary">
                   {formatAgo(conversation.updatedTs)}
                 </span>
               </div>
@@ -70,7 +70,7 @@ export function ConversationList({
               <div className="flex items-center gap-2">
                 <span
                   className={cn(
-                    "min-w-0 flex-1 truncate text-[12px]",
+                    "min-w-0 flex-1 truncate text-sub",
                     unread > 0 ? "text-fg-muted" : "text-fg-subtle",
                   )}
                 >
@@ -86,7 +86,7 @@ export function ConversationList({
                   // not handed an unlabelled number.
                   <span
                     aria-label={`${unread} unread`}
-                    className="shrink-0 rounded-full bg-accent/20 px-1.5 text-[10px] font-semibold text-accent"
+                    className="shrink-0 rounded-full bg-accent/20 px-1.5 text-micro font-semibold text-accent"
                   >
                     {unread}
                   </span>

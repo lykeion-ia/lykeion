@@ -22,7 +22,7 @@ import { screenTitleClass } from "../ui/ScreenHeader";
  * still differ, or the hierarchy goes back to being flat.
  */
 const sectionTitleClass = screenTitleClass;
-const tabTitleClass = "text-[20px] font-semibold tracking-[-0.2px] text-fg";
+const tabTitleClass = "text-display font-semibold tracking-[-0.2px] text-fg";
 
 /**
  * The box a settings heading sits in: `ScreenHeader`'s own content box — its

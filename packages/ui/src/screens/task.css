@@ -15,7 +15,7 @@
   padding: 0 16px;
   border-bottom: 1px solid var(--hairline);
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--type-sub);
   overflow: hidden;
 }
 
@@ -93,7 +93,7 @@
 }
 
 .rail-eyebrow {
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -106,14 +106,14 @@
   align-items: center;
   gap: 8px;
   min-height: 26px;
-  font-size: 12px;
+  font-size: var(--type-sub);
 }
 
 .rail-label {
   width: 64px;
   flex-shrink: 0;
   color: var(--ink-tertiary);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .rail-value {
@@ -129,7 +129,7 @@
 }
 
 .rail-note {
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
   line-height: 1.5;
   border-top: 1px dashed var(--hairline);
@@ -220,7 +220,7 @@
 
 .live-turn-provider {
   color: var(--ink-tertiary);
-  font-size: 11px;
+  font-size: var(--type-meta);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -242,7 +242,7 @@
 }
 
 .conv-title {
-  font-size: 14px;
+  font-size: var(--type-read);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -271,13 +271,13 @@
 }
 
 .conv-empty-title {
-  font-size: 13px;
+  font-size: var(--type-ui);
   font-weight: 500;
   color: var(--ink-muted);
 }
 
 .conv-empty-sub {
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-tertiary);
   max-width: 340px;
   line-height: 1.5;
@@ -301,7 +301,7 @@
   border-radius: 8px;
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--type-ui);
 }
 
 .composer-input::placeholder {
@@ -318,7 +318,7 @@
   padding: 0 12px;
   border-radius: 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-sub);
   font-weight: 500;
   white-space: nowrap;
   display: inline-flex;
@@ -381,7 +381,7 @@
 }
 
 .prov-eyebrow {
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -404,7 +404,7 @@
   border: 1px solid var(--hairline);
   border-radius: 4px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-sub);
   line-height: 1;
 }
 
@@ -414,7 +414,7 @@
 
 .stepper-label {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   color: var(--ink-subtle);
   padding: 0 2px;
 }
@@ -430,7 +430,7 @@
 
 .prov-tab {
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
   background: none;
   border: none;
@@ -458,7 +458,7 @@
 }
 
 .prov-desc {
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-subtle);
   line-height: 1.55;
 }
@@ -469,13 +469,13 @@
   background: var(--surface-2);
   padding: 14px;
   color: var(--ink-tertiary);
-  font-size: 12px;
+  font-size: var(--type-sub);
   text-align: center;
 }
 
 .prov-code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
   background: var(--surface-2);
   border: 1px solid var(--hairline);
@@ -764,7 +764,7 @@
   background: none;
   color: var(--ink-subtle);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--type-meta);
   cursor: pointer;
 }
 
@@ -785,7 +785,7 @@
   border-radius: 10px;
   background: var(--surface-1);
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--type-sub);
   text-align: left;
   display: flex;
   flex-direction: column;
@@ -810,7 +810,7 @@
   background: var(--surface-2);
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-sub);
   resize: vertical;
 }
 
@@ -832,7 +832,7 @@
   background: var(--surface-2);
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-sub);
   cursor: pointer;
 }
 
@@ -853,7 +853,7 @@
 }
 
 .card-eyebrow {
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -899,7 +899,7 @@
   border: 1px solid var(--hairline-strong);
   background: var(--surface-2);
   color: var(--status-done);
-  font-size: 10px;
+  font-size: var(--type-micro);
   line-height: 1;
 }
 
@@ -912,7 +912,7 @@
 /* Where this card sits in a batch of gates the turn raised at once. Quiet —
    it is context for the question below, not the question. */
 .perm-queue {
-  font-size: 11px;
+  font-size: var(--type-meta);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -922,27 +922,27 @@
 /* The headline: what is about to happen, as a question. */
 .perm-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--type-read);
   font-weight: 600;
   color: var(--ink);
 }
 
 .perm-detail {
-  font-size: 13px;
+  font-size: var(--type-ui);
   font-weight: 500;
   color: var(--ink);
 }
 
 /* Attribution for the reason above — the agent's claim, not the app's. */
 .perm-detail-source {
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
 }
 
 /* The raw payload: a disclosure, open for shell code and folded otherwise. */
 .perm-payload > summary {
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-muted);
   /* The marker is the only affordance here; keep it, drop the focus outline
      jump by letting the summary own its own focus ring. */
@@ -962,7 +962,7 @@
   align-items: center;
   gap: 8px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
 }
 
@@ -1035,13 +1035,13 @@
 }
 
 .perm-scope-item-label {
-  font-size: 13px;
+  font-size: var(--type-ui);
   font-weight: 500;
   color: var(--ink);
 }
 
 .perm-scope-item-desc {
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
 }
 
@@ -1106,7 +1106,7 @@ label.question-option:hover {
   display: grid;
   place-items: center;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
 }
 
@@ -1183,7 +1183,7 @@ label.question-option:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-subtle);
 }
 
@@ -1295,7 +1295,7 @@ label.question-option:hover {
   width: 13px;
   display: grid;
   place-items: center;
-  font-size: 10px;
+  font-size: var(--type-micro);
   line-height: 1;
   color: var(--status-done);
 }
@@ -1315,7 +1315,7 @@ label.question-option:hover {
 .tool-step-label {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1336,7 +1336,7 @@ label.question-option:hover {
   padding: 0 5px;
   border: 1px solid var(--warn);
   border-radius: 4px;
-  font-size: 9.5px;
+  font-size: var(--type-micro);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--warn);
@@ -1349,7 +1349,7 @@ label.question-option:hover {
   flex-shrink: 1;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   color: var(--ink-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1375,7 +1375,7 @@ label.question-option:hover {
 
 .step-stdout {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 1.5;
   color: var(--ink-subtle);
   background: var(--surface-2);
@@ -1417,13 +1417,13 @@ label.question-option:hover {
   gap: 10px;
   align-items: baseline;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--type-sub);
 }
 
 .tool-detail-key {
   flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--ink-tertiary);
@@ -1442,7 +1442,7 @@ label.question-option:hover {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--type-sub);
 }
 
 .tool-detail-note-text {
@@ -1453,7 +1453,7 @@ label.question-option:hover {
 .tool-detail-note-reason {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
   overflow-wrap: anywhere;
   user-select: text;
@@ -1477,7 +1477,7 @@ label.question-option:hover {
   border: 0;
   background: none;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-muted);
   cursor: pointer;
 }
@@ -1488,7 +1488,7 @@ label.question-option:hover {
 
 .tool-output-label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--type-micro);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-tertiary);
@@ -1497,7 +1497,7 @@ label.question-option:hover {
 .tool-output-pre {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 1.5;
   color: var(--ink-subtle);
   background: var(--surface-2);
@@ -1533,14 +1533,14 @@ label.question-option:hover {
 }
 
 .tool-result-title {
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   color: var(--ink);
   overflow-wrap: anywhere;
 }
 
 .tool-result-url {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   color: var(--ink-tertiary);
   overflow-wrap: anywhere;
 }
@@ -1588,7 +1588,7 @@ label.question-option:hover {
 .tool-step-group-title {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--type-sub);
   font-weight: 500;
   color: var(--ink-muted);
   overflow: hidden;
@@ -1599,7 +1599,7 @@ label.question-option:hover {
 .tool-step-group-summary {
   flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   color: var(--ink-tertiary);
 }
 
@@ -1673,7 +1673,7 @@ label.question-option:hover {
 }
 
 .prov-subeyebrow {
-  font-size: 10px;
+  font-size: var(--type-micro);
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1705,12 +1705,12 @@ label.question-option:hover {
   border: 1px solid var(--hairline);
   border-radius: 6px;
   background: var(--surface-2);
-  font-size: 11.5px;
+  font-size: var(--type-meta);
 }
 
 .log-ts {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   color: var(--ink-tertiary);
 }
 
@@ -1721,7 +1721,7 @@ label.question-option:hover {
 
 .log-badge {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--type-micro);
   border-radius: 4px;
   padding: 1px 5px;
   border: 1px solid var(--hairline-strong);
@@ -1739,7 +1739,7 @@ label.question-option:hover {
 .log-result {
   flex-basis: 100%;
   color: var(--ink-subtle);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 1.5;
 }
 
@@ -1789,12 +1789,12 @@ label.question-option:hover {
 
 .artifact-glyph {
   color: var(--ink-tertiary);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .artifact-path {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   color: var(--ink-muted);
 }
 
@@ -1832,7 +1832,7 @@ label.question-option:hover {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: var(--type-micro);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1862,14 +1862,14 @@ label.question-option:hover {
 }
 
 .finding-title {
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   font-weight: 500;
   color: var(--ink);
   line-height: 1.4;
 }
 
 .finding-claim {
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-muted);
   line-height: 1.5;
   border-left: 2px solid var(--hairline-strong);
@@ -1877,7 +1877,7 @@ label.question-option:hover {
 }
 
 .finding-evidence {
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
   line-height: 1.5;
 }
@@ -1886,14 +1886,14 @@ label.question-option:hover {
   color: var(--ink-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  font-size: 9.5px;
+  font-size: var(--type-micro);
   font-weight: 600;
   margin-right: 5px;
 }
 
 .finding-location {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   color: var(--ink-tertiary);
 }
 
@@ -1907,14 +1907,14 @@ label.question-option:hover {
 .btn--tiny {
   height: 24px;
   padding: 0 9px;
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .finding-resolved {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--status-done);
 }
 
@@ -1934,7 +1934,7 @@ label.question-option:hover {
   margin-left: 5px;
   padding: 0 4px;
   border-radius: 999px;
-  font-size: 9.5px;
+  font-size: var(--type-micro);
   font-weight: 600;
   color: var(--priority-urgent);
   border: 1px solid var(--priority-urgent);
@@ -1948,7 +1948,7 @@ label.question-option:hover {
 
 .done-notice {
   margin-top: 8px;
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 1.5;
   color: var(--priority-urgent);
   border: 1px solid var(--priority-urgent);
@@ -1962,7 +1962,7 @@ label.question-option:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--priority-urgent);
   border: 1px solid var(--hairline-strong);
   border-left: 2px solid var(--priority-urgent);
@@ -2001,7 +2001,7 @@ label.question-option:hover {
   background: transparent;
   color: var(--ink);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   text-align: left;
   cursor: pointer;
 }
@@ -2011,7 +2011,7 @@ label.question-option:hover {
 }
 
 .subagent-badge {
-  font-size: 10px;
+  font-size: var(--type-micro);
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -2042,7 +2042,7 @@ label.question-option:hover {
 
 .output-chip {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
   background: var(--surface-2);
   border: 1px solid var(--hairline);
@@ -2078,7 +2078,7 @@ label.question-option:hover {
      a status line ON the conversation, so it starts where the conversation
      starts rather than at the pane edge. */
   padding: 6px calc(18px + var(--scrollbar-w));
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-subtle);
   border-top: 1px solid var(--hairline);
 }
@@ -2116,7 +2116,7 @@ label.question-option:hover {
   align-items: center;
   gap: 5px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-sub);
   padding: 3px 9px;
   border-radius: 999px;
   border: 1px solid var(--hairline);
@@ -2173,7 +2173,7 @@ button.run-strip-notebook:hover {
   border-radius: 999px;
   background: var(--surface-2);
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--type-sub);
   font-weight: 500;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
   cursor: pointer;
@@ -2200,7 +2200,7 @@ button.run-strip-notebook:hover {
   border-radius: 10px;
   background: color-mix(in srgb, var(--priority-urgent) 8%, transparent);
   color: var(--priority-urgent);
-  font-size: 12px;
+  font-size: var(--type-sub);
 }
 
 /* The inline Study picker a send raises on an unfiled Task. It sits directly
@@ -2218,7 +2218,7 @@ button.run-strip-notebook:hover {
 }
 
 .composer-filing-label {
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   color: var(--ink-subtle);
 }
 
@@ -2233,7 +2233,7 @@ button.run-strip-notebook:hover {
   min-width: 0;
   height: 30px;
   padding: 0 8px;
-  font-size: 13px;
+  font-size: var(--type-ui);
   color: var(--ink);
   background: var(--surface-2);
   border: 1px solid var(--hairline);
@@ -2273,7 +2273,7 @@ button.run-strip-notebook:hover {
 }
 
 .mention-menu-head {
-  font-size: 11px;
+  font-size: var(--type-meta);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--ink-subtle);
@@ -2300,11 +2300,11 @@ button.run-strip-notebook:hover {
 }
 
 .mention-item-label {
-  font-size: 13px;
+  font-size: var(--type-ui);
 }
 
 .mention-item-desc {
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
 }
 
@@ -2322,7 +2322,7 @@ button.run-strip-notebook:hover {
   border: 1px solid var(--hairline-strong);
   border-radius: 8px;
   background: var(--surface-2);
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   line-height: 1.45;
   color: var(--ink-subtle);
 }
@@ -2496,13 +2496,13 @@ button.run-strip-notebook:hover {
 }
 
 .csend-item-label {
-  font-size: 12px;
+  font-size: var(--type-sub);
   font-weight: 500;
   color: var(--ink);
 }
 
 .csend-item-desc {
-  font-size: 10px;
+  font-size: var(--type-micro);
   color: var(--ink-subtle);
 }
 
@@ -2561,7 +2561,7 @@ button.run-strip-notebook:hover {
 }
 
 .tsb-project-name {
-  font-size: 13px;
+  font-size: var(--type-ui);
   font-weight: 600;
   letter-spacing: -0.1px;
   overflow: hidden;
@@ -2605,7 +2605,7 @@ button.run-strip-notebook:hover {
 }
 
 .tsb-tasks-empty {
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-tertiary);
   padding: 2px 8px;
 }
@@ -2622,7 +2622,7 @@ button.run-strip-notebook:hover {
   background: var(--surface-1);
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--type-ui);
   outline: none;
 }
 
@@ -2675,7 +2675,7 @@ button.run-strip-notebook:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--type-ui);
   color: var(--ink-subtle);
 }
 
@@ -2775,7 +2775,7 @@ button.run-strip-notebook:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: var(--type-read);
   color: var(--ink);
 }
 
@@ -2829,7 +2829,7 @@ button.run-strip-notebook:hover {
   background: transparent;
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--type-ui);
 }
 
 .art-search-input::placeholder {
@@ -2837,7 +2837,7 @@ button.run-strip-notebook:hover {
 }
 
 .art-count {
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-subtle);
   white-space: nowrap;
 }
@@ -2882,7 +2882,7 @@ button.run-strip-notebook:hover {
   border-radius: 10px;
   background: var(--surface-1);
   color: var(--ink-tertiary);
-  font-size: 12.5px;
+  font-size: var(--type-sub);
   text-align: center;
 }
 
@@ -2894,12 +2894,12 @@ button.run-strip-notebook:hover {
 }
 
 .art-group-title {
-  font-size: 13px;
+  font-size: var(--type-ui);
   color: var(--ink);
 }
 
 .art-group-count {
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-subtle);
 }
 
@@ -2939,7 +2939,7 @@ button.run-strip-notebook:hover {
 }
 
 .art-card-name {
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2947,7 +2947,7 @@ button.run-strip-notebook:hover {
 }
 
 .art-card-meta {
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
 }
 
@@ -2966,7 +2966,7 @@ button.run-strip-notebook:hover {
   background: transparent;
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--type-ui);
   cursor: pointer;
   text-align: left;
 }
@@ -2989,7 +2989,7 @@ button.run-strip-notebook:hover {
 .art-list-size {
   flex: 0 0 auto;
   color: var(--ink-subtle);
-  font-size: 12px;
+  font-size: var(--type-sub);
 }
 
 /* Task-settings popover (composer). */
@@ -3049,7 +3049,7 @@ button.run-strip-notebook:hover {
 }
 
 .cpop-label {
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink);
 }
 
@@ -3057,7 +3057,7 @@ button.run-strip-notebook:hover {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-tertiary);
 }
 
@@ -3076,7 +3076,7 @@ button.run-strip-notebook:hover {
   display: grid;
   place-items: center;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--type-micro);
   font-weight: 600;
   color: #0a0a0a;
 }
@@ -3092,7 +3092,7 @@ button.run-strip-notebook:hover {
   width: 23px;
   height: 23px;
   border-radius: 7px;
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .cli-switcher {
@@ -3110,7 +3110,7 @@ button.run-strip-notebook:hover {
   border-radius: 8px;
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--type-ui);
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
@@ -3132,7 +3132,7 @@ button.run-strip-notebook:hover {
 
 .cli-pill-version {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
 }
 
@@ -3168,7 +3168,7 @@ button.run-strip-notebook:hover {
 }
 
 .cli-menu-eyebrow {
-  font-size: 11px;
+  font-size: var(--type-meta);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -3177,7 +3177,7 @@ button.run-strip-notebook:hover {
 
 .cli-menu-count {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-tertiary);
 }
 
@@ -3215,7 +3215,7 @@ button.run-strip-notebook:hover {
 
 .cli-row-name {
   display: block;
-  font-size: 13px;
+  font-size: var(--type-ui);
   font-weight: 500;
   color: var(--ink);
   overflow: hidden;
@@ -3226,7 +3226,7 @@ button.run-strip-notebook:hover {
 .cli-row-desc {
   display: block;
   margin-top: 1px;
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3238,7 +3238,7 @@ button.run-strip-notebook:hover {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
 }
 
@@ -3308,11 +3308,11 @@ button.run-strip-notebook:hover {
   width: 21px;
   height: 21px;
   border-radius: 50%;
-  font-size: 9px;
+  font-size: var(--type-micro);
 }
 
 .cli-dock-name {
-  font-size: 12px;
+  font-size: var(--type-sub);
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--ink);
@@ -3322,7 +3322,7 @@ button.run-strip-notebook:hover {
 /* Shown beside `.cli-dock-name` only when the selected CLI's machine is not
    the only one in play — see `CliDock`'s `machineNameFor`. */
 .cli-dock-machine {
-  font-size: 11px;
+  font-size: var(--type-meta);
   font-weight: 500;
   color: var(--ink-muted);
   white-space: nowrap;
@@ -3375,7 +3375,7 @@ button.run-strip-notebook:hover {
 
 .code-block-lang {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   color: var(--ink-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -3390,7 +3390,7 @@ button.run-strip-notebook:hover {
   border-radius: 4px;
   background: none;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
   cursor: pointer;
 }
@@ -3408,7 +3408,7 @@ button.run-strip-notebook:hover {
   margin: 0;
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--type-sub);
   line-height: 1.5;
   color: var(--ink-subtle);
 }
@@ -3467,7 +3467,7 @@ pre.code-block-pre {
   background: none;
   cursor: pointer;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--type-ui);
   color: var(--ink-subtle);
   padding: 4px 10px;
   border-radius: 7px;
@@ -3487,8 +3487,13 @@ pre.code-block-pre {
 .rightpane-close {
   margin-left: auto;
 }
+/* --- Notebook panel ---
 
-/* --- Notebook panel --- */
+   An execution ledger rather than a stack of settings cards: one scrolling
+   document of cells separated by hairlines, with the axis that chooses what
+   is in it pinned above and the kernel it runs in pinned below. Structure is
+   carried by alignment and separators; a border or a filled background here
+   means "this is selected" or "this is code", and nothing else. */
 
 .notebook-panel {
   display: flex;
@@ -3497,101 +3502,273 @@ pre.code-block-pre {
   overflow: hidden;
 }
 
-.nbp-envtabs {
+/* The one animated thing on the surface, and only for a state that is
+   genuinely in motion. Referenced by the run strip's own dot as well. */
+@keyframes nbp-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* --- The axis row: contexts on the left, that context's languages on the
+       right. Two controls, because they answer different questions: which
+       notebook is on screen, and which of its kernels the strip below
+       describes. --- */
+
+.nbp-axis {
   display: flex;
-  gap: 4px;
-  padding: 8px 12px 0;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
   flex: 0 0 auto;
+  min-width: 0;
 }
 
-.nbp-envtab {
+.nbp-ctxtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nbp-ctxtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   appearance: none;
-  border: 1px solid var(--hairline);
-  border-bottom: none;
-  background: var(--surface-1);
-  cursor: default;
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-meta);
   color: var(--ink-subtle);
-  padding: 4px 12px;
-  border-radius: 7px 7px 0 0;
+  padding: 0 8px;
+  height: 26px;
+  border-radius: 6px;
+  max-width: 100%;
 }
 
-.nbp-envtab.is-active {
-  color: var(--ink);
+.nbp-ctxtab:hover {
   background: var(--surface-2);
+  color: var(--ink);
+}
+
+.nbp-ctxtab.is-active {
+  background: var(--surface-3);
+  border-color: var(--hairline);
+  color: var(--ink);
   font-weight: 550;
 }
 
-/* The scrolling stack of executed cells. */
+.nbp-ctxtab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nbp-ctxtab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--ink-tertiary);
+}
+
+.nbp-ctxtab-dot--idle {
+  background: var(--success);
+}
+
+.nbp-ctxtab-dot--running {
+  background: var(--warn);
+  animation: nbp-pulse 1s ease-in-out infinite;
+}
+
+.nbp-ctxtab-dot--starting {
+  background: var(--accent);
+  animation: nbp-pulse 1s ease-in-out infinite;
+}
+
+.nbp-ctxtab-dot--crashed {
+  background: var(--danger);
+}
+
+.nbp-ctxtab-dot--lazy,
+.nbp-ctxtab-dot--stopped {
+  background: var(--ink-tertiary);
+}
+
+/* The language chips. Secondary to the tabs beside them by size and weight,
+   because they choose a kernel inside the selected context rather than a
+   different context. */
+.nbp-langs {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.nbp-lang {
+  appearance: none;
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
+  padding: 0 7px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.nbp-lang:hover {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.nbp-lang.is-active {
+  color: var(--ink);
+  background: var(--surface-3);
+  border-color: var(--hairline);
+}
+
+/* --- The cell stack: the panel's primary scroll area. --- */
+
 .nbp-cells {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 }
 
 .nbp-empty {
   color: var(--ink-subtle);
-  font-size: 13px;
+  font-size: var(--type-meta);
   line-height: 1.5;
-  margin: 8px 2px;
+  margin: 0;
+  padding: 14px 12px;
 }
 
+/* No container: a cell is an entry in one document, marked off from the next
+   by a hairline and the space around it. */
 .nbp-cell {
-  border: 1px solid var(--hairline);
-  border-radius: 9px;
-  overflow: hidden;
-  background: var(--surface-1);
+  padding: 10px 10px 12px;
+  border-bottom: 1px solid var(--hairline);
 }
 
-.nbp-cell--agent {
-  border-left: 2px solid color-mix(in srgb, var(--ink) 22%, transparent);
+.nbp-cell:last-child {
+  border-bottom: 0;
 }
 
-.nbp-cell--err {
-  border-color: color-mix(in srgb, #d64545 40%, var(--hairline));
+/* The code canvas fills the rail. `.code-block`'s own reading measure is for
+   prose columns, where a line of code sits inside an answer; here the cell IS
+   the content and a 62ch cap would leave a gutter down one side of every
+   one. */
+.nbp-cell .code-block {
+  max-width: none;
+  border-color: var(--hairline);
 }
 
-.nbp-cell-head {
+.nbp-cell .code-block-head {
+  background: none;
+  border-bottom-color: var(--hairline);
+  padding: 4px 8px;
+}
+
+/* Counter, execution counter, language, origin — the compact provenance line
+   the evidence puts above every cell. */
+.nbp-cell-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--hairline);
-  background: var(--surface-2);
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .nbp-gutter {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-tertiary);
+  flex: 0 0 auto;
+}
+
+.nbp-cell-lang {
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--ink-subtle);
+  background: var(--surface-3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex: 0 0 auto;
 }
 
 .nbp-cell-by {
-  font-size: 11px;
-  color: var(--ink-subtle);
   margin-left: auto;
-  text-transform: lowercase;
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* Line numbers, drawn over the per-line elements both the highlighted and the
+   plain rendering emit. A counter rather than a second column of text, so the
+   numbers cannot be selected into a copy of the code. */
+.code-block--numbered .code-block-pre code {
+  counter-reset: nbp-line;
+}
+
+.code-block--numbered .code-block-pre .line::before {
+  counter-increment: nbp-line;
+  content: counter(nbp-line);
+  display: inline-block;
+  width: 2.25em;
+  margin-right: 0.85em;
+  text-align: right;
+  color: var(--ink-tertiary);
+  opacity: 0.65;
+  user-select: none;
+}
+
+/* --- Output: folded away until asked for. --- */
+
 .nbp-output-wrap {
-  border-top: 1px solid var(--hairline);
+  margin-top: 2px;
 }
 
 .nbp-output-summary {
   cursor: pointer;
-  font-size: 11px;
-  color: var(--ink-subtle);
-  padding: 4px 10px;
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
+  padding: 4px 2px;
   user-select: none;
+  list-style: none;
+}
+
+.nbp-output-summary::marker,
+.nbp-output-summary::-webkit-details-marker {
+  display: none;
+}
+
+.nbp-output-summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  color: var(--ink-tertiary);
+}
+
+.nbp-output-wrap[open] .nbp-output-summary::before {
+  content: "▾";
 }
 
 .nbp-outputs {
-  padding: 4px 10px 8px;
+  padding: 2px 0 4px 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -3600,15 +3777,25 @@ pre.code-block-pre {
 .nbp-out {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--type-micro);
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
   overflow-x: auto;
 }
 
+/* A failure is marked on the output that failed, not by turning the whole
+   cell into a red panel — the code above it is still the code that ran, and
+   a researcher scanning the ledger needs to find the traceback, not to be
+   stopped by the entry containing it. */
 .nbp-error {
-  color: #d64545;
+  color: var(--danger);
+  border-left: 2px solid var(--danger);
+  padding-left: 8px;
+}
+
+.nbp-cell--err .nbp-output-summary {
+  color: var(--danger);
 }
 
 .nbp-image img {
@@ -3616,146 +3803,171 @@ pre.code-block-pre {
   border-radius: 6px;
 }
 
-/* Context sub-tab strip — one tab per name among the Task's kernels and
-   cells, each carrying its kernel's state dot and, when a context holds more
-   than one kernel, a row of language chips. */
-.nbp-ctxtabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 8px 12px 0;
-  flex: 0 0 auto;
-}
+/* --- The kernel strip: one thin operational line, anchored above the
+       REPL it belongs to. --- */
 
-.nbp-ctxtab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  appearance: none;
-  border: 1px solid var(--hairline);
-  border-bottom: none;
-  background: var(--surface-1);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  color: var(--ink-subtle);
-  padding: 4px 12px;
-  border-radius: 7px 7px 0 0;
-}
-
-.nbp-ctxtab.is-active {
-  color: var(--ink);
-  background: var(--surface-2);
-  font-weight: 550;
-}
-
-.nbp-ctxtab-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-  background: var(--ink-subtle);
-}
-
-.nbp-ctxtab-dot--idle {
-  background: #3ea76a;
-}
-
-.nbp-ctxtab-dot--running {
-  background: #e0a325;
-}
-
-.nbp-ctxtab-dot--starting {
-  background: #3b82f6;
-}
-
-.nbp-ctxtab-dot--crashed {
-  background: #d64545;
-}
-
-.nbp-ctxtab-dot--lazy,
-.nbp-ctxtab-dot--stopped {
-  background: var(--ink-subtle);
-}
-
-.nbp-ctxtab-langs {
-  display: flex;
-  gap: 3px;
-}
-
-.nbp-ctxtab-lang {
-  font-size: 10px;
-  text-transform: uppercase;
-  color: var(--ink-subtle);
-  border: 1px solid var(--hairline);
-  border-radius: 4px;
-  padding: 0 4px;
-}
-
-/* Live-kernel strip: which kernel the selected context's cells belong to. */
 .nbp-strip {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 0 6px 0 12px;
+  height: 30px;
   border-top: 1px solid var(--hairline);
   background: var(--surface-2);
-  font-size: 12px;
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
   flex: 0 0 auto;
+  min-width: 0;
 }
 
 .nbp-strip-lang {
-  color: var(--ink);
-}
-
-.nbp-strip-session {
-  font-family: var(--font-mono);
-  color: var(--ink-subtle);
-}
-
-.nbp-strip-state {
-  color: var(--ink-subtle);
-  text-transform: capitalize;
-}
-
-.nbp-restart {
-  margin-left: auto;
-  appearance: none;
-  border: 1px solid var(--hairline);
-  background: var(--surface-1);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  color: var(--ink);
-  padding: 3px 10px;
-  border-radius: 7px;
-}
-
-.nbp-restart:hover {
-  background: var(--surface-3);
-}
-
-/* Footer: the selected tab's name and how many cells it holds. */
-.nbp-footer {
-  padding: 6px 12px;
-  border-top: 1px solid var(--hairline);
-  font-size: 11px;
-  color: var(--ink-subtle);
+  color: var(--ink-muted);
   flex: 0 0 auto;
 }
 
-/* REPL console. */
+.nbp-strip-env {
+  font-family: var(--font-mono);
+  color: var(--ink-tertiary);
+  background: var(--surface-3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex: 0 0 auto;
+}
+
+.nbp-strip-shared {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.nbp-strip-state {
+  margin-left: auto;
+  flex: 0 0 auto;
+  text-transform: capitalize;
+  font-variant-numeric: tabular-nums;
+}
+
+.nbp-strip-state--running {
+  color: var(--warn);
+}
+
+.nbp-strip-state--crashed {
+  color: var(--danger);
+}
+
+.nbp-strip-state--idle {
+  color: var(--success);
+}
+
+.nbp-strip--idle .nbp-strip-state {
+  color: var(--ink-tertiary);
+}
+
+.nbp-strip-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.nbp-strip-more {
+  appearance: none;
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--type-meta);
+  line-height: 1;
+  color: var(--ink-tertiary);
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+
+.nbp-strip-more:hover {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+
+.nbp-strip-menulist {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 20;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-3);
+  box-shadow: var(--shadow-pop);
+}
+
+.nbp-strip-menuitem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  appearance: none;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--type-meta);
+  color: var(--ink);
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+
+.nbp-strip-menuitem:hover {
+  background: var(--surface-4);
+}
+
+.nbp-strip-menunote {
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
+}
+
+/* --- The footer: what is selected, and how much of it. --- */
+
+.nbp-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 12px;
+  border-top: 1px solid var(--hairline);
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.nbp-footer > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nbp-footer-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- The REPL: the kernel's continuation, not a form. --- */
+
 .nbp-repl {
-  padding: 10px 12px 12px;
+  padding: 8px 12px 10px;
   border-top: 1px solid var(--hairline);
   flex: 0 0 auto;
 }
 
 .nbp-greeting {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: var(--ink-subtle);
-  line-height: 1.4;
+  margin: 0 0 6px;
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
+  line-height: 1.45;
 }
 
 .nbp-prompt {
@@ -3766,41 +3978,48 @@ pre.code-block-pre {
 
 .nbp-caret {
   font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--ink-subtle);
-  padding-top: 8px;
+  font-size: var(--type-meta);
+  color: var(--ink-tertiary);
+  padding-top: 7px;
+  flex: 0 0 auto;
 }
 
 .nbp-input {
   flex: 1 1 auto;
+  min-width: 0;
   resize: vertical;
-  min-height: 34px;
+  min-height: 32px;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--type-meta);
   line-height: 1.4;
   color: var(--ink);
   background: var(--surface-1);
   border: 1px solid var(--hairline);
-  border-radius: 8px;
-  padding: 7px 9px;
+  border-radius: 7px;
+  padding: 6px 8px;
 }
 
-.nbp-input:focus {
-  outline: none;
-  border-color: color-mix(in srgb, var(--ink) 35%, var(--hairline));
+.nbp-input:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .nbp-run {
   appearance: none;
-  border: none;
+  border: 1px solid var(--hairline);
   cursor: pointer;
   font: inherit;
-  font-size: 13px;
-  font-weight: 550;
-  color: var(--surface-1);
-  background: var(--ink);
-  padding: 7px 14px;
-  border-radius: 8px;
+  font-size: var(--type-meta);
+  color: var(--ink);
+  background: var(--surface-3);
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 7px;
+  flex: 0 0 auto;
+}
+
+.nbp-run:hover:not(:disabled) {
+  background: var(--surface-4);
 }
 
 .nbp-run:disabled {
@@ -3808,42 +4027,62 @@ pre.code-block-pre {
   cursor: default;
 }
 
-/* Setup state. */
-.nbp-setup {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  overflow-y: auto;
-}
-
-.nbp-setup-lead {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--ink-subtle);
+.nbp-run--stop {
+  color: var(--warn);
 }
 
 .nbp-repl-error {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: #d64545;
+  margin: 0 0 6px;
+  font-size: var(--type-micro);
+  color: var(--danger);
   font-family: var(--font-mono);
   white-space: pre-wrap;
 }
 
+/* --- The setup callout: compact, and only while there is something to set
+       up. The environment it would provision is chosen here, where the
+       provisioning is, rather than by a navigation strip above the cells. --- */
+
+.nbp-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-2);
+  flex: 0 0 auto;
+}
+
+.nbp-setup-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.nbp-setup-lead {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--type-micro);
+  line-height: 1.45;
+  color: var(--ink-tertiary);
+}
+
 .nbp-setup-btn {
-  align-self: flex-start;
+  flex: 0 0 auto;
   appearance: none;
-  border: none;
+  border: 1px solid var(--hairline);
   cursor: pointer;
   font: inherit;
-  font-size: 13px;
-  font-weight: 550;
-  color: var(--surface-1);
-  background: var(--ink);
-  padding: 8px 16px;
-  border-radius: 8px;
+  font-size: var(--type-meta);
+  color: var(--ink);
+  background: var(--surface-3);
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 7px;
+}
+
+.nbp-setup-btn:hover:not(:disabled) {
+  background: var(--surface-4);
 }
 
 .nbp-setup-btn:disabled {
@@ -3851,17 +4090,48 @@ pre.code-block-pre {
   cursor: default;
 }
 
+.nbp-envpick {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.nbp-envchip {
+  appearance: none;
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
+  padding: 0 7px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.nbp-envchip:hover {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+
+.nbp-envchip.is-active {
+  color: var(--ink);
+  background: var(--surface-3);
+  border-color: var(--hairline);
+}
+
 .nbp-setup-log {
   margin: 0;
-  max-height: 260px;
+  max-height: 160px;
   overflow-y: auto;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-micro);
   line-height: 1.5;
-  color: var(--ink-subtle);
-  background: var(--surface-2);
+  color: var(--ink-tertiary);
+  background: var(--surface-1);
   border: 1px solid var(--hairline);
-  border-radius: 8px;
-  padding: 8px 10px;
+  border-radius: 7px;
+  padding: 6px 8px;
   white-space: pre-wrap;
 }

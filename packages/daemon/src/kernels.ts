@@ -233,6 +233,9 @@ export function kernelBridgeFor(input: {
       "--token",
       input.token,
     ],
+    // Everything the relay needs travels in argv; env is required on the
+    // wire all the same (see McpServer.env).
+    env: [],
   };
 }
 

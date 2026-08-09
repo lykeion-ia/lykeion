@@ -44,13 +44,13 @@ export function AgentList({ agents, loading = false }: AgentListProps) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search agents…"
-            className="h-full w-full bg-transparent text-[13px] text-fg placeholder:text-fg-subtle focus:outline-none"
+            className="h-full w-full bg-transparent text-ui text-fg placeholder:text-fg-subtle focus:outline-none"
           />
         </div>
       </div>
 
       {visible.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-[13px] text-fg-subtle">
+        <div className="flex flex-1 items-center justify-center text-ui text-fg-subtle">
           {agents.length === 0
             ? loading
               ? ""
@@ -61,7 +61,7 @@ export function AgentList({ agents, loading = false }: AgentListProps) {
         <div className="flex-1 overflow-auto px-5 pb-5">
           <div
             className={cn(
-              "grid items-center gap-3 border-b border-line px-3 py-2 text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary",
+              "grid items-center gap-3 border-b border-line px-3 py-2 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary",
               GRID_COLS,
             )}
           >
@@ -77,13 +77,13 @@ export function AgentList({ agents, loading = false }: AgentListProps) {
                 key={agent.name}
                 to={{ name: "agent", agentId: agent.name }}
                 className={cn(
-                  "grid items-center gap-3 border-b border-line-soft px-3 py-2.5 text-[13px] hover:bg-surface-2",
+                  "grid items-center gap-3 border-b border-line-soft px-3 py-2.5 text-ui hover:bg-surface-2",
                   GRID_COLS,
                 )}
               >
                 <span className="flex min-w-0 items-center gap-2.5">
                   <span
-                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[11px] font-semibold text-white"
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-meta font-semibold text-white"
                     style={{
                       backgroundImage: `linear-gradient(135deg, ${avatar.gradient[0]}, ${avatar.gradient[1]})`,
                     }}
@@ -94,7 +94,7 @@ export function AgentList({ agents, loading = false }: AgentListProps) {
                     <span className="truncate font-medium text-fg">
                       {agent.name}
                     </span>
-                    <span className="truncate text-[12px] text-fg-subtle">
+                    <span className="truncate text-sub text-fg-subtle">
                       {agent.description}
                     </span>
                   </span>
@@ -109,7 +109,7 @@ export function AgentList({ agents, loading = false }: AgentListProps) {
                     agent.tools.map((t) => (
                       <span
                         key={t}
-                        className="rounded bg-surface-3 px-1.5 py-0.5 text-[11px] text-fg-muted"
+                        className="rounded bg-surface-3 px-1.5 py-0.5 text-meta text-fg-muted"
                       >
                         {t}
                       </span>

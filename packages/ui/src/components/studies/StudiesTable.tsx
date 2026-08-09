@@ -31,16 +31,16 @@ export interface StudiesTableProps {
 const GRID_COLS = "grid-cols-[minmax(0,1fr)_100px_130px_150px_110px_90px_58px]";
 
 // Row padding/typography, shared by the link row and its renaming twin.
-const ROW_CLASS = "grid items-center gap-3 px-3 py-2.5 text-[13px]";
+const ROW_CLASS = "grid items-center gap-3 px-3 py-2.5 text-ui";
 
 // The small muted tag styling shared by the key badge and the Archived marker.
 const BADGE_CLASS =
-  "shrink-0 rounded border border-line bg-surface-3 px-1.5 py-0.5 text-[10px] text-fg-subtle";
+  "shrink-0 rounded border border-line bg-surface-3 px-1.5 py-0.5 text-micro text-fg-subtle";
 
 // The eyebrow over a group of rows. It reuses the column header's typography
 // so the two read as one system rather than two competing labels.
 const GROUP_LABEL_CLASS =
-  "px-3 pb-1.5 pt-4 text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary";
+  "px-3 pb-1.5 pt-4 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary";
 
 export function StudiesTable({
   studies,
@@ -96,7 +96,7 @@ export function StudiesTable({
               style={{ width: `${progressPct}%` }}
             />
           </span>
-          <span className="text-[11px] tabular-nums text-fg-tertiary">
+          <span className="text-meta tabular-nums text-fg-tertiary">
             {meta.doneCount}/{meta.totalCount}
           </span>
         </span>
@@ -105,7 +105,7 @@ export function StudiesTable({
           {meta.lead ? (
             <>
               <span
-                className="grid h-4 w-4 shrink-0 place-items-center rounded-[5px] text-[9px] font-semibold text-white"
+                className="grid h-4 w-4 shrink-0 place-items-center rounded-[5px] text-micro font-semibold text-white"
                 style={{
                   backgroundImage: `linear-gradient(135deg, ${meta.lead.gradient[0]}, ${meta.lead.gradient[1]})`,
                 }}
@@ -142,7 +142,7 @@ export function StudiesTable({
               <InlineRename
                 title={study.title}
                 label={`Rename ${study.title}`}
-                className="min-w-0 flex-1 rounded-md border border-line-strong bg-surface-2 px-1.5 py-0.5 text-[13px] font-medium text-fg outline-none"
+                className="min-w-0 flex-1 rounded-md border border-line-strong bg-surface-2 px-1.5 py-0.5 text-ui font-medium text-fg outline-none"
                 onCommit={(next) => onRename?.(study.id, next)}
                 onCancel={() => onCancelRename?.()}
               />
@@ -205,7 +205,7 @@ export function StudiesTable({
     <div className="flex-1 overflow-auto px-5 pb-5">
       <div
         className={cn(
-          "grid items-center gap-3 border-b border-line px-3 py-2 text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary",
+          "grid items-center gap-3 border-b border-line px-3 py-2 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary",
           GRID_COLS,
         )}
       >

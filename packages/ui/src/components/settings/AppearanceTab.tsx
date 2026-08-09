@@ -65,7 +65,7 @@ function ThemeCard({
           />
           <div className="mt-3 flex items-center gap-2">
             <span
-              className="rounded-md px-2 py-1 text-[11px] font-medium"
+              className="rounded-md px-2 py-1 text-meta font-medium"
               style={{ background: swatch.accent, color: swatch.onAccent }}
             >
               Primary
@@ -84,10 +84,10 @@ function ThemeCard({
       {/* Label row in the app's own chrome. */}
       <div className="flex items-center justify-between gap-2 bg-surface px-3 py-2.5">
         <div className="min-w-0">
-          <div className="truncate text-[13px] font-medium text-fg">
+          <div className="truncate text-ui font-medium text-fg">
             {theme.label}
           </div>
-          <div className="truncate text-[11px] text-fg-subtle">
+          <div className="truncate text-meta text-fg-subtle">
             {theme.blurb}
           </div>
         </div>

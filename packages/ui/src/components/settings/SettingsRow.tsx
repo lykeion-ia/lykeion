@@ -30,9 +30,9 @@ export function Row({
       <div className="flex min-w-0 items-center gap-3.5">
         {leading}
         <div className="min-w-0">
-          <div className="text-[14px] text-fg">{label}</div>
+          <div className="text-read text-fg">{label}</div>
           {desc && (
-            <div className="mt-0.5 max-w-[420px] text-[12px] leading-snug text-fg-subtle">
+            <div className="mt-0.5 max-w-[420px] text-sub leading-snug text-fg-subtle">
               {desc}
             </div>
           )}
@@ -52,7 +52,7 @@ export function Row({
  * here so the two sit on one line looking like one set.
  */
 export const outlineControlClass =
-  "inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-line-strong px-3 text-[13px] text-fg hover:bg-surface";
+  "inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-line-strong px-3 text-ui text-fg hover:bg-surface";
 
 export function OutlineButton({
   children,

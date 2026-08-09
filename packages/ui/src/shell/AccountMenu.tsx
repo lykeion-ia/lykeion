@@ -52,7 +52,7 @@ export function AccountMenu({ open, onClose, onSettings }: AccountMenuProps) {
         className="absolute top-full left-0 z-50 mt-2 w-56 rounded-lg border border-line bg-surface p-1 shadow-xl"
       >
         {identity.email.trim() !== "" && (
-          <div className="truncate px-2 py-1.5 text-[12px] text-fg-subtle">
+          <div className="truncate px-2 py-1.5 text-sub text-fg-subtle">
             {identity.email}
           </div>
         )}
@@ -60,8 +60,8 @@ export function AccountMenu({ open, onClose, onSettings }: AccountMenuProps) {
         <div className="flex items-center gap-2 px-2 py-1.5">
           <UserAvatar user={{ ...identity, displayName }} size={28} />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] text-fg">{displayName}</div>
-            <div className="truncate text-[11px] text-fg-subtle">Lykeion</div>
+            <div className="truncate text-ui text-fg">{displayName}</div>
+            <div className="truncate text-meta text-fg-subtle">Lykeion</div>
           </div>
           <CheckIcon className="shrink-0 text-fg" width={16} height={16} />
         </div>
@@ -76,7 +76,7 @@ export function AccountMenu({ open, onClose, onSettings }: AccountMenuProps) {
             onSettings?.();
           }}
           className={cn(
-            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg",
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg",
           )}
         >
           <SettingsIcon className="shrink-0" width={16} height={16} />
@@ -90,7 +90,7 @@ export function AccountMenu({ open, onClose, onSettings }: AccountMenuProps) {
               onClose();
               signOut();
             }}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
           >
             Sign out
           </button>

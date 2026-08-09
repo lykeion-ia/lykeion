@@ -63,7 +63,7 @@ export function TaskTabs({
                   // one line in `CrumbStrip`, naming the same thing at the same
                   // level, and reading them at two sizes made the row look like
                   // two strips that happened to collide.
-                  "inline-flex items-center rounded-md text-[15px] transition-colors duration-[120ms]",
+                  "inline-flex items-center rounded-md text-read transition-colors duration-[120ms]",
                   active ? "bg-surface-3 text-fg" : "text-fg-subtle",
                 )}
               >
@@ -105,7 +105,7 @@ export function TaskTabs({
         {showMarkDone && (
           <button
             type="button"
-            className="h-7 rounded-md border border-line-strong bg-surface-2 px-2.5 text-[12.5px] text-fg-muted hover:bg-surface-3 hover:text-fg"
+            className="h-7 rounded-md border border-line-strong bg-surface-2 px-2.5 text-sub text-fg-muted hover:bg-surface-3 hover:text-fg"
             onClick={onMarkDone}
           >
             Mark Done
@@ -142,7 +142,7 @@ export function TaskTabs({
       </CrumbStrip>
 
       {doneError && (
-        <p className="px-5 pb-2 text-[12px] text-danger" role="alert">
+        <p className="px-5 pb-2 text-sub text-danger" role="alert">
           {doneError}
         </p>
       )}

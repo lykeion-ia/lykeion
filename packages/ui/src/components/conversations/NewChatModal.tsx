@@ -153,7 +153,7 @@ export function NewChatModal({
       >
         <div className="flex items-center gap-2 px-4 pb-1 pt-3">
           <ComposeIcon width={15} height={15} className="text-fg-subtle" />
-          <span className="text-[13px] font-medium text-fg">New chat</span>
+          <span className="text-ui font-medium text-fg">New chat</span>
           <span className="flex-1" />
           <button
             type="button"
@@ -172,7 +172,7 @@ export function NewChatModal({
             <select
               value={studyId}
               onChange={(e) => setStudyId(e.target.value)}
-              className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[12.5px] text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
+              className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-sub text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
             >
               <option value="">
                 {studies.length === 0 ? "No studies yet" : "— Pick a study —"}
@@ -189,7 +189,7 @@ export function NewChatModal({
               value={taskId}
               disabled={studyId === ""}
               onChange={(e) => setTaskId(e.target.value)}
-              className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[12.5px] text-fg outline-none focus-visible:outline-none! focus:border-line-strong disabled:opacity-50"
+              className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-sub text-fg outline-none focus-visible:outline-none! focus:border-line-strong disabled:opacity-50"
             >
               <option value="">
                 {studyId === ""
@@ -215,12 +215,12 @@ export function NewChatModal({
             // placeholder shows it rather than describing it.
             placeholder={task ? task.title : "Chat title (optional)"}
             aria-label="Chat title"
-            className="w-full bg-transparent text-[19px] font-semibold tracking-[-0.2px] text-fg outline-none focus-visible:outline-none! placeholder:text-fg-subtle"
+            className="w-full bg-transparent text-title font-semibold tracking-[-0.2px] text-fg outline-none focus-visible:outline-none! placeholder:text-fg-subtle"
           />
         </div>
 
         <div className="px-4 pb-3">
-          <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary">
+          <div className="mb-1.5 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary">
             With
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -234,7 +234,7 @@ export function NewChatModal({
             {participants.map((p) => (
               <span
                 key={assigneeKey(p)}
-                className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-[12px] text-fg-muted"
+                className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-sub text-fg-muted"
               >
                 {displayName(p, dir)}
                 {/* The padding is the pointer target — an 11px glyph is far
@@ -272,18 +272,18 @@ export function NewChatModal({
             }}
             placeholder="Write the first message…"
             aria-label="First message"
-            className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[14px] leading-relaxed text-fg outline-none focus-visible:outline-none! focus:border-line-strong placeholder:text-fg-subtle"
+            className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-read leading-relaxed text-fg outline-none focus-visible:outline-none! focus:border-line-strong placeholder:text-fg-subtle"
           />
         </div>
 
-        {error && <p className="px-4 pb-2 text-[12.5px] text-danger">{error}</p>}
+        {error && <p className="px-4 pb-2 text-sub text-danger">{error}</p>}
 
         <div className="flex items-center gap-3 border-t border-line px-4 py-3">
           <span className="flex-1" />
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-[13px] text-fg-subtle hover:text-fg"
+            className="rounded-md px-3 py-1.5 text-ui text-fg-subtle hover:text-fg"
           >
             Cancel
           </button>
@@ -292,7 +292,7 @@ export function NewChatModal({
             disabled={!canSubmit}
             onClick={submit}
             className={cn(
-              "rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity",
+              "rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity",
               canSubmit ? "hover:opacity-90" : "cursor-not-allowed opacity-40",
             )}
           >
@@ -313,7 +313,7 @@ function Field({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary">
+      <span className="text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary">
         {label}
       </span>
       {children}

@@ -125,7 +125,39 @@ let sessionId = "";
 /** The tool servers this client named on `session/new`. An adapter starts
  *  these itself, so what a `callTool` step can reach is exactly what the
  *  client offered and nothing this file decided. */
-let offeredServers: Array<{ name?: string; command?: string; args?: string[] }> = [];
+let offeredServers: Array<{
+  name?: string;
+  command?: string;
+  args?: string[];
+  env?: Array<{ name?: string; value?: string }>;
+}> = [];
+
+/** Why one offered server entry is not a server the ACP schema names, or
+ *  undefined when it is one. The real adapters check the same shape — and the
+ *  forgiving ones silently drop an entry that fails it, so a client that sent
+ *  one learns nothing. This agent answers like the strict one instead: the
+ *  session refuses to open, naming the field, so the omission fails the turn
+ *  it was made on rather than surfacing as a tool nothing can find. */
+function offeredServerFault(entry: unknown): string | undefined {
+  if (typeof entry !== "object" || entry === null) return "an entry is not an object";
+  const server = entry as Record<string, unknown>;
+  if (typeof server.name !== "string") return "an entry's name is not a string";
+  if (typeof server.command !== "string") return `"${server.name}" carries no command string`;
+  if (!Array.isArray(server.args) || server.args.some((a) => typeof a !== "string"))
+    return `"${server.name}" carries no args string list`;
+  if (
+    !Array.isArray(server.env) ||
+    server.env.some(
+      (v) =>
+        typeof v !== "object" ||
+        v === null ||
+        typeof (v as Record<string, unknown>).name !== "string" ||
+        typeof (v as Record<string, unknown>).value !== "string",
+    )
+  )
+    return `"${server.name}" carries no env list of { name, value } strings`;
+  return undefined;
+}
 let nextId = 1;
 const pending = new Map<number, (result: unknown) => void>();
 // Set once `session/cancel` arrives, so a `{ wait: "cancel" }` step reached
@@ -168,8 +200,25 @@ const toolServers = new Map<string, ToolServer>();
  *  server that never answers ends the call rather than the turn. */
 const TOOL_CALL_MS = 120_000;
 
-function startToolServer(named: { command: string; args: string[] }): ToolServer {
-  const child = spawn(named.command, named.args, { stdio: ["pipe", "pipe", "pipe"] });
+function startToolServer(named: {
+  command: string;
+  args: string[];
+  env: Array<{ name?: string; value?: string }>;
+}): ToolServer {
+  // The named variables land on top of this process's own environment, the
+  // way a real adapter starts a server it was told about — `env` is the one
+  // channel a client has for handing a tool server a value of its choosing.
+  const child = spawn(named.command, named.args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      ...Object.fromEntries(
+        named.env
+          .filter((v) => typeof v.name === "string" && typeof v.value === "string")
+          .map((v) => [v.name as string, v.value as string]),
+      ),
+    },
+  });
   const answers = new Map<number, (result: unknown) => void>();
   const failures = new Map<number, (why: string) => void>();
   let carry = "";
@@ -282,7 +331,11 @@ function toolServerNamed(name: string): ToolServer {
   const named = offeredServers.find((server) => server.name === name);
   if (!named || typeof named.command !== "string")
     throw new Error(`this agent was told about no tool server named ${name}`);
-  const started = startToolServer({ command: named.command, args: named.args ?? [] });
+  const started = startToolServer({
+    command: named.command,
+    args: named.args ?? [],
+    env: named.env ?? [],
+  });
   toolServers.set(name, started);
   return started;
 }
@@ -483,9 +536,18 @@ createInterface({ input: process.stdin }).on("close", stopToolServers).on("line"
   }
   if (msg.method === "session/new") {
     sessionId = "stub-session";
-    offeredServers =
-      (msg.params as { mcpServers?: Array<{ name?: string; command?: string; args?: string[] }> })
-        ?.mcpServers ?? [];
+    const named = (msg.params as { mcpServers?: unknown[] })?.mcpServers ?? [];
+    const fault = named.map(offeredServerFault).find((why) => why !== undefined);
+    if (fault !== undefined) {
+      process.stderr.write(`refusing session/new: ${fault}\n`);
+      send({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: { code: -32602, message: `mcpServers entries must carry name, command, args and env — ${fault}` },
+      });
+      return;
+    }
+    offeredServers = named as typeof offeredServers;
     const marker = process.env.LYKEION_STUB_SESSION_NEW_MARKER;
     if (marker) appendFileSync(marker, `${process.pid}\n`);
     // What the client actually sent, kept where a test can read it. A session
@@ -493,6 +555,11 @@ createInterface({ input: process.stdin }).on("close", stopToolServers).on("line"
     // is the object, not a log of them.
     const params = process.env.LYKEION_STUB_SESSION_NEW_PARAMS;
     if (params) writeFileSync(params, JSON.stringify(msg.params ?? null));
+    // The environment this agent was actually started with, for tests about
+    // what a spawn adds to it — read from in here because the spawn's own
+    // caller only knows what it intended to pass.
+    const spawnedWith = process.env.LYKEION_STUB_ENV_MARKER;
+    if (spawnedWith) writeFileSync(spawnedWith, JSON.stringify(process.env));
     const reply = () =>
       send({ jsonrpc: "2.0", id: msg.id, result: { sessionId, ...advertised } });
     const delayMs = Number(process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS ?? "0");

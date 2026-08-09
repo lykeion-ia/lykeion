@@ -22,8 +22,8 @@ export function AuthShell({
   return (
     <div className="grid min-h-screen place-items-center bg-canvas px-4">
       <div className="w-full max-w-[360px]">
-        <h1 className="text-[19px] font-semibold tracking-[-0.2px] text-fg">{title}</h1>
-        <p className="mb-5 mt-1 text-[13px] text-fg-muted">{subtitle}</p>
+        <h1 className="text-title font-semibold tracking-[-0.2px] text-fg">{title}</h1>
+        <p className="mb-5 mt-1 text-ui text-fg-muted">{subtitle}</p>
         {children}
       </div>
     </div>
@@ -47,15 +47,15 @@ export function Field({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary">{label}</span>
+      <span className="text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary">{label}</span>
       <input
         type={type}
         value={value}
         autoFocus={autoFocus}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[13px] text-fg outline-none focus:border-line-strong focus-visible:outline-none!"
+        className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-ui text-fg outline-none focus:border-line-strong focus-visible:outline-none!"
       />
-      {hint && <span className="text-[11.5px] text-fg-subtle">{hint}</span>}
+      {hint && <span className="text-meta text-fg-subtle">{hint}</span>}
     </label>
   );
 }
@@ -74,7 +74,7 @@ export function SubmitButton({
       type="submit"
       disabled={busy}
       className={cn(
-        "mt-1 rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity",
+        "mt-1 rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity",
         busy ? "cursor-not-allowed opacity-40" : "hover:opacity-90",
       )}
     >

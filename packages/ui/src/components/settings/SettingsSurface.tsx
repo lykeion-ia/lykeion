@@ -101,7 +101,7 @@ export function SettingsSurface({
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       {q.error && (
-        <p className="px-5 pb-1 text-[13px] text-danger">{q.error}</p>
+        <p className="px-5 pb-1 text-ui text-danger">{q.error}</p>
       )}
       <div className="flex min-h-0 flex-1">
         {/* The nav's column, title row included. Because the title sits inside

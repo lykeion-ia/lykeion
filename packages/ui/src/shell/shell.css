@@ -34,7 +34,7 @@
   justify-content: center;
   gap: 8px;
   padding: 0 16px;
-  font-size: 12px;
+  font-size: var(--type-sub);
   color: var(--ink-subtle);
 }
 
@@ -79,7 +79,7 @@
   border-radius: 5px;
   background: var(--primary);
   color: var(--on-primary);
-  font-size: 11px;
+  font-size: var(--type-meta);
   font-weight: 700;
   line-height: 1;
   display: grid;
@@ -87,7 +87,7 @@
 }
 
 .brand-name {
-  font-size: 13px;
+  font-size: var(--type-ui);
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--ink);
@@ -105,7 +105,7 @@
   background: var(--surface-1);
   color: var(--ink-subtle);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-sub);
 }
 
 .sidebar-search:hover {
@@ -132,7 +132,7 @@
   border-radius: 6px;
   color: var(--ink-subtle);
   text-decoration: none;
-  font-size: 13px;
+  font-size: var(--type-ui);
 }
 
 .nav-item .icon {
@@ -156,7 +156,7 @@
 .nav-badge {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   line-height: 16px;
   color: var(--ink-subtle);
   background: var(--surface-2);
@@ -171,7 +171,7 @@
 }
 
 .sidebar-eyebrow {
-  font-size: 10.5px;
+  font-size: var(--type-micro);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;

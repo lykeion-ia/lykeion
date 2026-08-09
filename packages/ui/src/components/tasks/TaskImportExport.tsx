@@ -102,7 +102,7 @@ export function TaskImportExport({
             type="button"
             onClick={toggle}
             aria-expanded={open}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-[12.5px] text-fg-subtle transition-colors hover:text-fg"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-sub text-fg-subtle transition-colors hover:text-fg"
           >
             Import / Export
             <ChevronDownIcon width={13} height={13} />

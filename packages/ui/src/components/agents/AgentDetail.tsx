@@ -13,7 +13,7 @@ import { cn } from "../../lib/utils";
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="mb-5">
-      <div className="mb-3 flex items-center gap-1.5 text-[12px] font-semibold text-fg-muted">
+      <div className="mb-3 flex items-center gap-1.5 text-sub font-semibold text-fg-muted">
         <ChevronDownIcon width={10} height={10} className="text-fg-tertiary" />
         {title}
       </div>
@@ -24,7 +24,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 function PropRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="mb-2.5 flex items-center text-[12.5px]">
+    <div className="mb-2.5 flex items-center text-sub">
       <span className="w-24 shrink-0 text-fg-subtle">{label}</span>
       <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-fg-muted">
         {children}
@@ -38,17 +38,17 @@ function AgentProperties({ agent }: { agent: Agent }) {
   return (
     <aside className="w-[312px] min-w-[312px] shrink-0 overflow-y-auto border-r border-line px-[18px] pb-6 pt-4">
       <div
-        className="grid h-10 w-10 place-items-center rounded-xl text-[15px] font-semibold text-white"
+        className="grid h-10 w-10 place-items-center rounded-xl text-read font-semibold text-white"
         style={{
           backgroundImage: `linear-gradient(135deg, ${avatar.gradient[0]}, ${avatar.gradient[1]})`,
         }}
       >
         {avatar.initial}
       </div>
-      <div className="mb-1 mt-3 text-[16px] font-semibold leading-snug tracking-[-0.25px] text-fg">
+      <div className="mb-1 mt-3 text-read font-semibold leading-snug tracking-[-0.25px] text-fg">
         {agent.name}
       </div>
-      <p className="mb-4 text-[12.5px] leading-relaxed text-fg-muted">
+      <p className="mb-4 text-sub leading-relaxed text-fg-muted">
         {agent.description}
       </p>
 
@@ -84,8 +84,8 @@ function EmptyPanel({
       <div className="grid h-9 w-9 place-items-center rounded-lg border border-line bg-surface-2 text-fg-subtle">
         <Icon width={16} height={16} />
       </div>
-      <div className="text-[13px] font-medium text-fg">{title}</div>
-      <p className="max-w-[280px] text-[12px] leading-relaxed text-fg-subtle">
+      <div className="text-ui font-medium text-fg">{title}</div>
+      <p className="max-w-[280px] text-sub leading-relaxed text-fg-subtle">
         {description}
       </p>
     </div>
@@ -112,7 +112,7 @@ export function AgentDetail({ agent }: AgentDetailProps) {
               onClick={() => setTab(t.key)}
               aria-pressed={tab === t.key}
               className={cn(
-                "border-b-2 px-2.5 py-2.5 text-[12.5px] transition-colors duration-[120ms]",
+                "border-b-2 px-2.5 py-2.5 text-sub transition-colors duration-[120ms]",
                 tab === t.key
                   ? "border-accent text-fg"
                   : "border-transparent text-fg-subtle hover:text-fg",
@@ -126,7 +126,7 @@ export function AgentDetail({ agent }: AgentDetailProps) {
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-4">
           {tab === "instructions" &&
             (agent.systemPrompt.trim() ? (
-              <pre className="whitespace-pre-wrap font-mono text-[12.5px] leading-relaxed text-fg-muted">
+              <pre className="whitespace-pre-wrap font-mono text-sub leading-relaxed text-fg-muted">
                 {agent.systemPrompt}
               </pre>
             ) : (
@@ -142,7 +142,7 @@ export function AgentDetail({ agent }: AgentDetailProps) {
                 {agent.tools.map((t) => (
                   <span
                     key={t}
-                    className="rounded-md border border-line bg-surface-2 px-2 py-1 text-[12px] text-fg-muted"
+                    className="rounded-md border border-line bg-surface-2 px-2 py-1 text-sub text-fg-muted"
                   >
                     {t}
                   </span>
@@ -161,7 +161,7 @@ export function AgentDetail({ agent }: AgentDetailProps) {
                 {agent.connectors.map((c) => (
                   <span
                     key={c}
-                    className="rounded-md border border-line bg-surface-2 px-2 py-1 text-[12px] text-fg-muted"
+                    className="rounded-md border border-line bg-surface-2 px-2 py-1 text-sub text-fg-muted"
                   >
                     {c}
                   </span>

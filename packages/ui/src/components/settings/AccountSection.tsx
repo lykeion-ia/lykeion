@@ -84,10 +84,10 @@ export function AccountSection({
       <div className="flex items-center gap-4 border-b border-line py-4">
         <UserAvatar user={user} size={64} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[15px] text-fg">
+          <div className="truncate text-read text-fg">
             {orNotSet(user.displayName)}
           </div>
-          <div className="truncate text-[12.5px] text-fg-subtle">
+          <div className="truncate text-sub text-fg-subtle">
             {signedIn ? user.email : "Not signed in"}
           </div>
           <div className="mt-2 flex items-center gap-2">
@@ -115,7 +115,7 @@ export function AccountSection({
             )}
           </div>
           {error && (
-            <p role="alert" className="mt-2 text-[12px] text-danger">
+            <p role="alert" className="mt-2 text-sub text-danger">
               {error}
             </p>
           )}
@@ -129,7 +129,7 @@ export function AccountSection({
         label="Organization"
         desc={orNotSet(settings.orgName)}
         control={
-          <span className="rounded bg-surface-2 px-2 py-1 font-mono text-[11px] text-fg-subtle">
+          <span className="rounded bg-surface-2 px-2 py-1 font-mono text-meta text-fg-subtle">
             {settings.orgId.trim() === ""
               ? "—"
               : `${settings.orgId.slice(0, 18)}…`}

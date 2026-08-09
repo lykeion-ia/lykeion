@@ -63,13 +63,13 @@ export function WorkflowList({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search workflows…"
-            className="h-full w-full bg-transparent text-[13px] text-fg placeholder:text-fg-subtle focus:outline-none"
+            className="h-full w-full bg-transparent text-ui text-fg placeholder:text-fg-subtle focus:outline-none"
           />
         </div>
       </div>
 
       {visible.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-[13px] text-fg-subtle">
+        <div className="flex flex-1 items-center justify-center text-ui text-fg-subtle">
           {workflows.length === 0
             ? loading
               ? ""
@@ -80,7 +80,7 @@ export function WorkflowList({
         <div className="flex-1 overflow-auto px-5 pb-5">
           <div
             className={cn(
-              "grid items-center gap-3 border-b border-line px-3 py-2 text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary",
+              "grid items-center gap-3 border-b border-line px-3 py-2 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary",
               GRID_COLS,
             )}
           >
@@ -114,7 +114,7 @@ function DisciplineHeading({
   count: number;
 }) {
   return (
-    <h2 className="flex items-center gap-2 px-3 pb-1 pt-4 text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary">
+    <h2 className="flex items-center gap-2 px-3 pb-1 pt-4 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary">
       <span
         className="h-2 w-2 shrink-0 rounded-full"
         style={{ backgroundColor: DISCIPLINE_COLOR[discipline] }}
@@ -131,13 +131,13 @@ function WorkflowRow({ workflow }: { workflow: Workflow }) {
     <RowLink
       to={{ name: "workflow", workflowId: workflow.id }}
       className={cn(
-        "grid items-center gap-3 border-b border-line-soft px-3 py-2.5 text-[13px] hover:bg-surface-2",
+        "grid items-center gap-3 border-b border-line-soft px-3 py-2.5 text-ui hover:bg-surface-2",
         GRID_COLS,
       )}
     >
       <span className="flex min-w-0 flex-col">
         <span className="truncate font-medium text-fg">{workflow.name}</span>
-        <span className="truncate text-[12px] text-fg-subtle">
+        <span className="truncate text-sub text-fg-subtle">
           {workflow.description}
         </span>
       </span>

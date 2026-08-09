@@ -14,7 +14,7 @@ function AgentChip({ name }: { name: string }) {
   const a = agentAvatar(name);
   return (
     <span
-      className="grid h-4 w-4 shrink-0 place-items-center rounded-[5px] text-[9px] font-semibold text-white"
+      className="grid h-4 w-4 shrink-0 place-items-center rounded-[5px] text-micro font-semibold text-white"
       style={{
         backgroundImage: `linear-gradient(135deg, ${a.gradient[0]}, ${a.gradient[1]})`,
       }}
@@ -64,7 +64,7 @@ function AgentSelect({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5 py-2 text-left text-[13px] text-fg-muted hover:bg-surface-3"
+        className="flex w-full items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5 py-2 text-left text-ui text-fg-muted hover:bg-surface-3"
       >
         <UserIcon width={15} height={15} className="shrink-0 text-fg-subtle" />
         {chosen.length === 0 ? (
@@ -99,13 +99,13 @@ function AgentSelect({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search agents and members…"
-            className="mb-1 w-full rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-[13px] text-fg outline-none placeholder:text-fg-subtle"
+            className="mb-1 w-full rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-ui text-fg outline-none placeholder:text-fg-subtle"
           />
-          <div className="px-1.5 pb-1 pt-0.5 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-fg-tertiary">
+          <div className="px-1.5 pb-1 pt-0.5 text-micro font-semibold uppercase tracking-[0.5px] text-fg-tertiary">
             My agents
           </div>
           {visible.length === 0 && (
-            <div className="px-2 py-1.5 text-[13px] text-fg-subtle">
+            <div className="px-2 py-1.5 text-ui text-fg-subtle">
               No agents yet
             </div>
           )}
@@ -119,7 +119,7 @@ function AgentSelect({
                   onToggle(a.name);
                   if (!multiple) setOpen(false);
                 }}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-fg-muted hover:bg-surface-2 hover:text-fg"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui text-fg-muted hover:bg-surface-2 hover:text-fg"
               >
                 <AgentChip name={a.name} />
                 <span className="flex-1">{a.name}</span>
@@ -196,7 +196,7 @@ export function CreateResearchGroupModal({
         className="w-full max-w-[560px] overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between px-5 pb-1 pt-4">
-          <h2 className="text-[15px] font-semibold text-fg">
+          <h2 className="text-read font-semibold text-fg">
             Create Research Group
           </h2>
           <button
@@ -208,7 +208,7 @@ export function CreateResearchGroupModal({
             <CloseIcon width={15} height={15} />
           </button>
         </div>
-        <p className="px-5 text-[13px] text-fg-subtle">
+        <p className="px-5 text-ui text-fg-subtle">
           Create a collaborative research group with a lead agent and optional
           additional members.
         </p>
@@ -223,7 +223,7 @@ export function CreateResearchGroupModal({
               <ImageIcon width={18} height={18} />
             </button>
             <label className="flex flex-1 flex-col gap-1">
-              <span className="text-[12.5px] font-medium text-fg-muted">
+              <span className="text-sub font-medium text-fg-muted">
                 Name
               </span>
               <input
@@ -231,13 +231,13 @@ export function CreateResearchGroupModal({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Structural Biology Group"
-                className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
+                className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
               />
             </label>
           </div>
 
           <label className="flex flex-col gap-1">
-            <span className="text-[12.5px] font-medium text-fg-muted">
+            <span className="text-sub font-medium text-fg-muted">
               Description
             </span>
             <textarea
@@ -246,18 +246,18 @@ export function CreateResearchGroupModal({
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Describe what this group is responsible for…"
               rows={2}
-              className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
+              className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
             />
-            <span className="self-end text-[11px] text-fg-tertiary">
+            <span className="self-end text-meta text-fg-tertiary">
               {description.length} / 255
             </span>
           </label>
 
           <div className="flex flex-col gap-1">
-            <span className="text-[12.5px] font-medium text-fg-muted">
+            <span className="text-sub font-medium text-fg-muted">
               Lead Agent
             </span>
-            <span className="mb-1 text-[12px] text-fg-subtle">
+            <span className="mb-1 text-sub text-fg-subtle">
               The lead receives all tasks assigned to this group and coordinates
               the team.
             </span>
@@ -272,11 +272,11 @@ export function CreateResearchGroupModal({
           </div>
 
           <div className="flex flex-col gap-1">
-            <span className="text-[12.5px] font-medium text-fg-muted">
+            <span className="text-sub font-medium text-fg-muted">
               Additional Members{" "}
               <span className="text-fg-tertiary">(optional)</span>
             </span>
-            <span className="mb-1 text-[12px] text-fg-subtle">
+            <span className="mb-1 text-sub text-fg-subtle">
               Members the lead can delegate sub-tasks to. Can be added later.
             </span>
             <AgentSelect
@@ -299,7 +299,7 @@ export function CreateResearchGroupModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-[13px] text-fg-muted hover:text-fg"
+            className="rounded-md px-3 py-1.5 text-ui text-fg-muted hover:text-fg"
           >
             Cancel
           </button>
@@ -307,7 +307,7 @@ export function CreateResearchGroupModal({
             type="button"
             disabled={!canCreate}
             onClick={submit}
-            className="rounded-md bg-fg px-3.5 py-1.5 text-[13px] font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             Create research group
           </button>

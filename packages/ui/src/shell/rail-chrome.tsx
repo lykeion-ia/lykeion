@@ -17,7 +17,7 @@ import { cn } from "../lib/utils";
  * pinned at `h-8` so both panes sit on an integral 32px grid.
  */
 export const railRowClass =
-  "flex h-8 items-center gap-2.5 mx-0.5 rounded-lg px-2 text-[13px]";
+  "flex h-8 items-center gap-2.5 mx-0.5 rounded-lg px-2 text-ui";
 
 const railRowIdle = "text-fg-subtle hover:bg-surface hover:text-fg";
 const railRowActive = "bg-surface-2 text-fg";
@@ -42,7 +42,7 @@ export function RailGlyph({ children }: { children: ReactNode }) {
 /** The uppercase heading over a rail section ("Laboratory", "This week"). */
 export function RailGroupLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="mt-2 px-2.5 pb-[3px] pt-1.5 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-fg-tertiary">
+    <div className="mt-2 px-2.5 pb-[3px] pt-1.5 text-micro font-semibold uppercase tracking-[0.5px] text-fg-tertiary">
       {children}
     </div>
   );

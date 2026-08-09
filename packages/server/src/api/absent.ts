@@ -4,8 +4,11 @@ import type { Deps } from "./index";
 
 /** What every kernel and run method answers with until a runtime is
  *  actually connected to a machine — the one failure no request to this
- *  server, on its own, can ever work around. */
-const NO_RUNTIME =
+ *  server, on its own, can ever work around. Exported for the one family
+ *  that has to choose between this reason and a truer one: `kernelsApi`
+ *  gives `kernelEnvSetup` this refusal only after looking at the runtimes
+ *  table and finding nothing online. */
+export const NO_RUNTIME =
   "no runtime is connected to this lab — install the Lykeion daemon on the machine you want to run on.";
 
 /**
@@ -50,6 +53,7 @@ export function absentApi(
   | "listRuntimes" | "listAgentClis" | "pairMachine" | "removeRuntime"
   | "startRun" | "submitRunDecision" | "runHistory" | "revertTurn"
   | "listRunningKernels" | "taskNotebook" | "kernelExecute" | "kernelInterrupt" | "kernelRestart"
+  | "kernelEnvSetup"
 > {
   return {
     async listConversations() {
@@ -92,9 +96,6 @@ export function absentApi(
     },
     async kernelEnvList() {
       return [];
-    },
-    async kernelEnvSetup(_name, _onProgress) {
-      throw new LykeionError("unsupported", NO_RUNTIME);
     },
 
     async delegateSubagent(_input) {

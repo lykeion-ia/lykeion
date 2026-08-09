@@ -31,6 +31,11 @@ const SCRIPT = [
       { content: "Report back", status: "pending" },
     ],
   },
+  // A real call through a server the client named on `session/new`. In the
+  // six behaviours whose sessions never name one, `toolServerNamed` fails
+  // fast and this lands as a `failed` tool_call_update — which is itself the
+  // honest shape of that situation, and nothing those behaviours wait on.
+  { callTool: "conformance_probe", server: "probe", toolCallId: "probe-1", arguments: {} },
   { ask: "permission", toolCallId: "write-1", title: "Write /tmp/lykeion-conformance-stub/probe.txt" },
   { wait: "cancel", timeoutMs: 500 },
   { emit: "agent_message_chunk", text: "Done." },

@@ -21,7 +21,7 @@ const LABEL_BY_ID = new Map(LABELS.map((l) => [l.id, l]));
 /** A single bordered metadata chip in the card's footer. */
 function MetaChip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-3 px-1.5 py-[3px] text-[11px] text-fg-subtle">
+    <span className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-3 px-1.5 py-[3px] text-meta text-fg-subtle">
       {children}
     </span>
   );
@@ -72,10 +72,10 @@ export function TaskCard({ task, study, onEdit }: TaskCardProps) {
             <StatusIcon status={task.status} />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block font-mono text-[10.5px] leading-none text-fg-tertiary">
+            <span className="block font-mono text-micro leading-none text-fg-tertiary">
               {taskCode(study, task)}
             </span>
-            <span className="mt-1 block text-[13px] font-medium leading-snug text-fg">
+            <span className="mt-1 block text-ui font-medium leading-snug text-fg">
               {task.title}
             </span>
           </span>
@@ -90,7 +90,7 @@ export function TaskCard({ task, study, onEdit }: TaskCardProps) {
         </div>
 
         {task.description && (
-          <p className="mb-2 line-clamp-2 text-[12px] leading-relaxed text-fg-subtle">
+          <p className="mb-2 line-clamp-2 text-sub leading-relaxed text-fg-subtle">
             {task.description}
           </p>
         )}
@@ -100,7 +100,7 @@ export function TaskCard({ task, study, onEdit }: TaskCardProps) {
             {labels.map((label) => (
               <span
                 key={label.id}
-                className="inline-flex items-center gap-1 rounded border border-line bg-surface-3 px-1.5 py-0.5 text-[10.5px] font-medium text-fg-subtle"
+                className="inline-flex items-center gap-1 rounded border border-line bg-surface-3 px-1.5 py-0.5 text-micro font-medium text-fg-subtle"
               >
                 <span
                   className="h-[6px] w-[6px] shrink-0 rounded-full"

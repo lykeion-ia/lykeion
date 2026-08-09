@@ -1519,6 +1519,16 @@ export function absentCapabilityConformance(makeApi: () => Promise<LykeionApi>):
       const api = await makeApi();
       await expect(api.kernelEnvList()).resolves.toEqual([]);
     });
+
+    it("kernelEnvSetup refuses when no runtime is online", async () => {
+      // A refusal, not a resolved no-op: a Setup that "succeeds" while
+      // provisioning nothing leaves the surface reporting an install that
+      // never happened. With no machine online the honest reason is that
+      // one — a core with a machine in reach answers differently, and that
+      // behaviour belongs to its own suite.
+      const api = await makeApi();
+      await expectRejection(api.kernelEnvSetup(), "unsupported", /no runtime is connected/);
+    });
   });
 }
 

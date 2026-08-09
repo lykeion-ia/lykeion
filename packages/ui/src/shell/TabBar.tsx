@@ -82,7 +82,7 @@ export function TabBar() {
         <ChevronRightIcon width={16} height={16} />
       </button>
 
-      <div className="ml-1 flex items-center gap-1.5 rounded-md border border-line bg-surface-2 px-3 py-1 text-[12.5px] text-fg">
+      <div className="ml-1 flex items-center gap-1.5 rounded-md border border-line bg-surface-2 px-3 py-1 text-sub text-fg">
         <Icon className="shrink-0 text-accent" width={14} height={14} />
         <span className="max-w-[240px] truncate">{label}</span>
       </div>

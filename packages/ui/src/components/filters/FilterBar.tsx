@@ -50,7 +50,7 @@ function OptionGlyph({ option }: { option: FilterOption }) {
   if (option.gradient) {
     return (
       <span
-        className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded-[4px] text-[8px] font-semibold text-white"
+        className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded-[4px] text-micro font-semibold text-white"
         style={{
           backgroundImage: `linear-gradient(135deg, ${option.gradient[0]}, ${option.gradient[1]})`,
         }}
@@ -184,14 +184,14 @@ export function FilterBar({
             // baseline whether the row holds only the FilterBar (Studies) or a
             // full toolbar (My Tasks) — otherwise the taller My Tasks row
             // centres this shorter button a couple px below its Studies twin.
-            "inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface-2 px-2.5 text-[12.5px] transition-colors hover:bg-surface-3",
+            "inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface-2 px-2.5 text-sub transition-colors hover:bg-surface-3",
             count > 0 ? "text-fg" : "text-fg-subtle",
           )}
         >
           <FilterIcon width={14} height={14} />
           Filter
           {count > 0 && (
-            <span className="grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold text-white">
+            <span className="grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-micro font-semibold text-white">
               {count}
             </span>
           )}
@@ -214,7 +214,7 @@ export function FilterBar({
                       key={dim.key}
                       type="button"
                       onClick={() => setLevel(dim.key)}
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-fg-muted hover:bg-surface-2 hover:text-fg"
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui text-fg-muted hover:bg-surface-2 hover:text-fg"
                     >
                       <dim.icon
                         width={15}
@@ -223,12 +223,12 @@ export function FilterBar({
                       />
                       <span className="flex-1">{dim.label}</span>
                       {selected > 0 && (
-                        <span className="text-[11px] text-fg-tertiary">
+                        <span className="text-meta text-fg-tertiary">
                           {selected}
                         </span>
                       )}
                       {dateActive && (
-                        <span className="text-[11px] text-fg-tertiary">
+                        <span className="text-meta text-fg-tertiary">
                           {formatTargetDate(state.targetDate!)}
                         </span>
                       )}
@@ -247,7 +247,7 @@ export function FilterBar({
                     <button
                       type="button"
                       onClick={() => setLevel(SORT_LEVEL)}
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-fg-muted hover:bg-surface-2 hover:text-fg"
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui text-fg-muted hover:bg-surface-2 hover:text-fg"
                     >
                       <SortIcon
                         width={15}
@@ -255,7 +255,7 @@ export function FilterBar({
                         className="shrink-0 text-fg-subtle"
                       />
                       <span className="flex-1">Sort by</span>
-                      <span className="text-[11px] text-fg-tertiary">
+                      <span className="text-meta text-fg-tertiary">
                         {
                           SORT_OPTIONS.find(
                             (s) => s.id === (sortKey ?? "updated"),
@@ -277,7 +277,7 @@ export function FilterBar({
                     <button
                       type="button"
                       onClick={clearAll}
-                      className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-[13px] text-danger hover:bg-surface-2"
+                      className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-ui text-danger hover:bg-surface-2"
                     >
                       Clear all filters
                     </button>
@@ -297,7 +297,7 @@ export function FilterBar({
                 >
                   <ChevronLeftIcon width={14} height={14} />
                 </button>
-                <span className="text-[13px] font-medium text-fg">
+                <span className="text-ui font-medium text-fg">
                   {level === SORT_LEVEL ? "Sort by" : activeDim?.label}
                 </span>
               </div>
@@ -313,7 +313,7 @@ export function FilterBar({
                     key={opt.id}
                     type="button"
                     onClick={() => toggleOption(activeDim.key, opt.id)}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-fg-muted hover:bg-surface-2 hover:text-fg"
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui text-fg-muted hover:bg-surface-2 hover:text-fg"
                   >
                     <OptionGlyph option={opt} />
                     <span className={cn("flex-1", selected && "text-fg")}>
@@ -326,7 +326,7 @@ export function FilterBar({
                         className="shrink-0 text-accent"
                       />
                     )}
-                    <span className="w-4 shrink-0 text-right text-[11px] text-fg-tertiary">
+                    <span className="w-4 shrink-0 text-right text-meta text-fg-tertiary">
                       {opt.count}
                     </span>
                   </button>
@@ -350,7 +350,7 @@ export function FilterBar({
                       onSort?.(opt.id);
                       setLevel(null);
                     }}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-fg-muted hover:bg-surface-2 hover:text-fg"
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui text-fg-muted hover:bg-surface-2 hover:text-fg"
                   >
                     <span className={cn("flex-1", selected && "text-fg")}>
                       {opt.label}
@@ -372,7 +372,7 @@ export function FilterBar({
       {chips.map((chip) => (
         <span
           key={chip.key}
-          className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-2 py-1 pl-2 pr-1 text-[12px] text-fg-muted"
+          className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-2 py-1 pl-2 pr-1 text-sub text-fg-muted"
         >
           {chip.glyph && <OptionGlyph option={chip.glyph} />}
           {chip.label}

@@ -41,7 +41,7 @@ export function SetupScreen({ onSignedIn }: { onSignedIn: () => void }) {
         <Field label="Your name" type="text" value={displayName} onChange={setDisplayName} autoFocus />
         <Field label="Email" type="email" value={email} onChange={setEmail} />
         <Field label="Password" type="password" value={password} onChange={setPassword} hint="At least 8 characters." />
-        {error && <p className="text-[12.5px] text-danger">{error}</p>}
+        {error && <p className="text-sub text-danger">{error}</p>}
         <SubmitButton busy={busy} idle="Create the lab" working="Creating…" />
       </form>
     </AuthShell>

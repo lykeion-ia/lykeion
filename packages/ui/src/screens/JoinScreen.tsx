@@ -56,12 +56,12 @@ export function JoinScreen({
         <Field label="Your name" type="text" value={displayName} onChange={setDisplayName} autoFocus />
         <Field label="Email" type="email" value={email} onChange={setEmail} />
         <Field label="Password" type="password" value={password} onChange={setPassword} hint="At least 8 characters." />
-        {error && <p className="text-[12.5px] text-danger">{error}</p>}
+        {error && <p className="text-sub text-danger">{error}</p>}
         <SubmitButton busy={busy} idle="Join the lab" working="Joining…" />
         <button
           type="button"
           onClick={onSignIn}
-          className="mt-1 self-start text-[12.5px] text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+          className="mt-1 self-start text-sub text-fg-muted underline-offset-2 hover:text-fg hover:underline"
         >
           Already have an account? Sign in
         </button>

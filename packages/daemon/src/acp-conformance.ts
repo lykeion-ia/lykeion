@@ -13,14 +13,14 @@
  * terminal state — never against wording only the stub would say.
  */
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEvent } from "@lykeion/api";
 import { connectAcp } from "./acp";
 import { confinementFor } from "./agent-home";
 import { confine, policyFor } from "./sandbox";
-import { startSession, type LiveSession } from "./session";
+import { startSession, type LiveSession, type McpServer } from "./session";
 
 /** Vitest's own timeout for a single test — long enough that a real agent's
  *  reply, shaped by a model call rather than the milliseconds the stub
@@ -182,6 +182,58 @@ function autoApprove(session: LiveSession, events: RunEvent[], answered: Set<str
 }
 
 /**
+ * A whole MCP stdio server in one file, written into a session's workspace so
+ * the adapter's boundary can read it and the server itself can write markers
+ * beside it. It publishes one tool. Which markers appear, and what the
+ * `called` marker contains, is how the behaviour below tells three facts
+ * apart: `connected` — the server entry survived the adapter's own schema
+ * (the shipped bug was an entry silently dropped there); `listed` — the
+ * adapter asked what tools it has; `called` — the tool ran, and the marker
+ * carries the env variable the client named on `session/new`, which nothing
+ * but the `env` field could have delivered.
+ */
+const PROBE_MCP_SOURCE = `
+const { appendFileSync } = require("node:fs");
+const { join } = require("node:path");
+const { createInterface } = require("node:readline");
+const markers = process.argv[2];
+const mark = (name, text) => appendFileSync(join(markers, name), (text ?? "") + "\\n");
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") {
+    mark("connected");
+    send({ jsonrpc: "2.0", id: msg.id, result: {
+      protocolVersion: typeof msg.params?.protocolVersion === "string" ? msg.params.protocolVersion : "2025-06-18",
+      capabilities: { tools: {} },
+      serverInfo: { name: "lykeion-conformance-probe", version: "1" },
+    } });
+    return;
+  }
+  if (msg.method === "tools/list") {
+    mark("listed");
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools: [{
+      name: "conformance_probe",
+      description: "Answers with this server's probe value. Takes no arguments.",
+      inputSchema: { type: "object", properties: {} },
+    }] } });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    const value = process.env.LYKEION_CONFORMANCE_PROBE ?? "";
+    mark("called", value);
+    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: value }] } });
+    return;
+  }
+  if (msg.id !== undefined) {
+    send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });
+  }
+});
+`;
+
+/**
  * The adapter command, wrapped so even a behaviour that drives ACP directly
  * runs inside a boundary. Two of the checks below talk to the connection
  * rather than to a `LiveSession`, and a real adapter spawned that way is
@@ -232,19 +284,23 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
       return dir;
     }
 
-    async function openSession(deadline: number): Promise<{ session: LiveSession; events: RunEvent[] }> {
+    async function openSession(
+      deadline: number,
+      opts?: { cwd?: string; mcpServers?: McpServer[] },
+    ): Promise<{ session: LiveSession; events: RunEvent[] }> {
       const { command, args, env, agent } = adapter();
       const events: RunEvent[] = [];
       const starting = startSession({
         adapter: { command, args },
 
         agent,
-        cwd: workspace(),
+        cwd: opts?.cwd ?? workspace(),
         dataDir: mkdtempSync(join(tmpdir(), "lykeion-acp-conformance-state-")),
         grants: [],
         onEvent: (event) => events.push(event),
         onGrant: () => {},
         env,
+        ...(opts?.mcpServers === undefined ? {} : { mcpServers: opts.mcpServers }),
       });
       // Tracked against the eventual settlement of `starting` itself, not
       // against the `withTimeout` race below: a session that finishes
@@ -360,6 +416,97 @@ export function acpConformance(name: string, adapter: AdapterFactory): void {
           deadline,
           () => session.stderrTail(),
         );
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "reaches a tool through an MCP server named on session/new",
+      async () => {
+        const deadline = deadlineFor(TEST_TIMEOUT_MS);
+        const cwd = workspace();
+        const probe = join(cwd, "probe-mcp.cjs");
+        writeFileSync(probe, PROBE_MCP_SOURCE);
+        const nonce = `probe-${Math.random().toString(36).slice(2)}`;
+        // A decoy in the workspace's own project scope: an `.mcp.json` whose
+        // one MCP server marks being reached into its own directory. A
+        // session that connects it took tools from a settings source rather
+        // than from `session/new` — the channel the settings-sources
+        // override exists to close, and the very file a run could write
+        // itself to widen its next turn. Deliberately NOT a config-dir
+        // redirect: pointing CLAUDE_CONFIG_DIR anywhere fresh signs the
+        // owner's CLI out, and a behaviour that breaks authentication
+        // measures its own sabotage rather than the adapter.
+        const decoyMarks = join(cwd, "decoy-marks");
+        mkdirSync(decoyMarks);
+        writeFileSync(
+          join(cwd, ".mcp.json"),
+          JSON.stringify({
+            mcpServers: { decoy: { command: process.execPath, args: [probe, decoyMarks] } },
+          }),
+        );
+        const { session, events } = await openSession(deadline, {
+          cwd,
+          mcpServers: [
+            {
+              name: "probe",
+              command: process.execPath,
+              args: [probe, cwd],
+              env: [{ name: "LYKEION_CONFORMANCE_PROBE", value: nonce }],
+            },
+          ],
+        });
+        const answered = new Set<string>();
+        session.prompt(
+          'Call the tool "conformance_probe" from the MCP server named "probe" with no arguments, ' +
+            "then repeat its output verbatim. If you are asked for permission, it is fine to proceed.",
+        );
+        // The server having been spoken to at all is the deterministic half:
+        // an entry the adapter's schema dropped is a server no one ever
+        // connects, silently — precisely how the kernel bridge shipped broken.
+        await waitFor(
+          "the named server is connected",
+          () => {
+            autoApprove(session, events, answered);
+            return existsSync(join(cwd, "connected"));
+          },
+          events,
+          deadline,
+          () => session.stderrTail(),
+        );
+        // The full round trip: the tool ran, and what it answered with is the
+        // env variable named on session/new — deliverable only by `env`.
+        await waitFor(
+          "the probe tool answers with the env it was started with",
+          () => {
+            autoApprove(session, events, answered);
+            return (
+              existsSync(join(cwd, "called")) && readFileSync(join(cwd, "called"), "utf8").includes(nonce)
+            );
+          },
+          events,
+          deadline,
+          () => session.stderrTail(),
+        );
+        // By now every server this session will ever connect has been — the
+        // probe's own round trip is complete. The decoy staying silent is
+        // the claude-shaped proof; no foreign `mcp__…` startup surfacing in
+        // the log is the codex-shaped one (its adapter reports each server
+        // it starts that way). Either firing means the session's tools came
+        // from somewhere other than session/new.
+        expect(
+          existsSync(join(decoyMarks, "connected")),
+          `the decoy user-scope server was connected — this adapter read a config dir's own MCP servers into the session.\nstderr: ${session.stderrTail()}`,
+        ).toBe(false);
+        const foreign = events.filter(
+          (event) =>
+            event.event === "log-entry" &&
+            /^mcp__(?!probe__)/.test(event.entry.title ?? ""),
+        );
+        expect(
+          foreign,
+          `a server nothing named on session/new started in this session.\n${eventsDump(foreign)}`,
+        ).toEqual([]);
       },
       TEST_TIMEOUT_MS,
     );

@@ -39,7 +39,7 @@ export function SignInScreen({ onSignedIn }: { onSignedIn: () => void }) {
       <form onSubmit={submit} className="flex flex-col gap-3">
         <Field label="Email" type="email" value={email} onChange={setEmail} autoFocus />
         <Field label="Password" type="password" value={password} onChange={setPassword} />
-        {error && <p className="text-[12.5px] text-danger">{error}</p>}
+        {error && <p className="text-sub text-danger">{error}</p>}
         <SubmitButton busy={busy} idle="Sign in" working="Signing in…" />
       </form>
     </AuthShell>

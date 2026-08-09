@@ -35,7 +35,7 @@ export function TaskList({
 
   if (tasks.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center text-[13px] text-fg-subtle">
+      <div className="flex flex-1 items-center justify-center text-ui text-fg-subtle">
         {emptyLabel}
       </div>
     );
@@ -45,7 +45,7 @@ export function TaskList({
     <div className="flex-1 overflow-auto px-5 pb-5">
       <div
         className={cn(
-          "grid items-center gap-3 border-b border-line px-3 py-2 text-[11px] font-medium uppercase tracking-[0.4px] text-fg-tertiary",
+          "grid items-center gap-3 border-b border-line px-3 py-2 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary",
           gridCols,
         )}
       >
@@ -72,13 +72,13 @@ export function TaskList({
             key={task.id}
             to={taskRoute(task)}
             className={cn(
-              "grid items-center gap-3 border-b border-line-soft px-3 py-2.5 text-[13px] hover:bg-surface-2",
+              "grid items-center gap-3 border-b border-line-soft px-3 py-2.5 text-ui hover:bg-surface-2",
               gridCols,
             )}
           >
             <span className="flex min-w-0 flex-col">
               <span className="flex min-w-0 items-center gap-2">
-                <span className="shrink-0 font-mono text-[11px] text-fg-tertiary">
+                <span className="shrink-0 font-mono text-meta text-fg-tertiary">
                   {taskCode(study, task)}
                 </span>
                 <span className="truncate font-medium text-fg">
@@ -86,11 +86,11 @@ export function TaskList({
                 </span>
               </span>
               {task.description && (
-                <span className="truncate text-[12px] text-fg-subtle">
+                <span className="truncate text-sub text-fg-subtle">
                   {task.description}
                 </span>
               )}
-              <span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-fg-subtle">
+              <span className="mt-1 flex flex-wrap items-center gap-2 text-meta text-fg-subtle">
                 <span
                   className={cn(
                     "rounded border px-1.5 py-0.5",

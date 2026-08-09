@@ -134,7 +134,7 @@ export function MembersPanel({ role }: MembersPanelProps) {
           }
         />
         {actionError && (
-          <p className="mb-3 text-[12.5px] text-danger">{actionError}</p>
+          <p className="mb-3 text-sub text-danger">{actionError}</p>
         )}
         <ul aria-label="Members" className="divide-y divide-line-soft">
           {members.map((member) => (
@@ -152,7 +152,7 @@ export function MembersPanel({ role }: MembersPanelProps) {
         <section>
           <SectionTitle>Outstanding invites</SectionTitle>
           {live.length === 0 ? (
-            <p className="text-[13px] text-fg-subtle">
+            <p className="text-ui text-fg-subtle">
               No invites outstanding. Mint one to bring somebody in.
             </p>
           ) : (
@@ -203,7 +203,7 @@ function MemberRow({
       <span
         aria-hidden="true"
         className={cn(
-          "grid h-8 w-8 shrink-0 place-items-center rounded-full bg-surface-2 text-[13px] text-fg",
+          "grid h-8 w-8 shrink-0 place-items-center rounded-full bg-surface-2 text-ui text-fg",
           offboarded && "opacity-50",
         )}
       >
@@ -213,23 +213,23 @@ function MemberRow({
         <span className="flex items-center gap-2">
           <span
             className={cn(
-              "truncate text-[13px] font-medium",
+              "truncate text-ui font-medium",
               offboarded ? "text-fg-subtle" : "text-fg",
             )}
           >
             {member.user.displayName}
           </span>
           {offboarded && (
-            <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-subtle">
+            <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-meta text-fg-subtle">
               No longer a member
             </span>
           )}
         </span>
-        <span className="block truncate text-[12px] text-fg-subtle">
+        <span className="block truncate text-sub text-fg-subtle">
           {member.user.email}
         </span>
       </span>
-      <span className="shrink-0 text-[12px] capitalize text-fg-muted">
+      <span className="shrink-0 text-sub capitalize text-fg-muted">
         {member.role}
       </span>
       {canRemove && (
@@ -237,7 +237,7 @@ function MemberRow({
           type="button"
           onClick={onRemove}
           aria-label={`Remove ${member.user.displayName}`}
-          className="shrink-0 rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg hover:bg-surface"
+          className="shrink-0 rounded-md border border-line-strong px-2.5 py-1 text-sub text-fg hover:bg-surface"
         >
           Remove
         </button>
@@ -288,26 +288,26 @@ export function InviteRow({
     <li className="flex items-center gap-3 py-3">
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-2">
-          <code className="truncate rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[12px] text-fg">
+          <code className="truncate rounded bg-surface-2 px-1.5 py-0.5 font-mono text-sub text-fg">
             {invite.code}
           </code>
           {redeemed && (
-            <span className="shrink-0 text-[11px] text-fg-subtle">
+            <span className="shrink-0 text-meta text-fg-subtle">
               Already joined
             </span>
           )}
           {!redeemed && expired && (
-            <span className="shrink-0 text-[11px] text-fg-subtle">
+            <span className="shrink-0 text-meta text-fg-subtle">
               Expired
             </span>
           )}
           {copyFailed && (
-            <span className="shrink-0 text-[11px] text-danger">
+            <span className="shrink-0 text-meta text-danger">
               Could not copy — select it above
             </span>
           )}
         </span>
-        <span className="block text-[11px] text-fg-subtle">
+        <span className="block text-meta text-fg-subtle">
           {invite.role} invite
         </span>
       </span>
@@ -316,7 +316,7 @@ export function InviteRow({
           type="button"
           onClick={() => void copy()}
           aria-label={`Copy ${invite.code}`}
-          className="flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[12px] text-fg hover:bg-surface"
+          className="flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-sub text-fg hover:bg-surface"
         >
           {copied ? (
             <>
@@ -336,7 +336,7 @@ export function InviteRow({
           type="button"
           onClick={onWithdraw}
           aria-label={`Withdraw ${invite.code}`}
-          className="shrink-0 rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg hover:bg-surface"
+          className="shrink-0 rounded-md border border-line-strong px-2.5 py-1 text-sub text-fg hover:bg-surface"
         >
           Withdraw
         </button>

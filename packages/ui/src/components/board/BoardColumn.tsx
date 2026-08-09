@@ -26,10 +26,10 @@ export function BoardColumn({
     <div className="flex w-[300px] min-w-[300px] shrink-0 flex-col rounded-xl border border-line-soft bg-lane p-2">
       <div className="flex items-center gap-2 px-1.5 pb-2.5 pt-1">
         <StatusIcon status={status} />
-        <span className="text-[12.5px] font-semibold tracking-[-0.1px] text-fg">
+        <span className="text-sub font-semibold tracking-[-0.1px] text-fg">
           {title}
         </span>
-        <span className="text-[12px] text-fg-tertiary">{tasks.length}</span>
+        <span className="text-sub text-fg-tertiary">{tasks.length}</span>
         {onAddTask && (
           <button
             type="button"
@@ -61,7 +61,7 @@ export function BoardColumn({
           <button
             type="button"
             onClick={onAddTask}
-            className="flex items-center gap-1.5 self-start rounded-md px-1 py-1 text-[12px] text-fg-tertiary transition-colors hover:text-fg-subtle"
+            className="flex items-center gap-1.5 self-start rounded-md px-1 py-1 text-sub text-fg-tertiary transition-colors hover:text-fg-subtle"
           >
             <PlusIcon width={14} height={14} />
             Add task

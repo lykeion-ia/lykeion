@@ -55,10 +55,10 @@ export function ConversationPane({
           ringClass="ring-canvas"
         />
         <div className="min-w-0 flex-1">
-          <h2 className="truncate text-[14px] font-semibold text-fg">
+          <h2 className="truncate text-read font-semibold text-fg">
             {conversation.title}
           </h2>
-          <p className="truncate text-[11.5px] text-fg-subtle">
+          <p className="truncate text-meta text-fg-subtle">
             {conversation.participants
               .map((p) => displayName(p, dir))
               .join(", ")}
@@ -74,7 +74,7 @@ export function ConversationPane({
               studyId: conversation.studyId,
               taskId: conversation.taskId,
             }}
-            className="shrink-0 font-mono text-[11px] text-accent hover:underline"
+            className="shrink-0 font-mono text-meta text-accent hover:underline"
           >
             {code} →
           </RowLink>
@@ -107,7 +107,7 @@ function MessageThread({ messages }: { messages: Message[] }) {
 
   if (messages.length === 0) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center text-[13px] text-fg-subtle">
+      <div className="flex min-h-0 flex-1 items-center justify-center text-ui text-fg-subtle">
         Nothing said yet.
       </div>
     );
@@ -138,7 +138,7 @@ function MessageThread({ messages }: { messages: Message[] }) {
             >
               <span
                 aria-hidden="true"
-                className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-[6px] text-[11px] font-semibold text-white"
+                className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-[6px] text-meta font-semibold text-white"
                 style={{
                   backgroundImage: `linear-gradient(135deg, ${avatar.gradient[0]}, ${avatar.gradient[1]})`,
                 }}
@@ -161,23 +161,23 @@ function MessageThread({ messages }: { messages: Message[] }) {
                     mine && "flex-row-reverse",
                   )}
                 >
-                  <span className="text-[12.5px] font-medium text-fg">
+                  <span className="text-sub font-medium text-fg">
                     {displayName(message.author, dir)}
                   </span>
                   {/* An agent in a thread of people is worth marking. Which
                       one it is, is already in the name beside it. */}
                   {isAgent && (
-                    <span className="rounded border border-line px-1 text-[9.5px] font-medium uppercase tracking-[0.4px] text-fg-tertiary">
+                    <span className="rounded border border-line px-1 text-micro font-medium uppercase tracking-[0.4px] text-fg-tertiary">
                       Agent
                     </span>
                   )}
-                  <span className="text-[11px] text-fg-tertiary">
+                  <span className="text-meta text-fg-tertiary">
                     {formatAgo(message.ts)}
                   </span>
                 </div>
                 <p
                   className={cn(
-                    "whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-fg-muted",
+                    "whitespace-pre-wrap break-words text-ui leading-relaxed text-fg-muted",
                     // The measure the Task transcript already caps a reader's
                     // own turn at. Without it a long message spans the pane
                     // and lands back where a left-aligned one would.
@@ -223,7 +223,7 @@ function MessageComposer({
 
   return (
     <div className="shrink-0 border-t border-line px-5 py-3">
-      {error && <p className="pb-2 text-[12.5px] text-danger">{error}</p>}
+      {error && <p className="pb-2 text-sub text-danger">{error}</p>}
       <div className="flex items-end gap-2 rounded-lg border border-line bg-surface-2 px-2.5 py-2 transition-colors duration-[120ms] focus-within:border-accent-focus">
         <textarea
           rows={1}
@@ -238,7 +238,7 @@ function MessageComposer({
           }}
           placeholder="Write a message…"
           aria-label="Write a message"
-          className="max-h-[140px] w-full resize-none bg-transparent text-[13.5px] leading-relaxed text-fg outline-none focus:outline-none placeholder:text-fg-subtle"
+          className="max-h-[140px] w-full resize-none bg-transparent text-ui leading-relaxed text-fg outline-none focus:outline-none placeholder:text-fg-subtle"
         />
         <button
           type="button"

@@ -1,4 +1,5 @@
 import { LykeionError, type Language, type LykeionApi, type RunningKernel } from "@lykeion/api";
+import { NO_RUNTIME } from "./absent";
 import type { Deps } from "./index";
 import type { Actor } from "../auth";
 import type { RunCommand, RunRelay } from "../run-relay";
@@ -11,7 +12,12 @@ import { healthFor } from "../runtime-health";
 
 export type KernelsApi = Pick<
   LykeionApi,
-  "listRunningKernels" | "taskNotebook" | "kernelExecute" | "kernelInterrupt" | "kernelRestart"
+  | "listRunningKernels"
+  | "taskNotebook"
+  | "kernelExecute"
+  | "kernelInterrupt"
+  | "kernelRestart"
+  | "kernelEnvSetup"
 >;
 
 interface KernelRuntime {
@@ -291,6 +297,24 @@ export function kernelsApi(deps: Deps): KernelsApi {
     async kernelRestart(kernelId) {
       const resolved = await authorizedKernelRuntime(deps, actor, now(), kernelId);
       deliverOrRefuse(runs, resolved, { type: "kernel-restart", runId: kernelId, kernelId });
+    },
+
+    async kernelEnvSetup() {
+      // Two refusals, and the runtimes table decides which is true. With no
+      // machine online the missing thing really is a runtime. With one
+      // right there, "no runtime is connected" would be false and would
+      // send the researcher to redo an install they have already done — the
+      // missing thing is provisioning itself, which no build of this server
+      // performs yet.
+      const nowTs = now();
+      const online = store
+        .all(`SELECT last_seen_ts FROM runtimes WHERE removed_ts IS NULL`)
+        .some((row) => healthFor(row.last_seen_ts as number, nowTs) === "online");
+      if (!online) throw new LykeionError("unsupported", NO_RUNTIME);
+      throw new LykeionError(
+        "unsupported",
+        "this lab cannot set up managed environments yet — kernels run in the machine's own interpreter for now.",
+      );
     },
   };
 }
