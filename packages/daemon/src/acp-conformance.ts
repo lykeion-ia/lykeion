@@ -606,7 +606,15 @@ export function acpConformance(
           .map((event) => event.text)
           .join("");
         expect(prose.trim().length).toBeGreaterThan(0);
-        const foreign = prose.match(/\bmcp__(?!probe\b|lykeion\b)\w+/g) ?? [];
+        // `probe__`, not `probe\b`: a tool is named `mcp__<server>__<tool>`, so
+        // what follows the server name is an underscore — a word character, and
+        // therefore no word boundary. Written with `\b` the exclusion never
+        // fired for a real tool name, and this read `mcp__lykeion__run_python`
+        // and the probe's own tool as servers nobody named. The behaviour could
+        // then only pass on a session reporting no MCP tools at all, which is
+        // the opposite of what it exists to check. Line 552 has it right.
+        const foreign =
+          prose.match(/\bmcp__(?!probe(?:__|\b)|lykeion(?:__|\b))\w+/g) ?? [];
         expect(
           foreign,
           `this session reports tools from servers nothing named on session/new.\n${eventsDump(events)}`,
