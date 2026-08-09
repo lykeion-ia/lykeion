@@ -5,6 +5,7 @@
  * is fully interactive.
  */
 
+import type { NotebookCell } from "./runtime";
 import type { Priority, Stage, Task, TaskStatus } from "./types";
 
 /** A plan step's live status. Drives the run strip's
@@ -231,7 +232,7 @@ export interface ExecutionLogEntry {
  */
 export type TurnItem =
   /** `block` is absent only on legacy streams; new streams carry an explicit role. */
-  { kind: "text"; text: string; block?: "thought" | "interim" | "final" | "error" }
+  { kind: "text"; text: string; block?: "thinking" | "interim" | "final" | "error" }
   | { kind: "step"; entry: ExecutionLogEntry };
 
 /**
@@ -469,6 +470,7 @@ export type RunEvent =
   | { event: "permission-card"; request: PermissionRequest }
   | { event: "question-asked"; request: QuestionRequest }
   | { event: "log-entry"; entry: ExecutionLogEntry }
+  | { event: "cell"; cell: NotebookCell }
   | { event: "live"; live: LiveTurn }
   | { event: "reviewing" }
   | { event: "completed"; state: TurnState; run?: RunRecord };

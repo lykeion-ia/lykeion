@@ -110,7 +110,15 @@ describe("the controls a recorded message carries", () => {
     await screen.findByText("Counted.");
 
     const stream = screen.getByTestId("conv-stream");
-    expect(within(stream).getAllByRole("button", { name: /copy/i })).toHaveLength(2);
+    // The agent's replies carry their own Copy now, so count the researcher's
+    // — these are the recorded-PROMPT controls this test is about.
+    const prompts = [...stream.querySelectorAll<HTMLElement>(".msg--user")];
+    expect(prompts).toHaveLength(2);
+    for (const prompt of prompts) {
+      expect(
+        within(prompt).getByRole("button", { name: /copy/i }),
+      ).toBeInTheDocument();
+    }
     expect(within(stream).getAllByRole("button", { name: /^edit$/i })).toHaveLength(1);
     expect(within(stream).getAllByRole("button", { name: /^revert$/i })).toHaveLength(1);
   });

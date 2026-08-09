@@ -1,4 +1,4 @@
-import type { KernelEnvStatus } from "@lykeion/api";
+import type { KernelEnvStatus, Language } from "@lykeion/api";
 import { ChipIcon } from "../icons";
 import { cn } from "../../lib/utils";
 
@@ -18,17 +18,21 @@ const STATE_META: Record<KernelEnvStatus["state"], StateMeta> = {
   },
 };
 
+function languageLabel(language: Language): string {
+  return language === "r" ? "R" : "Python";
+}
+
 /**
- * The managed Python environment's status card — Lykeion's own uv-provisioned
+ * The managed environment's status card — Lykeion's own uv-provisioned
  * interpreter, shared by the agent and the Notebook. Renders whatever the core
  * reports: `absent` on a fresh install (nothing faked), `ready` with the
- * resolved version + package count once provisioned. The Set-up action itself
- * lands with the Notebook surface (K4); this is the read-only status.
+ * resolved version + package count once provisioned. Read-only: the Set-up
+ * action is the Notebook surface's, not this card's.
  */
 export function KernelEnvCard({ status }: { status: KernelEnvStatus }) {
   const meta = STATE_META[status.state];
   const facts = [
-    status.python ? `Python ${status.python}` : null,
+    status.version ? `${languageLabel(status.language)} ${status.version}` : null,
     status.packageCount != null ? `${status.packageCount} packages` : null,
     status.platform && status.platform !== "unknown" ? status.platform : null,
   ].filter((f): f is string => f !== null);
@@ -41,7 +45,7 @@ export function KernelEnvCard({ status }: { status: KernelEnvStatus }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="text-[13px] font-medium text-fg">
-            Managed Python environment
+            Managed {languageLabel(status.language)} environment
           </span>
           <span
             className={cn(

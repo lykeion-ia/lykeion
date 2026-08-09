@@ -239,7 +239,7 @@ export interface ResolvedStep {
  *  titles already resolved (so the promotion/omission decision below can
  *  never disagree with what renders). */
 export type StreamBlock =
-  { kind: "text"; text: string; block?: "thought" | "interim" | "final" | "error" }
+  { kind: "text"; text: string; block?: "thinking" | "interim" | "final" | "error" }
   | { kind: "steps"; steps: ResolvedStep[] };
 
 /**

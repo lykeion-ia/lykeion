@@ -8,10 +8,9 @@ import type {
   ToolOutputPart,
 } from "@lykeion/api";
 import { isToolKind } from "@lykeion/api";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { connectAcp, type AcpConnection } from "./acp";
 import { confinementFor } from "./agent-home";
+import { daemonProgramPaths } from "./kernels";
 import { boundaryOf, confine, covers, policyFor, type SandboxGrant } from "./sandbox";
 import {
   confirmationOf,
@@ -19,6 +18,7 @@ import {
   readAdvertised,
   type OptionSetter,
 } from "./agent-options";
+import { ensureTmpDir } from "./scratch";
 
 /**
  * How long a stopped turn is given, after `session/cancel` is sent, to
@@ -35,6 +35,22 @@ import {
 const DEFAULT_CANCEL_GRACE_MS = 45_000;
 
 export type StandingGrant = SandboxGrant;
+
+/**
+ * One program this machine names to an agent as a tool server it may reach.
+ *
+ * The agent's own CLI spawns it, inside the same boundary the agent is in,
+ * and speaks the Model Context Protocol to it over its stdio. Everything
+ * that decides WHICH work the program does is in `args` — this machine
+ * writes them, so what an agent reaches through the server is settled here
+ * and not by anything the agent says.
+ */
+export interface McpServer {
+  /** What the agent calls this server's tools by. */
+  name: string;
+  command: string;
+  args: string[];
+}
 
 export interface LiveSession {
   /**
@@ -278,6 +294,10 @@ export async function startSession(options: {
    *  none and this machine's own platform is used. */
   platform?: string;
   grants: StandingGrant[];
+  /** The tool servers this session's agent is told it may reach. Absent is
+   *  the same as none: a session opens either way, and an agent given none is
+   *  told so rather than left to guess whether the list was withheld. */
+  mcpServers?: McpServer[];
   onEvent: (event: RunEvent) => void;
   onGrant: (grant: StandingGrant) => void;
   env?: NodeJS.ProcessEnv;
@@ -305,6 +325,13 @@ export async function startSession(options: {
     workspace: cwd,
     grants: options.grants,
     dataDir: options.dataDir,
+    // This machine's own program, read-only. What an agent starts is confined
+    // by the same profile the agent is, and the tool servers named below are
+    // started by the agent — so a boundary that could not read this would be
+    // one they cannot start inside. Carried whether or not any is named, so
+    // that what a boundary permits is a fact about the machine rather than
+    // about which turn happened to want a kernel.
+    readable: daemonProgramPaths(),
     ...confinementFor(options.agent, cwd),
   });
   const confined = confine(options.platform ?? process.platform, policy, options.adapter);
@@ -314,8 +341,7 @@ export async function startSession(options: {
   // program handed no writable temporary directory at all fails in ways that
   // have nothing to do with what it was asked to do. This one is inside the
   // workspace, which is already the one directory this run may write.
-  const scratch = join(cwd, ".lykeion", "tmp");
-  mkdirSync(scratch, { recursive: true });
+  const scratch = ensureTmpDir(cwd);
   const connection: AcpConnection = await connectAcp(confined.command, confined.args, {
     cwd,
     env: { ...(options.env ?? process.env), TMPDIR: scratch },
@@ -409,7 +435,10 @@ export async function startSession(options: {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
     });
-    const created = await connection.request("session/new", { cwd, mcpServers: [] });
+    const created = await connection.request("session/new", {
+      cwd,
+      mcpServers: options.mcpServers ?? [],
+    });
     sessionId = (created as { sessionId?: string }).sessionId ?? sessionId;
     advertised = readAdvertised(created);
   } catch (err) {

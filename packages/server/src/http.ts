@@ -17,7 +17,10 @@ import type { Store } from "./store/store";
 import { createChannel, type Channel, type Send } from "./channel";
 import { createRunRelay, type RunCommand, type RunRelay } from "./run-relay";
 import { createRevertRegistry, type RevertRegistry } from "./run-revert";
+import { createKernelListRegistry, type KernelListRegistry, type RawKernelReport } from "./kernel-list-registry";
+import { createPendingCells, type PendingCells } from "./kernel-cells";
 import { failDroppedRuns } from "./run-recovery";
+import { readReportedCell, recordCell } from "./store/cells";
 import {
   activeRunIdsForRuntime,
   addGrant,
@@ -28,6 +31,7 @@ import {
   runtimeForTurn,
   runtimeOwnerForTurn,
   sessionForTurn,
+  sessionOwner,
 } from "./store/sessions";
 
 const MAX_BODY = 1024 * 1024;
@@ -98,6 +102,33 @@ function sendJson(res: ServerResponse, status: number, body: unknown, setCookie?
   res.end(JSON.stringify(body));
 }
 
+/** Whether one entry of a `/daemon/kernel/list` report has the shape a
+ *  `kernel.list` answer actually has. Filtered rather than trusted whole,
+ *  the same discipline `/daemon/run/events` holds its frames to: this body
+ *  crossed a process this store did not write. */
+function isRawKernelReport(value: unknown): value is RawKernelReport {
+  if (value === null || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  // Epoch seconds as a whole number, or absent — never a default-valued
+  // present one, and never a fraction or a string masquerading as one.
+  const isEpochSecondsOrAbsent = (field: unknown): boolean =>
+    field === undefined || (typeof field === "number" && Number.isInteger(field));
+  return (
+    typeof v.id === "string" &&
+    typeof v.sessionId === "string" &&
+    typeof v.taskId === "string" &&
+    typeof v.name === "string" &&
+    typeof v.language === "string" &&
+    typeof v.state === "string" &&
+    typeof v.incarnation === "number" &&
+    typeof v.executionCount === "number" &&
+    typeof v.queueDepth === "number" &&
+    typeof v.environment === "string" &&
+    isEpochSecondsOrAbsent(v.startedTs) &&
+    isEpochSecondsOrAbsent(v.lastActivityTs)
+  );
+}
+
 export interface RunningServer {
   port: number;
   close(): Promise<void>;
@@ -118,6 +149,8 @@ export async function startServer(
   // event fan-out belong to the running server, not to any one request.
   const runs = createRunRelay();
   const reverts: RevertRegistry = createRevertRegistry();
+  const kernelLists: KernelListRegistry = createKernelListRegistry();
+  const pendingCells: PendingCells = createPendingCells();
   // Every open `/events` or `/daemon/commands` response, so `close()` can
   // end them itself: a stream nobody tears down keeps its heartbeat alive
   // (harmless — it is `unref`'d) but also keeps `server.close()` waiting on
@@ -135,7 +168,7 @@ export async function startServer(
   const indexHtml = rawIndex.replace("</head>", `${MARKER}</head>`);
 
   const listener = createRequestListener({
-    store, config, secure, indexHtml, now, channel, openStreams, runs, reverts,
+    store, config, secure, indexHtml, now, channel, openStreams, runs, reverts, kernelLists, pendingCells,
   });
   const server = secure
     ? createHttpsServer(
@@ -183,6 +216,12 @@ export function createRequestListener(deps: {
   /** Reverts waiting on the machine holding the files to say whether they
    *  are back, so `/daemon/run/reverted` can settle the one it names. */
   reverts: RevertRegistry;
+  /** `kernel-list` asks waiting on a runtime's own kernel host, so
+   *  `/daemon/kernel/list` can settle the one it names. */
+  kernelLists: KernelListRegistry;
+  /** The REPL cells this lab has asked a machine to run, so `/daemon/cell`
+   *  can recognize the one it is being told about. */
+  pendingCells: PendingCells;
   /** Every open `/events` or `/daemon/commands` response's teardown, so the
    *  server that built this listener can end them from `close()`. */
   openStreams: Set<() => void>;
@@ -190,7 +229,7 @@ export function createRequestListener(deps: {
    *  tiebreaks do the work rather than happening to pass on real time. */
   now?: () => number;
 }): (req: IncomingMessage, res: ServerResponse) => void {
-  const { store, config, secure, indexHtml, channel, openStreams, runs, reverts } = deps;
+  const { store, config, secure, indexHtml, channel, openStreams, runs, reverts, kernelLists, pendingCells } = deps;
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
 
   return (req, res) => {
@@ -488,6 +527,87 @@ export function createRequestListener(deps: {
           });
           return sendJson(res, 200, { ok: true });
         }
+        if (path === "/daemon/kernel/list") {
+          const machine = resolveMachine(store, req.headers.authorization);
+          if (!machine) return sendJson(res, 401, { error: "no such machine" });
+          const requestId = (body as { requestId?: unknown } | null)?.requestId;
+          const rawKernels = (body as { kernels?: unknown } | null)?.kernels;
+          if (typeof requestId !== "string" || !Array.isArray(rawKernels))
+            return sendJson(res, 400, { error: "a requestId and a kernels array are required" });
+          // `requestId` is minted off the same globally-sequential counter
+          // session ids are — exactly as guessable — so the bearer token
+          // above proves only that some paired machine is calling, not that
+          // it is the one this particular ask went to. `settle` itself holds
+          // the binding and refuses a mismatch without touching it, so the
+          // runtime this request actually belongs to can still answer it.
+          if (!kernelLists.settle(machine.runtimeId, requestId, rawKernels.filter(isRawKernelReport)))
+            return sendJson(res, 403, { error: "this machine was not asked for that kernel list" });
+          return sendJson(res, 200, { ok: true });
+        }
+        if (path === "/daemon/cell") {
+          const machine = resolveMachine(store, req.headers.authorization);
+          if (!machine) return sendJson(res, 401, { error: "no such machine" });
+          const b = body as Record<string, unknown> | null;
+          const cellId = b?.cellId;
+          const sessionId = b?.sessionId;
+          const taskId = b?.taskId;
+          // The cell itself, read to the shape this store's own row has
+          // rather than spot-checked: every counter a whole number, every
+          // output a message of a kind this lab knows, and nothing accepted
+          // because it happened to be a `number` or an array of anything.
+          const reported = readReportedCell(b);
+          if (typeof cellId !== "string" || typeof sessionId !== "string" || typeof taskId !== "string" || !reported)
+            return sendJson(res, 400, { error: "a cell needs its full shape" });
+          // A session id is sequential and guessable, the same as a run id —
+          // the bearer token above proves only that some paired machine is
+          // calling, not that it is the one this session actually belongs
+          // to. Without this, any machine in the lab could write a cell into
+          // a colleague's Task's notebook, attributed to a REPL session it
+          // never held.
+          const owner = sessionOwner(store, sessionId);
+          if (!owner || owner.runtimeId !== machine.runtimeId)
+            return sendJson(res, 403, { error: `this machine does not own session ${sessionId}` });
+          // `taskId` is what puts this cell on a Task's own notebook, and
+          // nothing above ties it to the session it claims to have run in —
+          // bound here to the turn that actually opened that session for
+          // that Task, not to a Task's own (movable) `study_id`, the same
+          // discipline `toRunningKernel` holds a `kernel-list` report to.
+          if (!store.get(`SELECT 1 FROM turns WHERE session_id = ? AND task_id = ?`, [sessionId, taskId]))
+            return sendJson(res, 403, { error: `session ${sessionId} has no turn recorded for Task ${taskId}` });
+          // The id and the attribution are the two things a machine cannot
+          // be believed about. This lab minted the id when it asked for the
+          // cell, handed it to the browser waiting on it, and remembered the
+          // member who asked — so both are taken from that record and
+          // neither is read off the report. An id nothing here asked for is
+          // refused: it is either a fabricated row for a notebook every
+          // member of the lab reads, or a second report of a cell already
+          // recorded, which under a PRIMARY KEY would be an insert that
+          // throws rather than a route that answers.
+          const by = pendingCells.claim(machine.runtimeId, cellId);
+          if (by === undefined)
+            return sendJson(res, 403, { error: `this lab did not ask this machine to run cell ${cellId}` });
+          // `ts` is the moment being recorded rather than a field of the
+          // cell, and is the one thing `recordCell` takes as an argument of
+          // its own — so it is taken out here rather than left on the object
+          // beside a parameter that says the same thing.
+          const { ts, ...ran } = reported;
+          recordCell(
+            store,
+            {
+              ...ran,
+              id: cellId,
+              taskId,
+              sessionId,
+              // The surface is settled by the route rather than by the
+              // report: a cell arriving here is the answer to a
+              // `kernel-execute` this lab sent, and an agent's own cells
+              // travel their run's event stream instead.
+              origin: { surface: "repl", by },
+            },
+            ts,
+          );
+          return sendJson(res, 200, { ok: true });
+        }
 
         // Nobody is signed in on this surface — a daemon authenticates with
         // a machine token, never a session cookie — so a change one of
@@ -527,7 +647,7 @@ export function createRequestListener(deps: {
         // module is handed, so whatever any of them records is in the queue
         // the `flush` below drains.
         const changes = changeRecorder({ store, actorId: actor.userId, now, channel });
-        const api = createWorkspaceApi({ store, actor, now, config, channel, changes, runs, reverts });
+        const api = createWorkspaceApi({ store, actor, now, config, channel, changes, runs, reverts, kernelLists, pendingCells });
         const method = path.slice("/rpc/".length);
         if (!rpcMethods(api).has(method)) return sendJson(res, 404, { error: `no such method: ${method}` });
         try {

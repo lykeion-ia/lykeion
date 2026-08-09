@@ -1,40 +1,92 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   KernelEnvStatus,
   KernelMessage,
   Language,
   NotebookCell,
-  NotebookStatus,
+  RunningKernel,
 } from "@lykeion/api";
 import { useApi } from "../../api/ApiContext";
 import { CodeBlock } from "./CodeBlock";
 import { CloseIcon, NotebookIcon } from "../icons";
 
-/** How often the strip re-reads kernel status + the document while open. */
+/** How often the strip re-reads kernels + the notebook document while open. */
 const POLL_MS = 1500;
 
 /**
- * The right-rail Notebook tab: a live REPL onto the Study's shared Python
- * kernel — the *same* namespace the agent's `run_python` calls run in — plus the
- * accumulated cell log (agent + researcher, interleaved) and a live-kernel strip.
+ * One name shared by every kernel and cell that ran under it — the grouping
+ * axis a researcher actually thinks in: `"main"` for a session's own work, or
+ * a delegated subagent's own name.
+ */
+interface Context {
+  name: string;
+  kernels: RunningKernel[];
+  cells: NotebookCell[];
+}
+
+function buildContexts(kernels: RunningKernel[], cells: NotebookCell[]): Context[] {
+  const names = new Set<string>();
+  for (const k of kernels) names.add(k.name);
+  for (const c of cells) names.add(c.name);
+  return [...names]
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => ({
+      name,
+      kernels: kernels.filter((k) => k.name === name),
+      cells: cells.filter((c) => c.name === name),
+    }));
+}
+
+/** The kernel a context's tab and strip speak for. A context ordinarily holds
+ *  one; when it holds more (one per language a session writes), the
+ *  languages sort first and `id` breaks any tie, so the pick is stable
+ *  across polls regardless of the order `listRunningKernels` answers in. */
+function primaryKernel(ctx: Context): RunningKernel | undefined {
+  return [...ctx.kernels].sort(
+    (a, b) => a.language.localeCompare(b.language) || a.id.localeCompare(b.id),
+  )[0];
+}
+
+/** The one session every kernel in this context belongs to, or `undefined`
+ *  when they don't agree — `taskNotebook` and `listRunningKernels` group by
+ *  `name` alone, so a context can span more than one session, and naming
+ *  just one of them as "the" session would be a claim the data doesn't back. */
+function sharedSessionId(kernels: RunningKernel[]): string | undefined {
+  const ids = new Set(kernels.map((k) => k.sessionId));
+  return ids.size === 1 ? kernels[0].sessionId : undefined;
+}
+
+function languageLabel(language: Language): string {
+  return language === "r" ? "R" : "Python";
+}
+
+/**
+ * The right-rail Notebook tab: every cell this Task's sessions have run,
+ * grouped into sub-tabs by the context (kernel identity `name`) that ran it,
+ * with a strip naming the selected context's kernel, a footer counting
+ * what's on screen, and a REPL that runs a cell on that same kernel — the
+ * *same* namespace the agent's own tool calls run in.
  *
- * The kernel is Study-scoped, so every Task in a Study opens onto one kernel;
- * that is why the strip says "shared with the agent" rather than naming a
- * session. Until the managed env is provisioned the panel shows a Setup state
- * (nothing faked — the honest first-install surface).
+ * The managed environment is a separate surface, offered above the cells
+ * while the core reports it unprovisioned and never in front of them: a cell
+ * is a record of work that already ran, on a kernel the machine started out
+ * of whatever interpreter it has, and none of it waits on an environment
+ * this lab has yet to provision.
  */
 export function NotebookPanel({
-  studyId,
+  taskId,
   onClose,
 }: {
-  studyId: string;
+  taskId: string;
   onClose?: () => void;
 }) {
   const api = useApi();
-  const [status, setStatus] = useState<NotebookStatus | null>(null);
   const [cells, setCells] = useState<NotebookCell[]>([]);
+  const [kernels, setKernels] = useState<RunningKernel[]>([]);
+  const [envStatus, setEnvStatus] = useState<KernelEnvStatus | null>(null);
   const [envs, setEnvs] = useState<KernelEnvStatus[]>([]);
   const [activeEnv, setActiveEnv] = useState<string | null>(null);
+  const [activeName, setActiveName] = useState<string | null>(null);
   const [repl, setRepl] = useState("");
   const [replBusy, setReplBusy] = useState(false);
   const [replError, setReplError] = useState<string | null>(null);
@@ -42,27 +94,30 @@ export function NotebookPanel({
   const [setupError, setSetupError] = useState<string | null>(null);
   const [setupLog, setSetupLog] = useState<string[]>([]);
 
-  // The active env sub-tab selects the execution language. Fresh install (no
-  // envs yet, activeEnv null) falls through to "python" so onboarding still
-  // works — no-mock-data means only a real "r" env (from kernelEnvList) ever
-  // produces an "r" tab, never an invented one.
-  const language: Language = activeEnv === "r" ? "r" : "python";
-
-  const refreshStatus = useCallback(async () => {
+  const refreshCells = useCallback(async () => {
     try {
-      setStatus(await api.kernelStatus(studyId, language));
+      setCells(await api.taskNotebook(taskId));
     } catch {
       /* transient — the next poll retries */
     }
-  }, [api, studyId, language]);
+  }, [api, taskId]);
 
-  const refreshDoc = useCallback(async () => {
+  const refreshKernels = useCallback(async () => {
     try {
-      setCells(await api.kernelDocument(studyId));
+      const all = await api.listRunningKernels();
+      setKernels(all.filter((k) => k.taskId === taskId));
     } catch {
-      /* transient */
+      /* transient — the next poll retries */
     }
-  }, [api, studyId]);
+  }, [api, taskId]);
+
+  const refreshEnvStatus = useCallback(async () => {
+    try {
+      setEnvStatus(await api.kernelEnvStatus());
+    } catch {
+      /* transient — the next poll retries */
+    }
+  }, [api]);
 
   const refreshEnvs = useCallback(async () => {
     try {
@@ -78,41 +133,34 @@ export function NotebookPanel({
     }
   }, [api]);
 
-  // Poll status + reload the document while the panel is mounted, so the
-  // agent's cells appear as they run and the strip tracks busy/idle live.
+  // Poll the document, the running kernels, the env status and the env list
+  // while the panel is mounted, so the agent's cells appear as they run.
   useEffect(() => {
     let alive = true;
-    void refreshStatus();
-    void refreshDoc();
+    void refreshCells();
+    void refreshKernels();
+    void refreshEnvStatus();
     void refreshEnvs();
     const t = setInterval(() => {
       if (!alive) return;
-      void refreshStatus();
-      void refreshDoc();
+      void refreshCells();
+      void refreshKernels();
+      void refreshEnvStatus();
       void refreshEnvs();
     }, POLL_MS);
     return () => {
       alive = false;
       clearInterval(t);
     };
-  }, [refreshStatus, refreshDoc, refreshEnvs]);
+  }, [refreshCells, refreshKernels, refreshEnvStatus, refreshEnvs]);
 
-  const runCell = useCallback(async () => {
-    const code = repl.trim();
-    if (!code || replBusy) return;
-    setReplBusy(true);
-    setReplError(null);
-    try {
-      await api.kernelExecute(studyId, code, language);
-      setRepl("");
-      await refreshDoc();
-      await refreshStatus();
-    } catch (e) {
-      setReplError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setReplBusy(false);
-    }
-  }, [api, studyId, repl, replBusy, refreshDoc, refreshStatus, language]);
+  const contexts = useMemo(() => buildContexts(kernels, cells), [kernels, cells]);
+
+  useEffect(() => {
+    setActiveName((cur) =>
+      cur && contexts.some((c) => c.name === cur) ? cur : (contexts[0]?.name ?? null),
+    );
+  }, [contexts]);
 
   const runSetup = useCallback(async () => {
     setSetupBusy(true);
@@ -125,22 +173,53 @@ export function NotebookPanel({
       await api.kernelEnvSetup(activeEnv ?? undefined, (line) =>
         setSetupLog((l) => [...l.slice(-200), line]),
       );
-      await refreshStatus();
+      await refreshEnvs();
+      await refreshEnvStatus();
     } catch (e) {
       setSetupError(e instanceof Error ? e.message : String(e));
     } finally {
       setSetupBusy(false);
     }
-  }, [api, activeEnv, refreshStatus]);
+  }, [api, activeEnv, refreshEnvs, refreshEnvStatus]);
+
+  // Whether the managed environment has still to be provisioned. It decides
+  // whether the Setup surface is offered and nothing else: the cells, their
+  // tabs, the kernel strip and the REPL all describe kernels a machine is
+  // already holding, and gating them on this would hide every one of them
+  // behind a button that provisions an environment none of them is in.
+  const needsSetup = envStatus !== null && envStatus.state !== "ready";
+
+  const selectedContext = contexts.find((c) => c.name === activeName) ?? null;
+  const selectedKernel = selectedContext ? primaryKernel(selectedContext) : undefined;
+  const cellsToShow = selectedContext?.cells ?? [];
+
+  const runCell = useCallback(async () => {
+    const code = repl.trim();
+    if (!code || replBusy || !selectedKernel) return;
+    setReplBusy(true);
+    setReplError(null);
+    try {
+      // Returns only the id the cell will be recorded under — the executed
+      // cell itself arrives on the next `taskNotebook` poll, the same way an
+      // agent's does.
+      await api.kernelExecute(selectedKernel.id, code);
+      setRepl("");
+    } catch (e) {
+      setReplError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReplBusy(false);
+    }
+  }, [api, repl, replBusy, selectedKernel]);
 
   const restart = useCallback(async () => {
+    if (!selectedKernel) return;
     try {
-      setStatus(await api.kernelRestart(studyId, language));
-      await refreshDoc();
+      await api.kernelRestart(selectedKernel.id);
+      await refreshKernels();
     } catch (e) {
       setReplError(e instanceof Error ? e.message : String(e));
     }
-  }, [api, studyId, refreshDoc, language]);
+  }, [api, selectedKernel, refreshKernels]);
 
   const onReplKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -148,8 +227,6 @@ export function NotebookPanel({
       void runCell();
     }
   };
-
-  const needsSetup = status !== null && !status.envReady;
 
   return (
     <section className="notebook-panel" data-testid="notebook-panel">
@@ -191,60 +268,87 @@ export function NotebookPanel({
         ))}
       </div>
 
-      {needsSetup ? (
+      {needsSetup && (
         <SetupState
           busy={setupBusy}
           error={setupError}
           log={setupLog}
           onSetup={runSetup}
         />
-      ) : (
-        <>
-          <div className="nbp-cells" data-testid="notebook-cells">
-            {cells.length === 0 ? (
-              <p className="nbp-empty">
-                No cells yet. Run one below, or ask the agent to run Python —
-                both land in this one shared namespace.
-              </p>
-            ) : (
-              cells.map((cell, i) => <CellView key={i} cell={cell} />)
-            )}
-          </div>
-
-          <KernelStrip status={status} onRestart={restart} />
-
-          <div className="nbp-repl">
-            <p className="nbp-greeting">
-              Connected to the agent's live kernel — variables and state are
-              shared.
-            </p>
-            {replError && <p className="nbp-repl-error">{replError}</p>}
-            <div className="nbp-prompt">
-              <span className="nbp-caret" aria-hidden="true">
-                &gt;&gt;&gt;
-              </span>
-              <textarea
-                className="nbp-input"
-                rows={2}
-                aria-label={`Run ${language === "r" ? "R" : "Python"} on the shared kernel`}
-                placeholder="df.shape"
-                value={repl}
-                disabled={replBusy}
-                onChange={(e) => setRepl(e.target.value)}
-                onKeyDown={onReplKey}
-              />
-              <button
-                type="button"
-                className="nbp-run"
-                onClick={() => void runCell()}
-                disabled={replBusy || repl.trim().length === 0}
-              >
-                {replBusy ? "Running…" : "Run"}
-              </button>
-            </div>
-          </div>
-        </>
       )}
+
+      <div className="nbp-ctxtabs" role="tablist" aria-label="Kernel context">
+        {contexts.map((ctx) => (
+          <ContextTab
+            key={ctx.name}
+            ctx={ctx}
+            active={ctx.name === activeName}
+            onSelect={() => setActiveName(ctx.name)}
+          />
+        ))}
+      </div>
+
+      <div className="nbp-cells" data-testid="notebook-cells">
+        {cellsToShow.length === 0 ? (
+          <p className="nbp-empty">
+            No cells yet. Ask the agent to run code, or wait for this context's
+            kernel to start one — each context keeps its own namespace.
+          </p>
+        ) : (
+          cellsToShow.map((cell) => <CellView key={cell.id} cell={cell} />)
+        )}
+      </div>
+
+      {selectedKernel && (
+        <KernelStrip
+          kernel={selectedKernel}
+          session={sharedSessionId(selectedContext?.kernels ?? [])}
+          onRestart={() => void restart()}
+        />
+      )}
+
+      {selectedContext && (
+        <div className="nbp-footer" data-testid="notebook-footer">
+          {selectedContext.name} ·{" "}
+          {selectedContext.cells.length === 1
+            ? "1 cell"
+            : `${selectedContext.cells.length} cells`}
+        </div>
+      )}
+
+      <div className="nbp-repl">
+        <p className="nbp-greeting">
+          Connected to the agent's live kernel — variables and state are shared.
+        </p>
+        {replError && <p className="nbp-repl-error">{replError}</p>}
+        <div className="nbp-prompt">
+          <span className="nbp-caret" aria-hidden="true">
+            &gt;&gt;&gt;
+          </span>
+          <textarea
+            className="nbp-input"
+            rows={2}
+            aria-label={
+              selectedKernel
+                ? `Run ${languageLabel(selectedKernel.language)} on this kernel`
+                : "Run code on this kernel"
+            }
+            placeholder="df.shape"
+            value={repl}
+            disabled={replBusy}
+            onChange={(e) => setRepl(e.target.value)}
+            onKeyDown={onReplKey}
+          />
+          <button
+            type="button"
+            className="nbp-run"
+            onClick={() => void runCell()}
+            disabled={replBusy || repl.trim().length === 0 || !selectedKernel}
+          >
+            {replBusy ? "Running…" : "Run"}
+          </button>
+        </div>
+      </div>
     </section>
   );
 }
@@ -283,32 +387,68 @@ function SetupState({
   );
 }
 
-/** The live-kernel strip: an activity meter · shared-kernel label · counter ·
- *  Restart. The meter sweeps while the kernel is `busy` and rests otherwise —
- *  the live-activity indicator. */
+/** One context sub-tab: a state dot for its kernel, its session + name, and
+ *  a language chip row when it holds more than one kernel. */
+function ContextTab({
+  ctx,
+  active,
+  onSelect,
+}: {
+  ctx: Context;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  const kernel = primaryKernel(ctx);
+  const session = sharedSessionId(ctx.kernels);
+  const label = session ? `${session} · ${ctx.name}` : ctx.name;
+  const languages = [...new Set(ctx.kernels.map((k) => k.language))].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  return (
+    <button
+      type="button"
+      className={`nbp-ctxtab${active ? " is-active" : ""}`}
+      role="tab"
+      aria-selected={active}
+      onClick={onSelect}
+    >
+      {kernel && (
+        <span
+          className={`nbp-ctxtab-dot nbp-ctxtab-dot--${kernel.state}`}
+          aria-hidden="true"
+        />
+      )}
+      <span className="nbp-ctxtab-label">{label}</span>
+      {ctx.kernels.length > 1 && (
+        <span className="nbp-ctxtab-langs">
+          {languages.map((l) => (
+            <span key={l} className="nbp-ctxtab-lang">
+              {l}
+            </span>
+          ))}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** The live-kernel strip: which kernel the selected context's cells belong
+ *  to — its language, its session (when every kernel in the context shares
+ *  one), where it stands, and Restart. */
 function KernelStrip({
-  status,
+  kernel,
+  session,
   onRestart,
 }: {
-  status: NotebookStatus | null;
+  kernel: RunningKernel;
+  session?: string;
   onRestart: () => void;
 }) {
-  const state = status?.launched ? status.state : "idle";
-  const count = status?.executionCount ?? 0;
   return (
     <div className="nbp-strip" data-testid="notebook-strip">
-      <span
-        className={`nbp-meter nbp-meter--${state}`}
-        data-testid="notebook-meter"
-        aria-hidden="true"
-      >
-        <span className="nbp-meter-fill" />
-      </span>
-      <span className="nbp-strip-label">
-        Python kernel · shared with the agent
-      </span>
-      <span className="nbp-strip-state">{state}</span>
-      <span className="nbp-strip-count">In [{count}]</span>
+      <span className="nbp-strip-lang">{languageLabel(kernel.language)} kernel</span>
+      {session && <span className="nbp-strip-session">{session}</span>}
+      <span className="nbp-strip-state">{kernel.state}</span>
       <button
         type="button"
         className="nbp-restart"
@@ -326,22 +466,21 @@ function CellView({ cell }: { cell: NotebookCell }) {
   const label = cell.executionCount > 0 ? cell.executionCount : " ";
   return (
     <div
-      className={`nbp-cell nbp-cell--${cell.surface}${cell.ok ? "" : " nbp-cell--err"}`}
+      className={`nbp-cell nbp-cell--${cell.origin.surface}${cell.ok ? "" : " nbp-cell--err"}`}
     >
       <div className="nbp-cell-head">
         <span className="nbp-gutter" aria-hidden="true">
           In [{label}]
         </span>
         <span className="nbp-cell-by">
-          {cell.surface === "agent" ? "agent" : "you"}
+          {cell.origin.surface === "agent" ? "agent" : "you"}
         </span>
       </div>
-      {/* The cell's OWN language — the document is mixed (a Study can run a
-          Python and an R kernel side by side), so hardcoding one highlighter
-          rendered R cells with Python's tokenizer. */}
+      {/* The cell's OWN language — a context can itself run Python and R
+          side by side, so each cell highlights under its own grammar. */}
       <CodeBlock code={cell.source} lang={cell.language} />
       {cell.outputs.length > 0 && (
-        <details className="nbp-output-wrap" open>
+        <details className="nbp-output-wrap">
           <summary className="nbp-output-summary">output</summary>
           <div className="nbp-outputs">
             {cell.outputs.map((out, i) => (
@@ -354,6 +493,16 @@ function CellView({ cell }: { cell: NotebookCell }) {
   );
 }
 
+/** One `Record` of a kernel message's payload, or nothing when the message
+ *  carries none. Every one of these crossed a machine this browser did not
+ *  write and a store that keeps them as opaque JSON, so a message naming a
+ *  kind this build does not know reaches here with no payload at all —
+ *  indexing that would throw during render and take the whole Task screen
+ *  down for everyone looking at it, over one cell's output. */
+function payload(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
 /** Render one kernel message the way a notebook does: text mono, errors red, a
  *  figure inline, a spilled payload as a path note. */
 function OutputView({ out }: { out: KernelMessage }) {
@@ -361,7 +510,7 @@ function OutputView({ out }: { out: KernelMessage }) {
     return <pre className="nbp-out nbp-stream">{out.text}</pre>;
   }
   if (out.kind === "error") {
-    const tb = out.traceback.join("\n");
+    const tb = Array.isArray(out.traceback) ? out.traceback.join("\n") : "";
     return (
       <pre className="nbp-out nbp-error">
         {tb || `${out.ename}: ${out.evalue}`}
@@ -369,7 +518,7 @@ function OutputView({ out }: { out: KernelMessage }) {
     );
   }
   // execute_result / display_data: image first, then text/plain, then spills.
-  const data = out.data as Record<string, unknown>;
+  const data = payload(out.data);
   const png = data["image/png"];
   if (typeof png === "string") {
     const b64 = png.replace(/\s+/g, "");
@@ -383,8 +532,8 @@ function OutputView({ out }: { out: KernelMessage }) {
   if (typeof text === "string") {
     return <pre className="nbp-out nbp-result">{text}</pre>;
   }
-  const refs = out.data_ref as Record<string, unknown>;
-  const refKeys = Object.keys(refs ?? {});
+  const refs = payload(out.data_ref);
+  const refKeys = Object.keys(refs);
   if (refKeys.length > 0) {
     return (
       <pre className="nbp-out nbp-result">

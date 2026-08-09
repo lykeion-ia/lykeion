@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -35,15 +43,25 @@ function fresh(): string {
 
 /** Runs one shell word-for-word inside the boundary and answers with what
  *  the kernel let it do. `/bin/sh -c` is the subject here, not a way of
- *  building a command line: nothing outside this file reaches a shell. */
+ *  building a command line: nothing outside this file reaches a shell.
+ *
+ *  The script is one argument the boundary cannot resolve to a file, which is
+ *  what keeps the probe honest: a path named directly in an argument array is
+ *  readable because the program being spawned is readable, so a run reading a
+ *  file it was handed as an argument says nothing about what the policy
+ *  allowed.
+ *
+ *  Everything but the workspace stands empty unless a test names it, so each
+ *  one declares the part of the boundary it is about and nothing else. */
 function inside(
-  policy: Omit<SandboxPolicy, "home"> & { home?: SandboxPolicy["home"] },
+  policy: { workspace: string } & Partial<Omit<SandboxPolicy, "workspace">>,
   script: string,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const confined = confine("darwin", { home: NO_AGENT_HOME, ...policy }, {
-    command: "/bin/sh",
-    args: ["-c", script],
-  });
+  const confined = confine(
+    "darwin",
+    { grants: [], denied: [], readable: [], home: NO_AGENT_HOME, ...policy },
+    { command: "/bin/sh", args: ["-c", script] },
+  );
   return new Promise((resolve) => {
     const child = spawn(confined.command, confined.args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -125,6 +143,7 @@ onDarwin("the boundary the kernel actually enforces", () => {
       workspace,
       grants: [{ path: granted, mode: "write" }],
       denied: [secrets],
+      readable: [],
       home: NO_AGENT_HOME,
     };
 
@@ -164,6 +183,7 @@ onDarwin("the boundary the kernel actually enforces", () => {
       workspace,
       grants: [{ path: granted, mode: "read" }],
       denied: [],
+      readable: [],
       home: NO_AGENT_HOME,
     };
     const read = await inside(policy, `cat ${granted}/paper.md`);
@@ -186,6 +206,7 @@ onDarwin("the snapshot is out of the agent's reach", () => {
       workspace: canonicalPath(task),
       grants: [],
       denied: [],
+      readable: [],
       home: NO_AGENT_HOME,
     };
     const overwrite = await inside(policy, `echo tampered > ${snapshot}/counts.csv`);
@@ -458,5 +479,46 @@ onDarwin("what a run needs in order to be a run", () => {
     const wrote = await inside(policy, `echo REPLACED > ${store}/token`);
     expect(wrote.code).not.toBe(0);
     expect(readFileSync(join(store, "token"), "utf8")).not.toContain("REPLACED");
+  });
+});
+
+/**
+ * A boundary drawn for something that is not an agent. It owns no installation
+ * and authenticates from nothing, and what it needs instead is an environment
+ * it can be run out of and cannot alter.
+ */
+onDarwin("a boundary around something that declared no home", () => {
+  it("lets a run read the environment it was given and refuses to write it", async () => {
+    const env = fresh();
+    writeFileSync(join(env, "sitecustomize.py"), "print('ok')\n");
+    const workspace = fresh();
+
+    const read = await inside({ workspace, readable: [env] }, `cat ${env}/sitecustomize.py`);
+    expect(read.stdout).toContain("print('ok')");
+    expect(read.code).toBe(0);
+
+    // A cell that could write here would leave code the next launch executes.
+    const wrote = await inside({ workspace, readable: [env] }, `touch ${env}/evil.py`);
+    expect(wrote.code).not.toBe(0);
+    expect(existsSync(join(env, "evil.py"))).toBe(false);
+  });
+
+  it("keeps a credential store denied inside an environment it may otherwise read", async () => {
+    // What decides is the last rule the kernel reads, so a readable environment
+    // rendered after the denies would hand over every key beneath it.
+    const env = fresh();
+    writeFileSync(join(env, "pyvenv.cfg"), "version = 3.13\n");
+    mkdirSync(join(env, ".netrc"), { recursive: true });
+    writeFileSync(join(env, ".netrc", "creds"), "AN ENVIRONMENTS STOWAWAY KEY\n");
+    const workspace = fresh();
+
+    const policy = { workspace, readable: [env] };
+    const ordinary = await inside(policy, `cat ${env}/pyvenv.cfg`);
+    expect(ordinary.stdout).toContain("version = 3.13");
+    expect(ordinary.code).toBe(0);
+
+    const key = await inside(policy, `cat ${env}/.netrc/creds`);
+    expect(key.stdout).not.toContain("AN ENVIRONMENTS STOWAWAY KEY");
+    expect(key.code).not.toBe(0);
   });
 });

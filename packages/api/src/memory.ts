@@ -13,7 +13,6 @@ import type {
   PairMachineInput,
   TaskPatch,
 } from "./api";
-import type { Language } from "./runtime";
 import type {
   Assignee,
   Study,
@@ -1452,6 +1451,7 @@ export function createInMemoryLab(
       return {
         state: "absent" as const,
         name: "python",
+        language: "python" as const,
         manager: "uv" as const,
         platform: "unknown",
         root: "",
@@ -1470,52 +1470,36 @@ export function createInMemoryLab(
       return {
         state: "absent" as const,
         name: name ?? "python",
+        // The contract names `"r"` as the R toolchain's env; every other
+        // name is the Python one this core defaults to.
+        language: name === "r" ? ("r" as const) : ("python" as const),
         manager: "uv" as const,
         platform: "unknown",
         root: "",
       };
     },
-    async kernelStatus(_studyId: string, _language: Language = "python") {
-      // No live kernel in the browser core — the Notebook shows Setup. Honest
-      // for both languages: Python is never ready here (no filesystem/`uv` to
-      // provision it), and R is never ready without an actual R env being
-      // provisioned — no mock data, no faked readiness.
-      return {
-        envReady: false,
-        launched: false,
-        state: "idle" as const,
-        executionCount: 0,
-      };
-    },
-    async kernelDocument() {
+    async listRunningKernels() {
+      // No machine behind a browser core, so nothing is holding a kernel.
+      // An empty list, not a refusal: "none running" is a real answer.
       return [];
     },
-    async kernelExecute(
-      _studyId: string,
-      _code: string,
-      language: Language = "python",
-    ) {
-      if (language === "r") {
-        throw new LykeionError(
-          "unsupported",
-          "the R environment is not provisioned — the R kernel isn't available in the browser",
-        );
-      }
+    async taskNotebook(_taskId: string) {
+      return [];
+    },
+    async kernelExecute(_kernelId: string, _code: string): Promise<{ cellId: string }> {
       throw new LykeionError(
         "unsupported",
-        "the managed Python kernel isn't available in the browser",
+        "the managed kernel isn't available in the browser",
       );
     },
-    async kernelInterrupt(_studyId: string, _language?: Language) {
-      // Nothing to interrupt without a kernel, in either language.
+    async kernelInterrupt(_kernelId: string) {
+      // Nothing to interrupt without a kernel.
     },
-    async kernelRestart(_studyId: string, _language: Language = "python") {
-      return {
-        envReady: false,
-        launched: false,
-        state: "idle" as const,
-        executionCount: 0,
-      };
+    async kernelRestart(_kernelId: string) {
+      throw new LykeionError(
+        "unsupported",
+        "the managed kernel isn't available in the browser",
+      );
     },
     async listAgentClis() {
       // The browser core can't probe the machine or handshake an ACP

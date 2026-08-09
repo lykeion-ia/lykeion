@@ -19,19 +19,17 @@ const NO_RUNTIME =
  * `settingsApi` own those — and so are the customization-engine and
  * research-group methods, which `configSurfaceApi` owns, and so are pairing
  * and the runtime list, which `runtimesApi` owns, and so are `startRun`,
- * `submitRunDecision` and `runHistory`, which `sessionsApi` owns. The
- * conversation methods are the ones in that neighbourhood answered here:
- * nothing yet stores a thread or a message.
+ * `submitRunDecision` and `runHistory`, which `sessionsApi` owns, and so are
+ * the kernel and notebook methods, which `kernelsApi` owns. The conversation
+ * methods are the ones in that neighbourhood answered here: nothing yet
+ * stores a thread or a message.
  *
  * A list method has nothing to list, so it answers honestly with `[]`
  * rather than inventing content. A method addressed by an id has nothing to
  * find, so it answers `not-found`, naming the id it was asked for. A
  * method that would create
  * or persist something has no writer behind it yet, so it answers
- * `unsupported`, naming what is missing. The kernel and run methods need an
- * actual machine to do their work, which nothing about this server can
- * supply on its own — those answer `unsupported` too, naming what a person
- * would have to do about it.
+ * `unsupported`, naming what is missing.
  */
 export function absentApi(
   _deps: Deps,
@@ -51,6 +49,7 @@ export function absentApi(
   | "listResearchGroups" | "createResearchGroup"
   | "listRuntimes" | "listAgentClis" | "pairMachine" | "removeRuntime"
   | "startRun" | "submitRunDecision" | "runHistory" | "revertTurn"
+  | "listRunningKernels" | "taskNotebook" | "kernelExecute" | "kernelInterrupt" | "kernelRestart"
 > {
   return {
     async listConversations() {
@@ -85,6 +84,7 @@ export function absentApi(
       return {
         state: "absent",
         name: "python",
+        language: "python",
         manager: "uv",
         platform: `${process.platform}-${process.arch}`,
         root: "",
@@ -94,28 +94,6 @@ export function absentApi(
       return [];
     },
     async kernelEnvSetup(_name, _onProgress) {
-      throw new LykeionError("unsupported", NO_RUNTIME);
-    },
-    async kernelStatus(_studyId, _language) {
-      return {
-        envReady: false,
-        launched: false,
-        state: "idle",
-        executionCount: 0,
-      };
-    },
-    async kernelDocument(_studyId) {
-      return [];
-    },
-    async kernelExecute(_studyId, _code, _language) {
-      throw new LykeionError("unsupported", NO_RUNTIME);
-    },
-    async kernelInterrupt(_studyId, _language) {
-      // The contract calls this a no-op when nothing is running, and with no
-      // runtime connected nothing ever is. Refusing would make a Stop
-      // control that is harmless everywhere else raise here.
-    },
-    async kernelRestart(_studyId, _language) {
       throw new LykeionError("unsupported", NO_RUNTIME);
     },
 

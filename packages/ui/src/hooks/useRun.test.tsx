@@ -489,7 +489,7 @@ it("preserves repeated identical text blocks when a terminal record lags the str
   );
 });
 
-it("keeps thought, interim, tool, final, and turn error blocks in one run", async () => {
+it("keeps thinking, interim, tool, final, and turn error blocks in one run", async () => {
   const user = userEvent.setup();
   const { api, emit } = drivenApi();
   render(<Harness api={api} />);
@@ -502,11 +502,11 @@ it("keeps thought, interim, tool, final, and turn error blocks in one run", asyn
     emit({ event: "assistant-text", text: "Fallback result.", partial: true });
     emit({ event: "assistant-text-final" });
   });
-  expect(screen.getByTestId("block-stream")).toHaveTextContent("thought|interim|tool|final");
+  expect(screen.getByTestId("block-stream")).toHaveTextContent("thinking|interim|tool|final");
   await act(async () => {
     emit({ event: "completed", state: { state: "failed", reason: "review failed" } });
   });
-  expect(screen.getByTestId("block-stream")).toHaveTextContent("thought|interim|tool|final|error");
+  expect(screen.getByTestId("block-stream")).toHaveTextContent("thinking|interim|tool|final|error");
   expect(screen.getByTestId("state")).toHaveTextContent("failed");
 });
 

@@ -3,8 +3,10 @@ import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunEvent } from "@lykeion/api";
+import type { RunEvent, TurnState } from "@lykeion/api";
 import { backoffDelayMs } from "./lab";
+import type { KernelHost } from "./kernel-host";
+import { PROTOCOL_VERSION } from "./kernel-protocol";
 import { startRuns, type RunSubsystem } from "./runs";
 
 const STUB = join(import.meta.dirname, "test-support", "stub-acp-agent.ts");
@@ -23,6 +25,7 @@ afterEach(async () => {
   delete process.env.LYKEION_STUB_EXIT_MARKER;
   delete process.env.LYKEION_STUB_EXIT_DELAY_MS;
   delete process.env.LYKEION_STUB_SESSION_NEW_MARKER;
+  delete process.env.LYKEION_STUB_SESSION_NEW_PARAMS;
   delete process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS;
   delete process.env.LYKEION_STUB_PROMPT_MARKER;
 });
@@ -31,6 +34,8 @@ afterEach(async () => {
 async function stubLab(commands: unknown[]) {
   const events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }> = [];
   const live: string[][] = [];
+  const cells: Record<string, unknown>[] = [];
+  const kernelListReplies: Array<{ requestId: string; kernels: unknown[] }> = [];
   let commandStream: import("node:http").ServerResponse | undefined;
   let seq = 0;
   const server = createServer((req, res) => {
@@ -50,6 +55,9 @@ async function stubLab(commands: unknown[]) {
       if (req.url === "/daemon/run/events")
         events.push(parsed as unknown as { runId: string; frames: never[] });
       if (req.url === "/daemon/run/live") live.push(parsed.runIds as string[]);
+      if (req.url === "/daemon/cell") cells.push(parsed);
+      if (req.url === "/daemon/kernel/list")
+        kernelListReplies.push(parsed as { requestId: string; kernels: unknown[] });
       res.writeHead(200, { "content-type": "application/json" });
       res.end("{}");
     });
@@ -65,6 +73,8 @@ async function stubLab(commands: unknown[]) {
     base: `http://127.0.0.1:${port}`,
     events,
     live,
+    cells,
+    kernelListReplies,
     commandConnected(): boolean {
       return commandStream !== undefined;
     },
@@ -87,7 +97,12 @@ function markerIn(dataDir: string, name: string): string {
   return join(taskDir, name);
 }
 
-function subsystem(base: string, dataDir: string) {
+function subsystem(
+  base: string,
+  dataDir: string,
+  kernelHost?: () => KernelHost,
+  kernelReachMs?: number,
+) {
   const r = startRuns({
     lab: base,
     token: "machine-token",
@@ -97,6 +112,8 @@ function subsystem(base: string, dataDir: string) {
       command: process.execPath,
       args: ["--experimental-strip-types", STUB],
     }),
+    ...(kernelHost === undefined ? {} : { kernelHost }),
+    ...(kernelReachMs === undefined ? {} : { kernelReachMs }),
   });
   running.push(r);
   return r;
@@ -109,6 +126,275 @@ async function until(check: () => boolean, what: string): Promise<void> {
   }
   throw new Error(`${what} never happened`);
 }
+
+/** Every `ahead` a run's `queued` frames have carried, in the order they were
+ *  published. */
+function queuedPositions(
+  lab: { events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }> },
+  runId: string,
+): number[] {
+  return lab.events
+    .filter((post) => post.runId === runId)
+    .flatMap((post) => post.frames)
+    .map((frame) => frame.event)
+    .filter((event): event is Extract<RunEvent, { event: "state" }> => event.event === "state")
+    .map((event) => event.state)
+    .filter((state): state is Extract<TurnState, { state: "queued" }> => state.state === "queued")
+    .map((state) => state.ahead);
+}
+
+/** A kernel host that answers, and says in what order it was asked.
+ *
+ *  `configuring` holds the boundary's reply open for as long as a test wants,
+ *  which is what makes "before" and "after" observable at all: a machine that
+ *  did not wait for it would have opened its session while this was still
+ *  unanswered. */
+function stubKernelHost(configuring: number, protocol: unknown = PROTOCOL_VERSION) {
+  const asked: string[] = [];
+  const answering: { configured?: { token?: string } } = {};
+  const cellListeners: Array<(params: unknown) => void> = [];
+  const host: KernelHost = {
+    call: async (method, params) => {
+      asked.push(method);
+      if (method === "host.hello") return { protocol, environment: "python", reads: [] };
+      if (method === "kernel.configure_session") {
+        answering.configured = params as { token?: string };
+        await new Promise((resolve) => setTimeout(resolve, configuring));
+        asked.push("the boundary landed");
+        return {};
+      }
+      return {};
+    },
+    on: (method, handler) => {
+      if (method === "cell") cellListeners.push(handler);
+    },
+    stop: () => Promise.resolve(),
+    get running() {
+      return true;
+    },
+    stderrTail: () => "",
+  };
+  return {
+    host,
+    asked,
+    get configured() {
+      return answering.configured;
+    },
+    /** Fires this host's own "cell" notification at whoever wired
+     *  `forwardKernelCells` onto it, the way `kernel-host.ts` would once the
+     *  real process wrote one to its stdout. */
+    announceCell(params: unknown): void {
+      for (const listener of cellListeners) listener(params);
+    },
+  };
+}
+
+const startRunOn = (runId: string) => ({
+  type: "start-run",
+  runId,
+  agent: "claude",
+  studyId: "s_cmp",
+  taskId: "t_cmp",
+  sessionId: "se_1",
+  prompt: "go",
+});
+
+it("gives a session a kernel before it starts the agent it names one to", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const opened = markerIn(data, "session-opened");
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_MARKER = opened;
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(400);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_kernels"));
+
+  await until(() => kernels.asked.includes("the boundary landed"), "the boundary landing");
+  // The agent has not been started yet, so no tool call of its own could have
+  // reached a kernel this machine had not described a boundary for.
+  expect(existsSync(opened)).toBe(false);
+
+  await until(() => existsSync(named), "the session opening");
+  const params = JSON.parse(readFileSync(named, "utf8")) as {
+    mcpServers: Array<{ name: string; args: string[] }>;
+  };
+  expect(kernels.asked).toEqual([
+    "host.hello",
+    "kernel.configure_session",
+    "the boundary landed",
+  ]);
+  expect(params.mcpServers.map((server) => server.name)).toEqual(["lykeion"]);
+  expect(params.mcpServers[0]?.args).toContain("--session");
+  expect(params.mcpServers[0]?.args).toContain("se_1");
+  // The word the relay carries is the one the host was told to expect, and
+  // nothing else on this machine has it. A relay holding some other word is a
+  // relay this session's kernels were not given to.
+  const args = params.mcpServers[0]?.args ?? [];
+  const carried = args[args.indexOf("--token") + 1];
+  expect(carried).toBeTruthy();
+  expect(kernels.configured?.token).toBe(carried);
+});
+
+it("forwards a cell the kernel host announces to the run currently taking its session's turn", async () => {
+  // Held open past the point the cell is announced: `runOfSession` only
+  // names this run for as long as its turn is actually the one running, and
+  // a script that ended the turn immediately would race that window closed
+  // before the announcement below ever reached it.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ sleep: 500 }, { endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_cell"));
+
+  // Not the boundary landing alone: this run's own turn has to actually be
+  // the one running on its session — `runOfSession` names it only once the
+  // whole session has opened, which is what the marker below confirms.
+  await until(() => existsSync(named), "the session opening");
+
+  kernels.announceCell({
+    sessionId: "se_1",
+    taskId: "t_cmp",
+    kernelId: "k_1",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 1,
+    source: "1 + 1",
+    origin: { surface: "agent", by: "a_claude" },
+    ok: true,
+    wallMs: 4,
+    ts: 99,
+    outputs: [],
+  });
+
+  await until(
+    () =>
+      lab.events.some(
+        (post) =>
+          post.runId === "run_cell" &&
+          post.frames.some((frame) => frame.event.event === "cell"),
+      ),
+    "the cell reaching the lab",
+  );
+
+  const forwarded = lab.events
+    .filter((post) => post.runId === "run_cell")
+    .flatMap((post) => post.frames)
+    .map((frame) => frame.event)
+    .find((event): event is Extract<RunEvent, { event: "cell" }> => event.event === "cell")!;
+  expect(forwarded.cell.source).toBe("1 + 1");
+  expect(forwarded.cell.kernelId).toBe("k_1");
+  expect(typeof forwarded.cell.id).toBe("string");
+  // The session and Task the announcement named do not travel any further
+  // than the routing decision itself.
+  expect("sessionId" in forwarded.cell).toBe(false);
+  expect("taskId" in forwarded.cell).toBe(false);
+});
+
+it("drops a cell the kernel host announces for a session with no run currently taking its turn", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ sleep: 500 }, { endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_no_cell"));
+  await until(() => existsSync(named), "the session opening");
+
+  kernels.announceCell({
+    sessionId: "se_never_started_a_turn",
+    taskId: "t_cmp",
+    kernelId: "k_1",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 1,
+    source: "1 + 1",
+    origin: { surface: "agent", by: "a_claude" },
+    ok: true,
+    wallMs: 4,
+    ts: 99,
+    outputs: [],
+  });
+
+  // A batched event waits out a 50ms flush window before it would ever
+  // reach the lab at all — given long enough to have done that, and to have
+  // shown up below, before this asserts it never did.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const cellFrames = lab.events
+    .filter((post) => post.runId === "run_no_cell")
+    .flatMap((post) => post.frames)
+    .filter((frame) => frame.event.event === "cell");
+  expect(cellFrames).toEqual([]);
+});
+
+it("opens the session anyway when this machine's kernels never answer", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  // A host that is up and says nothing — a cold environment still being
+  // provisioned, or one wedged. Its calls settle only when the process behind
+  // them dies, so without a deadline the turn never begins at all: no state
+  // frame, no failure, nothing a researcher could act on.
+  const silent: KernelHost = {
+    call: () => new Promise(() => {}),
+    on: () => {},
+    stop: () => Promise.resolve(),
+    get running() {
+      return true;
+    },
+    stderrTail: () => "",
+  };
+  // Captured rather than left on the terminal, and then asserted: a machine
+  // that quietly ran a turn without the kernels it was asked for is a machine
+  // nobody can diagnose.
+  const said: string[] = [];
+  const reporting = console.error;
+  console.error = (line: unknown) => said.push(String(line));
+  try {
+    subsystem(lab.base, data, () => silent, 50);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_silent_kernels"));
+    await until(() => existsSync(named), "the session opening");
+  } finally {
+    console.error = reporting;
+  }
+
+  expect(JSON.parse(readFileSync(named, "utf8"))).toMatchObject({ mcpServers: [] });
+  expect(said.join("\n")).toContain("did not answer in time");
+});
+
+it("starts an agent with no tool server at all where this machine holds no kernels", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  subsystem(lab.base, data);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_no_kernels"));
+
+  await until(() => existsSync(named), "the session opening");
+  // A tool that leads to a kernel which could never start is worse than no
+  // tool: the agent spends its turn discovering that for itself.
+  expect(JSON.parse(readFileSync(named, "utf8"))).toMatchObject({ mcpServers: [] });
+});
 
 it("says which runs it holds as soon as it connects", async () => {
   const lab = await stubLab([]);
@@ -1958,4 +2244,463 @@ it("says a turn is waiting rather than working, until its place in the queue com
   ).toBe(false);
 
   await r.stop();
+});
+
+it("moves a waiting turn up as the turns in front of it settle", async () => {
+  // A permission request never answered on its own is what keeps run_1
+  // genuinely running rather than finishing before run_2 and run_3 even get
+  // a chance to report their place in the queue.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { ask: "permission", toolCallId: "hold", title: "Write /tmp/somewhere" },
+  ]);
+  const lab = await stubLab(
+    ["run_1", "run_2", "run_3"].map((runId) => ({
+      type: "start-run",
+      runId,
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: "se_move_queue",
+      agent: "claude",
+      prompt: runId,
+      grants: [],
+    })),
+  );
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(lab.base, data);
+
+  // Proof run_1 is genuinely still running, with run_2 and run_3 queued
+  // behind it: nothing answers the open permission request on its own, and
+  // by the time a real subprocess has reached it, both queued turns have had
+  // far longer than they need to report their place.
+  await until(
+    () =>
+      lab.events.some(
+        (e) => e.runId === "run_1" && e.frames.some((f) => f.event.event === "permission-card"),
+      ),
+    "run_1 to become active",
+  );
+
+  expect(queuedPositions(lab, "run_2")).toEqual([1]);
+  expect(queuedPositions(lab, "run_3")).toEqual([2]);
+
+  lab.send({ type: "decision", runId: "run_1", decision: { action: "cancel" } });
+  await until(
+    () =>
+      lab.events.some(
+        (e) => e.runId === "run_1" && e.frames.some((f) => f.event.event === "completed"),
+      ),
+    "run_1 to settle",
+  );
+  // run_2 has begun, so it says so rather than saying it is still waiting;
+  // run_3 has one turn in front of it now rather than two.
+  await until(() => queuedPositions(lab, "run_3").length > 1, "run_3's revised position");
+  expect(queuedPositions(lab, "run_3")).toEqual([2, 1]);
+});
+
+it("does not repeat a queued turn's position when the turn cancelled ahead of it is only reached later", async () => {
+  // run_2's own continuation reaches `sessionOfRun.delete` only once the
+  // turns ahead of it in `turnQueues` have settled — by which point a
+  // decision already cancelled it and removed its entry. That continuation
+  // must find nothing left to remove, and must not re-announce run_4's
+  // position on the strength of a removal that never happened.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { ask: "permission", toolCallId: "hold", title: "Write /tmp/somewhere" },
+  ]);
+  const lab = await stubLab(
+    ["run_1", "run_2", "run_3", "run_4"].map((runId) => ({
+      type: "start-run",
+      runId,
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: "se_no_op_cancel",
+      agent: "claude",
+      prompt: runId,
+      grants: [],
+    })),
+  );
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(lab.base, data);
+
+  await until(
+    () =>
+      lab.events.some(
+        (e) => e.runId === "run_1" && e.frames.some((f) => f.event.event === "permission-card"),
+      ),
+    "run_1 to become active",
+  );
+  expect(queuedPositions(lab, "run_4")).toEqual([3]);
+
+  // run_2 is still only queued — cancelling it here removes its entry
+  // immediately and revises everyone behind it.
+  lab.send({ type: "decision", runId: "run_2", decision: { action: "cancel" } });
+  await until(
+    () =>
+      lab.events.some(
+        (e) => e.runId === "run_2" && e.frames.some((f) => f.event.event === "completed"),
+      ),
+    "run_2's cancelled ending",
+  );
+  expect(queuedPositions(lab, "run_4")).toEqual([3, 2]);
+
+  // run_1 settling advances `turnQueues` to run_2's own continuation, whose
+  // `sessionOfRun.delete` finds nothing left to remove — its own cancel
+  // already did that. run_3's continuation follows immediately behind it and
+  // becomes genuinely active, which is this test's proof that the whole
+  // chain, including run_2's no-op, has finished running.
+  lab.send({ type: "decision", runId: "run_1", decision: { action: "cancel" } });
+  await until(
+    () =>
+      lab.events.some(
+        (e) => e.runId === "run_3" && e.frames.some((f) => f.event.event === "permission-card"),
+      ),
+    "run_3 to become active",
+  );
+  expect(queuedPositions(lab, "run_4")).toEqual([3, 2, 1]);
+});
+
+/** A kernel host that records every call it is asked to make, and answers
+ *  each with an empty result — enough for a command that carries no reply
+ *  of its own back to the lab. */
+function recordingKernelHost() {
+  const calls: Array<{ method: string; params: unknown }> = [];
+  const host: KernelHost = {
+    call: async (method, params) => {
+      calls.push({ method, params });
+      return {};
+    },
+    on: () => {},
+    stop: () => Promise.resolve(),
+    get running() {
+      return true;
+    },
+    stderrTail: () => "",
+  };
+  return { host, calls };
+}
+
+it("interrupts a kernel this machine's host is holding when the lab asks it to", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = recordingKernelHost();
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({ type: "kernel-interrupt", runId: "k_1", kernelId: "k_1" });
+
+  await until(() => kernels.calls.length > 0, "the interrupt reaching this machine's kernel host");
+  expect(kernels.calls).toEqual([{ method: "kernel.interrupt", params: { kernel_id: "k_1" } }]);
+});
+
+it("restarts a kernel this machine's host is holding when the lab asks it to", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = recordingKernelHost();
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({ type: "kernel-restart", runId: "k_1", kernelId: "k_1" });
+
+  await until(() => kernels.calls.length > 0, "the restart reaching this machine's kernel host");
+  expect(kernels.calls).toEqual([{ method: "kernel.restart", params: { kernel_id: "k_1" } }]);
+});
+
+it("does nothing with a kernel-execute command and a machine that holds no kernel host", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(lab.base, data);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({
+    type: "kernel-execute",
+    runId: "cell_1",
+    kernelId: "k_1",
+    code: "1",
+    cellId: "cell_1",
+    sessionId: "se_1",
+    taskId: "t_cmp",
+    name: "main",
+    language: "python",
+    by: "u_ana",
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(lab.events).toEqual([]);
+  expect(lab.cells).toEqual([]);
+});
+
+it("runs a REPL cell on this machine's kernel host and posts the cell straight back, under the id the lab minted", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const calls: Array<{ method: string; params: unknown }> = [];
+  const host: KernelHost = {
+    call: async (method, params) => {
+      calls.push({ method, params });
+      if (method !== "kernel.execute") return {};
+      return {
+        kernelId: "k_1",
+        sessionId: "se_1",
+        taskId: "t_cmp",
+        name: "main",
+        language: "python",
+        environment: "python",
+        executionCount: 4,
+        source: "2 + 2",
+        origin: { surface: "repl", by: "u_ana" },
+        ok: true,
+        wallMs: 3,
+        ts: 1234,
+        outputs: [{ kind: "execute_result", execution_count: 4, data: { "text/plain": "4" }, data_ref: {} }],
+      };
+    },
+    on: () => {},
+    stop: () => Promise.resolve(),
+    get running() {
+      return true;
+    },
+    stderrTail: () => "",
+  };
+  subsystem(lab.base, data, () => host);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({
+    type: "kernel-execute",
+    runId: "cell_1",
+    kernelId: "k_1",
+    code: "2 + 2",
+    cellId: "cell_1",
+    sessionId: "se_1",
+    taskId: "t_cmp",
+    name: "main",
+    language: "python",
+    by: "u_ana",
+  });
+
+  await until(() => lab.cells.length > 0, "the cell reaching the lab");
+  expect(calls).toEqual([
+    {
+      method: "kernel.execute",
+      params: {
+        session_id: "se_1",
+        task_id: "t_cmp",
+        name: "main",
+        language: "python",
+        source: "2 + 2",
+        origin: { surface: "repl", by: "u_ana" },
+      },
+    },
+  ]);
+  expect(lab.cells[0]).toMatchObject({ cellId: "cell_1", kernelId: "k_1", source: "2 + 2", ok: true });
+});
+
+it("records a REPL cell once even when an agent holds the same session's turn", async () => {
+  // The host announces every cell it runs, this one included, and the run
+  // taking the session's turn is one this announcement would be delivered
+  // to. Both ways recorded, the same cell would be two rows in the Task's
+  // notebook — the same source, the same outputs, one under the id the lab
+  // minted and one under an id nothing else has ever seen.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ sleep: 800 }, { endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+
+  const cellListeners: Array<(params: unknown) => void> = [];
+  const ran = {
+    kernelId: "k_1",
+    sessionId: "se_1",
+    taskId: "t_cmp",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 4,
+    source: "2 + 2",
+    origin: { surface: "repl", by: "u_ana" },
+    ok: true,
+    wallMs: 3,
+    ts: 1234,
+    outputs: [],
+  };
+  const host: KernelHost = {
+    call: async (method) => {
+      if (method === "host.hello")
+        return { protocol: PROTOCOL_VERSION, environment: "python", reads: [] };
+      if (method !== "kernel.execute") return {};
+      // The host answers the call AND announces the cell, which is what the
+      // real one does: one event, written twice, because the two ends of it
+      // are waiting in different places.
+      for (const listener of cellListeners) listener(ran);
+      return ran;
+    },
+    on: (method, handler) => {
+      if (method === "cell") cellListeners.push(handler);
+    },
+    stop: () => Promise.resolve(),
+    get running() {
+      return true;
+    },
+    stderrTail: () => "",
+  };
+  subsystem(lab.base, data, () => host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_repl_during"));
+  await until(() => existsSync(named), "the session opening");
+
+  lab.send({
+    type: "kernel-execute",
+    runId: "cell_9",
+    kernelId: "k_1",
+    code: "2 + 2",
+    cellId: "cell_9",
+    sessionId: "se_1",
+    taskId: "t_cmp",
+    name: "main",
+    language: "python",
+    by: "u_ana",
+  });
+
+  await until(() => lab.cells.length > 0, "the cell reaching the lab");
+  // Long enough for a forwarded copy to have been batched and flushed: the
+  // events this machine posts leave on a 50ms timer.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  expect(lab.cells).toHaveLength(1);
+  expect(lab.cells[0]).toMatchObject({ cellId: "cell_9", source: "2 + 2" });
+  const forwarded = lab.events
+    .flatMap((post) => post.frames)
+    .filter((frame) => frame.event.event === "cell");
+  expect(forwarded).toEqual([]);
+});
+
+it("names no tool server when this machine's kernel host speaks another protocol, and still runs the turn", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  // A host from another build of this machine's own program. The wire shapes
+  // either end writes are hand-written on both sides, and this number is what
+  // a host says when it is no longer describing the same ones.
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION + 1);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_skew"));
+
+  await until(() => existsSync(named), "the session opening");
+  const params = JSON.parse(readFileSync(named, "utf8")) as {
+    mcpServers: Array<{ name: string }>;
+  };
+  // No relay named, so no tool leads to a kernel that could never be
+  // configured — and the session it was not named to still opened.
+  expect(params.mcpServers).toEqual([]);
+  expect(kernels.asked).toEqual(["host.hello"]);
+  await until(
+    () =>
+      lab.events.some((post) =>
+        post.frames.some(
+          (frame) => frame.event.event === "completed" && frame.event.state.state === "completed",
+        ),
+      ),
+    "the turn finishing",
+  );
+});
+
+it("refuses the turn when this machine cannot name a socket short enough to bind", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  const was = process.env.TMPDIR;
+  // A machine whose temporary directory leaves no room for a socket's name.
+  // Nothing this machine can do about it and nothing that changes on the next
+  // turn — so it ends the turn in words rather than opening a session with no
+  // tool server and saying nothing anyone reads.
+  process.env.TMPDIR = `/tmp/${"x".repeat(90)}`;
+  try {
+    subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_nowhere"));
+
+    await until(
+      () =>
+        lab.events.some((post) =>
+          post.frames.some(
+            (frame) => frame.event.event === "completed" && frame.event.state.state === "failed",
+          ),
+        ),
+      "the turn being refused",
+    );
+    const failure = lab.events
+      .flatMap((post) => post.frames)
+      .map((frame) => frame.event)
+      .find(
+        (event): event is Extract<RunEvent, { event: "completed" }> =>
+          event.event === "completed" && event.state.state === "failed",
+      )!;
+    const reason = failure.state.state === "failed" ? failure.state.reason : "";
+    expect(reason).toMatch(/unix socket's name/);
+    expect(reason).toMatch(/bytes/);
+    // Nothing was asked of the host: the name is decided before it is.
+    expect(kernels.asked).toEqual([]);
+  } finally {
+    if (was === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = was;
+  }
+});
+
+it("answers the lab's kernel-list ask with what this machine's kernel host reports", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const reported = [
+    {
+      id: "k_1",
+      sessionId: "se_1",
+      taskId: "t_cmp",
+      name: "main",
+      language: "python",
+      state: "idle",
+      incarnation: 1,
+      executionCount: 2,
+      queueDepth: 0,
+      environment: "python",
+    },
+  ];
+  const host: KernelHost = {
+    call: async (method) => (method === "kernel.list" ? { kernels: reported } : {}),
+    on: () => {},
+    stop: () => Promise.resolve(),
+    get running() {
+      return true;
+    },
+    stderrTail: () => "",
+  };
+  subsystem(lab.base, data, () => host);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({ type: "kernel-list", runId: "klreq_1" });
+
+  await until(() => lab.kernelListReplies.length > 0, "the kernel list reaching the lab");
+  expect(lab.kernelListReplies).toEqual([{ requestId: "klreq_1", kernels: reported }]);
+});
+
+it("answers the lab's kernel-list ask with an empty list when this machine holds no kernel host", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(lab.base, data);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({ type: "kernel-list", runId: "klreq_2" });
+
+  await until(() => lab.kernelListReplies.length > 0, "the kernel list reaching the lab");
+  expect(lab.kernelListReplies).toEqual([{ requestId: "klreq_2", kernels: [] }]);
 });

@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { agentHomeFor, foreignHomes, workspaceKey } from "./agent-home";
+import { agentHomeFor, allAgentHomes, foreignHomes, workspaceKey } from "./agent-home";
 
 const home = homedir();
 const WORKSPACE = "/work/studies/s_47/tasks/t_176";
@@ -82,6 +82,16 @@ it("names every other agent's installation, so one agent never reads another's c
   expect(foreignHomes("claude", WORKSPACE)).toContain(join(home, ".codex"));
   expect(foreignHomes("codex", WORKSPACE)).toContain(claude);
   expect(foreignHomes("codex", WORKSPACE)).toContain(join(home, "Library", "Keychains"));
+});
+
+it("names every agent's installation, for a run that owns none of them", () => {
+  // A run with no home of its own has no installation to keep reachable, so
+  // every one of them is somebody else's — leaving one out is the whole gap.
+  const all = allAgentHomes(WORKSPACE);
+  for (const id of ["claude", "codex"]) {
+    const declared = agentHomeFor(id, WORKSPACE);
+    for (const path of [...declared.state, ...declared.credentials]) expect(all).toContain(path);
+  }
 });
 
 it("never denies an agent its own home while naming the others", () => {

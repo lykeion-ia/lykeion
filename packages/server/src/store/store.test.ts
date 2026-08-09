@@ -166,6 +166,23 @@ it("applies every migration and records the version reached", () => {
   expect(row!.v).toBe(MIGRATIONS[MIGRATIONS.length - 1].version);
 });
 
+it("answers which Tasks a session has taken a turn for from an index rather than a scan", () => {
+  // Asked on the way in, of every kernel a machine reports and of every cell
+  // it posts — a Notebook rail open on one Task asks it once per kernel every
+  // poll. `turns` carries a recovery snapshot and a frame cursor per row, so
+  // a scan here is the widest table in this workspace read to answer what two
+  // columns already say. The query planner is asked directly: an index that
+  // exists and is not used is the same cost as no index at all.
+  const store = freshStore();
+  migrate(store);
+  const plan = store
+    .all(`EXPLAIN QUERY PLAN SELECT 1 FROM turns WHERE session_id = ? AND task_id = ?`, ["s", "t"])
+    .map((row) => String(row.detail))
+    .join(" ");
+  expect(plan).toContain("turns_by_session_task");
+  expect(plan).not.toContain("SCAN turns");
+});
+
 it("is idempotent: migrating an up-to-date database changes nothing", () => {
   const store = freshStore();
   migrate(store);

@@ -1,8 +1,6 @@
 import { useState } from "react";
 import type { Study, Task } from "@lykeion/api";
-import { useRouter } from "../../router";
 import { useApi, useInvalidateData } from "../../api/ApiContext";
-import { createStudyFromInput } from "../../lib/study-meta";
 import { StudyFormModal } from "../studies/StudyFormModal";
 import { InlineRename } from "../ui/InlineRename";
 import { TaskRowMenu } from "./TaskRowMenu";
@@ -56,15 +54,16 @@ export function TaskSidebar({
   /** Every Study, as move destinations. This one is dropped from the list. */
   studies?: Study[];
 }) {
-  const { navigate } = useRouter();
   const api = useApi();
   const invalidate = useInvalidateData();
   // Which row is being renamed in place — at most one at a time.
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Customize opens Settings over the conversation rather than navigating away.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // The project header doubles as the "start another Study" entry point.
-  const [createOpen, setCreateOpen] = useState(false);
+  // The project header names the Study it belongs to, so it opens that Study to
+  // be corrected — the same form, on the same record, as the Study page's own
+  // Edit action.
+  const [editOpen, setEditOpen] = useState(false);
   const pinned = tasks.filter((t) => t.pinned);
   const recent = tasks.filter((t) => !t.pinned);
 
@@ -121,8 +120,8 @@ export function TaskSidebar({
         <button
           type="button"
           className="tsb-project"
-          aria-label="New study"
-          onClick={() => setCreateOpen(true)}
+          aria-label="Edit study"
+          onClick={() => setEditOpen(true)}
         >
           <span className="tsb-project-name">{study.title}</span>
           <svg width="11" height="11" viewBox="0 0 10 10" fill="none">
@@ -225,14 +224,14 @@ export function TaskSidebar({
       </div>
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
-      {createOpen && (
+      {editOpen && (
         <StudyFormModal
-          onClose={() => setCreateOpen(false)}
+          study={study}
+          onClose={() => setEditOpen(false)}
           onSubmit={async (input) => {
-            const created = await createStudyFromInput(api, input);
-            setCreateOpen(false);
+            await api.updateStudy(study.id, input);
+            setEditOpen(false);
             invalidate();
-            navigate({ name: "study", studyId: created.id });
           }}
         />
       )}

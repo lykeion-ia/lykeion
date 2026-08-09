@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   boundaryOf,
@@ -9,6 +9,7 @@ import {
   covers,
   deniedPaths,
   NO_AGENT_HOME,
+  policyFor,
   renderSeatbeltProfile,
   sandboxBackendFor,
   type SandboxPolicy,
@@ -29,6 +30,7 @@ const policy = (over: Partial<SandboxPolicy> = {}): SandboxPolicy => ({
   workspace: "/work/task",
   grants: [],
   denied: [],
+  readable: [],
   home: NO_AGENT_HOME,
   ...over,
 });
@@ -68,6 +70,44 @@ it("gives a read grant read and a write grant both", () => {
   );
   expect(profile).toContain('(allow file-read* (subpath "/data/reference"))');
   expect(profile).toContain('(allow file-read* file-write* (subpath "/data/scratch"))');
+});
+
+it("renders a readable path as read and never write", () => {
+  const profile = renderSeatbeltProfile(policy({ readable: ["/work/envs/python"] }));
+  expect(profile).toContain('(allow file-read* (subpath "/work/envs/python"))');
+  expect(profile).not.toContain('file-write* (subpath "/work/envs/python")');
+});
+
+it("writes a readable path where the kernel will look, not where it was named", () => {
+  const root = fresh();
+  const real = join(root, "environment");
+  mkdirSync(real);
+  const link = join(root, "named");
+  symlinkSync(real, link);
+
+  const built = policyFor({ workspace: root, grants: [], dataDir: join(root, "data"), readable: [link] });
+
+  expect(built.readable).toEqual([canonicalPath(link)]);
+  expect(built.readable).toEqual([real]);
+});
+
+it("refuses a readable path broad enough to swallow the boundary, resolved rather than as written", () => {
+  const root = fresh();
+  const everything = join(root, "everything");
+  symlinkSync("/", everything);
+
+  // Named through something narrow, and the whole disk once resolved — which
+  // is the form the rule would have been written in.
+  expect(() =>
+    policyFor({ workspace: root, grants: [], dataDir: join(root, "data"), readable: [everything] }),
+  ).toThrow(/too broad/);
+  expect(() =>
+    policyFor({ workspace: root, grants: [], dataDir: join(root, "data"), readable: ["~"] }),
+  ).toThrow(/too broad/);
+  // What a run is genuinely given to execute out of is unaffected.
+  expect(
+    policyFor({ workspace: root, grants: [], dataDir: join(root, "data"), readable: [root] }).readable,
+  ).toEqual([root]);
 });
 
 it("puts a deny after an allow on its own ancestor, so the deny is what matches", () => {
@@ -278,6 +318,21 @@ it("reopens nothing that was never denied, so an ordinary home renders no traili
 it("leaves an agent that declared no home reaching nothing of its own", () => {
   const profile = renderSeatbeltProfile(policy());
   expect(profile).not.toContain("Keychains");
+  // Not the researcher's own configuration either. That rule is what lets a
+  // program read the settings it runs by, and a run owning no installation
+  // has none to read — only the tokens and the histories kept beside them.
+  expect(profile).not.toMatch(/\(allow file-read\* \(regex/);
+  expect(profile).not.toContain(canonicalPath(homedir()));
+});
+
+it("gives an agent that declared a home the configuration it runs by", () => {
+  const profile = renderSeatbeltProfile(
+    policy({
+      home: { state: ["/home/.agent"], credentials: [], sealed: [], private: [], patterns: [] },
+    }),
+  );
+  expect(profile).toMatch(/\(allow file-read\* \(regex "\^/);
+  expect(profile).toContain(canonicalPath(homedir()));
 });
 
 it("does not deny the machine's credential service unconditionally, since a deny would outlive the allow", () => {
@@ -298,4 +353,10 @@ it("tells two agents' boundaries apart, so one is never reused for the other", (
   const one = boundaryOf(policy({ home: { state: ["/home/.a"], credentials: [], sealed: [], private: [], patterns: [] } }));
   const other = boundaryOf(policy({ home: { state: ["/home/.b"], credentials: [], sealed: [], private: [], patterns: [] } }));
   expect(one).not.toBe(other);
+});
+
+it("tells two boundaries apart by what they may read", () => {
+  const one = boundaryOf(policy({ readable: ["/work/envs/python"] }));
+  const two = boundaryOf(policy({ readable: ["/work/envs/crispr"] }));
+  expect(one).not.toBe(two);
 });

@@ -81,6 +81,18 @@ describe("AssistantMessage", () => {
 });
 
 /**
+ * One block of a reply carries no controls of its own — Copy belongs to the
+ * whole answer, so a two-paragraph reply offers one and not two. The control
+ * itself is covered in TaskTranscript.test.tsx, where the reply is.
+ */
+describe("AssistantMessage — no per-block controls", () => {
+  it("draws no Copy of its own", () => {
+    render(<AssistantMessage text="Segmentation gives 512 ROIs." />);
+    expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
+  });
+});
+
+/**
  * The final summary's `~1 MB → reference by name` contract.
  *
  * Splitting it honestly: the AGENT decides which deliverables are linked and

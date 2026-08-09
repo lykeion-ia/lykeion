@@ -5,6 +5,8 @@ import type { ServerConfig } from "../config";
 import type { Channel } from "../channel";
 import type { RunRelay } from "../run-relay";
 import type { RevertRegistry } from "../run-revert";
+import type { KernelListRegistry } from "../kernel-list-registry";
+import type { PendingCells } from "../kernel-cells";
 import type { ChangeRecorder } from "./changes";
 import { absentApi } from "./absent";
 import { accountApi } from "./account";
@@ -14,6 +16,7 @@ import { studiesApi } from "./studies";
 import { tasksApi } from "./tasks";
 import { runtimesApi } from "./runtimes";
 import { sessionsApi } from "./sessions";
+import { kernelsApi } from "./kernels";
 
 /** What every family module is handed. `now` is a function so tests can
  *  pin the clock and prove the ordering tiebreak does the work. */
@@ -32,6 +35,13 @@ export interface Deps {
   /** Reverts waiting on the machine that holds the files to say whether
    *  they are back. Held for the process's lifetime, like `runs`. */
   reverts: RevertRegistry;
+  /** `kernel-list` asks waiting on a runtime's own kernel host to say what
+   *  it is holding. Held for the process's lifetime, like `runs`. */
+  kernelLists: KernelListRegistry;
+  /** The REPL cells this lab has asked a machine to run and is still waiting
+   *  to be told the outcome of. Held for the process's lifetime, like
+   *  `runs`. */
+  pendingCells: PendingCells;
   /**
    * Where a family records what it changed. One per request, handed to
    * every family, and flushed by the request once its writes have settled.
@@ -65,6 +75,7 @@ export function createWorkspaceApi(deps: Deps): LykeionApi {
     ...tasksApi(deps),
     ...runtimesApi(deps),
     ...sessionsApi(deps),
+    ...kernelsApi(deps),
     ...settingsApi(deps),
     ...configSurfaceApi(deps),
   };

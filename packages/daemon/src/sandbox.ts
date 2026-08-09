@@ -78,6 +78,15 @@ export interface SandboxPolicy {
   grants: SandboxGrant[];
   /** Paths denied whatever the grants say. Rendered last. */
   denied: string[];
+  /**
+   * Paths a run may read and never write, belonging to no agent's own
+   * installation. A kernel's environment is what this is for: it has to be
+   * readable for an interpreter to start out of it, and unwritable because an
+   * environment a cell can write is one a cell can leave a `sitecustomize.py`
+   * in — and that runs on the next launch, which may not be inside any
+   * boundary at all.
+   */
+  readable: string[];
   /** The agent's own installation, canonicalized. Separate from `grants`
    *  because nothing the researcher answers can widen or narrow it: it is a
    *  property of which program is being run, not of what it may reach. */
@@ -283,7 +292,13 @@ export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] =
   // something behind that runs outside this boundary the next time the
   // researcher opens a shell. The credential stores among them are denied
   // below, which is why the order matters.
-  const hidden = canonicalPrefix(home);
+  //
+  // Rendered only for a policy that declares an installation, because that is
+  // the whole of what it is for. A run owning none authenticates from nothing
+  // and has no configuration of its own to find here; what it would find
+  // instead is the researcher's package-index tokens, their shell history and
+  // every other store the denies below do not name.
+  const hidden = declaresAnInstallation(policy.home) ? canonicalPrefix(home) : undefined;
   if (hidden) lines.push(`(allow file-read* (regex ${literal(`^${escapeRegex(hidden)}/\\.`)}))`);
   // The program this machine is about to run has to be readable to be that
   // program: the adapter itself, whatever its argument array names, and the
@@ -299,6 +314,12 @@ export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] =
     lines.push(
       `(allow file-read*${grant.mode === "write" ? " file-write*" : ""} (subpath ${literal(grant.path)}))`,
     );
+  // Read and never write, and here rather than lower down: what a run is given
+  // to execute out of is still beneath every deny, so a credential store a
+  // researcher happens to keep inside one of these is refused by the same rule
+  // that refuses it inside a grant.
+  for (const path of shallowToDeep(policy.readable, (p) => p))
+    lines.push(`(allow file-read* (subpath ${literal(path)}))`);
   lines.push("");
 
   // What this particular agent needs in order to be itself. Written after the
@@ -363,39 +384,51 @@ function escapeRegex(value: string): string {
 }
 
 /**
- * A place too broad to be "where a program lives", whatever derived it. The
- * root of the disk and a home directory are each somebody's whole world, and
- * granting either as a program location would swallow the boundary — every
- * read-deny not rendered after it would be the only thing left holding.
+ * Whether this policy names an installation of its own at all.
  *
- * Refused rather than trimmed: a location this wide is a mistake in whatever
- * produced it, not a rule to emit more carefully.
+ * Asked of the shape of `NO_AGENT_HOME` rather than of a list of fields
+ * spelled out here, so a part of an installation that is added later is a
+ * part this question already covers instead of one it quietly ignores.
  */
-function tooBroadForAProgram(path: string): boolean {
+function declaresAnInstallation(home: AgentHome): boolean {
+  const parts = Object.keys(NO_AGENT_HOME) as (keyof AgentHome)[];
+  return parts.some((part) => home[part].length > 0);
+}
+
+/**
+ * A place too broad to be one thing's own, whatever derived it. The root of
+ * the disk, a top-level directory and a home directory are each somebody's
+ * whole world, and opening one as where a program lives or as what a run may
+ * read swallows the boundary: every other Task on this machine, and every
+ * study beside them, come with it.
+ *
+ * Refused or dropped rather than trimmed: a location this wide is a mistake
+ * in whatever produced it, not a rule to emit more carefully.
+ */
+function swallowsTheBoundary(path: string): boolean {
   if (path.split(sep).filter(Boolean).length < 2) return true;
   return path === canonicalPrefix(homedir());
 }
 
 /**
- * Where the program being spawned lives: the adapter, the directory holding
- * it, the package root above that — a program installed as `<prefix>/bin/x`
- * keeps its own files under `<prefix>` — anything its argument array names
- * that is really on disk, and the directories a command is looked up in,
- * which is where the runtime a script names in its own first line is found.
+ * Where one program lives: the command itself, the directory holding it, the
+ * package root above that — a program installed as `<prefix>/bin/x` keeps its
+ * own files under `<prefix>` — and anything its argument array names that is
+ * really on disk.
  *
  * Read only, and only what a program needs in order to be a program. A path
  * that does not resolve is simply not a file and contributes nothing; one
  * that is too broad to be a program's own location contributes nothing
  * either.
  *
- * A directory on the search path is taken as itself and never with its
- * parent: it is ALREADY the directory holding the program, and the thing
- * above it is a home directory or the root of the disk.
+ * Exported because a boundary sometimes has to carry a program it is not
+ * itself rendered for: what a confined program starts is confined by the same
+ * profile, and a helper it cannot read is a helper it cannot start.
  */
-function programPaths(adapter: { command: string; args: string[] }): string[] {
+export function programLocation(program: { command: string; args: string[] }): string[] {
   const paths: string[] = [];
   const push = (path: string | undefined): void => {
-    if (path !== undefined && !tooBroadForAProgram(path)) paths.push(path);
+    if (path !== undefined && !swallowsTheBoundary(path)) paths.push(path);
   };
   const resolved = (path: string): string | undefined => {
     try {
@@ -405,21 +438,44 @@ function programPaths(adapter: { command: string; args: string[] }): string[] {
     }
   };
 
-  const command = resolved(adapter.command);
+  const command = resolved(program.command);
   if (command !== undefined) {
     push(command);
     push(dirname(command));
     push(dirname(dirname(command)));
   }
-  for (const arg of adapter.args) {
+  for (const arg of program.args) {
     if (!arg.includes(sep)) continue;
     const named = resolved(arg);
     if (named === undefined) continue;
     push(named);
     push(dirname(named));
   }
-  for (const dir of (process.env.PATH ?? "").split(delimiter))
-    if (dir.length > 0) push(resolved(dir));
+  return paths;
+}
+
+/**
+ * Everything the adapter about to be spawned has to be able to read in order
+ * to be a program at all: its own location, and the directories a command is
+ * looked up in — which is where the runtime a script names in its own first
+ * line is found.
+ *
+ * A directory on the search path is taken as itself and never with its
+ * parent: it is ALREADY the directory holding the program, and the thing
+ * above it is a home directory or the root of the disk.
+ */
+function programPaths(adapter: { command: string; args: string[] }): string[] {
+  const paths = programLocation(adapter);
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (dir.length === 0) continue;
+    try {
+      const resolved = canonicalPath(dir);
+      if (!swallowsTheBoundary(resolved)) paths.push(resolved);
+    } catch {
+      // A directory named on the search path that is not there. It holds no
+      // program, so there is nothing to make readable.
+    }
+  }
   return paths;
 }
 
@@ -468,6 +524,9 @@ export function boundaryOf(policy: SandboxPolicy): string {
     workspace: policy.workspace,
     grants: policy.grants.map((grant) => `${grant.mode}:${grant.path}`).sort(),
     denied: [...policy.denied].sort(),
+    // Two runs given different environments to execute out of are two
+    // boundaries, and a session opened inside one is not one the other reuses.
+    readable: [...policy.readable].sort(),
     // Two agents confined for the same Task are not confined the same way,
     // and a session opened for one is not a session the other may reuse.
     home: [
@@ -543,6 +602,8 @@ export function policyFor(input: {
   home?: AgentHome;
   /** Other agents' installations, denied whatever else this policy allows. */
   foreign?: string[];
+  /** What this run may read and never write, owned by no agent. */
+  readable?: string[];
 }): SandboxPolicy {
   const workspace = canonicalPath(input.workspace);
   const grants = input.grants.map((grant) => ({
@@ -569,7 +630,21 @@ export function policyFor(input: {
     ...deniedPaths(input.dataDir),
     ...resolveEachThatCan(input.foreign ?? []),
   ];
-  return { workspace, grants, denied: [...new Set(denied)], home };
+  // Resolved as far as it exists, like a home and unlike a grant: an
+  // environment is built by this machine rather than named by a researcher
+  // looking at it, so a rule written where it will be is what lets it be built.
+  const readable = resolveEachThatCan(input.readable ?? []);
+  // Checked once resolved, because that is the shape the rule would be
+  // written in and a link is one name for another place. Refused rather than
+  // dropped, unlike a program's own location: a program with one path fewer
+  // still runs out of the system directories, while a run given nothing to
+  // execute out of fails in words nobody can trace back to here. Nothing a
+  // researcher answered reaches this list — it is this machine's own — so a
+  // path this wide is a defect rather than an answer.
+  for (const path of readable)
+    if (swallowsTheBoundary(path))
+      throw new Error(`${path} is too broad to be an environment a run reads out of`);
+  return { workspace, grants, denied: [...new Set(denied)], readable, home };
 }
 
 /** Each path written where the kernel will look, dropping the ones this

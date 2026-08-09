@@ -630,6 +630,32 @@ it(
 );
 
 it(
+  "never spawns its kernel host merely from pairing and serving",
+  async () => {
+    const dir = freshDir();
+    const lab = await answeringLab({ studyIds: [], taskIds: [] });
+    pairWith(dir, lab.base);
+
+    // No `uv` on this PATH — the command this machine's kernel host launch
+    // resolves to. A daemon that started one merely by pairing would fail
+    // to spawn it and say so; one that starts a host only once something on
+    // it asks for a kernel never attempts it at all, and says nothing about
+    // it either way.
+    const daemon = serve(dir, [], { PATH: dirname(process.execPath) });
+    await waitFor("the daemon to claim the directory", () => readControlFile(dir) !== undefined);
+    await waitFor("the daemon to finish pairing and reach serving", () => daemon.output().includes("Paired as"));
+    // A spawn destined to fail resolves in single-digit milliseconds; this
+    // is far longer than an eager attempt would need to fail and say so.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(daemon.output()).not.toMatch(/kernel host/i);
+
+    const stopped = await run(["stop", "--data-dir", dir]);
+    expect(stopped.stdout, daemon.output()).toContain("Stopped the daemon on pid");
+  },
+  15_000,
+);
+
+it(
   "is not held back by a catalogue command that ignores being cancelled",
   async () => {
     // The probe runs thirteen local commands and gives each three seconds.

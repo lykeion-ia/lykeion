@@ -143,6 +143,29 @@
      this width so the input lines up directly under the messages. One knob
      tunes the whole reading width. */
   --conv-measure: 100ch;
+  /* Height of the hover-revealed actions strip, and the room reserved for it.
+     The strip is `position: absolute`, so it adds nothing to the flow: this
+     one value sizes it AND reserves its space, so the two cannot drift apart.
+
+     Declared here rather than on `.msg` because both a message and a
+     `.turn-reply` reserve it, and a reply is the message's PARENT — a custom
+     property set on `.msg` inherits down to its children, never up to the
+     wrapper that has to make the room. */
+  --msg-actions-h: 27px;
+  /* The researcher's bubble insets its text by its padding; a reply has no
+     bubble and no inset, so measured from the LAST LINE OF WORDS its Copy sat
+     that much closer than the prompt's did. `--reply-actions-lead` is what the
+     reply's strip adds back to land at the same distance. Derived from the
+     bubble's own padding rather than written as a number, so restyling the
+     bubble cannot silently pull the two sides apart again.
+
+     The PADDING alone, not padding + border: an absolutely positioned box
+     resolves `top: 100%` against its containing block's PADDING box, so the
+     bubble's border sits outside what the strip is offset from and never
+     counts. Adding it here overshot by exactly 1px. */
+  --msg-bubble-pad: 8px;
+  --msg-bubble-border: 1px;
+  --reply-actions-lead: var(--msg-bubble-pad);
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -482,11 +505,34 @@
   gap: 12px;
 }
 
+/* Chat body text — deliberately NOT the app's 13px `body` size. See
+   `--chat-text` in styles/tokens.css for why the conversation reads at the
+   browser default; the fallback keeps a bare `.msg` correct if one is ever
+   rendered outside a themed tree. The `--assistant` rules below are sized in
+   `em` against THIS base, not the body's, so they track the token. */
 .msg {
-  font-size: 13px;
+  /* Anchors the actions strip (`--msg-actions-h` is on `.conversation`). */
+  position: relative;
+  font-size: var(--chat-text, 1rem);
   color: var(--ink-muted);
   line-height: 1.55;
   max-width: var(--conv-measure, 62ch);
+}
+
+/* Reserve the strip's height, or it lands ON whatever follows — the next
+   reply, or the next turn's prompt. It is `position: absolute`, so it
+   contributes nothing to the flow, and the only thing between one message and
+   the next is `.conv-column`'s 12px gap: 12px of room for a 27px strip.
+
+   This was a live bug on the researcher's bubble, invisible only because the
+   buttons used to be opaque pills that painted over the text they covered.
+   Unboxing them uncovered it. It is stated on `.msg` so the agent's side
+   cannot repeat it.
+
+   `:has()` because a message with no actions in it — the in-flight live tail,
+   a SubagentThread task line — must not carry the reservation as dead space. */
+.msg:has(.msg-actions) {
+  margin-bottom: var(--msg-actions-h, 27px);
 }
 
 /* The agent's prose. Used to be `white-space: pre-wrap` over a raw string: one
@@ -513,16 +559,23 @@
   color: var(--ink);
 }
 
+/* Sized in `em` against `.msg`'s base, so a heading stays a heading and the
+   whole scale follows `--chat-text` when it moves. The old 16/15/14px were
+   set when the bubble's base was 13px; left as they were, an `h1` would now
+   be exactly body size and the scale would collapse. */
 .msg--assistant :where(h1) {
-  font-size: 16px;
+  font-size: 1.25em;
 }
 
 .msg--assistant :where(h2) {
-  font-size: 15px;
+  font-size: 1.125em;
 }
 
+/* Level 3 lands on the body size on purpose — at this depth the 600 weight and
+   `--ink` colour carry the heading, and a fourth distinct size would only
+   crowd the scale. */
 .msg--assistant :where(h3) {
-  font-size: 14px;
+  font-size: 1em;
 }
 
 .msg--assistant :where(p, ul, ol, blockquote) {
@@ -563,17 +616,32 @@
   color: var(--ink-muted);
 }
 
+/* `em`, not `rem`: a mono face reads large next to the sans at the same size,
+   so code is stepped down relative to WHATEVER it sits in — it shrinks with a
+   heading it's inlined into instead of overrunning it. */
 .msg--assistant :where(code) {
   padding: 1px 4px;
   border-radius: 4px;
   background: var(--surface-3);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.875em;
 }
 
+/* Tables stay below the prose size — they're scanned in a grid, not read in a
+   line, and the extra density keeps more columns inside the measure. */
 .msg--assistant :where(table) {
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 0.875em;
+}
+
+/* A fenced block inside a message is message content, so it scales with the
+   conversation — but `CodeBlock` is shared with `ToolStepDetail`, where the
+   same class sits in a dense tool card that is chrome, not chat. Scoping the
+   bump to `.msg--assistant` moves the one without dragging the other: base
+   `.code-block-pre` keeps its 12px for tool cards. Matched to the inline
+   `code` ratio so the two forms of code agree. */
+.msg--assistant .code-block-pre {
+  font-size: calc(var(--chat-text, 1rem) * 0.875);
 }
 
 .msg--assistant :where(th, td) {
@@ -594,14 +662,17 @@
 /* The researcher's own turn — aligned to the trailing edge and tinted so it
    reads distinctly from the agent's replies. `position: relative` anchors the
    hover-revealed Edit button below. */
+/* The padding and border here are read back by `--reply-actions-lead` (see
+   `.conversation`) to keep the agent's Copy the same distance from its text as
+   this one is from the text inside the bubble. Change them through the
+   variables, not past them. */
 .msg--user {
-  position: relative;
   align-self: flex-end;
   max-width: 52ch;
-  padding: 8px 12px;
+  padding: var(--msg-bubble-pad) 12px;
   border-radius: 12px;
   background: var(--surface-2);
-  border: 1px solid var(--hairline-strong);
+  border: var(--msg-bubble-border) solid var(--hairline-strong);
   color: var(--ink);
 }
 
@@ -617,25 +688,80 @@
   position: absolute;
   top: 100%;
   right: 0;
+  /* Stated rather than left to the buttons' intrinsic size, so the space
+     reserved above is always exactly the space taken. Matches what the
+     content comes to anyway (4px here + 11px text at line-height 1.5 + the
+     buttons' 3px padding); if these controls ever need to grow, move
+     `--msg-actions-h` and both sides follow. */
+  height: var(--msg-actions-h, 27px);
   display: flex;
-  gap: 4px;
+  /* Wider than the 4px that separated the old pills: without a border to end
+     each control, the gap is the only thing telling two bare labels apart. */
+  gap: 12px;
   padding-top: 4px;
   opacity: 0;
 }
 
-.msg--user:hover .msg-actions,
+/* The agent's side is left-aligned and full width, so its controls sit on the
+   LEADING edge — under the first character of the reply. The researcher's
+   bubble is right-aligned, so its own sit under the last character of theirs.
+   Each strip hangs off the edge its message is anchored to. */
+/* Leading edge, and dropped by `--reply-actions-lead` so this Copy sits the
+   same distance below the reply's last line of words as the prompt's does
+   below the text inside its bubble. `box-sizing` is border-box globally
+   (styles/tokens.css), so the padding comes OUT of the height — the height
+   has to grow by the same amount or the buttons are squashed into what's
+   left. */
+.turn-reply .msg-actions {
+  left: 0;
+  right: auto;
+  padding-top: calc(4px + var(--reply-actions-lead, 9px));
+  height: calc(var(--msg-actions-h, 27px) + var(--reply-actions-lead, 9px));
+}
+
+/* The agent's whole answer to one prompt: the several bubbles a turn can draw
+   — two paragraphs, or prose split around a tool card — held as ONE thing
+   carrying one set of controls. `position: relative` so the strip hangs off
+   the REPLY's bottom edge rather than any single bubble's, and the gap
+   restates `.conv-column`'s so nesting the bubbles a level deeper does not
+   change how far apart they sit. */
+.turn-reply {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Same reservation a bubble makes, for the same reason: the strip is out of
+   flow, so without this it lands on the next turn's prompt. It must move in
+   LOCKSTEP with the strip's height above — reserving one figure while drawing
+   another is exactly what put the strip back on top of the next message once
+   already. */
+.turn-reply:has(.msg-actions) {
+  margin-bottom: calc(
+    var(--msg-actions-h, 27px) + var(--reply-actions-lead, 9px)
+  );
+}
+
+.msg:hover .msg-actions,
+.turn-reply:hover .msg-actions,
 .msg-actions:focus-within {
   opacity: 1;
 }
 
+/* Bare icon-and-label controls, not pills. These already appear only on hover,
+   under one bubble, in a row of two or three — a border and fill around each
+   drew three competing boxes under the prompt and read heavier than the
+   message they act on. Weight is carried by colour alone: subtle at rest,
+   full `--ink` on hover. No `background` on any state, so nothing re-draws the
+   box the hover fill used to. */
 .msg-action {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
-  border: 1px solid var(--hairline-strong);
-  border-radius: 999px;
-  background: var(--surface-1);
+  padding: 3px 2px;
+  border: none;
+  background: none;
   color: var(--ink-subtle);
   font: inherit;
   font-size: 11px;
@@ -644,7 +770,6 @@
 
 .msg-action:hover:not(:disabled) {
   color: var(--ink);
-  background: var(--surface-3);
 }
 
 .msg-action:disabled {
@@ -749,11 +874,13 @@
   gap: 6px;
 }
 
+/* A plan is the agent's own prose, just itemised — it reads at the chat size
+   the same paragraph would if it had come back as an ordinary message. */
 .plan-step {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--chat-text, 1rem);
   color: var(--ink-muted);
 }
 
@@ -924,8 +1051,11 @@
    (number, checkbox, or glyph) and a stacked label + description that WRAP
    within the card (fixing the overflow the plain `.btn` fallback caused).
    Mirrors the `.cli-row` anatomy and the `.plan-check` badge box. */
+/* The agent asking and the researcher answering are both turns in the
+   conversation, so the question, its options and the free-text reply all read
+   at the chat size — only `.question-option-desc` stays subordinate. */
 .question-text {
-  font-size: 15px;
+  font-size: var(--chat-text, 1rem);
   font-weight: 600;
   line-height: 1.4;
   color: var(--ink);
@@ -995,13 +1125,15 @@ label.question-option:hover {
 }
 
 .question-option-label {
-  font-size: 13px;
+  font-size: var(--chat-text, 1rem);
   font-weight: 500;
   color: var(--ink);
 }
 
+/* A fraction of the knob rather than a fixed px, so it stays subordinate to
+   the label it explains at whatever size the conversation is set to. */
 .question-option-desc {
-  font-size: 11.5px;
+  font-size: calc(var(--chat-text, 1rem) * 0.875);
   line-height: 1.45;
   color: var(--ink-subtle);
 }
@@ -1033,7 +1165,7 @@ label.question-option:hover {
   border: none;
   background: transparent;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--chat-text, 1rem);
   color: var(--ink);
   outline: none;
 }
@@ -1508,11 +1640,17 @@ label.question-option:hover {
    channel, set apart by a rule down the leading edge and an italic, dimmer,
    narrower measure — this app's separation, and the reason the channel exists
    at all. Nothing here is ever recorded. */
+/* Reads at the chat size like everything else in the conversation: the SAME
+   thinking, once persisted, renders through `AssistantMessage` as a `.msg`
+   inside `.turn-block--thinking`, so a smaller live size meant one block of
+   thinking changed size the moment its turn landed. The separation this channel exists
+   for is carried by the other four signals named above — rule, italic, dimmer
+   ink, narrower measure — none of which this touches. */
 .live-thinking {
   max-width: 58ch;
   padding-inline-start: 10px;
   border-inline-start: 2px solid var(--hairline-strong);
-  font-size: 12px;
+  font-size: var(--chat-text, 1rem);
   font-style: italic;
   line-height: 1.5;
   color: var(--ink-tertiary);
@@ -1526,8 +1664,10 @@ label.question-option:hover {
   gap: 10px;
 }
 
+/* The Messages tab replays the same conversation from the provenance side, so
+   it reads at the same size the transcript does. */
 .prov-msg {
-  font-size: 12.5px;
+  font-size: var(--chat-text, 1rem);
   color: var(--ink-muted);
   line-height: 1.55;
 }
@@ -2187,6 +2327,10 @@ button.run-strip-notebook:hover {
   color: var(--ink-subtle);
 }
 
+/* What the researcher is about to say, set at the size it will be once said.
+   The composer and the bubble its text becomes are the same half of the same
+   conversation, and a prompt that reflowed on send read as two different
+   surfaces. */
 .composer-textarea {
   width: 100%;
   resize: none;
@@ -2195,14 +2339,18 @@ button.run-strip-notebook:hover {
   background: transparent;
   color: var(--ink);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--chat-text, 1rem);
   line-height: 1.5;
   letter-spacing: -0.01em;
   max-height: 200px;
 }
 
+/* The hero composer (an empty Task's first prompt) no longer steps up a point
+   — it was 15px against a 14px sibling, and the same step above the chat size
+   would put the opening prompt out of scale with every reply to it. Its
+   emphasis is the card, not the type. */
 .composer-card--hero .composer-textarea {
-  font-size: 15px;
+  font-size: var(--chat-text, 1rem);
 }
 
 .composer-textarea::placeholder {
@@ -2561,10 +2709,16 @@ button.run-strip-notebook:hover {
 
 /* `:focus-within` keeps the trigger visible while its menu is open — the
    button holds focus for as long as the popover does, so the kebab cannot
-   fade out from under an open menu when the pointer leaves the row. */
+   fade out from under an open menu when the pointer leaves the row.
+
+   `[aria-expanded]` catches the case focus cannot: the panel is portaled to
+   `<body>`, so a keyboard walking INTO it (ArrowRight onto "Move to study")
+   takes focus off this row entirely. The attribute says the menu is open
+   wherever the focus went. */
 .tsb-task:hover .tsb-task-kebab,
 .tsb-task.is-active .tsb-task-kebab,
-.tsb-task-actions:focus-within .tsb-task-kebab {
+.tsb-task-actions:focus-within .tsb-task-kebab,
+.tsb-task-kebab[aria-expanded="true"] {
   opacity: 1;
 }
 
@@ -2579,6 +2733,25 @@ button.run-strip-notebook:hover {
   flex-direction: column;
   gap: 10px;
   max-width: var(--conv-measure, 62ch);
+}
+
+/* Findings shown IN the conversation are read like the rest of it, so the
+   reviewer's own words take the chat size. Scoped to `.conv-review` because
+   `FindingCard` also renders into the right pane's Review tab, which is a
+   dense inspector — the same card, read two different ways, and only the one
+   sitting in the transcript should grow.
+
+   The claim and the class it falls under are what a researcher reads; the
+   evidence supports them at the same subordinate ratio used elsewhere. The
+   severity chip, the "Evidence" label, the file location and the Resolve
+   button are chrome and keep their own sizes. */
+.conv-review .finding-title,
+.conv-review .finding-claim {
+  font-size: var(--chat-text, 1rem);
+}
+
+.conv-review .finding-evidence {
+  font-size: calc(var(--chat-text, 1rem) * 0.875);
 }
 
 /* ArtifactsPanel — the "Files" surface. */
@@ -3443,7 +3616,83 @@ pre.code-block-pre {
   border-radius: 6px;
 }
 
-/* Live-kernel strip. */
+/* Context sub-tab strip — one tab per name among the Task's kernels and
+   cells, each carrying its kernel's state dot and, when a context holds more
+   than one kernel, a row of language chips. */
+.nbp-ctxtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 12px 0;
+  flex: 0 0 auto;
+}
+
+.nbp-ctxtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  appearance: none;
+  border: 1px solid var(--hairline);
+  border-bottom: none;
+  background: var(--surface-1);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-subtle);
+  padding: 4px 12px;
+  border-radius: 7px 7px 0 0;
+}
+
+.nbp-ctxtab.is-active {
+  color: var(--ink);
+  background: var(--surface-2);
+  font-weight: 550;
+}
+
+.nbp-ctxtab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--ink-subtle);
+}
+
+.nbp-ctxtab-dot--idle {
+  background: #3ea76a;
+}
+
+.nbp-ctxtab-dot--running {
+  background: #e0a325;
+}
+
+.nbp-ctxtab-dot--starting {
+  background: #3b82f6;
+}
+
+.nbp-ctxtab-dot--crashed {
+  background: #d64545;
+}
+
+.nbp-ctxtab-dot--lazy,
+.nbp-ctxtab-dot--stopped {
+  background: var(--ink-subtle);
+}
+
+.nbp-ctxtab-langs {
+  display: flex;
+  gap: 3px;
+}
+
+.nbp-ctxtab-lang {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--ink-subtle);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* Live-kernel strip: which kernel the selected context's cells belong to. */
 .nbp-strip {
   display: flex;
   align-items: center;
@@ -3455,80 +3704,18 @@ pre.code-block-pre {
   flex: 0 0 auto;
 }
 
-/* Live-activity meter: a thin track with a fill that rests when idle and
-   sweeps left-to-right while the kernel is busy. */
-.nbp-meter {
-  position: relative;
-  width: 44px;
-  height: 4px;
-  border-radius: 2px;
-  flex: 0 0 auto;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--ink) 12%, transparent);
-}
-
-.nbp-meter-fill {
-  position: absolute;
-  inset: 0;
-  border-radius: 2px;
-  background: var(--ink-subtle);
-}
-
-/* Idle: a short, calm resting fill. */
-.nbp-meter--idle .nbp-meter-fill {
-  right: 70%;
-  background: #3ea76a;
-}
-
-/* Busy: an indeterminate sweep. */
-.nbp-meter--busy .nbp-meter-fill {
-  width: 40%;
-  background: #e0a325;
-  animation: nbp-sweep 1.1s ease-in-out infinite;
-}
-
-/* Starting: a full, pulsing bar. */
-.nbp-meter--starting .nbp-meter-fill {
-  background: #3b82f6;
-  animation: nbp-pulse 1s ease-in-out infinite;
-}
-
-/* Dead: a full, still red bar. */
-.nbp-meter--dead .nbp-meter-fill {
-  background: #d64545;
-}
-
-@keyframes nbp-sweep {
-  0% {
-    left: -40%;
-  }
-  100% {
-    left: 100%;
-  }
-}
-
-@keyframes nbp-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-
-.nbp-strip-label {
+.nbp-strip-lang {
   color: var(--ink);
+}
+
+.nbp-strip-session {
+  font-family: var(--font-mono);
+  color: var(--ink-subtle);
 }
 
 .nbp-strip-state {
   color: var(--ink-subtle);
   text-transform: capitalize;
-}
-
-.nbp-strip-count {
-  font-family: var(--font-mono);
-  color: var(--ink-subtle);
 }
 
 .nbp-restart {
@@ -3548,6 +3735,15 @@ pre.code-block-pre {
   background: var(--surface-3);
 }
 
+/* Footer: the selected tab's name and how many cells it holds. */
+.nbp-footer {
+  padding: 6px 12px;
+  border-top: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--ink-subtle);
+  flex: 0 0 auto;
+}
+
 /* REPL console. */
 .nbp-repl {
   padding: 10px 12px 12px;
@@ -3560,14 +3756,6 @@ pre.code-block-pre {
   font-size: 12px;
   color: var(--ink-subtle);
   line-height: 1.4;
-}
-
-.nbp-repl-error {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: #d64545;
-  font-family: var(--font-mono);
-  white-space: pre-wrap;
 }
 
 .nbp-prompt {
@@ -3634,6 +3822,14 @@ pre.code-block-pre {
   font-size: 13px;
   line-height: 1.55;
   color: var(--ink-subtle);
+}
+
+.nbp-repl-error {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #d64545;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
 }
 
 .nbp-setup-btn {

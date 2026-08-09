@@ -728,6 +728,78 @@ export const MIGRATIONS: Migration[] = [
       store.run(`DROP INDEX IF EXISTS one_active_turn_per_task`);
     },
   },
+  {
+    version: 19,
+    up(store) {
+      // The block role `thought` is now `thinking`, matching the live channel
+      // that has always been called that. The value is STORED, not derived, so
+      // every transcript recorded before the rename still carries the old
+      // string — and a block that no longer matches the check is not a
+      // cosmetic problem: it stops being routed into the thinking channel,
+      // renders as ordinary prose, and gets copied to the clipboard as though
+      // it were the agent's answer. That channel exists precisely so thinking
+      // cannot be taken for the answer.
+      store.run(`UPDATE turn_items SET block = 'thinking' WHERE block = 'thought'`);
+
+      // `turns.recovery_snapshot` holds a JSON copy of the same stream, kept
+      // as a derived cache (`recovery.stream = turnStream(...)` after every
+      // frame). A settled turn takes no more frames, so nothing would ever
+      // rebuild it — the rows above would say `thinking` while the snapshot
+      // any reader actually loads still said `thought`.
+      //
+      // Replacing the serialized pair is exact rather than approximate: a
+      // quote inside a JSON string is written `\"`, so this unescaped byte
+      // sequence cannot occur inside a message's text. It only ever matches a
+      // real key and value.
+      store.run(
+        `UPDATE turns
+            SET recovery_snapshot = REPLACE(
+                  recovery_snapshot, '"block":"thought"', '"block":"thinking"')
+          WHERE recovery_snapshot LIKE '%"block":"thought"%'`,
+      );
+    },
+  },
+  {
+    version: 20,
+    up(store) {
+      // A cell is durable and the directory it ran in is not: a Task's
+      // workspace is swept, and what was computed in it has to outlive that.
+      store.run(`
+        CREATE TABLE cells (
+          id              TEXT PRIMARY KEY,
+          task_id         TEXT NOT NULL,
+          session_id      TEXT NOT NULL,
+          kernel_id       TEXT NOT NULL,
+          name            TEXT NOT NULL,
+          language        TEXT NOT NULL,
+          environment     TEXT NOT NULL,
+          execution_count INTEGER NOT NULL,
+          source          TEXT NOT NULL,
+          origin_surface  TEXT NOT NULL CHECK (origin_surface IN ('agent', 'repl')),
+          origin_by       TEXT NOT NULL,
+          ok              INTEGER NOT NULL,
+          wall_ms         INTEGER NOT NULL,
+          ts              INTEGER NOT NULL,
+          outputs         TEXT NOT NULL,
+          tool_use_id     TEXT,
+          seq             INTEGER NOT NULL UNIQUE
+        )`);
+      store.run(`CREATE INDEX cells_by_task ON cells(task_id, seq)`);
+    },
+  },
+  {
+    version: 21,
+    up(store) {
+      // Which Tasks a session has actually taken a turn for is now asked on
+      // the way in, of every kernel a machine reports and of every cell it
+      // posts — a Notebook rail open on one Task asks it once per kernel
+      // every poll. `turns` is the widest table this workspace has, holding
+      // a recovery snapshot and a frame cursor per row, so the same question
+      // answered by a scan is the whole of that table read to answer
+      // something two columns already say.
+      store.run(`CREATE INDEX turns_by_session_task ON turns(session_id, task_id)`);
+    },
+  },
 ];
 
 assertAscending(MIGRATIONS);

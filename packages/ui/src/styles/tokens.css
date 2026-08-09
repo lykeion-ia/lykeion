@@ -74,6 +74,21 @@
     Roboto, sans-serif;
   --font-mono:
     ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* The conversation's reading size, and the one knob that sets it. A Task's
+     chat surfaces are the only ones here that are READ rather than scanned —
+     the agent's prose, the researcher's prompt, a question it must answer —
+     so they take the browser's own default size instead of the denser 13px
+     chrome scale `body` sets below. `html` declares no font-size, so 1rem is
+     a true 16px and honours a reader who has changed that default.
+
+     Every chat surface derives from this: some take it directly, the
+     subordinate ones (an option's description, a code block) take a
+     `calc()` fraction of it, and the assistant bubble's own headings and
+     code are in `em` off `.msg`. Move this one value and the whole
+     conversation moves together — that is the point of it being a token
+     rather than a number repeated at each surface. */
+  --chat-text: 1rem;
 }
 
 /*

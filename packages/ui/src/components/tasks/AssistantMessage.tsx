@@ -105,6 +105,12 @@ const MarkdownCode: Components["code"] = ({ className, children }) => (
  *    is not trusted input. Both defaults stay.
  * 2. `live` ⇒ `completeMarkdown` first; a recorded turn is already whole and
  *    is rendered as-is.
+ *
+ * It renders ONE block of a reply and carries no controls of its own. A turn's
+ * `messages` are the paragraphs of a single answer, so Copy belongs to the
+ * whole reply — see `AssistantReply` in TaskTranscript.tsx. Putting it here
+ * would give a two-paragraph answer two Copy buttons and imply it was two
+ * things the agent said.
  */
 export function AssistantMessage({
   text,

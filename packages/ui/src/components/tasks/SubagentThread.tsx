@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { RunArtifact } from "@lykeion/api";
 import { AssistantMessage } from "./AssistantMessage";
+import { AssistantReply, replyText } from "./AssistantReply";
 
 /** A collapsible "Subagent: <persona>" sub-thread nested under a parent turn. */
 export function SubagentThread({
@@ -32,9 +33,14 @@ export function SubagentThread({
       {open && (
         <div className="subagent-body">
           <div className="msg msg--user">{task}</div>
-          {messages.map((t, i) => (
-            <AssistantMessage text={t} key={i} />
-          ))}
+          {/* A subagent's messages are the paragraphs of its one answer, and
+              take one Copy between them — the same rule the parent turn's
+              reply follows. */}
+          <AssistantReply text={replyText(messages)}>
+            {messages.map((t, i) => (
+              <AssistantMessage text={t} key={i} />
+            ))}
+          </AssistantReply>
           {outputs && outputs.length > 0 && (
             <div className="subagent-outputs">
               {outputs.map((o) => (

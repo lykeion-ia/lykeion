@@ -467,7 +467,11 @@ describe("assistant prose — one bubble per whole message", () => {
     // "Here's what I found:- 42 rows" by a seam guess.
     const bubbles = conversation.querySelectorAll(".msg--assistant");
     expect(bubbles).toHaveLength(2);
-    expect(bubbles[0].textContent).toBe("Here's what I found:");
+    // The bubble carries its Copy control as well as its prose, so read the
+    // rendered paragraph rather than the whole bubble's `textContent`.
+    expect(bubbles[0].querySelector("p")).toHaveTextContent(
+      /^Here's what I found:$/,
+    );
     // `AssistantMessage` parses "- 42 rows" as markdown, so the bubble holds
     // a real `<li>` — the `-` is list syntax, not text, and the rendered
     // `textContent` no longer carries it.

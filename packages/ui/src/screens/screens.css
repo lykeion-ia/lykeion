@@ -280,18 +280,32 @@ a.crumb:hover {
 
 /* The name, and what can be done to the Study, on one row. The key is not
    repeated here — the page was reached by it, so printing it again says
-   nothing. The head runs the page's full measure, across the rail's column
-   too, so the Study's name sits above everything the page holds rather than
-   beside one part.
+   nothing. The head's BOX runs the page's full measure, across the rail's
+   column too, so the Study's name sits above everything the page holds rather
+   than beside one part.
+
+   Its content, though, is centred on the main column: the right padding
+   reserves the rail's track and the gutter, which leaves a content box exactly
+   as wide as `.study-main` — so the name lands on the composer's axis, the
+   same line the description below it centres on. Centring on the head's own
+   measure instead would sit the name half the rail's width to the right of
+   everything it heads.
+
+   The actions leave the flow to keep that true: pinned to the page's far edge,
+   they hold the outer measure while contributing no width of their own to the
+   centring. The margin is the one gap between the name and both columns' first
+   row (it was padding, which the reservation above now uses).
 
    The description is NOT here: it opens the main column instead, so that it
-   and the rail's panel begin on the same line. This padding is therefore the
-   one gap between the name and both columns' first row. */
+   and the rail's panel begin on the same line. */
 .study-head {
+  position: relative;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
-  padding: 0 0 18px;
+  padding-right: calc(var(--study-rail) + var(--study-gutter));
+  margin-bottom: 18px;
 }
 
 /* An archived Study still opens, so its page says so rather than pretending
@@ -306,12 +320,22 @@ a.crumb:hover {
   color: var(--ink-tertiary);
 }
 
-/* Pin and the "…" menu, pushed to the far edge of the name's row. */
+/* Pin and the "…" menu, pushed to the far edge of the name's row. Out of the
+   flow so the name centres on the main column rather than on whatever the
+   controls leave behind — see `.study-head`. */
 .study-head-actions {
+  position: absolute;
+  right: 0;
+  /* Spanning the row and centring its children, rather than the shorter
+     `top: 50%` + `translateY(-50%)`: a transform makes the element the
+     containing block for its `position: fixed` descendants, and the "…" here
+     opens exactly such a panel (see `useAnchoredPanel`). The menu would hang
+     off this box instead of the viewport and land far off screen. */
+  top: 0;
+  bottom: 0;
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-left: auto;
 }
 
 .study-head-action {
@@ -338,6 +362,7 @@ a.crumb:hover {
 
 .study-title {
   margin: 0;
+  text-align: center;
   font-size: 24px;
   font-weight: 600;
   letter-spacing: -0.015em;
@@ -354,6 +379,9 @@ a.crumb:hover {
    padding used to supply. */
 .study-description {
   margin: 0 0 26px;
+  /* It already fills the main column, so this centres it on the composer's
+     axis — the same line the name above it is centred on. */
+  text-align: center;
   font-size: 13px;
   line-height: 1.6;
   color: var(--ink-muted);
@@ -474,14 +502,21 @@ a.crumb:hover {
 /* `:focus-within` covers three cases at once: the list's roving focus landing
    on a row, a keyboard reaching the kebab, and the menu standing open — the
    trigger keeps focus for as long as its popover lives, so an open menu can
-   never be left hanging under a faded-out button. */
+   never be left hanging under a faded-out button.
+
+   `[aria-expanded]` is the fourth: the panel is portaled to `<body>`, so a
+   keyboard that walks INTO it (ArrowRight onto a submenu) takes focus out of
+   this row, and the row would fade its own open menu's trigger. The attribute
+   says the menu is open wherever the focus went. */
 .study-task-row:hover .study-task-actions,
-.study-task-row:focus-within .study-task-actions {
+.study-task-row:focus-within .study-task-actions,
+.study-task-row:has(.study-task-kebab[aria-expanded="true"]) .study-task-actions {
   opacity: 1;
 }
 
 .study-task-row:hover .study-task-when,
-.study-task-row:focus-within .study-task-when {
+.study-task-row:focus-within .study-task-when,
+.study-task-row:has(.study-task-kebab[aria-expanded="true"]) .study-task-when {
   opacity: 0;
 }
 

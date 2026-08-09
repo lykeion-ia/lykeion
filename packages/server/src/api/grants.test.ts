@@ -11,6 +11,8 @@ import { migrate } from "../store/migrations";
 import { createChannel } from "../channel";
 import { createRunRelay, type RunCommand, type RunRelay } from "../run-relay";
 import { createRevertRegistry } from "../run-revert";
+import { createKernelListRegistry } from "../kernel-list-registry";
+import { createPendingCells } from "../kernel-cells";
 import { createRequestListener } from "../http";
 import { apiFor, signUpOwner } from "../test-support/server-api";
 import type { Store } from "../store/store";
@@ -44,7 +46,7 @@ function freshLabServer(): Promise<{ base: string; store: Store; relay: RunRelay
 
   const listener = createRequestListener({
     store, config, secure: false, indexHtml, channel, openStreams, runs: relay,
-    reverts: createRevertRegistry(),
+    reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), pendingCells: createPendingCells(),
   });
   const server = createHttpServer(listener);
 

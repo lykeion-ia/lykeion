@@ -9,6 +9,7 @@ import type {
   TurnState,
 } from "@lykeion/api";
 import type { Row, Store } from "./store";
+import { readReportedCell, recordCell } from "./cells";
 import { nextSeq } from "./migrations";
 
 /** A folder a Study's owner has granted standing access to on one runtime.
@@ -274,6 +275,25 @@ export function runtimeForTurn(store: Store, turnId: string): string | undefined
 }
 
 /**
+ * The Study and runtime a session itself belongs to, addressed by the
+ * session's own id rather than through one of its turns. A kernel is
+ * addressed by the session that opened it, and that session need not have
+ * an open turn at the moment a kernel command reaches it — a researcher's
+ * own REPL asks a kernel to run outside any turn at all. `undefined` for a
+ * session id nothing has opened.
+ */
+export function sessionOwner(
+  store: Store,
+  sessionId: string,
+): { studyId: string; runtimeId: string } | undefined {
+  const row = store.get(
+    `SELECT study_id AS study_id, runtime_id AS runtime_id FROM sessions WHERE id = ?`,
+    [sessionId],
+  );
+  return row ? { studyId: row.study_id as string, runtimeId: row.runtime_id as string } : undefined;
+}
+
+/**
  * The member who owns the machine a turn's session runs on, or `undefined`
  * when no turn has that id. This is the durable check a cookie-authenticated
  * route uses to confirm a run id a browser was handed really belongs to a
@@ -513,7 +533,7 @@ export function appendTurnText(
   turnId: string,
   text: string,
   partial = false,
-  block?: "thought" | "interim" | "final" | "error",
+  block?: "thinking" | "interim" | "final" | "error",
 ): void {
   store.run(`UPDATE turns SET text = text || ? WHERE id = ?`, [text, turnId]);
   const seq = nextSeq(store);
@@ -589,7 +609,7 @@ function turnStream(store: Store, turnId: string): TurnItem[] {
       if (samePartialBlock && current?.kind === "text") {
         current.text += item.text as string;
       } else {
-        stream.push({ kind: "text", text: item.text as string, ...(item.block === null ? {} : { block: item.block as "thought" | "interim" | "final" | "error" }) });
+        stream.push({ kind: "text", text: item.text as string, ...(item.block === null ? {} : { block: item.block as "thinking" | "interim" | "final" | "error" }) });
       }
       joiningPartial = item.partial === 1;
       continue;
@@ -631,7 +651,7 @@ export function recordRunFrames(
   nowTs: number,
 ): RunEventFrame[] {
   const row = store.get(
-    `SELECT ended_ts, last_frame_seq, recovery_snapshot FROM turns WHERE id = ?`,
+    `SELECT ended_ts, last_frame_seq, recovery_snapshot, task_id, session_id FROM turns WHERE id = ?`,
     [turnId],
   );
   if (!row) throw new Error(`no such turn: ${turnId}`);
@@ -685,8 +705,11 @@ export function recordRunFrames(
             appendTurnText(store, turnId, event.text, event.partial, "interim");
           recovery.stream = turnStream(store, turnId);
           break;
+        // The EVENT keeps its name — it is the daemon's wire vocabulary, and
+        // downstream of it sits ACP's own `agent_thought_chunk`, which is not
+        // ours to rename. Only the block role this records is `thinking`.
         case "assistant-thought":
-          appendTurnText(store, turnId, event.text, event.partial, "thought");
+          appendTurnText(store, turnId, event.text, event.partial, "thinking");
           recovery.stream = turnStream(store, turnId);
           break;
         case "assistant-text-final":
@@ -736,6 +759,48 @@ export function recordRunFrames(
           });
           recovery.stream = turnStream(store, turnId);
           break;
+        case "cell": {
+          // A cell is durable data queried through `notebookFor`, not a
+          // step in this turn's own recovery stream — a reload rebuilds a
+          // Task's notebook from the `cells` table directly rather than
+          // replaying it out of a turn's transcript.
+          //
+          // Read out of the frame rather than trusted from it. Nothing has
+          // type-checked what arrived on the wire, and the row a cell becomes
+          // is constrained — an `origin.surface` outside the CHECK, or no
+          // cell on the event at all, would throw inside the one transaction
+          // this whole batch shares and take every valid frame beside it
+          // down, with the daemon retrying that same immutable batch behind
+          // it forever. Treated as the `default` case treats a frame nothing
+          // recognizes: logged, and a no-op the cursor still advances past.
+          const cell = readReportedCell(event.cell);
+          if (cell === undefined) {
+            console.error(
+              `recordRunFrames: ignoring a cell frame this lab cannot record: ${JSON.stringify(event.cell)}`,
+            );
+            break;
+          }
+          recordCell(
+            store,
+            {
+              taskId: row.task_id as string,
+              sessionId: row.session_id as string,
+              kernelId: cell.kernelId,
+              name: cell.name,
+              language: cell.language,
+              environment: cell.environment,
+              executionCount: cell.executionCount,
+              source: cell.source,
+              origin: cell.origin,
+              ok: cell.ok,
+              wallMs: cell.wallMs,
+              outputs: cell.outputs,
+              ...(cell.toolUseId === undefined ? {} : { toolUseId: cell.toolUseId }),
+            },
+            cell.ts,
+          );
+          break;
+        }
         case "live":
           recovery.live = event.live;
           break;
@@ -750,6 +815,29 @@ export function recordRunFrames(
           recovery.live = {};
           recovery.reviewing = false;
           break;
+        default: {
+          // Compile time: every branch above names one member of `RunEvent`.
+          // A member added to the union without a case here fails this
+          // assignment to compile — the actual hazard worth guarding,
+          // caught by whoever adds it rather than by a run wedging later.
+          const exhaustive: never = event;
+          // Runtime: this line is reachable despite that guarantee, by
+          // wire data no type ever checked — a frame's `event.event`
+          // naming nothing this switch recognizes. This whole loop runs
+          // inside one transaction shared with every other frame in the
+          // batch (`http.ts`'s `/daemon/run/events` handler wraps
+          // `recordRunFrames` in `store.tx`), so throwing here would roll
+          // that transaction back whole: every valid frame beside the bad
+          // one, undone, and the daemon's `flush` retrying this same
+          // immutable batch forever behind it. Logged and treated as a
+          // no-op instead: this frame changes nothing, the frames around
+          // it in the same batch still commit, and the run's cursor still
+          // advances past it below.
+          console.error(
+            `recordRunFrames: ignoring a run event this switch does not recognize: ${JSON.stringify(exhaustive)}`,
+          );
+          break;
+        }
       }
 
       // This write precedes settlement below deliberately. A trigger, reader,

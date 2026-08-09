@@ -199,7 +199,7 @@ function mergeStep(stream: TurnItem[], entry: ExecutionLogEntry): TurnItem[] {
   return next;
 }
 
-function appendBlock(stream: TurnItem[], text: string, block: "thought" | "interim" | "error"): TurnItem[] {
+function appendBlock(stream: TurnItem[], text: string, block: "thinking" | "interim" | "error"): TurnItem[] {
   const last = stream[stream.length - 1];
   if (last?.kind === "text" && last.block === block)
     return [...stream.slice(0, -1), { ...last, text: last.text + text }];
@@ -217,7 +217,7 @@ function promoteLiveText(stream: TurnItem[], live: LiveTurn): TurnItem[] {
 function markFinalText(stream: TurnItem[]): TurnItem[] {
   for (let index = stream.length - 1; index >= 0; index -= 1) {
     const item = stream[index];
-    if (item?.kind !== "text" || item.block === "thought" || item.block === "error") continue;
+    if (item?.kind !== "text" || item.block === "thinking" || item.block === "error") continue;
     const next = [...stream];
     next[index] = { ...item, block: "final" };
     return next;
@@ -283,7 +283,7 @@ function applyEvent(entry: RunEntry, event: RunEvent): RunEntry {
     case "assistant-thought":
       return {
         ...entry,
-        stream: appendBlock(entry.stream, event.text, "thought"),
+        stream: appendBlock(entry.stream, event.text, "thinking"),
         partialText: null,
       };
     case "assistant-text-final":

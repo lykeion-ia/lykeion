@@ -15,6 +15,8 @@ import { apiFor, signUpOwner } from "./test-support/server-api";
 import type { Store } from "./store/store";
 import { recordRunFrames } from "./store/sessions";
 import { createRevertRegistry } from "./run-revert";
+import { createKernelListRegistry } from "./kernel-list-registry";
+import { createPendingCells } from "./kernel-cells";
 
 const dirs: string[] = [];
 const servers: Array<{ close(): Promise<void> }> = [];
@@ -75,7 +77,7 @@ function freshLabServer(existingDir?: string): Promise<{
     indexHtml,
     channel,
     openStreams,
-    runs: relay, reverts: createRevertRegistry(),
+    runs: relay, reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), pendingCells: createPendingCells(),
   });
   const server = createHttpServer(listener);
 

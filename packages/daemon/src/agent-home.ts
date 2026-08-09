@@ -165,3 +165,14 @@ export function foreignHomes(agent: string, workspace: string): string[] {
   }
   return [...foreign];
 }
+
+/**
+ * Every agent installation on this machine, for a policy that belongs to no
+ * agent. A kernel authenticates from nothing and owns no installation, so an
+ * agent's home is no more reachable from a cell than another agent's is from
+ * that agent.
+ */
+export function allAgentHomes(workspace: string): string[] {
+  const homes = homesFor(workspace);
+  return [...new Set(Object.values(homes).flatMap((home) => [...home.state, ...home.credentials]))];
+}

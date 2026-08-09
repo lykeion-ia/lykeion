@@ -1511,7 +1511,7 @@ export function absentCapabilityConformance(makeApi: () => Promise<LykeionApi>):
       const api = await makeApi();
       const status = await api.kernelEnvStatus();
       expect(status.state).toBe("absent");
-      expect(status.python).toBeUndefined();
+      expect(status.version).toBeUndefined();
       expect(status.packageCount).toBeUndefined();
     });
 
@@ -1556,51 +1556,41 @@ export function pairingUnsupportedConformance(makeApi: () => Promise<LykeionApi>
   });
 }
 
-export function languageAxisConformance(makeApi: () => Promise<LykeionApi>): void {
-  describe("language axis", () => {
-    it("kernelStatus reports R not ready — no faked env", async () => {
+/**
+ * What an implementation with no machine behind it says about kernels. A
+ * list that is empty is a different answer from a call that refuses, and both
+ * are asserted: "nothing is running" is knowable without a machine, and
+ * "run this" is not.
+ */
+export function kernelAxisConformance(makeApi: () => Promise<LykeionApi>): void {
+  describe("kernel axis", () => {
+    it("reports no running kernels rather than refusing to say", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Kernel", key: "KRN" });
-      const status = await api.kernelStatus(study.id, "r");
-      expect(status.envReady).toBe(false);
-      expect(status.launched).toBe(false);
+      await expect(api.listRunningKernels()).resolves.toEqual([]);
     });
 
-    it("kernelStatus defaults to python and also reports not ready", async () => {
+    it("reports an empty notebook for a Task nothing has run", async () => {
       const api = await makeApi();
       const study = await api.createStudy({ title: "Kernel", key: "KRN" });
-      const status = await api.kernelStatus(study.id);
-      expect(status.envReady).toBe(false);
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "Nothing has run here",
+      });
+      await expect(api.taskNotebook(task.id)).resolves.toEqual([]);
     });
 
-    it("kernelExecute for R rejects rather than pretending an env exists", async () => {
-      // The code is the contract; the wording is not. One implementation
-      // explains that the R environment is not provisioned, another that
-      // no machine is connected at all, and both are honest answers to
-      // "run this" from something with nowhere to run it. Asserting either
-      // sentence would hold every other implementation to one of them.
+    it("refuses to execute rather than pretending a kernel exists", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Kernel", key: "KRN" });
-      await expectRejection(
-        api.kernelExecute(study.id, "1 + 1", "r"),
-        "unsupported",
-        /./,
-      );
+      // The wording is deliberately unasserted: an implementation says why in
+      // its own terms, and pinning the sentence here would make one
+      // implementation's phrasing the contract.
+      await expectRejection(api.kernelExecute("k_1", "1 + 1"), "unsupported", /./);
     });
 
-    it("kernelExecute for Python (default) rejects when the env isn't provisioned", async () => {
-      // The exact message is not asserted here: "isn't available in the
-      // browser" is this implementation's own reason and no server runs
-      // in a browser. Only the rejection itself is a contract guarantee;
-      // the wording is checked against the in-memory implementation
-      // instead.
+    it("refuses to restart a kernel it does not have", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Kernel", key: "KRN" });
-      await expectRejection(
-        api.kernelExecute(study.id, "1 + 1"),
-        "unsupported",
-        /.+/,
-      );
+      await expectRejection(api.kernelRestart("k_1"), "unsupported", /./);
     });
   });
 }
@@ -2003,7 +1993,7 @@ const AREAS = [
   researchGroupsConformance,
   absentCapabilityConformance,
   pairingUnsupportedConformance,
-  languageAxisConformance,
+  kernelAxisConformance,
 ];
 
 /** And what only an implementation that can actually run a turn can. */

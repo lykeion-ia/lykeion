@@ -1,16 +1,26 @@
-import { afterEach, beforeAll, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { build } from "esbuild";
 import { spawn, type ChildProcess } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createHttpApi,
   LykeionError,
+  type ExecutionLogEntry,
   type LykeionApi,
+  type NotebookCell,
   type RunEvent,
   type RunEventFrame,
+  type TaskTurn,
   type Transport,
 } from "@lykeion/api";
 import { signUpOwner, startTestServer, type TestServer } from "./test-support/server-api";
@@ -30,36 +40,85 @@ const daemonSrc = join(src, "..", "..", "daemon", "src");
 const stubAgent = join(daemonSrc, "test-support", "stub-acp-agent.ts");
 
 let daemonBundle = "";
+/**
+ * The same daemon, built where it ships. A machine finds the kernel host by
+ * its own program's location — two directories below `packages` — so a
+ * daemon that is to hold kernels at all has to be started from there rather
+ * than from wherever a temporary directory happens to be. Only the case
+ * that runs cells uses this one, so the cases that do not never start an
+ * interpreter they have no use for.
+ */
+let shippedBundle = "";
 
 const dirs: string[] = [];
 const children: ChildProcess[] = [];
 const servers: TestServer[] = [];
 
+/** How long a daemon asked to stop is given before it is killed. It has a
+ *  kernel host of its own to end, and a daemon killed outright would leave
+ *  that interpreter running with nothing holding the other end of it. */
+const STOP_MS = 10_000;
+
 beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), "lykeion-run-e2e-"));
   dirs.push(dir);
   daemonBundle = join(dir, "daemon.mjs");
-  await build({
-    entryPoints: [join(daemonSrc, "main.ts")],
-    outfile: daemonBundle,
-    bundle: true,
-    platform: "node",
-    format: "esm",
-  });
+  shippedBundle = join(daemonSrc, "..", "dist", `run-e2e-${process.pid}.mjs`);
+  mkdirSync(dirname(shippedBundle), { recursive: true });
+  for (const outfile of [daemonBundle, shippedBundle])
+    await build({
+      entryPoints: [join(daemonSrc, "main.ts")],
+      outfile,
+      bundle: true,
+      platform: "node",
+      format: "esm",
+    });
 }, 60_000);
 
+afterAll(() => {
+  rmSync(shippedBundle, { force: true });
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
 afterEach(async () => {
-  for (const child of children.splice(0)) {
-    if (child.pid !== undefined) child.kill("SIGKILL");
-  }
+  // Asked to stop before it is killed, and awaited: a daemon holds a kernel
+  // host, and only its own shutdown ends that process. Killed outright it
+  // would leave one behind for every case that ran one.
+  await Promise.all(
+    children.splice(0).map(async (child) => {
+      if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+      const ended = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      child.kill("SIGTERM");
+      let killer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        ended,
+        new Promise<void>((resolve) => {
+          killer = setTimeout(() => {
+            child.kill("SIGKILL");
+            resolve();
+          }, STOP_MS);
+        }),
+      ]);
+      if (killer) clearTimeout(killer);
+    }),
+  );
   for (const server of servers.splice(0)) await server.close();
   for (const dir of dirs.splice(1)) rmSync(dir, { recursive: true, force: true });
-});
+}, 60_000);
 
 function freshDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "lykeion-run-e2e-daemon-"));
   dirs.push(dir);
   return dir;
+}
+
+/** Where `uv` is on this machine. A daemon given a `PATH` of this file's own
+ *  making still has to be able to start a kernel host, and `uv` is what
+ *  starts one. */
+function uvDirectory(): string {
+  for (const dir of (process.env.PATH ?? "").split(delimiter))
+    if (dir !== "" && existsSync(join(dir, "uv"))) return dir;
+  throw new Error("this machine has no uv on PATH, and a kernel host is started through one");
 }
 
 /** Polls `predicate` until it holds, the same shape `lifecycle.test.ts` and
@@ -68,13 +127,18 @@ function freshDir(): string {
  *  those do. */
 async function until(
   predicate: () => boolean | Promise<boolean>,
-  what: string,
+  /** What was being waited for. A function when saying it means reading
+   *  state that only matters once the wait has failed — a daemon's output,
+   *  say, which is empty at the moment the wait begins and is the whole
+   *  diagnostic by the moment it gives up. */
+  what: string | (() => string),
   timeoutMs = 15_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (await predicate()) return;
-    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${what}`);
+    if (Date.now() >= deadline)
+      throw new Error(`timed out waiting for ${typeof what === "string" ? what : what()}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -243,7 +307,19 @@ interface DaemonHandle {
 async function pairAndServe(
   lab: TestServer,
   ownerApi: LykeionApi,
-  options: { env?: Record<string, string> } = {},
+  options: {
+    env?: Record<string, string>;
+    /** Where this daemon's own program is. The daemon that holds kernels is
+     *  started from where it ships, because that is what decides whether it
+     *  can find the kernel host at all. */
+    bundle?: string;
+    /** Where an agent's work goes, when this test needs somewhere other
+     *  than the directory the daemon would pick for itself. */
+    workDir?: string;
+    /** Directories put on the daemon's `PATH` beyond the two every case
+     *  needs, for a case whose daemon has to reach a program of its own. */
+    path?: string[];
+  } = {},
 ): Promise<DaemonHandle> {
   const dataDir = freshDir();
   const binDir = freshDir();
@@ -254,12 +330,21 @@ async function pairAndServe(
   let output = "";
   const child = spawn(
     process.execPath,
-    [daemonBundle, "serve", "--no-browser", "--data-dir", dataDir, "--lab", lab.base],
+    [
+      options.bundle ?? daemonBundle,
+      "serve",
+      "--no-browser",
+      "--data-dir",
+      dataDir,
+      "--lab",
+      lab.base,
+      ...(options.workDir === undefined ? [] : ["--work-dir", options.workDir]),
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,
-        PATH: `${binDir}:${dirname(process.execPath)}`,
+        PATH: [binDir, dirname(process.execPath), ...(options.path ?? [])].join(delimiter),
         ...(options.env ?? {}),
       },
     },
@@ -412,4 +497,120 @@ it(
     expect((await owner.api.runHistory(task.id))[0]?.status).toBe("ok");
   },
   60_000,
+);
+
+/** A kernel needs an operating-system boundary this machine can render and a
+ *  `uv` to resolve its interpreter through, and this machine only has both on
+ *  macOS. */
+const onDarwin = process.platform === "darwin" ? it : it.skip;
+
+/** What a cell printed, in the order it printed it. */
+function said(cell: NotebookCell): string {
+  return cell.outputs
+    .map((output) => {
+      if (output.kind === "stream") return output.text;
+      if (output.kind === "execute_result") return String(output.data["text/plain"] ?? "");
+      if (output.kind === "error") return output.traceback.join("\n");
+      return "";
+    })
+    .join("");
+}
+
+/** Every Execution Log entry this Task's settled turns hold. */
+function executionLog(turns: TaskTurn[]): ExecutionLogEntry[] {
+  return turns.flatMap((turn) =>
+    (turn.stream ?? []).flatMap((item) => (item.kind === "step" ? [item.entry] : [])),
+  );
+}
+
+/**
+ * The whole spine with a kernel on the end of it: a real lab, a real daemon
+ * holding a real Python interpreter behind a real boundary, and an agent
+ * that reaches it the only way an agent can — a tool server this machine
+ * named to it, started by the agent itself, over the socket this machine
+ * bound for the Task.
+ *
+ * The working directory is one of this file's ordinary temporary ones,
+ * nested as deep as any: what a machine can bind a socket for must not turn
+ * on where a researcher keeps their Tasks, and a directory chosen to be
+ * short here would be a suite that never asks.
+ *
+ * `bridge.test.ts` already proves the two cells share a namespace through
+ * the relay and the interpreter. What is proved here and nowhere else is
+ * what the *lab* ends up holding once that has happened: the cells filed
+ * against the Task, in order, read back the way a browser reads them, and
+ * the agent's own steps filed against the turn that ran them.
+ */
+onDarwin(
+  "carries a variable from one of an agent's steps to the next",
+  async () => {
+    const lab = await realServerOnLoopback();
+    const owner = await signInAsOwner(lab);
+    const daemon = await pairAndServe(lab, owner.api, {
+      bundle: shippedBundle,
+      workDir: freshDir(),
+      path: [uvDirectory()],
+      env: {
+        LYKEION_STUB_SCRIPT: JSON.stringify([
+          {
+            callTool: "run_python",
+            server: "lykeion",
+            toolCallId: "tc-binds-it",
+            title: "Run Python",
+            arguments: { code: "x = 41" },
+          },
+          {
+            callTool: "run_python",
+            server: "lykeion",
+            toolCallId: "tc-reads-it",
+            title: "Run Python",
+            arguments: { code: "print(x + 1)" },
+          },
+        ]),
+      },
+    });
+
+    await until(
+      () => machineIsSessionReady(owner.api, daemon.name),
+      "the daemon to report claude as session-ready",
+      20_000,
+    );
+    const study = await owner.api.createStudy({ key: "CMP", title: "Comparative" });
+    const task = await owner.api.createTask({ studyId: study.id, stage: "background", title: "run me" });
+
+    const handle = await owner.api.startRun({
+      studyId: study.id,
+      taskId: task.id,
+      prompt: "bind a name and then read it back",
+      options: { planMode: false, agent: "claude" },
+    });
+    const seen: RunEvent[] = [];
+    handle.onEvent((event) => seen.push(event));
+    await until(
+      () => seen.some((event) => event.event === "completed"),
+      () => `the turn to complete; this machine said: ${daemon.output()}`,
+      150_000,
+    );
+
+    // What the lab stored, read back the way a browser reads it.
+    const notebook = await owner.api.taskNotebook(task.id);
+    expect(notebook.map((cell) => cell.source)).toEqual(["x = 41", "print(x + 1)"]);
+    expect(said(notebook[1]!)).toContain("42");
+    // One namespace across two of the agent's steps, and the agent never
+    // said which kernel it meant.
+    expect(notebook[0]!.kernelId).toBe(notebook[1]!.kernelId);
+    expect(notebook[0]!.origin).toEqual({ surface: "agent", by: "claude" });
+
+    // Both of the agent's steps are in the lab's own Execution Log, filed
+    // against the turn that ran them. They are not joined to the cells here:
+    // an agent's id for a call is the agent's, and the tools this machine
+    // publishes take a cell's source and nothing else, so a cell comes back
+    // naming no call at all.
+    const { turns } = await owner.api.getTask(task.id);
+    expect(executionLog(turns).map((entry) => entry.toolUseId)).toEqual([
+      "tc-binds-it",
+      "tc-reads-it",
+    ]);
+  },
+  240_000,
 );

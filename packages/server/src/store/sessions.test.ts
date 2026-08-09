@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "./sqlite";
-import { migrate, nextSeq } from "./migrations";
+import { MIGRATIONS, migrate, nextSeq } from "./migrations";
 import * as sessionsStore from "./sessions";
+import { notebookFor } from "./cells";
 import {
   openSession,
   recordTurn,
@@ -22,7 +23,7 @@ import {
   dropGrantsForStudy,
   dropGrantsForRuntime,
 } from "./sessions";
-import type { ExecutionLogEntry } from "@lykeion/api";
+import type { ExecutionLogEntry, NotebookCell, RunEventFrame } from "@lykeion/api";
 import type { Store } from "./store";
 
 const dirs: string[] = [];
@@ -133,6 +134,235 @@ it("persists progressive state, plan, transcript, live, and review snapshots", (
   });
 });
 
+it("folds a cell frame into the Task's notebook, keyed off the turn's own task, and leaves the transcript stream untouched", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store, { taskId: "t_notebook" });
+  const cell: NotebookCell = {
+    id: "wire-only",
+    kernelId: "k_1",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 1,
+    source: "1 + 1",
+    origin: { surface: "agent", by: "a_claude" },
+    ok: true,
+    wallMs: 8,
+    ts: 42,
+    outputs: [{ kind: "stream", name: "stdout", text: "2\n" }],
+    toolUseId: "tu_1",
+  };
+
+  recordRunFrames(store, turnId, [{ seq: 1, event: { event: "cell", cell } }], 100);
+
+  const notebook = notebookFor(store, "t_notebook");
+  expect(notebook).toHaveLength(1);
+  expect(notebook[0]).toEqual({ ...cell, id: notebook[0]!.id });
+  // The wire id is a placeholder the daemon minted for transit; the row
+  // mints its own durable one rather than trusting it.
+  expect(notebook[0]!.id).not.toBe("wire-only");
+  // A cell lives in the `cells` table, found through `notebookFor` — not
+  // replayed out of a turn's own recovery stream.
+  expect(runSnapshot(store, turnId)?.stream).toEqual([]);
+});
+
+it("drops a cell frame for a run that has already ended, the same as every other frame", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store, { taskId: "t_ended" });
+  finishTurn(store, turnId, { endedTs: 50, status: "ok" });
+
+  const accepted = recordRunFrames(
+    store,
+    turnId,
+    [
+      {
+        seq: 1,
+        event: {
+          event: "cell",
+          cell: {
+            id: "c_1",
+            kernelId: "k_1",
+            name: "main",
+            language: "python",
+            environment: "python",
+            executionCount: 1,
+            source: "1 + 1",
+            origin: { surface: "agent", by: "a_claude" },
+            ok: true,
+            wallMs: 8,
+            ts: 42,
+            outputs: [],
+          },
+        },
+      },
+    ],
+    100,
+  );
+
+  expect(accepted).toEqual([]);
+  expect(notebookFor(store, "t_ended")).toEqual([]);
+});
+
+it("commits the valid frames around a run event the fold switch does not recognize, and keeps accepting frames after it", () => {
+  // This whole loop runs inside one transaction shared with the rest of the
+  // batch (`http.ts`'s `/daemon/run/events` handler wraps `recordRunFrames`
+  // in `store.tx`), so throwing on a frame naming an event this build does
+  // not know would roll every valid frame in the batch back with it, and the
+  // daemon would retry that exact same immutable batch forever behind it. An
+  // unrecognized event is logged and treated as a no-op instead: the batch
+  // still commits, and the run still accepts frames afterward.
+  const store = freshStore();
+  const { turnId } = freshTurn(store, { taskId: "t_guard" });
+  const bogus = [
+    { seq: 1, event: { event: "plan-proposed", plan: { steps: [{ title: "Inspect", done: false }] } } },
+    { seq: 2, event: { event: "made-up-event" } },
+    { seq: 3, event: { event: "reviewing" } },
+  ] as unknown as RunEventFrame[];
+
+  const said: unknown[][] = [];
+  const reporting = console.error;
+  console.error = (...args: unknown[]) => said.push(args);
+  let accepted: RunEventFrame[];
+  try {
+    accepted = recordRunFrames(store, turnId, bogus, 100);
+  } finally {
+    console.error = reporting;
+  }
+
+  expect(accepted.map((f) => f.seq)).toEqual([1, 2, 3]);
+  const snapshot = runSnapshot(store, turnId);
+  expect(snapshot?.plan).toEqual({ steps: [{ title: "Inspect", done: false }] });
+  expect(snapshot?.reviewing).toBe(true);
+  expect(snapshot?.lastEventSeq).toBe(3);
+  expect(said.some((args) => String(args[0]).includes("made-up-event"))).toBe(true);
+
+  // The run's cursor moved past the whole batch, unrecognized frame
+  // included — a later frame is accepted rather than rejected as a gap.
+  const more = recordRunFrames(
+    store,
+    turnId,
+    [{ seq: 4, event: { event: "live", live: { thinking: "still going" } } }],
+    101,
+  );
+  expect(more.map((f) => f.seq)).toEqual([4]);
+  expect(runSnapshot(store, turnId)?.live).toEqual({ thinking: "still going" });
+});
+
+it("commits the valid frames around a cell frame this lab cannot record, and keeps accepting frames after it", () => {
+  // A `cell` frame is recognized by the switch and then written into a
+  // constrained row: `origin_surface` is a CHECK, and a frame carrying no
+  // cell at all reaches the same INSERT with nothing to put in it. Either
+  // one throwing would take the whole batch's transaction with it and leave
+  // the daemon retrying that same immutable batch forever — the failure the
+  // unrecognized-event case above already refuses to be.
+  const store = freshStore();
+  const { turnId } = freshTurn(store, { taskId: "t_badcell" });
+  const bogus = [
+    { seq: 1, event: { event: "reviewing" } },
+    {
+      seq: 2,
+      event: {
+        event: "cell",
+        cell: {
+          id: "c_1",
+          kernelId: "k_1",
+          name: "main",
+          language: "python",
+          environment: "python",
+          executionCount: 1,
+          source: "1 + 1",
+          // Neither `agent` nor `repl`, which is what the column allows.
+          origin: { surface: "somewhere else", by: "a_claude" },
+          ok: true,
+          wallMs: 8,
+          ts: 42,
+          outputs: [],
+        },
+      },
+    },
+    { seq: 3, event: { event: "cell" } },
+    { seq: 4, event: { event: "live", live: { thinking: "still going" } } },
+  ] as unknown as RunEventFrame[];
+
+  const said: unknown[][] = [];
+  const reporting = console.error;
+  console.error = (...args: unknown[]) => said.push(args);
+  let accepted: RunEventFrame[];
+  try {
+    accepted = recordRunFrames(store, turnId, bogus, 100);
+  } finally {
+    console.error = reporting;
+  }
+
+  expect(accepted.map((f) => f.seq)).toEqual([1, 2, 3, 4]);
+  expect(notebookFor(store, "t_badcell")).toEqual([]);
+  const snapshot = runSnapshot(store, turnId);
+  expect(snapshot?.reviewing).toBe(true);
+  expect(snapshot?.live).toEqual({ thinking: "still going" });
+  expect(snapshot?.lastEventSeq).toBe(4);
+  expect(said.filter((args) => String(args[0]).includes("cannot record"))).toHaveLength(2);
+
+  // The run's cursor moved past the whole batch, so the frames behind it are
+  // accepted rather than rejected as a gap.
+  const more = recordRunFrames(
+    store,
+    turnId,
+    [{ seq: 5, event: { event: "assistant-text", text: "done", partial: false } }],
+    101,
+  );
+  expect(more.map((f) => f.seq)).toEqual([5]);
+});
+
+it("records a cell whose outputs are messages it knows, and refuses one whose are not", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store, { taskId: "t_outputs" });
+  const cell = {
+    id: "wire-only",
+    kernelId: "k_1",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 1,
+    source: "plot()",
+    origin: { surface: "agent", by: "a_claude" },
+    ok: true,
+    wallMs: 8,
+    ts: 42,
+  };
+
+  const said: unknown[][] = [];
+  const reporting = console.error;
+  console.error = (...args: unknown[]) => said.push(args);
+  try {
+    recordRunFrames(
+      store,
+      turnId,
+      [
+        {
+          seq: 1,
+          event: {
+            event: "cell",
+            cell: { ...cell, outputs: [{ kind: "stream", name: "stdout", text: "ok\n" }] },
+          },
+        },
+        // A payload the renderer would reach into and find nothing in.
+        {
+          seq: 2,
+          event: { event: "cell", cell: { ...cell, outputs: [{ kind: "display_data" }] } },
+        },
+      ] as unknown as RunEventFrame[],
+      100,
+    );
+  } finally {
+    console.error = reporting;
+  }
+
+  const notebook = notebookFor(store, "t_outputs");
+  expect(notebook).toHaveLength(1);
+  expect(notebook[0]!.outputs).toEqual([{ kind: "stream", name: "stdout", text: "ok\n" }]);
+  expect(said.filter((args) => String(args[0]).includes("cannot record"))).toHaveLength(1);
+});
+
 it("keeps partial prose only in the active live tail and promotes it on settlement", () => {
   const store = freshStore();
   const { turnId } = freshTurn(store);
@@ -221,7 +451,7 @@ it("persists ordered typed blocks inside one turn and recovery snapshot", () => 
   ], 10);
 
   const ordered = [
-    { kind: "text", text: "Check dependencies", block: "thought" },
+    { kind: "text", text: "Check dependencies", block: "thinking" },
     { kind: "text", text: "I will inspect the data.", block: "interim" },
     { kind: "step", entry: failedStep },
     { kind: "text", text: "I used a rank-based fallback.", block: "final" },
@@ -234,6 +464,55 @@ it("persists ordered typed blocks inside one turn and recovery snapshot", () => 
   const settled = taskTurnsForTask(store, "t_1")[0];
   expect(settled?.runId).toBe(turnId);
   expect(settled?.stream).toEqual(ordered);
+});
+
+/**
+ * The block role was renamed `thought` → `thinking`, and the value is stored,
+ * not derived: every transcript recorded before the rename carries the old
+ * string in `turn_items.block`. Left unconverted it stops matching the check
+ * that routes thinking into its own channel — so an old thought would render
+ * as ordinary prose AND be copied to the clipboard as though it were the
+ * answer, which is exactly what that channel exists to prevent.
+ */
+it("migrates a transcript recorded as `thought` to `thinking`", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store);
+  recordRunFrames(
+    store,
+    turnId,
+    [
+      {
+        seq: 1,
+        event: { event: "assistant-thought", text: "Weighing two options.", partial: false },
+      },
+    ],
+    10,
+  );
+
+  // Put a pre-rename workspace back together: the rows, AND the JSON snapshot
+  // derived from them. A settled turn takes no more frames, so nothing would
+  // ever rebuild that snapshot on its own — migrating only the rows would
+  // leave every reader still loading `thought`.
+  store.run(`UPDATE turn_items SET block = 'thought' WHERE block = 'thinking'`);
+  store.run(
+    `UPDATE turns SET recovery_snapshot =
+       REPLACE(recovery_snapshot, '"block":"thinking"', '"block":"thought"')`,
+  );
+  // Run the rename itself rather than re-entering `migrate`, which applies
+  // whatever sits above the highest version already recorded — so a migration
+  // added after this one would leave this asserting nothing.
+  const rename = MIGRATIONS.find((migration) => migration.version === 19);
+  if (!rename) throw new Error("the rename is no longer version 19");
+  rename.up(store);
+
+  // The snapshot readers actually load...
+  expect(runSnapshot(store, turnId)?.stream).toEqual([
+    { kind: "text", text: "Weighing two options.", block: "thinking" },
+  ]);
+  // ...and the rows it is rebuilt from.
+  expect(
+    store.get(`SELECT block FROM turn_items WHERE turn_id = ?`, [turnId]),
+  ).toEqual({ block: "thinking" });
 });
 
 it("records a failed turn reason as an error block without creating another turn", () => {

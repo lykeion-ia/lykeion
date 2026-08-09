@@ -3,12 +3,14 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { runBridge } from "./bridge";
 import { DAEMON_VERSION, readDaemonConfig, USAGE, type DaemonConfig } from "./config";
 import { labLabel, readState, revokedStatePath, setAsidePairing, type PairedState } from "./state";
 import { beginPairing, PairingRefused, type PairingSession } from "./pairing";
 import { cliFingerprint, platformTag, probeAgentClis } from "./probe";
 import { heartbeat, report, workspacesGone } from "./lab";
 import { createRetryLoop, type RetryLoop } from "./retry";
+import { startKernelHost, type KernelHost } from "./kernel-host";
 import { startRuns, type RunSubsystem } from "./runs";
 import { heldWorkspaces, removeWorkspaces } from "./workspace";
 import {
@@ -61,6 +63,7 @@ let probeTimer: NodeJS.Timeout | undefined;
 let controlServer: ControlServer | undefined;
 let pairingSession: PairingSession | undefined;
 let runSubsystem: RunSubsystem | undefined;
+let kernelHost: KernelHost | undefined;
 let stopping = false;
 
 /**
@@ -134,6 +137,17 @@ async function shutdown(): Promise<void> {
   const runs = runSubsystem;
   runSubsystem = undefined;
   if (runs) await runs.stop();
+
+  // Stopped after the run subsystem, not before: runs.stop() drains rather
+  // than aborts — it awaits every live session's own close, gives a queued
+  // turn a durable ending, and keeps retrying a batch the lab has not yet
+  // accepted — and a session reaching this machine's kernels during any of
+  // that needs the host still standing to reach. A host stopped first is a
+  // host that answers none of those calls, which is the same failure a
+  // machine that crashed outright would leave behind.
+  const host = kernelHost;
+  kernelHost = undefined;
+  if (host) await host.stop();
 
   const session = pairingSession;
   pairingSession = undefined;
@@ -273,6 +287,65 @@ function adapterFor(agent: string): { command: string; args: string[] } | undefi
   return command ? { command, args: [] } : undefined;
 }
 
+/** What starts this machine's kernel host: `uv`, resolving the interpreter
+ *  and lockfile `packages/kernel-host`'s own `pyproject.toml` pins, run
+ *  against that package by path rather than against whatever a bare
+ *  `python` on this machine's `PATH` happens to be — a pinned lockfile
+ *  resolved against an unpinned interpreter is not pinned at all. The path
+ *  is built from this file's own location so it holds whether this module is
+ *  run from source or from the bundle `build` produces, both of which sit
+ *  two directories below `packages`. */
+function kernelHostLaunch(): { command: string; args: string[] } {
+  const kernelHostDir = join(import.meta.dirname, "..", "..", "kernel-host");
+  return { command: "uv", args: ["run", "--project", kernelHostDir, "lykeion-kernel-host"] };
+}
+
+/**
+ * This machine's kernel host, started the first time something on it needs
+ * one rather than the moment this machine finishes pairing. A machine that is
+ * never asked to run an agent never syncs a `uv` environment and never holds
+ * a Python process open.
+ *
+ * The first ask is a session opening, not a cell running, and it cannot be
+ * later than that: an agent reaches its kernels over a socket this host
+ * binds for the Task, and the agent's own program connects to that socket as
+ * it opens its session. The socket therefore has to exist before the session
+ * does, and the only thing that can bind it is a host that is already
+ * running. So a researcher who runs a turn and never runs a cell
+ * does pay for this once.
+ *
+ * Every call while the one already started is still running returns that host
+ * rather than starting a second. A host that has since died is not handed
+ * back a second time either: `kernelHost` existing is not the same claim as it
+ * still answering, and a caller of this is asking for something it can use.
+ * `shutdown()` already lets `kernelHost` stay `undefined` rather than
+ * assuming this was ever called.
+ */
+export function kernelHostFor(): KernelHost {
+  const held = kernelHost;
+  if (held?.running) return held;
+  // Told to stop before it is replaced, and never merely dropped. A host
+  // stops answering for reasons that say nothing about whether its process
+  // is gone — a failed write to its input is one — so a machine that let go
+  // of this reference without stopping it would leave an interpreter running
+  // that nothing on this machine holds the other end of, and `shutdown()`
+  // would stop only whichever host came last. Not awaited, because a caller
+  // is asking for a host it can use and the one being replaced is no longer
+  // that; the stop escalates to a kill on its own clock.
+  if (held) void held.stop();
+  const launch = kernelHostLaunch();
+  kernelHost = startKernelHost({
+    command: launch.command,
+    args: launch.args,
+    // stop() ends this same process to end this same conversation, so the
+    // exit it causes is not news — only one this machine did not ask for is.
+    onExit: (reason) => {
+      if (!stopping) console.error(`this machine's kernel host exited (${reason})`);
+    },
+  });
+  return kernelHost;
+}
+
 /**
  * The machine itself: claims the data directory, pairs if it has not
  * already, then heartbeats and reports for as long as it is left alone.
@@ -374,6 +447,7 @@ async function runServe(config: DaemonConfig): Promise<void> {
     workDir: config.workDir,
     dataDir: config.dataDir,
     adapterFor,
+    kernelHost: kernelHostFor,
   });
 
   // Swept once now, so a directory the lab had already let go of before
@@ -615,7 +689,18 @@ async function runStop(config: DaemonConfig): Promise<void> {
   out(`Stopped the daemon on pid ${file.pid}.`);
 }
 
+/** The word that says this process is a relay rather than this machine. */
+const BRIDGE = "bridge";
+
 async function main(): Promise<void> {
+  // Answered before this program's own command line is read at all. A relay
+  // is not this machine — it pairs with nothing, claims no directory and
+  // holds no identity — and the arguments that address one are not arguments
+  // this machine takes.
+  if (process.argv[2] === BRIDGE) {
+    process.exitCode = await runBridge(process.argv.slice(3));
+    return;
+  }
   const config = readDaemonConfig(process.env, process.argv.slice(2));
   // Answered before anything binds a port, claims a directory or mints a
   // pairing link. Somebody asking what this program is has not asked it to

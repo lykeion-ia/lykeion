@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { RunEventFrame } from "@lykeion/api";
-import { createRunRelay } from "./run-relay";
+import { createRunRelay, type RunCommand } from "./run-relay";
 
 it("keeps a still-running run's commands available for a fresh attach to replay", () => {
   const relay = createRunRelay();
@@ -180,4 +180,55 @@ it("continues a run's own sequence past whatever its buffer already holds", () =
     { seq: 2, event: { event: "assistant-text", text: "two", partial: true } },
   ]);
   expect(relay.nextSeqFor("run_1")).toBe(3);
+});
+
+// ---- deliverNow — what a kernel command travels on instead of enqueue,
+// because it addresses one live kernel over one live connection rather than
+// a turn that must survive a reconnect.
+
+it("delivers a command straight to a live subscriber, and reports that it did", () => {
+  const relay = createRunRelay();
+  const received: RunCommand[] = [];
+  relay.attach("rt_1", (_seq, c) => received.push(c));
+  const delivered = relay.deliverNow("rt_1", { type: "kernel-interrupt", runId: "k_1", kernelId: "k_1" });
+  expect(delivered).toBe(true);
+  expect(received).toEqual([{ type: "kernel-interrupt", runId: "k_1", kernelId: "k_1" }]);
+});
+
+it("refuses to deliver, and reports so, when nothing is attached to receive it", () => {
+  const relay = createRunRelay();
+  const delivered = relay.deliverNow("rt_1", { type: "kernel-interrupt", runId: "k_1", kernelId: "k_1" });
+  expect(delivered).toBe(false);
+});
+
+it("never leaves a delivered command behind for a later attach to replay", () => {
+  // `enqueue` keeps a `start-run`'s command around because a reconnecting
+  // daemon must still receive it, and prunes it on that run's own
+  // `completed` frame. A kernel command belongs to no run and completes
+  // nothing, so kept the same way it would sit there forever, replayed on
+  // every later `attach`.
+  const relay = createRunRelay();
+  const first: RunCommand[] = [];
+  const detach = relay.attach("rt_1", (_seq, c) => first.push(c));
+  relay.deliverNow("rt_1", { type: "kernel-interrupt", runId: "k_1", kernelId: "k_1" });
+  expect(first).toHaveLength(1);
+  detach();
+
+  const second: RunCommand[] = [];
+  relay.attach("rt_1", (_seq, c) => second.push(c));
+  expect(second).toEqual([]);
+});
+
+it("assigns a delivered command the next seq in its runtime's own sequence, so a later real command cannot collide with it", () => {
+  const relay = createRunRelay();
+  relay.attach("rt_1", () => {});
+  relay.deliverNow("rt_1", { type: "kernel-interrupt", runId: "k_1", kernelId: "k_1" });
+
+  const replayed: number[] = [];
+  relay.enqueue("rt_1", { type: "start-run", runId: "run_1" });
+  const detach = relay.attach("rt_1", (seq) => replayed.push(seq));
+  detach();
+  // The enqueued start-run's own seq is strictly past whatever deliverNow
+  // already spent — never a repeat of it.
+  expect(replayed[0]).toBeGreaterThan(1);
 });

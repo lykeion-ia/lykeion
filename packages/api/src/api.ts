@@ -38,9 +38,8 @@ import type { ArtifactBlob } from "./artifact";
 import type {
   Runtime,
   KernelEnvStatus,
-  Language,
   NotebookCell,
-  NotebookStatus,
+  RunningKernel,
 } from "./runtime";
 import type { AgentCli } from "./agent-cli";
 import type {
@@ -280,43 +279,31 @@ export interface LykeionApi {
     onProgress?: (line: string) => void,
   ): Promise<KernelEnvStatus>;
 
-  /**
-   * The Study kernel's live status for the Notebook strip. Never launches a
-   * kernel — a status read must not spin an interpreter up. `language`
-   * defaults to `"python"` when omitted.
-   */
-  kernelStatus(studyId: string, language?: Language): Promise<NotebookStatus>;
+  /** Every kernel any machine in this lab is holding. Empty when none is. */
+  listRunningKernels(): Promise<RunningKernel[]>;
 
   /**
-   * The Study notebook document — every kernel cell (agent `run_python` +
-   * researcher REPL) in execution order, for the Notebook code view. Not
-   * language-scoped: each cell already carries its own `language`.
+   * Every cell run against this Task, in execution order, across every
+   * session and kernel that touched it. Not language-scoped and not
+   * kernel-scoped: each cell already carries both.
    */
-  kernelDocument(studyId: string): Promise<NotebookCell[]>;
+  taskNotebook(taskId: string): Promise<NotebookCell[]>;
 
   /**
-   * Run one REPL cell on the Study's shared kernel and return the executed
-   * cell. Blocks until the cell completes; `kernelInterrupt` still lands.
-   * `language` defaults to `"python"` when omitted.
+   * Run one cell on a kernel, from the researcher's own surface. Returns the
+   * id the cell will be recorded under and does not wait for it: a cell has
+   * no bound on how long it may legitimately run, and the executed cell
+   * arrives on the Task's stream the same way an agent's does.
    */
-  kernelExecute(
-    studyId: string,
-    code: string,
-    language?: Language,
-  ): Promise<NotebookCell>;
+  kernelExecute(kernelId: string, code: string): Promise<{ cellId: string }>;
 
-  /**
-   * Interrupt the Study kernel's running cell (SIGINT). A no-op when idle.
-   * `language` defaults to `"python"` when omitted.
-   */
-  kernelInterrupt(studyId: string, language?: Language): Promise<void>;
+  /** Interrupt whatever this kernel is running. A no-op when it is idle. */
+  kernelInterrupt(kernelId: string): Promise<void>;
 
-  /**
-   * Restart the Study kernel into a fresh namespace (the counter resets to 0;
-   * every variable — the agent's included — is gone). Returns the new
-   * status. `language` defaults to `"python"` when omitted.
-   */
-  kernelRestart(studyId: string, language?: Language): Promise<NotebookStatus>;
+  /** Restart this kernel into a fresh namespace. The counter resets, every
+   *  variable is gone — the agent's included — and the identity survives with
+   *  its incarnation raised. */
+  kernelRestart(kernelId: string): Promise<void>;
 
   /**
    * Coding-agent CLIs detected on this machine — the ACP backends a run can be

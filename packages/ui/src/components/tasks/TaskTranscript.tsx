@@ -1,8 +1,10 @@
 import { Fragment, useState, type ReactNode } from "react";
 import type { TaskTurn, TurnItem, TurnState } from "@lykeion/api";
-import { CopyIcon, PencilIcon } from "../icons";
+import { PencilIcon } from "../icons";
 import { blocksOf, ToolStepGroup } from "./ToolStep";
 import { AssistantMessage } from "./AssistantMessage";
+import { AssistantReply, replyText } from "./AssistantReply";
+import { CopyButton } from "./CopyButton";
 import { SubagentThread } from "./SubagentThread";
 
 type CancelledTurnState = Extract<TurnState, { state: "cancelled" }>;
@@ -88,12 +90,12 @@ export function StreamView({
     <>
       {blocksOf(stream).map((block, i) =>
         block.kind === "text" ? (
-          block.block === "thought" ? (
+          block.block === "thinking" ? (
             <details
               key={i}
-              className="turn-block turn-block--thought"
-              data-testid="turn-block-thought"
-              data-block-kind="thought"
+              className="turn-block turn-block--thinking"
+              data-testid="turn-block-thinking"
+              data-block-kind="thinking"
             >
               <summary>Thought</summary>
               <AssistantMessage text={block.text} />
@@ -130,27 +132,6 @@ export interface TurnRevert {
   reason?: string;
   onRevert?: () => Promise<void>;
   onEdit?: (prompt: string) => Promise<void>;
-}
-
-/** Copies text and says so briefly. Nothing is lost, so nothing is
- *  confirmed. */
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      className="msg-action"
-      onClick={() => {
-        void navigator.clipboard?.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
-        });
-      }}
-    >
-      <CopyIcon width={13} height={13} />
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
 }
 
 /**
@@ -328,11 +309,13 @@ function TurnView({
   return (
     <>
       <UserBubble prompt={prompt} {...(revert ? { revert } : {})} />
-      {stream && stream.length > 0 ? (
-        <StreamView stream={stream} />
-      ) : (
-        messages.map((text, i) => <AssistantMessage text={text} key={i} />)
-      )}
+      <AssistantReply text={replyText(messages, stream)}>
+        {stream && stream.length > 0 ? (
+          <StreamView stream={stream} />
+        ) : (
+          messages.map((text, i) => <AssistantMessage text={text} key={i} />)
+        )}
+      </AssistantReply>
       {status === "failed" && !cancelled && (
         <div className="run-line run-line--failed">Run failed</div>
       )}

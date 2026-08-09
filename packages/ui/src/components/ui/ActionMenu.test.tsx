@@ -124,7 +124,75 @@ it("opens an end-aligned menu's submenu to the right", async () => {
   await user.click(screen.getByRole("button", { name: "Open" }));
   await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
 
+  // `align` anchors the first panel to its trigger; it does not reverse the
+  // flyout, which opens rightward until the viewport's right edge runs out.
   const [, submenu] = screen.getAllByRole("menu");
-  expect(submenu.className).toContain("left-full");
-  expect(submenu.className).not.toContain("right-full");
+  expect(submenu).toHaveAttribute("data-side", "right");
+});
+
+it("floats its panels free of the pane they open in", async () => {
+  // These menus hang off rows inside scrolling panes, and a scroll container
+  // clips on BOTH axes — an absolutely positioned panel wider than its pane
+  // lost its leading edge, icons and all, and a flyout opening past the pane
+  // was shaved to a sliver. Fixed panels answer to the viewport instead, so
+  // no ancestor's overflow can reach them.
+  const user = userEvent.setup();
+  renderWithSubmenu(vi.fn());
+  await user.click(screen.getByRole("button", { name: "Open" }));
+  await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+
+  for (const panel of screen.getAllByRole("menu"))
+    expect(panel.className).toContain("fixed");
+});
+
+it("portals its panels out of the trigger's tree", async () => {
+  // `fixed` only answers to the viewport while no ancestor is a containing
+  // block, and one `-translate-y-1/2` on any wrapper quietly makes one. Out of
+  // the tree, nothing upstream can move the panel.
+  const user = userEvent.setup();
+  const { container } = renderWithSubmenu(vi.fn());
+  await user.click(screen.getByRole("button", { name: "Open" }));
+  await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+
+  for (const panel of screen.getAllByRole("menu")) {
+    expect(container).not.toContainElement(panel);
+    expect(panel.parentElement).toBe(document.body);
+  }
+});
+
+it("selects through a portaled panel instead of dismissing itself", async () => {
+  // The outside-click check runs on mousedown and the selection on click. Once
+  // the panel is out of the tree, containment calls every press inside it an
+  // outside one — so the press would tear the menu down before its own click
+  // landed, and every selection would be swallowed.
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  renderWithSubmenu(onSelect);
+  await user.click(screen.getByRole("button", { name: "Open" }));
+  await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+  await user.click(screen.getByRole("menuitem", { name: /Plasticity/ }));
+
+  expect(onSelect).toHaveBeenCalledTimes(1);
+});
+
+it("leaves focus on the trigger, which is what keeps a hover-only one visible", async () => {
+  // Rows hide their kebab until hovered and hold it open with `:focus-within`
+  // (see `.tsb-task-actions`). That reads the trigger's own focus, not the
+  // panel's — so it survives the portal only while opening does not move focus
+  // into the menu.
+  const user = userEvent.setup();
+  render(
+    <ActionMenu items={[{ id: "a", icon: PlusIcon, label: "Add thing" }]}>
+      {({ toggle }) => (
+        <button type="button" onClick={toggle}>
+          Open
+        </button>
+      )}
+    </ActionMenu>,
+  );
+  const trigger = screen.getByRole("button", { name: "Open" });
+  await user.click(trigger);
+
+  expect(screen.getByRole("menu")).toBeInTheDocument();
+  expect(trigger).toHaveFocus();
 });

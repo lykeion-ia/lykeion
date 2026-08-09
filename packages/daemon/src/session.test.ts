@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecutionLogEntry, RunEvent } from "@lykeion/api";
-import { startSession, type LiveSession, type StandingGrant } from "./session";
+import { startSession, type LiveSession, type McpServer, type StandingGrant } from "./session";
+import { canonicalPath } from "./sandbox";
 
 const STUB = join(import.meta.dirname, "test-support", "stub-acp-agent.ts");
 const live: LiveSession[] = [];
@@ -25,7 +26,7 @@ function grantedDir(): string {
 async function session(
   script: unknown[],
   grants: StandingGrant[] = [],
-  options: { cancelGraceMs?: number } = {},
+  options: { cancelGraceMs?: number; mcpServers?: McpServer[] } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "lykeion-sess-"));
   dirs.push(cwd);
@@ -33,6 +34,10 @@ async function session(
   dirs.push(dataDir);
   const events: RunEvent[] = [];
   const granted: StandingGrant[] = [];
+  // Inside the workspace, which is the one directory the boundary lets the
+  // adapter write — a path anywhere else would be refused by the kernel
+  // rather than answered.
+  const opening = join(cwd, "session-new.json");
   const s = await startSession({
     adapter: {
       command: process.execPath,
@@ -44,11 +49,20 @@ async function session(
     grants,
     onEvent: (e) => events.push(e),
     onGrant: (g) => granted.push(g),
-    env: { ...process.env, LYKEION_STUB_SCRIPT: JSON.stringify(script) },
+    env: {
+      ...process.env,
+      LYKEION_STUB_SCRIPT: JSON.stringify(script),
+      LYKEION_STUB_SESSION_NEW_PARAMS: opening,
+    },
+    ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
     ...(options.cancelGraceMs !== undefined ? { cancelGraceMs: options.cancelGraceMs } : {}),
   });
   live.push(s);
-  return { s, events, granted };
+  /** What `session/new` actually carried, read back off the agent's own side
+   *  of the wire — so a value dropped between the option and the call shows
+   *  up here rather than passing on what was intended. */
+  const newSessionParams = () => JSON.parse(readFileSync(opening, "utf8")) as Record<string, unknown>;
+  return { s, events, granted, newSessionParams };
 }
 
 const settled = (events: RunEvent[]) =>
@@ -61,6 +75,28 @@ async function until(check: () => boolean): Promise<void> {
   }
   throw new Error("never settled");
 }
+
+it("names the kernel bridge to the agent it starts", async () => {
+  const { newSessionParams } = await session([], [], {
+    mcpServers: [{ name: "lykeion", command: "/x/bridge", args: ["--socket", "/w/sockets/k.sock"] }],
+  });
+  expect(newSessionParams()).toMatchObject({
+    mcpServers: [{ name: "lykeion", command: "/x/bridge", args: ["--socket", "/w/sockets/k.sock"] }],
+  });
+});
+
+it("tells an agent about no servers when it was given none", async () => {
+  const { newSessionParams } = await session([]);
+  expect(newSessionParams()).toMatchObject({ mcpServers: [] });
+});
+
+it("confines an agent inside a boundary that still lets it start this machine's own program", async () => {
+  // A tool server is started by the agent, inside the agent's own boundary.
+  // One that could not read the program it is told to run is one it cannot
+  // start, whatever the agent was told about it.
+  const { s } = await session([]);
+  expect(JSON.parse(s.boundary).readable).toContain(canonicalPath(process.argv[1] ?? ""));
+});
 
 it("turns the agent's prose into assistant-text and finishes completed", async () => {
   const { s, events } = await session([

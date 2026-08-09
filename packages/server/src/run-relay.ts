@@ -1,15 +1,33 @@
 import { randomUUID } from "node:crypto";
-import type { RunDecision, RunEventFrame } from "@lykeion/api";
+import type { Language, RunDecision, RunEventFrame } from "@lykeion/api";
 import type { StandingGrant } from "./store/sessions";
 
 /**
  * One instruction the lab hands a runtime over its command stream: start a
- * turn, answer something a running turn asked, or stop one. Every kind
- * shares this one shape because they travel the same stream in the same
- * envelope — only `runId` is ever guaranteed present.
+ * turn, answer something a running turn asked, stop one, or reach a kernel
+ * directly. Every kind shares this one shape because they travel the same
+ * stream in the same envelope — only `runId` is ever guaranteed present. A
+ * kernel command belongs to no turn, so it carries a `runId` of its own
+ * choosing — `kernelExecute` uses the cell id it just minted,
+ * `kernelInterrupt`/`kernelRestart` use the kernel id, and `kernel-list`
+ * uses a request id nothing else in this relay reuses — rather than leaving
+ * the field empty.
+ *
+ * Every kernel command travels over `deliverNow`, never `enqueue`: it is
+ * never queued for a later connection at all, so `publish`'s pruning by
+ * `runId` — which only ever removes a `start-run`'s own commands once that
+ * run completes — has nothing to do for one, and never needs to.
  */
 export interface RunCommand {
-  type: "start-run" | "decision" | "cancel" | "revert";
+  type:
+    | "start-run"
+    | "decision"
+    | "cancel"
+    | "revert"
+    | "kernel-execute"
+    | "kernel-interrupt"
+    | "kernel-restart"
+    | "kernel-list";
   runId: string;
   studyId?: string;
   taskId?: string;
@@ -20,6 +38,24 @@ export interface RunCommand {
   model?: string;
   grants?: StandingGrant[];
   decision?: RunDecision;
+  /** Which kernel a `kernel-execute`, `kernel-interrupt` or `kernel-restart`
+   *  command addresses. */
+  kernelId?: string;
+  /** The source a `kernel-execute` command asks a kernel to run. */
+  code?: string;
+  /** The id `kernelExecute` minted for the cell it is asking a kernel to
+   *  run, before that cell exists. */
+  cellId?: string;
+  /** The kernel context name a `kernel-execute` command runs in — the axis
+   *  `KernelIdentity.name` names, e.g. `"main"`. */
+  name?: string;
+  /** The kernel language a `kernel-execute` command runs in. */
+  language?: Language;
+  /** The member a `kernel-execute` command's cell is recorded as run by —
+   *  `CellOrigin.by` for the `"repl"` surface, since the researcher who
+   *  asked for it is this command's own caller, not anyone the kernel host
+   *  could ever be told. */
+  by?: string;
 }
 
 /** How many of a run's most recent event frames stay available to replay.
@@ -89,6 +125,19 @@ export interface RunRelay {
    *  joins the runtime's `live` set; one enqueued with nobody attached does
    *  not, until a later `attach` replays it. */
   enqueue(runtimeId: string, command: RunCommand): void;
+  /** Delivers a command to a runtime's command stream immediately, and only
+   *  if a connection is attached to receive it right now — never queued for
+   *  whatever connects next. Returns whether it was actually delivered.
+   *  What a kernel command uses instead of `enqueue`: it addresses one live
+   *  kernel over one live connection, and `enqueue`'s queueing exists for
+   *  the opposite case — a `start-run` that must survive a reconnect and be
+   *  replayed, because a turn started once must still run exactly once. A
+   *  queued `kernel-restart` replayed on a later `attach` would act on
+   *  whatever kernel currently holds that id then, which may not be the one
+   *  a researcher was looking at when they asked for it — including the
+   *  same daemon's very next process, on its first reconnect after this one
+   *  restarted it. */
+  deliverNow(runtimeId: string, command: RunCommand): boolean;
   /** Attaches the one live listener for a runtime's command stream: every
    *  command already queued is replayed to it immediately, in order —
    *  joining the runtime's `live` set as it goes, for any `start-run` among
@@ -208,6 +257,14 @@ export function createRunRelay(): RunRelay {
         if (command.type === "start-run") queue.live.add(command.runId);
         queue.subscriber(seq, command);
       }
+    },
+
+    deliverNow(runtimeId, command) {
+      const queue = queueFor(runtimeId);
+      if (!queue.subscriber) return false;
+      queue.seq += 1;
+      queue.subscriber(queue.seq, command);
+      return true;
     },
 
     attach(runtimeId, send) {

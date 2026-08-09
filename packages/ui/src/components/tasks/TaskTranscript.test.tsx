@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { TaskTurn } from "@lykeion/api";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TaskTranscript, groupTaskTurns } from "./TaskTranscript";
 
 const turn = (over: Partial<TaskTurn> = {}): TaskTurn => ({
@@ -46,7 +47,7 @@ describe("the transcript", () => {
       <TaskTranscript
         history={[turn({
           stream: [
-            { kind: "text", text: "Visible plan", block: "thought" },
+            { kind: "text", text: "Visible plan", block: "thinking" },
             { kind: "text", text: "Starting analysis", block: "interim" },
             { kind: "step", entry: { ts: 2, toolUseId: "py-1", tool: "python", input: {}, decision: "ran", result: "failed", isError: true } },
             { kind: "text", text: "Recovered result", block: "final" },
@@ -58,8 +59,8 @@ describe("the transcript", () => {
     );
     const kinds = Array.from(document.querySelectorAll("[data-block-kind]"))
       .map((node) => node.getAttribute("data-block-kind"));
-    expect(kinds).toEqual(["thought", "interim", "tool", "final", "error"]);
-    expect(screen.getByTestId("turn-block-thought")).not.toHaveAttribute("open");
+    expect(kinds).toEqual(["thinking", "interim", "tool", "final", "error"]);
+    expect(screen.getByTestId("turn-block-thinking")).not.toHaveAttribute("open");
     expect(screen.getByRole("alert")).toHaveTextContent("Turn warning");
     expect(screen.getAllByText("segment the ROIs")).toHaveLength(1);
   });
@@ -165,5 +166,87 @@ describe("the transcript", () => {
     // has spoken in is the centered chat entry, and the transcript must leave
     // the column to it.
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+/**
+ * A turn's `messages` are the paragraphs of ONE reply, not a series of
+ * separate replies — the adapter breaks a single answer into blocks on its way
+ * through. So the reply is what carries Copy: one control for what the agent
+ * said, not one per paragraph of it.
+ */
+describe("Copy on the agent's reply", () => {
+  function writeText() {
+    const write = vi.fn(async () => {});
+    Object.assign(navigator, { clipboard: { writeText: write } });
+    return write;
+  }
+
+  const TWO_PARAGRAPHS = turn({
+    messages: [
+      "Ran rigid motion correction over the twelve stacks.",
+      "Segmentation gives 512 ROIs before filtering.",
+    ],
+  });
+
+  /** The agent's Copy controls — the researcher's prompt has its own. */
+  const replyCopies = (container: HTMLElement) =>
+    within(container)
+      .getAllByRole("button", { name: /copy/i })
+      .filter((b) => !b.closest(".msg--user"));
+
+  it("gives a multi-paragraph reply ONE Copy, not one per paragraph", () => {
+    const { container } = render(
+      <TaskTranscript history={[TWO_PARAGRAPHS]} viewTurns={[]} />,
+    );
+    expect(replyCopies(container)).toHaveLength(1);
+  });
+
+  it("copies the whole reply, both paragraphs, in order", async () => {
+    const write = writeText();
+    const { container } = render(
+      <TaskTranscript history={[TWO_PARAGRAPHS]} viewTurns={[]} />,
+    );
+    await userEvent.click(replyCopies(container)[0]);
+    expect(write).toHaveBeenCalledWith(
+      [
+        "Ran rigid motion correction over the twelve stacks.",
+        "Segmentation gives 512 ROIs before filtering.",
+      ].join("\n\n"),
+    );
+  });
+
+  it("gives each turn its own reply Copy", () => {
+    const { container } = render(
+      <TaskTranscript
+        history={[
+          turn({ runId: "run_1", sequence: 1, messages: ["First reply."] }),
+          turn({ runId: "run_2", sequence: 2, messages: ["Second reply."] }),
+        ]}
+        viewTurns={[]}
+      />,
+    );
+    expect(replyCopies(container)).toHaveLength(2);
+  });
+
+  /** Thinking is not the answer, and never was — it must not ride along. */
+  it("copies the answer only, never the thinking that preceded it", async () => {
+    const write = writeText();
+    const { container } = render(
+      <TaskTranscript
+        history={[
+          turn({
+            messages: [],
+            stream: [
+              { kind: "text", block: "thinking", text: "Weighing two options." },
+              { kind: "text", block: "final", text: "Went with the second." },
+            ],
+          }),
+        ]}
+        viewTurns={[]}
+      />,
+    );
+    await userEvent.click(replyCopies(container)[0]);
+    expect(write).toHaveBeenCalledWith("Went with the second.");
   });
 });

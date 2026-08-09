@@ -1,4 +1,4 @@
-import type { RunDecision, RunEvent } from "@lykeion/api";
+import type { Language, RunDecision, RunEvent } from "@lykeion/api";
 import type { ProbedCli } from "./probe";
 import type { StandingGrant } from "./session";
 
@@ -200,11 +200,24 @@ export function backoffDelayMs(attempt: number): number {
 }
 
 /** One instruction the lab sends down the command stream: start a turn,
- *  answer something a running turn asked, or stop one. The three kinds share
- *  one shape rather than three because they arrive on the same stream in the
- *  same envelope — only `runId` is ever guaranteed present. */
+ *  answer something a running turn asked, stop one, or reach a kernel
+ *  directly. These share one shape rather than several because they arrive
+ *  on the same stream in the same envelope — only `runId` is ever guaranteed
+ *  present, and a kernel command carries one of the lab's own choosing since
+ *  it belongs to no turn. Every kernel command is delivered, never queued —
+ *  the lab's own `RunRelay.deliverNow` is what sends one, and it never
+ *  reaches this daemon at all unless the command stream is open when it is
+ *  issued. */
 export interface RunCommand {
-  type: "start-run" | "decision" | "cancel" | "revert";
+  type:
+    | "start-run"
+    | "decision"
+    | "cancel"
+    | "revert"
+    | "kernel-execute"
+    | "kernel-interrupt"
+    | "kernel-restart"
+    | "kernel-list";
   runId: string;
   studyId?: string;
   taskId?: string;
@@ -215,6 +228,21 @@ export interface RunCommand {
   model?: string;
   grants?: StandingGrant[];
   decision?: RunDecision;
+  /** Which kernel a `kernel-execute`, `kernel-interrupt` or `kernel-restart`
+   *  command addresses. */
+  kernelId?: string;
+  /** The source a `kernel-execute` command asks a kernel to run. */
+  code?: string;
+  /** The id the lab minted for the cell a `kernel-execute` command is
+   *  asking a kernel to run, before that cell exists. */
+  cellId?: string;
+  /** The kernel context name a `kernel-execute` command runs in, e.g.
+   *  `"main"`. */
+  name?: string;
+  /** The kernel language a `kernel-execute` command runs in. */
+  language?: Language;
+  /** The member a `kernel-execute` command's cell is recorded as run by. */
+  by?: string;
 }
 
 /** One SSE block's `data:` line(s), joined the way the spec joins a
@@ -387,4 +415,56 @@ export async function postRunLive(
       ? body.retireRunIds.filter((runId): runId is string => typeof runId === "string")
       : [],
   };
+}
+
+/** What one kernel's own `kernel.execute` answers with — every field this
+ *  machine's kernel host reports about the cell it just ran, in the shape
+ *  `forwardKernelCells`'s `CellAnnouncement` already carries for an agent's
+ *  cells. A REPL cell has no run of its own to travel a `RunEvent` through,
+ *  so it travels here instead. */
+export interface KernelCellReport {
+  sessionId: string;
+  taskId: string;
+  kernelId: string;
+  name: string;
+  language: string;
+  environment: string;
+  executionCount: number;
+  source: string;
+  origin: { surface: string; by: string };
+  ok: boolean;
+  wallMs: number;
+  ts: number;
+  outputs: unknown[];
+  toolUseId?: string;
+}
+
+/** Tells the lab about one cell a kernel ran outside any turn — the
+ *  researcher's own REPL, reached through `kernelExecute` rather than an
+ *  agent's tool call. Carries the id the lab minted for it when it asked
+ *  for the cell to run, so the lab records it under exactly the id it
+ *  already promised the researcher who is waiting on it. */
+export async function postKernelCell(
+  lab: string,
+  token: string,
+  cellId: string,
+  cell: KernelCellReport,
+  signal: AbortSignal,
+): Promise<void> {
+  await callLab(lab, "/daemon/cell", token, { cellId, ...cell }, signal);
+}
+
+/** Answers the lab's `kernel-list` command with what this machine's kernel
+ *  host says it is holding — every field `kernel.list` reports, none of
+ *  which name a runtime or a Study: this machine's own bearer token is what
+ *  the lab already knows it by, and a Study is resolved from a kernel's own
+ *  session, which the lab already holds durably. */
+export async function postKernelList(
+  lab: string,
+  token: string,
+  requestId: string,
+  kernels: unknown[],
+  signal: AbortSignal,
+): Promise<void> {
+  await callLab(lab, "/daemon/kernel/list", token, { requestId, kernels }, signal);
 }

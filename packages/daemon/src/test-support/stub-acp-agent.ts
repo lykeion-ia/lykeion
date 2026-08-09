@@ -9,7 +9,8 @@
  * give a second turn on the same session different behaviour from the first
  * (the last one plays again for any call past the end of the list).
  */
-import { appendFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 type Directive =
@@ -62,6 +63,22 @@ type Directive =
    *  time. That limit is why a client bug specific to concurrent requests could
    *  not be reached from this stub at all. */
   | { askAll: Array<Omit<Extract<Directive, { ask: "permission" }>, "ask">> }
+  /** One call to a tool published by a server this agent was told about on
+   *  `session/new`, made the way an adapter makes one: the server is started
+   *  as its own process and spoken the Model Context Protocol to over that
+   *  process's stdio, and the call is reported to the client as a `tool_call`
+   *  before it and a `tool_call_update` after it — which is what puts it in
+   *  the Execution Log. A server this agent was told nothing about, or one
+   *  that will not start, ends the call `failed` carrying what went wrong,
+   *  because an agent that stayed silent about that would leave a test unable
+   *  to tell a tool that answered nothing from one that was never reached. */
+  | {
+      callTool: string;
+      server: string;
+      toolCallId: string;
+      arguments: Record<string, unknown>;
+      title?: string;
+    }
   /** Pauses the script for up to `timeoutMs`, or until `session/cancel`
    *  arrives, whichever comes first — the one way a script can put the stub
    *  into the same mid-turn state a real adapter is in when a researcher
@@ -105,6 +122,10 @@ const setCalls: Array<{ method: string; id: string; value: string }> = [];
 const marker = process.env.LYKEION_STUB_SET_MARKER;
 
 let sessionId = "";
+/** The tool servers this client named on `session/new`. An adapter starts
+ *  these itself, so what a `callTool` step can reach is exactly what the
+ *  client offered and nothing this file decided. */
+let offeredServers: Array<{ name?: string; command?: string; args?: string[] }> = [];
 let nextId = 1;
 const pending = new Map<number, (result: unknown) => void>();
 // Set once `session/cancel` arrives, so a `{ wait: "cancel" }` step reached
@@ -117,6 +138,7 @@ process.on("SIGTERM", () => {
   const exit = () => {
     const marker = process.env.LYKEION_STUB_EXIT_MARKER;
     if (marker) appendFileSync(marker, `${process.pid}\n`);
+    stopToolServers();
     process.exit(0);
   };
   const delayMs = Number(process.env.LYKEION_STUB_EXIT_DELAY_MS ?? "0");
@@ -126,6 +148,192 @@ process.on("SIGTERM", () => {
 
 function send(message: unknown): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+/** One tool server, as this agent holds it: the process it runs in and the
+ *  protocol spoken over that process's stdio. */
+interface ToolServer {
+  child: ChildProcess;
+  call(name: string, args: Record<string, unknown>): Promise<string>;
+}
+
+/** Every tool server this agent has started, by the name the client gave it.
+ *  One process per server for the whole session, which is what an adapter
+ *  does — a server started per call would hand every call a fresh one, and a
+ *  tool server that holds anything between calls could never show it. */
+const toolServers = new Map<string, ToolServer>();
+
+/** How long one tool call is given to be answered. Long enough for a server
+ *  that has to provision something before its first answer, and finite so a
+ *  server that never answers ends the call rather than the turn. */
+const TOOL_CALL_MS = 120_000;
+
+function startToolServer(named: { command: string; args: string[] }): ToolServer {
+  const child = spawn(named.command, named.args, { stdio: ["pipe", "pipe", "pipe"] });
+  const answers = new Map<number, (result: unknown) => void>();
+  const failures = new Map<number, (why: string) => void>();
+  let carry = "";
+  let stderr = "";
+  let gone = "";
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  // Only the tail is kept: a server that writes without stopping must not
+  // spend the memory the agent holding it runs in.
+  child.stderr?.on("data", (chunk: string) => (stderr = (stderr + chunk).slice(-8192)));
+  /** Settles everything outstanding against a server that is no longer
+   *  there. A command that could not be spawned at all emits `error` and
+   *  never `exit`, so both endings have to arrive here — a call left waiting
+   *  on a settlement nothing is coming to make is a turn that hangs. */
+  const ended = (why: string): void => {
+    gone = why;
+    for (const fail of failures.values()) fail(`${gone}${stderr ? `: ${stderr}` : ""}`);
+    answers.clear();
+    failures.clear();
+  };
+  child.on("error", (err) => ended(`it could not be started: ${err.message}`));
+  child.on("exit", (code, signal) =>
+    ended(signal ? `it was stopped by ${signal}` : `it exited with status ${code}`),
+  );
+  child.stdout?.on("data", (chunk: string) => {
+    carry += chunk;
+    let newline = carry.indexOf("\n");
+    while (newline !== -1) {
+      const line = carry.slice(0, newline).trim();
+      carry = carry.slice(newline + 1);
+      // A line this end cannot read is dropped rather than thrown out of a
+      // stream handler nothing is prepared to catch, which would take this
+      // whole agent down over one malformed message.
+      if (line.length > 0) {
+        try {
+          const message = JSON.parse(line) as {
+            id?: number;
+            result?: unknown;
+            error?: { message?: string };
+          };
+          if (message.id !== undefined) {
+            if (message.error) failures.get(message.id)?.(message.error.message ?? "refused");
+            else answers.get(message.id)?.(message.result);
+            answers.delete(message.id);
+            failures.delete(message.id);
+          }
+        } catch {
+          // Nothing to deliver it to.
+        }
+      }
+      newline = carry.indexOf("\n");
+    }
+  });
+
+  let nextCall = 1;
+  const write = (message: unknown): void => {
+    child.stdin?.write(`${JSON.stringify(message)}\n`);
+  };
+  const request = (method: string, params: unknown): Promise<unknown> => {
+    if (gone) return Promise.reject(new Error(`this tool server is not running: ${gone}`));
+    const id = nextCall++;
+    const answered = new Promise<unknown>((resolve, reject) => {
+      answers.set(id, resolve);
+      failures.set(id, (why) => reject(new Error(why)));
+    });
+    write({ jsonrpc: "2.0", id, method, params });
+    // Cleared however the call settles, not only when it expires. A timer
+    // left running holds this process's event loop open for its whole
+    // length, so an agent whose client has already gone would stand there
+    // for the rest of it rather than ending with the session it belongs to.
+    let expiry: NodeJS.Timeout | undefined;
+    return Promise.race([
+      answered,
+      new Promise<never>((_, reject) => {
+        expiry = setTimeout(
+          () => reject(new Error(`${method} was never answered${stderr ? `: ${stderr}` : ""}`)),
+          TOOL_CALL_MS,
+        );
+      }),
+    ]).finally(() => clearTimeout(expiry));
+  };
+
+  const opened = (async () => {
+    await request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "stub-acp-agent", version: "1" },
+    });
+    write({ jsonrpc: "2.0", method: "notifications/initialized" });
+  })();
+
+  return {
+    child,
+    async call(name, args) {
+      await opened;
+      const answer = (await request("tools/call", { name, arguments: args })) as {
+        content?: Array<{ text?: string }>;
+        isError?: boolean;
+      };
+      const said = (answer.content ?? []).map((part) => part.text ?? "").join("");
+      if (answer.isError) throw new Error(said || "this tool call failed and said nothing");
+      return said;
+    },
+  };
+}
+
+function toolServerNamed(name: string): ToolServer {
+  const held = toolServers.get(name);
+  if (held) return held;
+  const named = offeredServers.find((server) => server.name === name);
+  if (!named || typeof named.command !== "string")
+    throw new Error(`this agent was told about no tool server named ${name}`);
+  const started = startToolServer({ command: named.command, args: named.args ?? [] });
+  toolServers.set(name, started);
+  return started;
+}
+
+/** Ends every tool server this agent started. An adapter's servers are its
+ *  own children and go when it does; left standing, they would outlive the
+ *  session that named them. */
+function stopToolServers(): void {
+  for (const server of toolServers.values()) server.child.kill("SIGKILL");
+  toolServers.clear();
+}
+
+/** One tool call, from telling the client about it through telling the client
+ *  how it went — the shape a real adapter reports a tool call in, and the
+ *  only reason the Execution Log has an entry for one at all. */
+async function callTool(step: Extract<Directive, { callTool: string }>): Promise<void> {
+  send({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: step.toolCallId,
+        ...(step.title === undefined ? {} : { title: step.title }),
+        rawInput: step.arguments,
+        status: "pending",
+      },
+    },
+  });
+  let status = "completed";
+  let said: string;
+  try {
+    said = await toolServerNamed(step.server).call(step.callTool, step.arguments);
+  } catch (err) {
+    status = "failed";
+    said = err instanceof Error ? err.message : String(err);
+  }
+  send({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: step.toolCallId,
+        status,
+        content: [{ type: "content", content: { type: "text", text: said } }],
+      },
+    },
+  });
 }
 
 function ask(method: string, params: unknown): Promise<unknown> {
@@ -222,6 +430,10 @@ async function play(script: Directive[]): Promise<string> {
       await askPermission(step);
       continue;
     }
+    if ("callTool" in step) {
+      await callTool(step);
+      continue;
+    }
     if ("askAll" in step) {
       // Every request sent before ANY answer is awaited — the whole point of
       // this step. Mapping first and awaiting the array afterwards is what
@@ -254,7 +466,10 @@ async function play(script: Directive[]): Promise<string> {
   return stopReason;
 }
 
-createInterface({ input: process.stdin }).on("line", (line) => {
+// The client's end going is this agent's end going too, and a tool server it
+// started is its own child: nothing else on the machine holds one, so one
+// left standing here is one nothing will ever stop.
+createInterface({ input: process.stdin }).on("close", stopToolServers).on("line", (line) => {
   if (!line.trim()) return;
   const msg = JSON.parse(line) as { id?: number; method?: string; params?: unknown; result?: unknown };
   if (msg.method === undefined && msg.id !== undefined) {
@@ -268,8 +483,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (msg.method === "session/new") {
     sessionId = "stub-session";
+    offeredServers =
+      (msg.params as { mcpServers?: Array<{ name?: string; command?: string; args?: string[] }> })
+        ?.mcpServers ?? [];
     const marker = process.env.LYKEION_STUB_SESSION_NEW_MARKER;
     if (marker) appendFileSync(marker, `${process.pid}\n`);
+    // What the client actually sent, kept where a test can read it. A session
+    // is opened once, so this is written rather than appended: what is wanted
+    // is the object, not a log of them.
+    const params = process.env.LYKEION_STUB_SESSION_NEW_PARAMS;
+    if (params) writeFileSync(params, JSON.stringify(msg.params ?? null));
     const reply = () =>
       send({ jsonrpc: "2.0", id: msg.id, result: { sessionId, ...advertised } });
     const delayMs = Number(process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS ?? "0");

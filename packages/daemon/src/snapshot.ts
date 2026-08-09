@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, rmSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { SCRATCH_DIR } from "./scratch";
 
 /**
  * What a Task's working directory held when a turn started, so a turn can be
@@ -71,6 +72,7 @@ function sizeOf(path: string): number {
   let total = 0;
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === SCRATCH_DIR) continue;
       const child = join(dir, entry.name);
       if (entry.isDirectory()) walk(child);
       else if (entry.isFile()) total += statSync(child).size;
@@ -108,7 +110,10 @@ export async function takeSnapshot(
   // turn's starting state, never a snapshot nested inside its predecessor.
   rmSync(destination, { recursive: true, force: true });
 
-  if (options.clone !== false && (await clone(source, destination))) return { taken: true };
+  if (options.clone !== false && (await clone(source, destination))) {
+    rmSync(join(destination, SCRATCH_DIR), { recursive: true, force: true });
+    return { taken: true };
+  }
   rmSync(destination, { recursive: true, force: true });
 
   const limit = options.maxCopyBytes ?? DEFAULT_MAX_COPY_BYTES;
@@ -118,7 +123,10 @@ export async function takeSnapshot(
       taken: false,
       reason: `this Task's files are too large to copy on a volume that cannot clone them (${size} bytes, over ${limit})`,
     };
-  if (await copy(source, destination)) return { taken: true };
+  if (await copy(source, destination)) {
+    rmSync(join(destination, SCRATCH_DIR), { recursive: true, force: true });
+    return { taken: true };
+  }
   rmSync(destination, { recursive: true, force: true });
   return { taken: false, reason: "this Task's files could not be copied" };
 }
@@ -166,6 +174,15 @@ export async function restoreSnapshot(
     if (hadDirectory) renameSync(replaced, task);
     rmSync(staged, { recursive: true, force: true });
     throw err;
+  }
+  // What a turn wrote is what goes back. The files the process doing the
+  // restoring is standing in are not part of that: an adapter holding this
+  // directory open keeps its temporary files, and the socket a kernel is
+  // reached through does not move out from under it.
+  const carried = join(replaced, SCRATCH_DIR);
+  if (hadDirectory && existsSync(carried)) {
+    rmSync(join(task, SCRATCH_DIR), { recursive: true, force: true });
+    renameSync(carried, join(task, SCRATCH_DIR));
   }
   rmSync(replaced, { recursive: true, force: true });
 }

@@ -110,12 +110,12 @@ function LiveRunBlock({
         stdoutFor={landedStream ? undefined : stdoutFor}
       />
 
-      {run.live.thinking && !stream.some((item) => item.kind === "text" && item.block === "thought") ? (
+      {run.live.thinking && !stream.some((item) => item.kind === "text" && item.block === "thinking") ? (
         <div className="live-thinking" data-testid="live-thinking">
           {run.live.thinking}
         </div>
       ) : null}
-      {run.live.text && !stream.some((item) => item.kind === "text" && item.block !== "thought" && item.block !== "error") ? (
+      {run.live.text && !stream.some((item) => item.kind === "text" && item.block !== "thinking" && item.block !== "error") ? (
         <div className="live-text" data-testid="live-text">
           <AssistantMessage text={run.live.text} live />
         </div>
@@ -1082,8 +1082,8 @@ export function TaskScreen({
           {/* The inspector is the Study's workspace — artifacts on disk and a
               live kernel — so it exists only where there is one. Every way of
               opening it is already off without a Study; this is the last of
-              them, and the one that keeps `ArtifactPane`/`NotebookPanel` from
-              ever being handed a Study id there is none of. */}
+              them, and the one that keeps `ArtifactPane` from ever being
+              handed a Study id there is none of. */}
           {rightPaneOpen && study !== undefined && (
             <div className="task-rightpane">
               <div
@@ -1146,7 +1146,7 @@ export function TaskScreen({
                   }}
                 />
               ) : (
-                <NotebookPanel studyId={study.id} />
+                <NotebookPanel taskId={task.id} />
               )}
             </div>
           )}

@@ -5,19 +5,33 @@ import {
   LabFrameConflict,
   LabRefused,
   openCommands,
+  postKernelCell,
+  postKernelList,
   postRunEvents,
   postRunGrant,
   postRunLive,
   postRunReverted,
   postRunSnapshot,
+  type KernelCellReport,
   type RunCommand,
 } from "./lab";
 import { createRetryLoop } from "./retry";
 import { ensureTaskDir } from "./workspace";
 import { confinementFor } from "./agent-home";
+import type { KernelHost } from "./kernel-host";
+import {
+  daemonProgramPaths,
+  ensureKernelSocketDir,
+  forwardKernelCells,
+  kernelBridgeFor,
+  kernelConfinementFor,
+  kernelSessionToken,
+  kernelSocketPath,
+} from "./kernels";
+import { PROTOCOL_VERSION } from "./kernel-protocol";
 import { boundaryOf, policyFor } from "./sandbox";
 import { restoreSnapshot, takeSnapshot } from "./snapshot";
-import { startSession, type LiveSession, type StandingGrant } from "./session";
+import { startSession, type LiveSession, type McpServer, type StandingGrant } from "./session";
 
 /** How long a run's buffered events wait for company before they are posted
  *  on their own. Long enough that a burst of `assistant-text` chunks travels
@@ -80,11 +94,41 @@ const OUTBOUND_QUEUE_LIMIT = 2000;
  *  since forgotten by everyone, including the lab. */
 const STARTED_RUNS_LIMIT = 1000;
 
+/**
+ * How long a session waits for this machine's kernels to be put within reach
+ * before it opens without them.
+ *
+ * The first ask on a machine is also the one that provisions the environment
+ * the kernels run in, which is minutes of work on a cold machine and none on
+ * a warm one — so this is generous. It is bounded at all because the call it
+ * bounds settles only when the host answers or the host process dies: a host
+ * that is up and not answering would otherwise hold the turn open with
+ * nothing said, which is the one failure a researcher cannot act on.
+ */
+const KERNEL_REACH_MS = 90_000;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, ms);
     timer.unref?.();
   });
+}
+
+/**
+ * `work`, or a rejection carrying `why` once `ms` has passed.
+ *
+ * `Promise.race` subscribes to `work` either way, so a rejection that arrives
+ * after the deadline has already been declared is still handled here rather
+ * than surfacing as a rejection nothing was waiting for.
+ */
+function withDeadline<T>(work: Promise<T>, ms: number, why: string): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error(why)), ms);
+      timer.unref?.();
+    }),
+  ]);
 }
 
 /**
@@ -106,6 +150,15 @@ export function startRuns(options: {
    *  passes none and this machine's own platform is used; a test naming one
    *  is how the no-backend path is exercised without a second machine. */
   platform?: string;
+  /** This machine's kernel host, asked for the first time a session that
+   *  could use a kernel is opened. Absent on a machine that holds none: a
+   *  session is then told about no tool server at all, rather than about one
+   *  whose kernel could never start. */
+  kernelHost?: () => KernelHost;
+  /** Overrides `KERNEL_REACH_MS` — a test's own way to make a host that never
+   *  answers something shorter than real minutes. Production never passes
+   *  this. */
+  kernelReachMs?: number;
   cancelGraceMs?: number;
 }): RunSubsystem {
   // Two signals rather than one: aborting the command stream the instant
@@ -143,6 +196,14 @@ export function startRuns(options: {
   // rejection (notably during shutdown) must still not recreate seq 1 and
   // publish a second ending. Bounded on the same horizon as replayed starts.
   const terminalRuns = new Set<string>();
+
+  // Which kernel host `kernelsFor` last wired `forwardKernelCells` onto, so
+  // a listener is registered once per host instance rather than once per
+  // session opened against it. Rebuilt whenever the host instance changes —
+  // a fresh process starts with no registered listener of its own, and a
+  // registration still pointed at the process it replaced would never see
+  // another notification.
+  let cellRoutingHost: KernelHost | undefined;
 
   // One reusable ACP subprocess per healthy session id. A subprocess whose
   // stop was not acknowledged moves to `retainedSessions`: it is still held
@@ -255,7 +316,7 @@ export function startRuns(options: {
     let release!: Promise<void>;
     release = (async () => {
       const sessionId = sessionOfRun.get(runId);
-      sessionOfRun.delete(runId);
+      if (sessionId && sessionOfRun.delete(runId)) publishQueue(sessionId);
       if (!sessionId) {
         settlers.get(runId)?.();
         settlers.delete(runId);
@@ -570,6 +631,129 @@ export function startRuns(options: {
     emit(runId, { event: "completed", state: { state: "failed", reason } });
   }
 
+  /**
+   * Tells a turn still waiting on this session where it now stands.
+   * `sessionOfRun` holds one entry per turn this session has taken and not
+   * finished, in the order they were taken, so a turn's place in that map is
+   * the number of turns in front of it.
+   *
+   * Every turn in the session is walked either way, since a later turn's
+   * count of how many are in front of it depends on knowing how many earlier
+   * ones there are — but `only`, when given, restricts which of them actually
+   * gets told: joining the tail of the queue changes nothing about where
+   * anyone already in it stands, so `handleStartRun` names the one turn that
+   * just joined rather than repeating news no one's position has changed.
+   * Called with no `only` after `sessionOfRun` loses an entry, since a turn
+   * leaving the queue shortens it for everyone behind it at once. A position
+   * that is never revised stops being true the moment the turn ahead of it
+   * ends, and a queue that never appears to move reads as a queue that is
+   * stuck.
+   */
+  function publishQueue(sessionId: string, only?: string): void {
+    let ahead = 0;
+    for (const [runId, session] of sessionOfRun) {
+      if (session !== sessionId) continue;
+      if (ahead > 0 && (only === undefined || only === runId))
+        emit(runId, { event: "state", state: { state: "queued", ahead } });
+      ahead += 1;
+    }
+  }
+
+  /**
+   * Puts a kernel within reach of the session about to open, and answers with
+   * the tool server to name to it.
+   *
+   * The configuration is awaited before this returns, and this returns before
+   * the agent is told the relay exists — which is the whole of the ordering
+   * this end owes the host. The host holds one kernel's cells in the order
+   * they were sent, and orders nothing else against them: a boundary that had
+   * not landed by the time a cell arrived would have that cell refused for a
+   * boundary nobody had supplied.
+   *
+   * A machine that cannot confine a kernel, whose host speaks a protocol this
+   * one does not, or whose host will not answer, names no server. A run still
+   * happens: an agent that can read and write this Task's files is worth much
+   * more than a refused turn, and a tool that leads to a kernel which could
+   * never start is the empty capability this would otherwise be advertising.
+   *
+   * A socket name this machine cannot bind is the one thing that raises
+   * instead. A host that will not answer is a condition of the moment — one
+   * still starting, one being replaced — and a machine that cannot confine
+   * anything offers no agent at all, so no turn reaches here on one. A name
+   * too long to bind is neither: it is a property of where this machine keeps
+   * its files, unchanged by waiting and identical on every turn after.
+   * Degraded quietly it would be a lab that never holds a kernel and never
+   * says so; raised, it ends this turn in words naming the path and its size,
+   * where whoever can move the directory will read them.
+   */
+  async function kernelsFor(
+    cwd: string,
+    taskId: string,
+    sessionId: string,
+    agent: string,
+    grants: StandingGrant[],
+  ): Promise<McpServer[]> {
+    if (options.kernelHost === undefined) return [];
+    const token = kernelSessionToken();
+    // Decided before anything is asked of the host, and outside the catch
+    // below, so a name that cannot be bound leaves this as a refusal rather
+    // than as a session quietly opened with no tools.
+    const socket = kernelSocketPath(cwd);
+    const reaching = async (): Promise<void> => {
+      const host = options.kernelHost!();
+      if (cellRoutingHost !== host) {
+        forwardKernelCells(host, (sid) => runOfSession.get(sid), emit);
+        cellRoutingHost = host;
+      }
+      const hello = (await host.call("host.hello", {})) as {
+        protocol?: unknown;
+        environment?: string;
+        reads?: string[];
+      };
+      // Read rather than merely declared at both ends. The wire shapes below
+      // are written twice, once here and once in the host, and this number is
+      // what a host says when it is no longer describing the same ones — a
+      // machine whose host was replaced under a daemon that was not.
+      if (hello.protocol !== PROTOCOL_VERSION)
+        throw new Error(
+          `this machine's kernel host speaks protocol ${JSON.stringify(hello.protocol)} ` +
+            `and this daemon speaks ${PROTOCOL_VERSION}`,
+        );
+      const { prefix } = kernelConfinementFor({
+        platform: options.platform ?? process.platform,
+        workspace: cwd,
+        dataDir: options.dataDir,
+        grants,
+        reads: hello.reads ?? [],
+      });
+      // The directory the socket goes in, before the host is asked to bind
+      // one inside it.
+      ensureKernelSocketDir();
+      await host.call("kernel.configure_session", {
+        session_id: sessionId,
+        task_id: taskId,
+        workspace: cwd,
+        environment: hello.environment ?? "",
+        prefix,
+        socket,
+        token,
+      });
+    };
+    try {
+      await withDeadline(
+        reaching(),
+        options.kernelReachMs ?? KERNEL_REACH_MS,
+        "this machine's kernels did not answer in time",
+      );
+      return [kernelBridgeFor({ workspace: cwd, sessionId, taskId, agent, token })];
+    } catch (err) {
+      console.error(
+        `this machine could not put a kernel within reach of ${taskId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
   async function runTurn(
     runId: string,
     sessionId: string,
@@ -582,7 +766,7 @@ export function startRuns(options: {
     model: string | undefined,
   ): Promise<void> {
     if (cancelledQueuedRuns.delete(runId)) {
-      sessionOfRun.delete(runId);
+      if (sessionOfRun.delete(runId)) publishQueue(sessionId);
       return;
     }
     if (stopped) {
@@ -593,7 +777,7 @@ export function startRuns(options: {
       // all, and without an ending of its own here it would sit `running`
       // in the store forever, with no daemon left to ever finish it.
       refuse(runId, STOPPED_BEFORE_TURN_REASON);
-      sessionOfRun.delete(runId);
+      if (sessionOfRun.delete(runId)) publishQueue(sessionId);
       return;
     }
     // What this turn's grants actually permit. A profile is fixed when the
@@ -610,12 +794,17 @@ export function startRuns(options: {
           workspace: ensureTaskDir(options.workDir, studyId, taskId),
           grants,
           dataDir: options.dataDir,
+          // The same read `startSession` renders, computed the same way. Two
+          // readings of it that disagreed would make every turn's boundary
+          // look changed, and every turn would retire the session in front of
+          // it and spawn another.
+          readable: daemonProgramPaths(),
           ...confinementFor(agent, ensureTaskDir(options.workDir, studyId, taskId)),
         }),
       );
     } catch (err) {
       refuse(runId, err instanceof Error ? err.message : String(err));
-      sessionOfRun.delete(runId);
+      if (sessionOfRun.delete(runId)) publishQueue(sessionId);
       return;
     }
     let live = liveSessions.get(sessionId);
@@ -651,7 +840,17 @@ export function startRuns(options: {
         });
       } catch (err) {
         refuse(runId, err instanceof Error ? err.message : String(err));
-        sessionOfRun.delete(runId);
+        if (sessionOfRun.delete(runId)) publishQueue(sessionId);
+        return;
+      }
+      // Before the session opens, so no tool call can reach a kernel this
+      // machine has not yet described a boundary for.
+      let mcpServers: McpServer[];
+      try {
+        mcpServers = await kernelsFor(cwd, taskId, sessionId, agent, grants);
+      } catch (err) {
+        refuse(runId, err instanceof Error ? err.message : String(err));
+        if (sessionOfRun.delete(runId)) publishQueue(sessionId);
         return;
       }
       const initialization = new AbortController();
@@ -665,6 +864,7 @@ export function startRuns(options: {
           dataDir: options.dataDir,
           ...(options.platform === undefined ? {} : { platform: options.platform }),
           grants,
+          mcpServers,
           onEvent: (event) => {
             if (liveSessions.get(sessionId) !== created) return;
             const current = runOfSession.get(sessionId);
@@ -718,7 +918,7 @@ export function startRuns(options: {
         if (stopped) refuse(runId, STOPPED_BEFORE_TURN_REASON);
         else if (!explicitlyCancelled)
           refuse(runId, err instanceof Error ? err.message : String(err));
-        sessionOfRun.delete(runId);
+        if (sessionOfRun.delete(runId)) publishQueue(sessionId);
         return;
       } finally {
         if (initializations.get(runId) === initialization) initializations.delete(runId);
@@ -732,7 +932,7 @@ export function startRuns(options: {
       if (stopped || cancelledBeforePrompt) {
         if (stopped && !cancelledBeforePrompt) {
           refuse(runId, STOPPED_BEFORE_TURN_REASON);
-          sessionOfRun.delete(runId);
+          if (sessionOfRun.delete(runId)) publishQueue(sessionId);
         }
         await live.close();
         return;
@@ -746,7 +946,7 @@ export function startRuns(options: {
     live.prompt(prompt);
     await settled;
     if (runOfSession.get(sessionId) === runId) runOfSession.delete(sessionId);
-    sessionOfRun.delete(runId);
+    if (sessionOfRun.delete(runId)) publishQueue(sessionId);
   }
 
   function handleStartRun(command: RunCommand): void {
@@ -776,15 +976,7 @@ export function startRuns(options: {
     const grants = command.grants ?? [];
 
     sessionOfRun.set(runId, sessionId);
-    // Everything this session has taken and not yet finished, this turn
-    // excluded. A researcher who typed ahead is owed the difference between a
-    // turn that has begun and one that is still waiting for its place: drawn
-    // as `planning`, a waiting turn says the agent is thinking about a prompt
-    // it has not been handed.
-    const ahead = [...sessionOfRun.entries()].filter(
-      ([other, session]) => session === sessionId && other !== runId,
-    ).length;
-    if (ahead > 0) emit(runId, { event: "state", state: { state: "queued", ahead } });
+    publishQueue(sessionId, runId);
     const tail = turnQueues.get(sessionId) ?? Promise.resolve();
     const next = tail
       .catch(() => {})
@@ -811,7 +1003,7 @@ export function startRuns(options: {
     if (!sessionId || runOfSession.get(sessionId) === runId) return;
     cancelledQueuedRuns.add(runId);
     initializations.get(runId)?.abort();
-    sessionOfRun.delete(runId);
+    if (sessionOfRun.delete(runId)) publishQueue(sessionId);
     emit(runId, { event: "completed", state: { state: "cancelled" } });
   }
 
@@ -869,12 +1061,129 @@ export function startRuns(options: {
     })();
   }
 
+  /**
+   * Signals a kernel this machine's host may be holding, by the bare id the
+   * host itself minted for it — the one thing `kernel.interrupt` and
+   * `kernel.restart` need, and the same id the lab resolved a runtime from
+   * to address this machine at all. Neither command carries a reply: a
+   * researcher watching a Stop control is better served by nothing
+   * happening than by an error this machine has nowhere to show them, so a
+   * machine with no kernel host, or one not answering, is left silent
+   * rather than surfaced anywhere.
+   */
+  function signalKernel(method: "kernel.interrupt" | "kernel.restart", command: RunCommand): void {
+    const kernelId = command.kernelId;
+    if (options.kernelHost === undefined || kernelId === undefined) return;
+    void options.kernelHost().call(method, { kernel_id: kernelId }).catch(() => {});
+  }
+
+  function handleKernelInterrupt(command: RunCommand): void {
+    signalKernel("kernel.interrupt", command);
+  }
+
+  function handleKernelRestart(command: RunCommand): void {
+    signalKernel("kernel.restart", command);
+  }
+
+  /**
+   * A cell the researcher's own REPL asked a kernel to run, outside any
+   * agent's turn — so there is no run for its output to travel a
+   * `RunEvent` through the way an agent's cell does. `kernel.execute`
+   * answers the call itself with the cell it just ran, and that is what
+   * reaches the lab: posted directly, under the id the lab already minted
+   * and handed back before this command ever arrived. The host announces
+   * this cell as well, on the same stream every cell is announced on, and
+   * `forwardKernelCells` drops it — a cell carried both ways would be
+   * recorded twice, and a researcher would read one cell as two.
+   *
+   * Silent when this machine holds no kernel host, when the command is
+   * missing the identity or attribution a cell must carry, or when the
+   * kernel itself refuses the call: there is no run to attach a failure
+   * frame to, and the REPL's own error state is what a researcher watching
+   * this actually sees.
+   */
+  function handleKernelExecute(command: RunCommand): void {
+    const { kernelId, code, sessionId, taskId, name, language, by, cellId } = command;
+    if (options.kernelHost === undefined) return;
+    if (
+      kernelId === undefined ||
+      code === undefined ||
+      sessionId === undefined ||
+      taskId === undefined ||
+      name === undefined ||
+      language === undefined ||
+      by === undefined ||
+      cellId === undefined
+    )
+      return;
+    void options
+      .kernelHost()
+      .call("kernel.execute", {
+        session_id: sessionId,
+        task_id: taskId,
+        name,
+        language,
+        source: code,
+        origin: { surface: "repl", by },
+      })
+      .then((cell) =>
+        postKernelCell(
+          options.lab,
+          options.token,
+          cellId,
+          cell as KernelCellReport,
+          eventsController.signal,
+        ),
+      )
+      .catch(() => {});
+  }
+
+  /**
+   * What this machine's kernel host is holding, answered back to the lab's
+   * own `kernel-list` ask. Answered `[]` rather than left silent when this
+   * machine holds no kernel host at all, or when the host itself does not
+   * answer — the lab's own wait for this reply is bounded either way, but a
+   * machine that answers promptly is what keeps a researcher's poll from
+   * ever needing to wait out that bound.
+   */
+  function handleKernelList(command: RunCommand): void {
+    const requestId = command.runId;
+    if (options.kernelHost === undefined) {
+      void postKernelList(options.lab, options.token, requestId, [], eventsController.signal).catch(
+        () => {},
+      );
+      return;
+    }
+    void options
+      .kernelHost()
+      .call("kernel.list", {})
+      .then((result) => {
+        const kernels = (result as { kernels?: unknown } | undefined)?.kernels;
+        return postKernelList(
+          options.lab,
+          options.token,
+          requestId,
+          Array.isArray(kernels) ? kernels : [],
+          eventsController.signal,
+        );
+      })
+      .catch(() =>
+        postKernelList(options.lab, options.token, requestId, [], eventsController.signal).catch(
+          () => {},
+        ),
+      );
+  }
+
   function handleCommand(seq: number, command: RunCommand): void {
     lastCommandSeq = seq;
     if (command.type === "start-run") return handleStartRun(command);
     if (command.type === "decision") return handleDecision(command);
     if (command.type === "cancel") return handleCancel(command);
     if (command.type === "revert") return handleRevert(command);
+    if (command.type === "kernel-interrupt") return handleKernelInterrupt(command);
+    if (command.type === "kernel-restart") return handleKernelRestart(command);
+    if (command.type === "kernel-execute") return handleKernelExecute(command);
+    if (command.type === "kernel-list") return handleKernelList(command);
   }
 
   const retries = createRetryLoop({
@@ -921,7 +1230,7 @@ export function startRuns(options: {
       for (const [runId, sessionId] of [...sessionOfRun]) {
         if (runOfSession.get(sessionId) === runId) continue;
         cancelledQueuedRuns.add(runId);
-        sessionOfRun.delete(runId);
+        if (sessionOfRun.delete(runId)) publishQueue(sessionId);
         refuse(runId, STOPPED_BEFORE_TURN_REASON);
       }
       // Closing a session that still has a turn in flight is not silent: the

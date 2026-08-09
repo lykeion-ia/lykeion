@@ -1516,15 +1516,25 @@ describe("assignees", () => {
   });
 });
 
-describe("language axis (in-memory)", () => {
-  it("kernelExecute for Python (default) rejects with a browser-only error", async () => {
-    // The exact wording — "isn't available in the browser" — is this
-    // implementation's own reason for refusing; the conformance suite only
-    // holds every implementation to rejecting, not to this message.
+describe("kernel identity", () => {
+  it("addresses a kernel by its own id, not by a Study", async () => {
     const api = createInMemoryApi();
-    const study = await api.createStudy({ title: "Kernel", key: "KRN" });
-    await expect(api.kernelExecute(study.id, "1 + 1")).rejects.toThrow(
-      /managed Python kernel isn't available in the browser/i,
+    // Nothing is running in a browser, and the honest answer to "which
+    // kernels are running" is none — not a refusal.
+    await expect(api.listRunningKernels()).resolves.toEqual([]);
+  });
+
+  it("has no notebook for a Task nothing has run", async () => {
+    const api = createInMemoryApi();
+    const study = (await api.listStudies())[0]!;
+    const task = (await api.getStudy(study.id)).tasks[0]!;
+    await expect(api.taskNotebook(task.id)).resolves.toEqual([]);
+  });
+
+  it("refuses to execute against a kernel the browser cannot hold", async () => {
+    const api = createInMemoryApi();
+    await expect(api.kernelExecute("k_1", "1 + 1")).rejects.toThrow(
+      /kernel isn't available in the browser/i,
     );
   });
 });

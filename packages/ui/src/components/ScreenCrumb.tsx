@@ -24,7 +24,7 @@ export function CrumbTrail({ page, to }: { page: string; to?: Route }) {
   return (
     <nav
       aria-label="Breadcrumb"
-      className="flex min-w-0 items-center gap-1.5 text-[13px]"
+      className="flex min-w-0 items-center gap-1.5 text-[15px]"
     >
       <RowLink
         to={{ name: "studies" }}

@@ -59,7 +59,11 @@ export function TaskTabs({
               <span
                 key={t.id}
                 className={cn(
-                  "inline-flex items-center rounded-md text-[13px] transition-colors duration-[120ms]",
+                  // Matches `CrumbTrail`'s size — the tabs and the trail sit on
+                  // one line in `CrumbStrip`, naming the same thing at the same
+                  // level, and reading them at two sizes made the row look like
+                  // two strips that happened to collide.
+                  "inline-flex items-center rounded-md text-[15px] transition-colors duration-[120ms]",
                   active ? "bg-surface-3 text-fg" : "text-fg-subtle",
                 )}
               >
