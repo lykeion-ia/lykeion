@@ -99,7 +99,7 @@ export function kernelConfinementFor(input: {
 }
 
 /** What the agent calls this machine's kernel tools by. */
-export const KERNEL_SERVER_NAME = "lykeion";
+export const KERNEL_SERVER_NAME = "notebook";
 
 /** The one kernel a Task's session is given. A context owns one kernel per
  *  language it runs code in, and this is that one's name. */

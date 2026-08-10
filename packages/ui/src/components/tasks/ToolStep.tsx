@@ -113,11 +113,12 @@ export function deterministicLabel(entry: ExecutionLogEntry): string {
     }
     default: {
       // An MCP tool (`mcp__<server>__<tool>`): the model authors a
-      // `human_description` for the call (the kernel's `run_python` requires
-      // one), so use it as the step's title. Falling back, show the bare tool
-      // name from the `mcp__` triple ("run_python"), never the full machine
-      // name. Model-authored, like a tier-1 title, so it is used as-is — the
-      // glyph, not the tense, carries whether a blocked call ran.
+      // `human_description` for the call (the notebook's
+      // `execute_python_cell` requires one), so use it as the step's title.
+      // Falling back, show the bare tool name from the `mcp__` triple
+      // ("execute_python_cell"), never the full machine name. Model-authored,
+      // like a tier-1 title, so it is used as-is — the glyph, not the tense,
+      // carries whether a blocked call ran.
       if (entry.tool?.startsWith("mcp__")) {
         const description = stringField(entry.input, ["human_description"]);
         if (description) return description;

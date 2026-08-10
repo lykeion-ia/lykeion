@@ -219,8 +219,8 @@ async function reachingAKernel() {
 onDarwin("carries a variable from one of an agent's tool calls to the next", async () => {
   const { agent } = await reachingAKernel();
 
-  const first = await agent.call("run_python", { code: "x = 41" });
-  const second = await agent.call("run_python", { code: "print(x + 1)" });
+  const first = await agent.call("execute_python_cell", { code: "x = 41" });
+  const second = await agent.call("execute_python_cell", { code: "print(x + 1)" });
 
   const said = (second.content ?? []).map((part) => part.text ?? "").join("");
   expect(said).toContain("42");
@@ -231,7 +231,7 @@ onDarwin("carries a variable from one of an agent's tool calls to the next", asy
 onDarwin("writes a cell that says which Task ran it and who ran it", async () => {
   const { agent } = await reachingAKernel();
 
-  const cell = (await agent.call("run_python", { code: "1" })).structuredContent?.cell;
+  const cell = (await agent.call("execute_python_cell", { code: "1" })).structuredContent?.cell;
 
   expect(cell?.name).toBe("main");
   expect(cell?.origin).toEqual({ surface: "agent", by: "claude" });
@@ -243,7 +243,10 @@ onDarwin("publishes exactly the two tools, and neither of them names a kernel", 
 
   const published = await agent.tools();
 
-  expect(published.tools.map((tool) => tool.name).sort()).toEqual(["run_python", "run_shell"]);
+  expect(published.tools.map((tool) => tool.name).sort()).toEqual([
+    "execute_python_cell",
+    "execute_shell_cell",
+  ]);
 }, 120_000);
 
 onDarwin("runs a cell inside the Task's own directory and nowhere else", async () => {
@@ -252,8 +255,8 @@ onDarwin("runs a cell inside the Task's own directory and nowhere else", async (
   const outside = taskDir();
   writeFileSync(join(outside, "secret.txt"), "ANOTHER TASKS WORK\n");
 
-  const mine = await agent.call("run_shell", { command: "cat counts.csv" });
-  const theirs = await agent.call("run_shell", { command: `cat ${outside}/secret.txt` });
+  const mine = await agent.call("execute_shell_cell", { command: "cat counts.csv" });
+  const theirs = await agent.call("execute_shell_cell", { command: `cat ${outside}/secret.txt` });
 
   const read = (answer: { content?: Array<{ text?: string }> }): string =>
     (answer.content ?? []).map((part) => part.text ?? "").join("");
@@ -344,7 +347,7 @@ it("is named to an agent with its own arguments already saying which kernel it i
     token: "a-word-only-this-session-has",
   });
 
-  expect(server.name).toBe("lykeion");
+  expect(server.name).toBe("notebook");
   expect(server.command).toBe(process.execPath);
   // What this machine writes and what the relay reads are one contract, so
   // they are asserted against each other rather than each against a copy of

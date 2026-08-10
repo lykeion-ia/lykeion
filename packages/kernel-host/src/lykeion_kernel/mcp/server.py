@@ -102,8 +102,8 @@ def _answer(cell: dict[str, Any]) -> types.CallToolResult:
 
 TOOLS = [
     types.Tool(
-        name="run_python",
-        title="Run Python",
+        name="execute_python_cell",
+        title="Execute Python cell",
         description=(
             "Run Python in this Task's kernel. The namespace is held open between "
             "calls, so a name bound by one call is still bound in the next."
@@ -115,8 +115,8 @@ TOOLS = [
         },
     ),
     types.Tool(
-        name="run_shell",
-        title="Run a shell command",
+        name="execute_shell_cell",
+        title="Execute shell cell",
         description=(
             "Run one shell command inside the same boundary as this Task's kernel, "
             "in the Task's own directory. Its output comes back as the cell's output."
@@ -190,9 +190,9 @@ def server_for(reach: Reach) -> Server[Any]:
         # Off the loop, because a cell holds whatever is running it for as
         # long as it runs. Run here, this connection could not answer a ping
         # or a cancellation for the length of a researcher's slowest cell.
-        if params.name == "run_python":
+        if params.name == "execute_python_cell":
             source = _text(params.arguments, "code")
-        elif params.name == "run_shell":
+        elif params.name == "execute_shell_cell":
             source = shell_source(_text(params.arguments, "command"))
         else:
             raise ValueError(f"this machine publishes no tool named {params.name}")
@@ -200,7 +200,7 @@ def server_for(reach: Reach) -> Server[Any]:
         return _answer(await asyncio.to_thread(cell_for, reach, source, tool_use_id))
 
     return Server(
-        "lykeion",
+        "notebook",
         version="1",
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,

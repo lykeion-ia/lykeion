@@ -54,12 +54,13 @@ describe("deterministicLabel (tier 3 — the guaranteed baseline)", () => {
   });
 
   it("labels an MCP tool by its human_description, else the bare tool name", () => {
-    // run_python reaches the UI as `mcp__lykeion_kernel__run_python`; the model
-    // authors a human_description per call, and that is the step's title.
+    // execute_python_cell reaches the UI as
+    // `mcp__notebook__execute_python_cell`; the model authors a
+    // human_description per call, and that is the step's title.
     expect(
       deterministicLabel(
         entry({
-          tool: "mcp__lykeion_kernel__run_python",
+          tool: "mcp__notebook__execute_python_cell",
           input: {
             code: "df.head()",
             human_description: "Preview the DataFrame",
@@ -68,10 +69,18 @@ describe("deterministicLabel (tier 3 — the guaranteed baseline)", () => {
       ),
     ).toBe("Preview the DataFrame");
     // With no description, the bare tool name from the triple — never the full
-    // machine name `mcp__lykeion_kernel__run_python`.
+    // machine name `mcp__notebook__execute_python_cell`.
     expect(
       deterministicLabel(
-        entry({ tool: "mcp__lykeion_kernel__run_python", input: {} }),
+        entry({ tool: "mcp__notebook__execute_python_cell", input: {} }),
+      ),
+    ).toBe("execute_python_cell");
+  });
+
+  it("still renders a historical MCP tool name without rewriting the record", () => {
+    expect(
+      deterministicLabel(
+        entry({ tool: "mcp__lykeion__run_python", input: {} }),
       ),
     ).toBe("run_python");
   });
@@ -1297,7 +1306,7 @@ describe("golden transcript — no machine-facing text in the step rows", () => 
       kind: "step",
       entry: entry({
         toolUseId: "g5",
-        tool: "mcp__lykeion_kernel__run_python",
+        tool: "mcp__notebook__execute_python_cell",
         input: { human_description: "Scoring on-target activity" },
         result: "done",
       }),

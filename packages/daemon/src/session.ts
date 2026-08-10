@@ -146,11 +146,11 @@ export interface LiveSession {
    * update and the MCP call it announces, but the kernel runs one cell at a
    * time in send order and a call's announcement precedes the whole of its
    * cell's runtime, so the turn's own log is consulted instead — an exact
-   * `code` match first (a `run_python` call's input is the cell's source,
-   * verbatim), then a `command` carried inside the source (`run_shell` wraps
-   * the command in a subprocess template), then the one still-pending call
-   * whose title names the kernel server. No match answers undefined: an
-   * unjoined cell over a misjoined one.
+   * `code` match first (an `execute_python_cell` call's input is the cell's
+   * source, verbatim), then a `command` carried inside the source
+   * (`execute_shell_cell` wraps the command in a subprocess template), then
+   * the one still-pending call whose title names the kernel server. No match
+   * answers undefined: an unjoined cell over a misjoined one.
    */
   claimKernelCall(source: string): string | undefined;
   /** What this session is confined by. A caller holding a live session

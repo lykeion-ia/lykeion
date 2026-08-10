@@ -228,7 +228,7 @@ it("gives a session a kernel before it starts the agent it names one to", async 
     "kernel.configure_session",
     "the boundary landed",
   ]);
-  expect(params.mcpServers.map((server) => server.name)).toEqual(["lykeion"]);
+  expect(params.mcpServers.map((server) => server.name)).toEqual(["notebook"]);
   // Present and empty, not absent: the ACP schema requires `env`, and the
   // real adapters silently drop an entry without it — a session that opens
   // with no kernel tools and no error anywhere.
@@ -323,7 +323,7 @@ it("joins a forwarded cell to the kernel call the session's own log says it arri
     {
       emit: "tool_call",
       toolCallId: "toolu_x",
-      title: "mcp__lykeion__run_python",
+      title: "mcp__notebook__execute_python_cell",
       rawInput: { code: "1 + 1" },
     },
     { sleep: 500 },

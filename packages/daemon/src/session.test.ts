@@ -86,12 +86,12 @@ async function until(check: () => boolean): Promise<void> {
 it("names the kernel bridge to the agent it starts", async () => {
   const { newSessionParams } = await session([], [], {
     mcpServers: [
-      { name: "lykeion", command: "/x/bridge", args: ["--socket", "/w/sockets/k.sock"], env: [] },
+      { name: "notebook", command: "/x/bridge", args: ["--socket", "/w/sockets/k.sock"], env: [] },
     ],
   });
   expect(newSessionParams()).toMatchObject({
     mcpServers: [
-      { name: "lykeion", command: "/x/bridge", args: ["--socket", "/w/sockets/k.sock"], env: [] },
+      { name: "notebook", command: "/x/bridge", args: ["--socket", "/w/sockets/k.sock"], env: [] },
     ],
   });
 });
@@ -168,7 +168,7 @@ it("joins a cell to the kernel call whose input is the cell's source, at most on
     {
       emit: "tool_call",
       toolCallId: "toolu_k1",
-      title: "mcp__lykeion__run_python",
+      title: "mcp__notebook__execute_python_cell",
       rawInput: { code: "1 + 1" },
     },
     { emit: "tool_call_update", toolCallId: "toolu_k1", status: "completed", content: "2" },
@@ -186,7 +186,7 @@ it("joins a shell cell to its call by the command carried inside the source", as
     {
       emit: "tool_call",
       toolCallId: "exec-9f",
-      title: "mcp__lykeion__run_shell",
+      title: "mcp__notebook__execute_shell_cell",
       rawInput: { command: "echo eleven rows" },
     },
     { emit: "tool_call_update", toolCallId: "exec-9f", status: "completed", content: "eleven rows" },
@@ -202,7 +202,7 @@ it("joins a shell cell to its call by the command carried inside the source", as
 it("joins a cell to the one still-pending kernel call when its input answers nothing", async () => {
   const { s, events } = await session([
     { emit: "tool_call", toolCallId: "t-read", title: "Read counts.csv", rawInput: { path: "counts.csv" } },
-    { emit: "tool_call", toolCallId: "exec-p", title: "mcp__lykeion__run_python" },
+    { emit: "tool_call", toolCallId: "exec-p", title: "mcp__notebook__execute_python_cell" },
     { sleep: 200 },
     { emit: "tool_call_update", toolCallId: "exec-p", status: "completed", content: "" },
   ]);
@@ -222,7 +222,7 @@ it("forgets last turn's kernel calls when a new turn begins", async () => {
     {
       emit: "tool_call",
       toolCallId: "toolu_k1",
-      title: "mcp__lykeion__run_python",
+      title: "mcp__notebook__execute_python_cell",
       rawInput: { code: "1 + 1" },
     },
     { emit: "tool_call_update", toolCallId: "toolu_k1", status: "completed", content: "2" },

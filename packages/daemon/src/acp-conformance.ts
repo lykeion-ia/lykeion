@@ -609,12 +609,13 @@ export function acpConformance(
         // `probe__`, not `probe\b`: a tool is named `mcp__<server>__<tool>`, so
         // what follows the server name is an underscore — a word character, and
         // therefore no word boundary. Written with `\b` the exclusion never
-        // fired for a real tool name, and this read `mcp__lykeion__run_python`
+        // fired for a real tool name, and this read
+        // `mcp__notebook__execute_python_cell`
         // and the probe's own tool as servers nobody named. The behaviour could
         // then only pass on a session reporting no MCP tools at all, which is
         // the opposite of what it exists to check. Line 552 has it right.
         const foreign =
-          prose.match(/\bmcp__(?!probe(?:__|\b)|lykeion(?:__|\b))\w+/g) ?? [];
+          prose.match(/\bmcp__(?!probe(?:__|\b)|notebook(?:__|\b))\w+/g) ?? [];
         expect(
           foreign,
           `this session reports tools from servers nothing named on session/new.\n${eventsDump(events)}`,
@@ -622,7 +623,7 @@ export function acpConformance(
         const leaked = ownRegistryServers(adapter().agent).filter(
           (name) =>
             name !== "probe" &&
-            name !== "lykeion" &&
+            name !== "notebook" &&
             new RegExp(`\\b${escapedForRegex(name)}\\b`, "i").test(prose),
         );
         expect(

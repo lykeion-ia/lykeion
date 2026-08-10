@@ -553,17 +553,17 @@ onDarwin(
       env: {
         LYKEION_STUB_SCRIPT: JSON.stringify([
           {
-            callTool: "run_python",
-            server: "lykeion",
+            callTool: "execute_python_cell",
+            server: "notebook",
             toolCallId: "tc-binds-it",
-            title: "Run Python",
+            title: "Execute Python cell",
             arguments: { code: "x = 41" },
           },
           {
-            callTool: "run_python",
-            server: "lykeion",
+            callTool: "execute_python_cell",
+            server: "notebook",
             toolCallId: "tc-reads-it",
-            title: "Run Python",
+            title: "Execute Python cell",
             arguments: { code: "print(x + 1)" },
           },
         ]),

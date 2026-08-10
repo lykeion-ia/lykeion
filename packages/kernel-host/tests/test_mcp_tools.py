@@ -119,13 +119,13 @@ def stdout_of(answer: dict[str, Any]) -> str:
     )
 
 
-def test_run_python_lands_in_the_kernel_named_by_the_bridge(mcp: Calling):
-    mcp.call("run_python", {"code": "y = 7"})
-    assert "7" in stdout_of(mcp.call("run_python", {"code": "print(y)"}))
+def test_execute_python_cell_lands_in_the_kernel_named_by_the_bridge(mcp: Calling):
+    mcp.call("execute_python_cell", {"code": "y = 7"})
+    assert "7" in stdout_of(mcp.call("execute_python_cell", {"code": "print(y)"}))
 
 
 def test_a_tool_call_carries_its_identity_into_the_cell(mcp: Calling):
-    cell = mcp.call("run_python", {"code": "1"})["cell"]
+    cell = mcp.call("execute_python_cell", {"code": "1"})["cell"]
     assert cell["name"] == "main"
     assert cell["origin"] == {"surface": "agent", "by": "claude"}
 
@@ -135,14 +135,14 @@ def test_a_call_whose_meta_names_its_tool_use_id_leaves_it_on_the_cell(mcp: Call
     # a vendor key. The cell keeps it, so the notebook record and the agent's
     # execution log name the same event.
     cell = mcp.call(
-        "run_python", {"code": "1"}, meta={"claudecode/toolUseId": "toolu_01x"}
+        "execute_python_cell", {"code": "1"}, meta={"claudecode/toolUseId": "toolu_01x"}
     )["cell"]
     assert cell["toolUseId"] == "toolu_01x"
 
 
 def test_a_shell_call_carries_its_tool_use_id_the_same_way(mcp: Calling):
     cell = mcp.call(
-        "run_shell", {"command": "true"}, meta={"toolUseId": "exec-4f"}
+        "execute_shell_cell", {"command": "true"}, meta={"toolUseId": "exec-4f"}
     )["cell"]
     assert cell["toolUseId"] == "exec-4f"
 
@@ -150,7 +150,7 @@ def test_a_shell_call_carries_its_tool_use_id_the_same_way(mcp: Calling):
 def test_a_call_with_no_meta_leaves_the_cell_without_a_tool_use_id(mcp: Calling):
     # Absent rather than null: a provider that forwarded nothing said nothing,
     # and the daemon may still join the cell to its step by observation.
-    cell = mcp.call("run_python", {"code": "1"})["cell"]
+    cell = mcp.call("execute_python_cell", {"code": "1"})["cell"]
     assert "toolUseId" not in cell
 
 
@@ -158,39 +158,39 @@ def test_both_calls_reach_the_same_kernel(mcp: Calling):
     # The kernel is decided when the server is built and cannot be named by a
     # tool call, so two calls that could not have said which kernel they meant
     # are in one namespace whether or not they say so.
-    first = mcp.call("run_python", {"code": "1"})["cell"]
-    second = mcp.call("run_shell", {"command": "true"})["cell"]
+    first = mcp.call("execute_python_cell", {"code": "1"})["cell"]
+    second = mcp.call("execute_shell_cell", {"command": "true"})["cell"]
     assert first["kernelId"] == second["kernelId"]
 
 
 def test_a_tool_names_nothing_a_caller_could_point_at_another_kernel(mcp: Calling):
     published = {tool.name: tool.input_schema for tool in mcp.tools().tools}
-    assert sorted(published) == ["run_python", "run_shell"]
-    assert list(published["run_python"]["properties"]) == ["code"]
-    assert list(published["run_shell"]["properties"]) == ["command"]
+    assert sorted(published) == ["execute_python_cell", "execute_shell_cell"]
+    assert list(published["execute_python_cell"]["properties"]) == ["code"]
+    assert list(published["execute_shell_cell"]["properties"]) == ["command"]
 
 
-def test_run_shell_brings_its_output_back_as_the_cell_it_ran(mcp: Calling):
-    answer = mcp.call("run_shell", {"command": "echo eleven rows"})
+def test_execute_shell_cell_brings_its_output_back_as_the_cell_it_ran(mcp: Calling):
+    answer = mcp.call("execute_shell_cell", {"command": "echo eleven rows"})
     assert "eleven rows" in stdout_of(answer)
     assert answer["cell"]["ok"] is True
 
 
 def test_a_shell_command_leaves_the_researchers_own_names_alone(mcp: Calling):
-    mcp.call("run_python", {"code": "subprocess = 'mine'"})
-    mcp.call("run_shell", {"command": "echo hello"})
-    assert "mine" in stdout_of(mcp.call("run_python", {"code": "print(subprocess)"}))
+    mcp.call("execute_python_cell", {"code": "subprocess = 'mine'"})
+    mcp.call("execute_shell_cell", {"command": "echo hello"})
+    assert "mine" in stdout_of(mcp.call("execute_python_cell", {"code": "print(subprocess)"}))
 
 
 def test_a_quote_in_a_command_is_part_of_it_and_not_the_end_of_it(mcp: Calling):
     # The command travels as one string inside an argument list, so nothing in
     # it can close the list and become code of its own.
-    answer = mcp.call("run_shell", {"command": "printf '%s' \"it's one argument\""})
+    answer = mcp.call("execute_shell_cell", {"command": "printf '%s' \"it's one argument\""})
     assert stdout_of(answer) == "it's one argument"
 
 
 def test_a_shell_command_that_failed_says_so_without_ending_the_cell(mcp: Calling):
-    answer = mcp.call("run_shell", {"command": "exit 3"})
+    answer = mcp.call("execute_shell_cell", {"command": "exit 3"})
     # The command failed and the cell ran, which are two different facts, and
     # the agent is told both rather than left to read one as the other.
     assert answer["cell"]["ok"] is True
@@ -198,7 +198,7 @@ def test_a_shell_command_that_failed_says_so_without_ending_the_cell(mcp: Callin
 
 
 def test_a_cell_that_raised_comes_back_as_a_failed_call_carrying_the_traceback(mcp: Calling):
-    answer = mcp.call("run_python", {"code": "raise ValueError('no such column')"})
+    answer = mcp.call("execute_python_cell", {"code": "raise ValueError('no such column')"})
     assert answer["isError"] is True
     assert "no such column" in answer["text"]
     assert answer["cell"]["ok"] is False
