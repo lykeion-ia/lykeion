@@ -17,7 +17,7 @@ afterEach(() => {
   window.location.hash = "";
 });
 
-function stubFetch(handlers: Record<string, () => Response>) {
+function stubFetch(handlers: Record<string, (init?: RequestInit) => Response>) {
   vi.stubGlobal("fetch", async (input: RequestInfo, init?: RequestInit) => {
     const path = new URL(String(input), "http://lab.example").pathname;
     // The refusal the real server makes, in the fixture, because a stub that
@@ -32,7 +32,7 @@ function stubFetch(handlers: Record<string, () => Response>) {
     }
     const handler = handlers[path];
     if (!handler) throw new Error(`no stub for ${path}`);
-    return handler();
+    return handler(init);
   });
 }
 
@@ -78,6 +78,40 @@ it("offers to create the owner on a lab that has none", async () => {
     </AuthGate>,
   );
   expect(await screen.findByRole("button", { name: /Create the lab/i })).toBeInTheDocument();
+});
+
+it("asks the new lab for a name, on the one screen that can", async () => {
+  // Setup answers once and is then withdrawn, so this is the only moment
+  // anything can ask. The answer is what a machine's pairing page and the
+  // link back from it call this lab; skipped, it stays unnamed and those
+  // places say the address instead.
+  const currentUser = vi.fn(async () => {
+    throw new LykeionError("unauthenticated", "not signed in");
+  });
+  const bodies: unknown[] = [];
+  stubFetch({
+    "/auth/setup": (init) => {
+      if (init?.method === "POST") bodies.push(JSON.parse(String(init.body)));
+      return init?.method === "POST"
+        ? json(200, { ok: true })
+        : json(200, { setupRequired: true });
+    },
+  });
+  const user = userEvent.setup();
+  render(
+    <AuthGate currentUser={currentUser} onSignedIn={() => {}}>
+      <p>the workbench</p>
+    </AuthGate>,
+  );
+
+  await user.type(await screen.findByLabelText(/Lab name/i), "Ferrando Lab");
+  await user.type(screen.getByLabelText(/Your name/i), "Ana");
+  await user.type(screen.getByLabelText(/Email/i), "ana@lab.example");
+  await user.type(screen.getByLabelText(/Password/i), "a good long password");
+  await user.click(screen.getByRole("button", { name: /Create the lab/i }));
+
+  await waitFor(() => expect(bodies).toHaveLength(1));
+  expect(bodies[0]).toMatchObject({ labName: "Ferrando Lab", displayName: "Ana" });
 });
 
 it("shows the join screen for an invite link instead of asking for sign-in", async () => {

@@ -32,6 +32,8 @@ import {
   TrashIcon,
 } from "../components/icons";
 import { modelOptionOf, noChoiceReason } from "../lib/agent-options";
+import { cliIcon } from "../lib/cli-icons";
+import { cliInk } from "../lib/cli-brand";
 import { stashRun } from "../lib/pending-run";
 import {
   closeTaskTab,
@@ -251,6 +253,11 @@ export function StudyScreen({ studyId }: { studyId: string }) {
     invalidate();
   };
 
+  // What a detected CLI calls itself, for the row glyph's tooltip. Falls back
+  // to the id the turn recorded: a Task keeps naming the agent it ran on even
+  // once no machine here reports that CLI any more.
+  const agentName = (id: string) => clis.find((c) => c.id === id)?.name ?? id;
+
   /**
    * One Task line. `i` is its place in the flat, top-to-bottom reading order
    * the list navigates by — which runs across both groups, so an arrow key
@@ -278,11 +285,10 @@ export function StudyScreen({ studyId }: { studyId: string }) {
             rowRef={setRef(i)}
             onFocus={() => select(i)}
           >
-            {/* A Task is a chat, so it wears the chat glyph — the same one
-                the rail's conversation control carries. */}
-            <span className="study-task-glyph">
-              <Icon name="chat" size={14} />
-            </span>
+            <TaskGlyph
+              agent={task.agent}
+              name={task.agent ? agentName(task.agent) : undefined}
+            />
             <span className="study-task-title">{task.title}</span>
             <span className="study-task-when">{formatAgo(task.updatedTs)}</span>
           </RowLink>
@@ -542,6 +548,49 @@ export function StudyScreen({ studyId }: { studyId: string }) {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * What a Task row leads with: the mark of the coding agent it is talking to,
+ * drawn from the same brand set the composer's CLI dock wears, so one drawing
+ * means one agent everywhere on this page. Which agent is on a piece of work
+ * is the fact that separates two rows of this list, and reading it off the
+ * row is what saves opening the Task to find out.
+ *
+ * A Task nobody has run is on no agent, and an agent with no bundled mark has
+ * nothing to draw — both keep the chat glyph, which is what a Task is before
+ * it is anything else, and the same one the rail's conversation control
+ * carries.
+ *
+ * The mark wears its brand's own colour. Which agent is on a piece of work is
+ * what this column is FOR, and a column of identical grey silhouettes made a
+ * reader tell Claude from Codex by their outlines at 14px — colour is the
+ * fastest thing on a row to read, and it is the one fact these drawings carry
+ * that a shape does not. The chat glyph keeps the row's ink: it stands for no
+ * brand, so it has no colour to be in. Brands whose mark is black or white
+ * keep the row's ink too; see `cliInk`.
+ */
+function TaskGlyph({ agent, name }: { agent?: string; name?: string }) {
+  const Mark = agent ? cliIcon(agent) : null;
+  const ink = Mark && agent ? cliInk(agent) : null;
+  return (
+    <span
+      className="study-task-glyph"
+      // Out of the accessibility tree rather than named: this sits inside the
+      // row's link, and a titled child with no readable content of its own
+      // would be folded into the link's name — so the row would announce its
+      // agent before its title.
+      aria-hidden="true"
+      {...(ink ? { style: { color: ink } } : {})}
+      {...(Mark ? { "data-agent": agent, title: name } : {})}
+    >
+      {Mark ? (
+        <Mark className="study-task-mark" />
+      ) : (
+        <Icon name="chat" size={14} />
+      )}
+    </span>
   );
 }
 

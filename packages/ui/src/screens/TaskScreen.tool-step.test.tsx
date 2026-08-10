@@ -267,7 +267,7 @@ describe("Task transcript — tool-step cards", () => {
     // Tier 3 (the deterministic label) — a `Bash` step with no adapter title
     // and no promotable narration before it.
     expect(
-      await within(conversation).findByText("Ran: wc -l data.csv"),
+      await within(conversation).findByText("wc -l data.csv"),
     ).toBeInTheDocument();
     expect(within(conversation).getAllByTestId("tool-step")).toHaveLength(1);
 
@@ -357,7 +357,7 @@ describe("Task transcript — tool-step cards", () => {
     // with a sentence that does not name it, and cost the transcript a whole
     // prose block.
     expect(escaped).toHaveTextContent(
-      "Wrote /Users/researcher/.claude/plans/load-the-dataset.md",
+      "Write /Users/researcher/.claude/plans/load-the-dataset.md",
     );
     expect(escaped).not.toHaveTextContent("Here's my plan for this task.");
     expect(
@@ -414,8 +414,8 @@ describe("Task transcript — tool-step cards", () => {
     expect(within(group).getByText("Ran 2 commands")).toBeInTheDocument();
     expect(within(group).getByText("2 steps")).toBeInTheDocument();
     expect(within(group).getAllByTestId("tool-step")).toHaveLength(2);
-    expect(within(group).getByText("Ran: wc -l a.csv")).toBeInTheDocument();
-    expect(within(group).getByText("Ran: wc -l b.csv")).toBeInTheDocument();
+    expect(within(group).getByText("wc -l a.csv")).toBeInTheDocument();
+    expect(within(group).getByText("wc -l b.csv")).toBeInTheDocument();
   });
 
   it("renders a FAILED turn's landed stream as cards, exactly like a completed one", async () => {
@@ -650,7 +650,7 @@ describe("Task transcript refresh on landing", () => {
     // The step drew a card (tier 3, the deterministic label)...
     await waitFor(() =>
       expect(
-        within(conversation).getAllByText("Ran: wc -l kinases.csv").length,
+        within(conversation).getAllByText("wc -l kinases.csv").length,
       ).toBeGreaterThan(0),
     );
     // ...exactly one, with one prose block: refetching the transcript must not
@@ -658,7 +658,7 @@ describe("Task transcript refresh on landing", () => {
     await waitFor(() => {
       expect(within(conversation).getAllByTestId("tool-step")).toHaveLength(1);
       expect(
-        within(conversation).getAllByText("Ran: wc -l kinases.csv"),
+        within(conversation).getAllByText("wc -l kinases.csv"),
       ).toHaveLength(1);
       expect(
         within(conversation).getAllByText("There are 518."),
@@ -710,7 +710,7 @@ describe("Task transcript refresh on landing", () => {
 
     // The card the stopped turn drew stays on screen.
     await waitFor(() =>
-      expect(screen.getAllByText("Ran: wc -l kinases.csv")).toHaveLength(1),
+      expect(screen.getAllByText("wc -l kinases.csv")).toHaveLength(1),
     );
   });
 });

@@ -638,6 +638,70 @@
   color: var(--ink-muted);
 }
 
+/* A link in the agent's prose. Tailwind's preflight resets every anchor to
+   `color: inherit; text-decoration: inherit`, and nothing in this app put that
+   back — so a citation used to render as body text with no sign it could be
+   clicked at all. See `MarkdownLink` (components/tasks/MarkdownLink.tsx) for
+   the glyph and the URL box; this is the part of the treatment that is colour.
+
+   Underline only on hover: a transcript can carry a dozen citations in one
+   paragraph, and permanently underlining each turns the prose into stripes.
+   The colour is enough to find them; the underline confirms the one under the
+   pointer. */
+.msg--assistant :where(a) {
+  color: var(--link-fg);
+  text-decoration: none;
+}
+
+.msg--assistant :where(a):hover,
+.msg--assistant :where(a):focus-visible {
+  color: var(--link-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* The favicon (or its fallback glyph). `inline-block` inside an anchor that
+   stays `inline` — an `inline-flex` anchor could not break across lines, and a
+   long citation label has to wrap like the sentence it sits in. The negative
+   `vertical-align` seats the box on the text baseline rather than hanging it
+   from the line box. */
+.msg-link-icon {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  margin-inline-end: 4px;
+  border-radius: 2px;
+}
+
+/* The URL box. Portalled to `<body>` and `fixed`, so `.conv-stream`'s
+   `overflow-y: auto` cannot clip it and no ancestor's stacking context can
+   trap it; `MarkdownLink` supplies `left`/`top` from the link's measured rect
+   and flips it below when there is no room above. `pointer-events: none` keeps
+   it from stealing the hover that is drawing it. */
+.msg-link-tip {
+  position: fixed;
+  z-index: 60;
+  max-width: 340px;
+  padding: 6px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  background: var(--surface-3);
+  color: var(--ink-muted);
+  font-size: var(--type-meta);
+  line-height: var(--type-meta--lh);
+  /* A URL has no spaces to break at, so it is allowed to break anywhere. */
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  /* `top` is the link's top edge; the box hangs above it. Below the link
+     (`data-below`) `top` is already the far edge, so it hangs down as-is. */
+  transform: translateY(-100%);
+}
+
+.msg-link-tip[data-below] {
+  transform: none;
+}
+
 /* `em`, not `rem`: a mono face reads large next to the sans at the same size,
    so code is stepped down relative to WHATEVER it sits in — it shrinks with a
    heading it's inlined into instead of overrunning it. */
@@ -771,33 +835,9 @@
   opacity: 1;
 }
 
-/* Bare icon-and-label controls, not pills. These already appear only on hover,
-   under one bubble, in a row of two or three — a border and fill around each
-   drew three competing boxes under the prompt and read heavier than the
-   message they act on. Weight is carried by colour alone: subtle at rest,
-   full `--ink` on hover. No `background` on any state, so nothing re-draws the
-   box the hover fill used to. */
-.msg-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 2px;
-  border: none;
-  background: none;
-  color: var(--ink-subtle);
-  font: inherit;
-  font-size: var(--type-meta);
-  cursor: pointer;
-}
-
-.msg-action:hover:not(:disabled) {
-  color: var(--ink);
-}
-
-.msg-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+/* The controls this strip holds are `.quiet-action` (components/components.css)
+   — they are worn outside this surface now, so they are not defined here. The
+   height above counts on that control's 3px padding; the two move together. */
 
 /* What discarding a turn costs, named before it happens. */
 .turn-confirm {
@@ -1249,37 +1289,186 @@ label.question-option:hover {
   }
 }
 
-/* Tool-step cards — one per tool call a turn took, drawn inline in the
-   conversation stream between the assistant's paragraphs. Same surface +
-   hairline language as the plan/permission cards above, at one step less
-   weight (they are transcript furniture, not something to act on): a static
-   always-visible row, never a disclosure. */
-.tool-step {
+/* ── The turn rail ─────────────────────────────────────────────────────────
+   One continuous hairline down the leading edge of a reply, carrying a marker
+   per event: the agent's prose, its thinking, and every tool step, in the one
+   order they happened. Nothing here draws a box — the rail is what holds a run
+   of fifteen steps together, and fifteen bordered cards is what it replaced.
+
+   The line is drawn PER ROW rather than once on the container. Adjacent rows
+   join into one unbroken line; an open group carries its own dimmer line a
+   column in without the outer rail knowing anything about it; and the last row
+   ends the line exactly where it ends. It is also why the grid has NO `gap`:
+   any space between two rows would show as a break in the rail, so the rows
+   carry their vertical rhythm as padding instead. */
+.turn-rail {
+  --rail-col: 20px;
+  --rail-line: var(--hairline-strong);
+  display: grid;
+  /* The measure the whole conversation shares: the rail and its rows are capped
+     as one, so a long command line ellipsises at the same edge the prose above
+     it wraps at. */
   max-width: var(--conv-measure, 62ch);
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--surface-1);
-  overflow: hidden;
-  /* Never let the card be squeezed below its content. On reopen a lone step is
-     a DIRECT flex child of `.conv-column` (a height-capped `flex-direction:
-     column`), and `overflow: hidden` gives a flex item an automatic minimum
-     size of 0 — so the default `flex-shrink: 1` collapsed it to a sliver the
-     moment the transcript overflowed: the "tool step renders nothing on reopen"
-     bug. Live cards sit inside `.conv-live` (not `overflow: hidden`) and never
-     hit this, so the two are pinned to match. */
+  /* Never let the rail be squeezed below its content. On reopen it is a DIRECT
+     flex child of `.conv-column` (a height-capped `flex-direction: column`), and
+     a flex item whose overflow is not `visible` has an automatic minimum size of
+     0 — so the default `flex-shrink: 1` collapsed the old step cards to a sliver
+     the moment the transcript overflowed: the "tool step renders nothing on
+     reopen" bug. Live rows sit inside `.conv-live` (not `overflow: hidden`) and
+     never hit this, so the two are pinned to match. */
   flex-shrink: 0;
 }
 
-/* A disclosure header: the whole row toggles the step's detail body. Reset the
-   button chrome and take the same pointer + hover the group header does, so the
-   two read as one affordance. */
+/* An open group's children: the same rail one column in, and a shade quieter,
+   so they read as hanging off their header rather than as its peers. */
+.turn-rail--nested {
+  --rail-col: 16px;
+  --rail-line: var(--hairline);
+}
+
+/* One node: a marker cell and a content cell. `align-items: start` so the
+   marker sits on the row's FIRST line however tall the content grows. */
+.rail-row {
+  --rail-lead: calc(var(--chat-text, 1rem) * 1.55);
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--rail-col) minmax(0, 1fr);
+  align-items: start;
+  padding-block: 5px;
+}
+
+/* The rail itself. Full height of the row, so two rows meet with no seam. */
+.rail-row::before,
+.tool-step-group::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(var(--rail-col) / 2 - 0.5px);
+  width: 1px;
+  background: var(--rail-line, var(--hairline-strong));
+}
+
+.rail-marker {
+  grid-column: 1;
+  align-self: start;
+  /* Over the line, not under it. */
+  position: relative;
+  z-index: 1;
+  height: var(--rail-lead);
+  display: grid;
+  place-items: center;
+  font-size: var(--type-micro);
+  line-height: 1;
+}
+
+.rail-body {
+  grid-column: 2;
+  min-width: 0;
+}
+
+/* Every dot node: a shape sitting in a hole punched through the rail (the
+   `box-shadow` ring, in the canvas colour), so the line stops cleanly at each
+   marker instead of running through it. */
+.rail-marker--prose::after,
+.rail-marker--thinking::after,
+.rail-marker--ok::after,
+.rail-marker--running::after {
+  content: "";
+  border-radius: 999px;
+  box-shadow: 0 0 0 4px var(--canvas);
+}
+
+/* Prose — a hollow ring. The agent speaking is a node on the timeline, not an
+   action taken on it, and the two must not read alike. */
+.rail-marker--prose::after {
+  width: 7px;
+  height: 7px;
+  background: var(--canvas);
+  border: 1.5px solid var(--ink-subtle);
+}
+
+/* Thinking — smaller and quieter than anything else on the rail. It is not the
+   answer, and this is the rail's share of saying so. */
+.rail-marker--thinking::after {
+  width: 5px;
+  height: 5px;
+  background: var(--ink-tertiary);
+}
+
+.rail-marker--ok::after {
+  width: 7px;
+  height: 7px;
+  background: var(--status-done);
+}
+
+.rail-marker--running::after {
+  width: 7px;
+  height: 7px;
+  background: var(--status-progress);
+}
+
+/* The same pulse `.run-dot` uses, so "still going" reads the same wherever it
+   appears in the turn. */
+@media (prefers-reduced-motion: no-preference) {
+  .rail-marker--running::after {
+    animation: run-pulse 1.4s ease-in-out infinite;
+  }
+}
+
+/* A refusal and a failure are GLYPHS, never a differently-tinted dot: colour
+   alone must not be the thing that tells a researcher a step did not run. Each
+   gets the same 15px hole in the rail the dots punch, so every node breaks the
+   line the same way. */
+.rail-marker--blocked,
+.rail-marker--error {
+  background: radial-gradient(
+    circle at center,
+    var(--canvas) 7.5px,
+    transparent 7.5px
+  );
+}
+
+.rail-marker--blocked {
+  color: var(--warn);
+}
+
+.rail-marker--error {
+  color: var(--priority-urgent);
+}
+
+/* A steps block draws its own rows; this wrapper only carries the block's
+   identity, so it must not become a grid item between them and the rail. */
+.turn-block-tool {
+  display: contents;
+}
+
+/* ── One tool step ─────────────────────────────────────────────────────────
+   A node on the rail: the tool's NAME in bold and a muted description beside
+   it — `Bash  find . -name '*.css'`. The whole row is a disclosure onto the
+   step's detail; collapsed, it carries a clamped IN/OUT preview beneath it. */
+.tool-step {
+  --rail-lead: 22px;
+  padding-block: 1px;
+  /* Held at full height for the same reason `.turn-rail` is — see the note
+     there. Restated on the row because a row is a flex item wherever a caller
+     stacks one in a flex column. */
+  flex-shrink: 0;
+  max-width: var(--conv-measure, 62ch);
+}
+
 .tool-step-head {
   width: 100%;
+  min-height: 22px;
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
-  padding: 7px 10px;
+  min-width: 0;
+  /* Padded for the hover fill, then pulled back by the same amount, so the tool
+     name starts on the same left edge the prose rows above it do. */
+  padding: 1px 4px;
+  margin-inline: -4px;
   border: 0;
+  border-radius: 6px;
   background: none;
   font: inherit;
   color: inherit;
@@ -1292,8 +1481,8 @@ label.question-option:hover {
 }
 
 /* The disclosure chevron: points right when closed, rotated to point down when
-   open. Shared by the group header and the "Show output" toggle so the two read
-   as the same affordance. */
+   open. Shared by the group header and the "Show output" toggle inside an
+   opened detail, so the two read as the same affordance. */
 .tool-step-chevron {
   flex-shrink: 0;
   color: var(--ink-tertiary);
@@ -1310,47 +1499,42 @@ label.question-option:hover {
   }
 }
 
-/* Status lives in the glyph, not in a fill: a transcript of twenty steps
-   would be unreadable if each one carried a tinted background. */
-.tool-step-glyph {
+.rail-tool {
   flex-shrink: 0;
-  width: 13px;
-  display: grid;
-  place-items: center;
-  font-size: var(--type-micro);
-  line-height: 1;
-  color: var(--status-done);
+  font-size: var(--type-sub);
+  font-weight: 600;
+  color: var(--ink);
 }
 
-.tool-step--running .tool-step-glyph {
-  color: var(--ink-subtle);
-}
-
-.tool-step--blocked .tool-step-glyph {
-  color: var(--warn);
-}
-
-.tool-step--error .tool-step-glyph {
-  color: var(--priority-urgent);
-}
-
-.tool-step-label {
+/* The description yields first: it is the part a long path can afford to lose,
+   and the tool's name never is. */
+.rail-desc {
   flex: 1;
   min-width: 0;
   font-size: var(--type-sub);
-  color: var(--ink);
+  color: var(--ink-subtle);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* A DERIVED description is a literal path or command, and is set as one. A
+   model-authored one — the adapter's title, or the sentence the agent wrote
+   just before the call — is prose, and stays in the prose face. The row says
+   which of the two kinds of text it is showing; guessing that from the string
+   would be a guess, and the tier is already known (see `StepSource`). */
+.rail-desc--mono {
+  font-family: var(--font-mono);
+  font-size: var(--type-meta);
+}
+
 /* A step whose access left the study workspace. The call SUCCEEDED — this is
-   not an error or a blocked state (the glyph keeps telling that truth), so the
-   warning tone lives on its own marker and a hairline the same colour, never
-   on the status glyph. Warn, not danger: nothing failed; something happened
+   neither an error nor a blocked state (the marker keeps telling that truth),
+   so the warning tone lives on this chip and on the description beside it,
+   never on the marker. Warn, not danger: nothing failed; something happened
    that the researcher never got the chance to approve. */
-.tool-step--outside {
-  border-color: var(--warn);
+.tool-step--outside .rail-desc {
+  color: var(--warn);
 }
 
 .tool-step-outside {
@@ -1365,60 +1549,89 @@ label.question-option:hover {
   cursor: help;
 }
 
-/* The right-hand summary yields first: it's the least important column, and
-   a long one must never squeeze the label out. */
-.tool-step-summary {
-  flex-shrink: 1;
+/* ── A collapsed step's IN/OUT preview ─────────────────────────────────────
+   What the step DID, without opening it: the argument it was called with over
+   the first lines of what it produced. Quiet and hairline-boxed — it is a
+   preview, and the row above it is the thing being read. Never drawn while the
+   row is open: the opened detail carries the same content in full. */
+.step-io {
+  margin: 3px 0 1px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.step-io-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 4px 8px;
+}
+
+.step-io-line--out {
+  align-items: start;
+  border-top: 1px solid var(--hairline);
+}
+
+.step-io-key {
+  flex-shrink: 0;
+  width: 2.4em;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  letter-spacing: 0.04em;
+  color: var(--ink-tertiary);
+}
+
+/* One line, ellipsised: the whole argument is in the opened detail, and a
+   wrapping command would make the pane taller than the row it belongs to. */
+.step-io-in {
   min-width: 0;
   font-family: var(--font-mono);
   font-size: var(--type-micro);
-  color: var(--ink-tertiary);
+  color: var(--ink-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tool-step-body {
-  border-top: 1px solid var(--hairline);
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* The live pane of a step whose tool is STILL RUNNING — open while the card
-   is collapsed, because output arriving right now is the reason the card is
-   on screen at all. Tighter than an expanded body: it is a tail being
-   watched, not a record being read. */
-.tool-step-body--live {
-  padding-top: 6px;
-  padding-bottom: 6px;
-}
-
-.step-stdout {
+/* Clamped to about four lines and FADED rather than cut: a hard edge reads as
+   "that is all of it", which is the one thing this pane must not say. The mask
+   stops are absolute lengths measured from the top, not percentages, so output
+   SHORTER than the clamp never fades — the gradient's stops simply fall past
+   the end of a two-line pane. */
+.step-io-out {
+  --io-clamp: calc(var(--type-micro) * 1.5 * 4);
+  flex: 1;
+  min-width: 0;
+  margin: 0;
   font-family: var(--font-mono);
-  font-size: var(--type-meta);
+  font-size: var(--type-micro);
   line-height: 1.5;
   color: var(--ink-subtle);
-  background: var(--surface-2);
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  padding: 8px 10px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 320px;
-  overflow-y: auto;
-  /* The live output is the one thing here worth copying — opt back out of the
-     app-wide `user-select: none`. */
-  user-select: text;
-  cursor: text;
+  overflow: hidden;
+  max-height: var(--io-clamp);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(var(--io-clamp) - 1.2em),
+    transparent var(--io-clamp)
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(var(--io-clamp) - 1.2em),
+    transparent var(--io-clamp)
+  );
 }
 
-/* A running tool's stdout, still arriving: the same monospace block as the
-   Execution Log's code panes above, capped shorter — the researcher is
-   watching the last few lines, not reading a finished record. */
+/* A running tool's stdout, still arriving. It is the one thing on this pane
+   worth copying while it lands — opt back out of the app-wide
+   `user-select: none`. */
 .step-stdout {
-  max-height: 160px;
+  user-select: text;
+  cursor: text;
 }
 
 /* The opened detail of a tool step (see `ToolStepDetail`): the per-tool body
@@ -1567,44 +1780,50 @@ label.question-option:hover {
   overflow-wrap: anywhere;
 }
 
-/* A run of consecutive steps: one outer card with a synthesized header, its
-   steps stacked hairline-separated inside so the group reads as a single
-   object rather than a pile of boxes. */
+/* A run of consecutive steps: one header on the rail, its steps on a nested
+   rail beneath it. No box around either — folded, the group is a single node in
+   the turn; unfolded, its steps are their own small timeline hanging off that
+   node. */
 .tool-step-group {
-  max-width: var(--conv-measure, 62ch);
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--surface-1);
-  overflow: hidden;
-  /* Held at full height for the same reason as `.tool-step` above: a run of
-     steps reopens as a direct flex child of `.conv-column`, and its
-     `overflow: hidden` would otherwise let the column squeeze it to nothing. */
+  /* The line down the whole group — header AND body — so the outer rail does
+     not break where a group opens. It is drawn at the same place, in the same
+     colour, as the header row's own bar (see `.rail-row::before`); the two
+     overlap exactly, which is why neither has to know about the other. */
+  position: relative;
+  /* Held at full height for the same reason `.turn-rail` is — see the note
+     there. */
   flex-shrink: 0;
+  max-width: var(--conv-measure, 62ch);
+}
+
+/* The header sits on the OUTER rail, so it takes a step row's lead and
+   rhythm — the marker over it must line up with every other node in the turn. */
+.tool-step-group-row {
+  --rail-lead: 22px;
+  padding-block: 1px;
 }
 
 .tool-step-group-head {
   width: 100%;
+  min-height: 22px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 6px;
+  /* Padded for the hover fill, then pulled back by the same amount, so the
+     title starts on the same left edge as the step rows below it. */
+  padding: 1px 4px;
+  margin-inline: -4px;
   border: 0;
-  border-bottom: 1px solid var(--hairline);
-  background: var(--surface-2);
+  border-radius: 6px;
+  background: none;
   font: inherit;
+  color: inherit;
   text-align: left;
   cursor: pointer;
 }
 
 .tool-step-group-head:hover {
-  background: var(--surface-3);
-}
-
-/* Collapsed: the head is the group's only row, so it must not carry a hairline
-   under nothing. The open state keeps the border that separates it from the
-   body below. */
-.tool-step-group-head[aria-expanded="false"] {
-  border-bottom: 0;
+  background: var(--surface-2);
 }
 
 .tool-step-group-title {
@@ -1625,20 +1844,10 @@ label.question-option:hover {
   color: var(--ink-tertiary);
 }
 
+/* One rail column in, so the nested rail hangs beneath its header's marker
+   rather than running over the outer line. */
 .tool-step-group-body {
-  display: flex;
-  flex-direction: column;
-}
-
-.tool-step-group-body .tool-step {
-  max-width: none;
-  border: 0;
-  border-radius: 0;
-  background: none;
-}
-
-.tool-step-group-body .tool-step + .tool-step {
-  border-top: 1px solid var(--hairline);
+  padding-inline-start: var(--rail-col, 20px);
 }
 
 /* The in-flight tail of the current turn — the part that has not yet become a
@@ -1677,6 +1886,15 @@ label.question-option:hover {
   line-height: 1.5;
   color: var(--ink-tertiary);
   white-space: pre-wrap;
+}
+
+/* On the rail, the leading rule IS the rail — a second one 20px to its right is
+   the same separation drawn twice. The other three signals the thinking channel
+   is set apart by (italic, dimmer ink, narrower measure) all stay, and the
+   rail's own quiet marker carries the rest. */
+.rail-row .live-thinking {
+  padding-inline-start: 0;
+  border-inline-start: 0;
 }
 
 /* Provenance — Messages tab. */

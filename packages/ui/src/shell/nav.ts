@@ -49,7 +49,11 @@ export const laboratoryItems: NavEntry[] = [
 // reports on the lab rather than being somewhere you work. It is the Settings ›
 // Workspace › Profile tab now.
 export const configureItems: NavEntry[] = [
-  { label: "Runtimes", icon: MonitorIcon, route: { name: "runtimes" } },
+  // "Machines", not "Runtimes": the screen behind this is a roster of
+  // computers a researcher paired, and a runtime is what runs ON one. The
+  // route keeps its name — it is a URL people have bookmarked, and renaming
+  // the label is the whole of what this changes.
+  { label: "Machines", icon: MonitorIcon, route: { name: "runtimes" } },
   { label: "Settings", icon: SettingsIcon, route: { name: "settings" } },
 ];
 

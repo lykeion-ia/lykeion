@@ -29,7 +29,7 @@ describe("Rail", () => {
       "Studies",
       "Agents",
       "Workflows",
-      "Runtimes",
+      "Machines",
       "Settings",
     ]) {
       expect(

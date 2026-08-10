@@ -58,6 +58,36 @@ const MONOS: Record<string, string> = {
   pi: "PI",
 };
 
+/**
+ * The colour a brand mark is drawn in when it stands on the page's own
+ * background rather than on its filled chip.
+ *
+ * Not `COLORS`: those are TILE fills, chosen to be sat on, and three of them
+ * would vanish used as ink — Codex and OpenClaw are white, Pi is black, and a
+ * white glyph on a white page is a rendering fault rather than a brand. Those
+ * three are absent here on purpose. A mark with no entry keeps whatever ink it
+ * inherits, which is the honest rendering of a brand whose mark IS black or
+ * white: it follows the reader's theme, the way the brand itself does.
+ */
+const INKS: Record<string, string> = {
+  claude: "#d97757",
+  gemini: "#5b8def",
+  copilot: "#6e7681",
+  cursor: "#8a86d8",
+  opencode: "#3bb7c4",
+  kimi: "#7a5cff",
+  kiro: "#5b8def",
+  qoder: "#4cc38a",
+  codebuddy: "#3b82f6",
+  hermes: "#b06ae0",
+};
+
+/** The brand's own colour to draw its mark in, or `null` to keep the ink the
+ *  mark inherits (see `INKS`). */
+export function cliInk(id: string): string | null {
+  return INKS[id] ?? null;
+}
+
 export function cliBrand(id: string, name: string): CliBrand {
   // Fallback initials for an unrecognised id: first letter of up to the
   // first two words (e.g. "Weird Tool" -> "WT"), not just the name's first

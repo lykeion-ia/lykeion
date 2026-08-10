@@ -323,8 +323,13 @@ export function stepOutcome(
 /** The text a step produced, as one string — every text and terminal piece,
  *  concatenated in the order it arrived. This is what the views that draw
  *  file contents, STDOUT and search results read; the pieces that are not
- *  text are drawn as themselves, beside it. */
-function textOf(parts: ToolOutputPart[]): string {
+ *  text are drawn as themselves, beside it.
+ *
+ *  Exported for the collapsed row's `OUT` preview (`ToolStepPreview`), which
+ *  shows the first few lines of this same text: the preview and the opened
+ *  detail must agree about what a step produced, so they read it the same way
+ *  rather than each deciding for itself. */
+export function outputText(parts: ToolOutputPart[]): string {
   return parts
     .map((part) =>
       part.type === "text" ? part.text : part.type === "terminal" ? part.output : "",
@@ -436,7 +441,7 @@ function ExecuteDetail({
   parts: ToolOutputPart[];
 }) {
   const command = strInput(entry, "command");
-  const output = textOf(parts);
+  const output = outputText(parts);
   return (
     <>
       {command && <CodeBlock code={command} lang="bash" />}
@@ -460,7 +465,7 @@ function ReadDetail({
   parts: ToolOutputPart[];
 }) {
   const path = strInput(entry, "file_path") ?? strInput(entry, "path");
-  const output = textOf(parts);
+  const output = outputText(parts);
   return (
     <>
       {output && (
@@ -522,7 +527,7 @@ function EditDetail({
 }
 
 function ResultSection({ parts }: { parts: ToolOutputPart[] }) {
-  const output = textOf(parts);
+  const output = outputText(parts);
   if (!output) return null;
   return (
     <OutputSection label="RESULT">
@@ -542,7 +547,7 @@ function LookupDetail({
 }) {
   const query = strInput(entry, "query") ?? strInput(entry, "pattern");
   const url = strInput(entry, "url");
-  const output = textOf(parts);
+  const output = outputText(parts);
   const results = output ? parseWebResults(output) : null;
   return (
     <>
@@ -577,7 +582,7 @@ function GenericDetail({
   const input = entry.input;
   const hasInput =
     !!input && typeof input === "object" && Object.keys(input).length > 0;
-  const output = textOf(parts);
+  const output = outputText(parts);
   return (
     <>
       {hasInput && (

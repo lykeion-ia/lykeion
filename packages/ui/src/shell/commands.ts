@@ -80,7 +80,7 @@ export function buildCommands(
     },
     {
       id: "nav-runtimes",
-      label: "Go to Runtimes",
+      label: "Go to Machines",
       hint: "Screen",
       route: { name: "runtimes" },
     },

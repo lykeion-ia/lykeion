@@ -38,6 +38,7 @@ import {
   StreamView,
   UserBubble,
 } from "../components/tasks/TaskTranscript";
+import { RailRow, TurnRail } from "../components/tasks/TurnRail";
 import { AssistantMessage } from "../components/tasks/AssistantMessage";
 import { modelOptionOf, noChoiceReason } from "../lib/agent-options";
 import { useRouter, type Route } from "../router";
@@ -106,21 +107,33 @@ function LiveRunBlock({
       data-run-id={run.runId}
     >
       <UserBubble prompt={run.prompt} />
-      <StreamView
-        stream={stream}
-        stdoutFor={landedStream ? undefined : stdoutFor}
-      />
+      {/* ONE rail for the whole reply: the blocks that have landed and the tail
+          still arriving. The tail is the newest thing the agent has said, so it
+          belongs at the bottom of the same timeline — hung off the rail it will
+          join, not dangling beside it until the turn ends and it snaps into
+          place. Thinking keeps its own marker here for the same reason it keeps
+          its own channel: it is not the answer. */}
+      <TurnRail>
+        <StreamView
+          stream={stream}
+          stdoutFor={landedStream ? undefined : stdoutFor}
+        />
 
-      {run.live.thinking && !stream.some((item) => item.kind === "text" && item.block === "thinking") ? (
-        <div className="live-thinking" data-testid="live-thinking">
-          {run.live.thinking}
-        </div>
-      ) : null}
-      {run.live.text && !stream.some((item) => item.kind === "text" && item.block !== "thinking" && item.block !== "error") ? (
-        <div className="live-text" data-testid="live-text">
-          <AssistantMessage text={run.live.text} live />
-        </div>
-      ) : null}
+        {run.live.thinking && !stream.some((item) => item.kind === "text" && item.block === "thinking") ? (
+          <RailRow marker="thinking">
+            <div className="live-thinking" data-testid="live-thinking">
+              {run.live.thinking}
+            </div>
+          </RailRow>
+        ) : null}
+        {run.live.text && !stream.some((item) => item.kind === "text" && item.block !== "thinking" && item.block !== "error") ? (
+          <RailRow marker="running">
+            <div className="live-text" data-testid="live-text">
+              <AssistantMessage text={run.live.text} live />
+            </div>
+          </RailRow>
+        ) : null}
+      </TurnRail>
 
       {run.plan && (
         <PlanCard
@@ -1044,14 +1057,12 @@ export function TaskScreen({
         className="task-columns"
         data-pane-mode={paneMode}
         style={{
-          // The inspector takes a real share of the width beside the
-          // conversation, all of it when focused, and none at all when closed.
+          // Split, the inspector and the conversation are equal halves — all of
+          // the width when focused, and none at all when closed.
           gridTemplateColumns:
             paneMode === "focus"
               ? "minmax(0, 1fr)"
-              : `minmax(0, 1fr)${
-                  rightPaneOpen ? " minmax(400px, 0.82fr)" : ""
-                }`,
+              : `minmax(0, 1fr)${rightPaneOpen ? " minmax(400px, 1fr)" : ""}`,
         }}
       >
         {railView === "context" &&

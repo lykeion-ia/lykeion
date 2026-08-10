@@ -99,6 +99,42 @@
   flex-shrink: 0;
 }
 
+/* A bare icon-and-label control — Copy, Edit, Revert — not a pill.
+ *
+ * Born under the transcript's bubbles, where a row of two or three bordered
+ * pills drew competing boxes under the prompt and read heavier than the
+ * message they acted on. Weight is carried by colour alone: subtle at rest,
+ * full `--ink` on hover. No `background` on any state, so nothing re-draws the
+ * box the hover fill used to.
+ *
+ * Here rather than in task.css because the Machines screen wears the same
+ * Copy: the command a researcher runs on the machine they are adding is copied
+ * far more often than it is read, and it deserves the control the transcript
+ * already settled on rather than a second one that looks nearly like it.
+ * `.msg-actions` — the strip that positions these under a bubble — stays with
+ * the transcript, because that placement is the transcript's alone. */
+.quiet-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 2px;
+  border: none;
+  background: none;
+  color: var(--ink-subtle);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+
+.quiet-action:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.quiet-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 kbd {
   font-family: var(--font-mono);
   font-size: var(--type-micro);

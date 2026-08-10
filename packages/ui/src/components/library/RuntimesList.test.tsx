@@ -118,7 +118,7 @@ it("separates your machines from the rest of the lab", () => {
   const yours = screen.getByRole("list", { name: "Your machines" });
   expect(within(yours).getByText("ana-macbook")).toBeInTheDocument();
   expect(within(yours).queryByText("bo-workstation")).toBeNull();
-  const elsewhere = screen.getByRole("list", { name: "Elsewhere in the lab" });
+  const elsewhere = screen.getByRole("list", { name: "Lab's machines" });
   expect(within(elsewhere).getByText("bo-workstation")).toBeInTheDocument();
 });
 
@@ -139,7 +139,7 @@ it("gives each group a heading a sighted researcher can read, and names the list
   // tables carrying the same column headers are otherwise identical on
   // screen, and which one is yours is the whole point of the split.
   const mine = screen.getByRole("heading", { name: "Your machines" });
-  const theirs = screen.getByRole("heading", { name: "Elsewhere in the lab" });
+  const theirs = screen.getByRole("heading", { name: "Lab's machines" });
   expect(mine).toBeVisible();
   expect(theirs).toBeVisible();
 
@@ -151,7 +151,7 @@ it("gives each group a heading a sighted researcher can read, and names the list
   expect(yours.getAttribute("aria-label")).toBeNull();
   expect(mine.id).not.toBe("");
   expect(
-    screen.getByRole("list", { name: "Elsewhere in the lab" }).getAttribute(
+    screen.getByRole("list", { name: "Lab's machines" }).getAttribute(
       "aria-labelledby",
     ),
   ).toBe(theirs.id);
@@ -195,20 +195,73 @@ it("says the version is unknown for an installed command that would not name its
   expect(screen.queryByText(/not installed/i)).toBeNull();
 });
 
-it("promises only what a paired machine actually does, and points at the instructions for starting one", () => {
+it("carries the command itself, addressed to this lab, and promises nothing it cannot do", () => {
   renderList([], "u_you");
 
-  const card = screen.getByText("Add a computer").parentElement;
+  const card = screen.getByRole("heading", { name: "Add your first computer" }).closest("section");
   expect(card).not.toBeNull();
-  // Nothing can pick up a task on this build, and the composer says so on
-  // the screens that host it.
-  expect(card).not.toHaveTextContent(/queued task/i);
-  expect(card).toHaveTextContent(/running a turn on one is not possible yet/i);
   // A file name is not somewhere a browser can go, so the card has to carry
   // the command itself — filled in with this lab's own address, which is the
   // one part a researcher could not supply from where they are standing.
   expect(card).toHaveTextContent(`pnpm daemon --lab ${window.location.origin}`);
-  expect(card).toHaveTextContent("docs/running-the-daemon.md");
+  // Nothing can pick up a task on this build, and the composer says so on
+  // the screens that host it. This card says nothing about it either way,
+  // which is the one thing it must not get wrong in the other direction.
+  expect(card).not.toHaveTextContent(/queued task/i);
+});
+
+it("offers the command to be taken, not only to be read", () => {
+  // It is meant to be run on the machine being added, which is often not the
+  // one reading this — so it is copied far more often than typed.
+  renderList([], "u_you");
+
+  expect(
+    screen.getByRole("button", { name: "Copy the command" }),
+  ).toBeInTheDocument();
+});
+
+it("says a browser tab is coming, because nothing else will", () => {
+  // The step the flow was missing. Pairing hands off to a page the daemon
+  // serves on the machine itself, and the lab cannot link to it — the port
+  // is whatever was free and the link carries a single-use nonce. So the
+  // one thing the lab can do is say it is about to happen; otherwise a tab
+  // opens, from a command typed in a terminal, and reads as unrelated.
+  renderList([], "u_you");
+
+  const card = screen.getByRole("heading", { name: "Add your first computer" }).closest("section");
+  expect(card).toHaveTextContent(/setup page opens in your browser/i);
+  expect(card).toHaveTextContent(/approve the request back here/i);
+});
+
+it("steps out of the way once the member has a machine of their own", () => {
+  // Someone with a machine came for the roster. The same card left open is
+  // the loudest thing on a page whose subject is now the table above it.
+  renderList([machine({ ownerId: "u_you" })], "u_you");
+
+  expect(screen.queryByText("Add your first computer")).toBeNull();
+  expect(screen.queryByText(/setup page opens in your browser/i)).toBeNull();
+  // Still reachable — a second machine is a real thing to want.
+  expect(screen.getByRole("button", { name: "Add a computer" })).toBeInTheDocument();
+});
+
+it("reopens the steps on request, for a second machine", async () => {
+  const user = userEvent.setup();
+  renderList([machine({ ownerId: "u_you" })], "u_you");
+
+  await user.click(screen.getByRole("button", { name: "Add a computer" }));
+
+  // Not "your first" this time: the wording follows what is actually true.
+  expect(
+    screen.getByRole("heading", { name: "Add a computer" }),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/setup page opens in your browser/i)).toBeInTheDocument();
+});
+
+it("keeps asking a member whose colleagues have machines but who has none", () => {
+  // Runtimes are owned, and only the member who paired one can run on it.
+  renderList([machine({ ownerId: "u_them" })], "u_you");
+
+  expect(screen.getByText("Add your first computer")).toBeInTheDocument();
 });
 
 it("offers Remove on your own machine and on none of the lab's others", () => {
@@ -220,7 +273,7 @@ it("offers Remove on your own machine and on none of the lab's others", () => {
   expect(
     within(yours).getByRole("button", { name: /Remove ana-macbook/i }),
   ).toBeInTheDocument();
-  const elsewhere = screen.getByRole("list", { name: "Elsewhere in the lab" });
+  const elsewhere = screen.getByRole("list", { name: "Lab's machines" });
   expect(
     within(elsewhere).queryByRole("button", { name: /Remove bo-workstation/i }),
   ).toBeNull();

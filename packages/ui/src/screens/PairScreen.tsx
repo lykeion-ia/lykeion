@@ -95,7 +95,7 @@ function SpentLink() {
       subtitle="A pairing link is good for exactly one approval, and this one is spent."
     >
       <p className="text-ui text-fg-muted">
-        The machine it names may be paired already — Runtimes lists every
+        The machine it names may be paired already — Machines lists every
         machine this lab knows. If it is not, nothing is waiting on the far
         end of this link: the request behind it is finished either way.
       </p>

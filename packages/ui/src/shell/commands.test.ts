@@ -35,7 +35,7 @@ describe("buildCommands", () => {
       "Go to Skills",
       "Go to Workflows",
       "Go to Connectors",
-      "Go to Runtimes",
+      "Go to Machines",
       "Go to Profile",
       "Go to Appearance",
       "Go to Settings",

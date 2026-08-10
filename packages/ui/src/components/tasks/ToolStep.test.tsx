@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import type { ExecutionLogEntry, TurnItem } from "@lykeion/api";
 import {
   CONTROL_PLANE_TOOLS,
@@ -8,8 +14,10 @@ import {
   ToolStepGroup,
   blocksOf,
   deterministicLabel,
+  stepArgument,
   stepStatus,
   stepSummary,
+  type ResolvedStep,
 } from "./ToolStep";
 
 const entry = (over: Partial<ExecutionLogEntry> = {}): ExecutionLogEntry => ({
@@ -21,6 +29,14 @@ const entry = (over: Partial<ExecutionLogEntry> = {}): ExecutionLogEntry => ({
   result: "a\nb\nc",
   isError: false,
   ...over,
+});
+
+/** A step exactly as `blocksOf` resolves one that has no adapter title and no
+ *  promotable narration before it: tier 3, the deterministic fallback. */
+const resolvedStep = (e: ExecutionLogEntry): ResolvedStep => ({
+  entry: e,
+  title: deterministicLabel(e),
+  source: "deterministic",
 });
 
 describe("deterministicLabel (tier 3 — the guaranteed baseline)", () => {
@@ -691,9 +707,7 @@ describe("blocksOf — grouping + the no-double-render rule", () => {
 describe("ToolStepGroup — a lone step renders bare, >1 renders under a header", () => {
   it("renders a single step with no group header", () => {
     render(
-      <ToolStepGroup
-        steps={[{ entry: entry(), title: deterministicLabel(entry()) }]}
-      />,
+      <ToolStepGroup steps={[resolvedStep(entry())]} />,
     );
     expect(screen.queryByTestId("tool-step-group")).toBeNull();
     expect(screen.getByTestId("tool-step")).toBeInTheDocument();
@@ -703,7 +717,7 @@ describe("ToolStepGroup — a lone step renders bare, >1 renders under a header"
     const steps = [
       entry({ toolUseId: "tu-1", tool: "Bash", input: { command: "echo a" } }),
       entry({ toolUseId: "tu-2", tool: "Bash", input: { command: "echo b" } }),
-    ].map((e) => ({ entry: e, title: deterministicLabel(e) }));
+    ].map(resolvedStep);
     render(<ToolStepGroup steps={steps} />);
     const group = screen.getByTestId("tool-step-group");
     expect(within(group).getByText("2 steps")).toBeInTheDocument();
@@ -714,7 +728,7 @@ describe("ToolStepGroup — a lone step renders bare, >1 renders under a header"
     const steps = [
       entry({ toolUseId: "tu-1", tool: "Bash", input: { command: "echo a" } }),
       entry({ toolUseId: "tu-2", tool: "Bash", input: { command: "echo b" } }),
-    ].map((e) => ({ entry: e, title: deterministicLabel(e) }));
+    ].map(resolvedStep);
     render(<ToolStepGroup steps={steps} />);
     const group = screen.getByTestId("tool-step-group");
     const head = within(group).getByRole("button", { name: /ran 2 commands/i });
@@ -743,10 +757,7 @@ describe("ToolStepGroup — a lone step renders bare, >1 renders under a header"
    * already stopped telling one level down.
    */
   describe("group header tense — it never claims a run that did not happen", () => {
-    const resolved = (e: ExecutionLogEntry) => ({
-      entry: e,
-      title: deterministicLabel(e),
-    });
+    const resolved = resolvedStep;
     // Unmounts before returning, so a test may assert on several headers
     // without `screen` queries colliding across renders.
     const headerOf = (entries: ExecutionLogEntry[]): string => {
@@ -977,8 +988,12 @@ describe("ToolStepGroup — a lone step renders bare, >1 renders under a header"
       render(<ToolStepGroup steps={steps} />);
       const group = screen.getByTestId("tool-step-group");
       expect(within(group).getByText("Edit 2 files")).toBeInTheDocument();
-      expect(within(group).getByText("Edit notes/a.md")).toBeInTheDocument();
-      expect(within(group).queryByText("Write notes/a.md")).toBeNull();
+      // The row's own verb is the tool's NAME, which is the same word the
+      // header borrowed — they cannot disagree any more, because they are the
+      // same string from the same record.
+      const [first] = within(group).getAllByTestId("tool-step");
+      expect(first).toHaveTextContent("Edit notes/a.md");
+      expect(group).not.toHaveTextContent("Write");
     });
   });
 
@@ -997,7 +1012,7 @@ describe("ToolStepGroup — a lone step renders bare, >1 renders under a header"
       const steps = [
         entry({ toolUseId: "", ts: 7, input: { command: "echo a" } }),
         entry({ toolUseId: "", ts: 7, input: { command: "echo b" } }),
-      ].map((e) => ({ entry: e, title: deterministicLabel(e) }));
+      ].map(resolvedStep);
       render(<ToolStepGroup steps={steps} />);
       const group = screen.getByTestId("tool-step-group");
       expect(within(group).getAllByTestId("tool-step")).toHaveLength(2);
@@ -1010,28 +1025,54 @@ describe("ToolStepGroup — a lone step renders bare, >1 renders under a header"
   });
 });
 
-describe("ToolStepCard — a disclosure row", () => {
-  it("renders ok/blocked/error as both a status modifier class and a glyph", () => {
+describe("ToolStepCard — a row on the rail", () => {
+  it("renders ok/blocked/error as a status class AND a marker on the rail", () => {
     const { rerender } = render(<ToolStepCard entry={entry()} />);
     expect(screen.getByTestId("tool-step")).toHaveClass("tool-step--ok");
-    expect(screen.getByText("✓")).toBeInTheDocument();
+    expect(screen.getByTestId("tool-step")).toHaveAttribute("data-marker", "ok");
     rerender(<ToolStepCard entry={entry({ decision: "denied" })} />);
     expect(screen.getByTestId("tool-step")).toHaveClass("tool-step--blocked");
+    // Refused and failed draw a GLYPH, never a differently-tinted dot: colour
+    // alone must not be what says a step did not run — which is also what lets
+    // the row's label drop the tense (see `stepArgument`).
     expect(screen.getByText("⊘")).toBeInTheDocument();
     rerender(<ToolStepCard entry={entry({ isError: true })} />);
     expect(screen.getByTestId("tool-step")).toHaveClass("tool-step--error");
     expect(screen.getByText("✕")).toBeInTheDocument();
   });
 
-  it("renders a pending announcement as a running card", () => {
-    render(<ToolStepCard entry={entry({ decision: "pending" })} />);
-    expect(screen.getByTestId("tool-step")).toHaveClass("tool-step--running");
-    expect(screen.getByText("…")).toBeInTheDocument();
+  it("says in words what each non-ok marker means", () => {
+    // The rail row is labelled `tool name + argument`, which is tenseless —
+    // "Write results/out.csv" reads the same whether the file was written or
+    // the write was refused. That fact used to live in the verb; it now lives
+    // in the marker, so it has to reach a reader who cannot see one.
+    for (const [over, word] of [
+      [{ decision: "pending" }, "running"],
+      [{ decision: "denied" }, "blocked"],
+      [{ isError: true }, "failed"],
+    ] as const) {
+      const { unmount } = render(<ToolStepCard entry={entry(over)} />);
+      expect(within(screen.getByTestId("tool-step")).getByText(word)).toHaveClass(
+        "sr-only",
+      );
+      unmount();
+    }
+    // …and the unremarkable case says nothing: "ok" before each of fifteen
+    // steps is noise, not information.
+    render(<ToolStepCard entry={entry()} />);
+    expect(screen.getByTestId("tool-step").querySelector(".sr-only")).toBeNull();
   });
 
-  it("renders a STOPPED write as a blocked card labelled in the non-past", () => {
+  it("renders a pending announcement as a running row", () => {
+    render(<ToolStepCard entry={entry({ decision: "pending" })} />);
+    const card = screen.getByTestId("tool-step");
+    expect(card).toHaveClass("tool-step--running");
+    expect(card).toHaveAttribute("data-marker", "running");
+  });
+
+  it("renders a STOPPED write as a blocked row that claims no past tense", () => {
     // The whole failure in one assertion: plan mode, the agent asks to write
-    // results/out.csv, the researcher hits Stop. Before the fix this card read
+    // results/out.csv, the researcher hits Stop. Before the fix this row read
     // "✓ Wrote results/out.csv" — a green tick over a file that does not exist.
     render(
       <ToolStepCard
@@ -1048,7 +1089,11 @@ describe("ToolStepCard — a disclosure row", () => {
     expect(card).toHaveClass("tool-step--blocked");
     expect(within(card).getByText("⊘")).toBeInTheDocument();
     expect(within(card).queryByText("✓")).toBeNull();
-    expect(within(card).getByText("Write results/out.csv")).toBeInTheDocument();
+    // Name and argument are separate spans with a real space between them, so
+    // the row reads as one phrase to a screen reader and to anything else that
+    // takes its text.
+    expect(card).toHaveTextContent("Write results/out.csv");
+    expect(card).not.toHaveTextContent("Wrote results/out.csv");
   });
 
   describe("a step that left the workspace says so", () => {
@@ -1071,10 +1116,11 @@ describe("ToolStepCard — a disclosure row", () => {
       const card = screen.getByTestId("tool-step");
       expect(within(card).getByText(/outside workspace/i)).toBeInTheDocument();
       expect(card).toHaveClass("tool-step--outside");
-      // The call SUCCEEDED: `stepStatus` is not overloaded — still ok/✓.
+      // The call SUCCEEDED: `stepStatus` is not overloaded — still ok, and the
+      // rail still draws the ordinary green node.
       expect(stepStatus(escaped())).toBe("ok");
       expect(card).toHaveClass("tool-step--ok");
-      expect(within(card).getByText("✓")).toBeInTheDocument();
+      expect(card).toHaveAttribute("data-marker", "ok");
     });
 
     it("shows nothing of the sort on an ordinary in-workspace step", () => {
@@ -1121,23 +1167,42 @@ describe("ToolStepCard — a disclosure row", () => {
     expect(screen.queryByTestId("tool-step-detail")).toBeNull();
   });
 
-  it("shows the glyph, label and tool-shaped summary on the always-visible row", () => {
+  it("labels the row with the tool NAME and its argument, not a sentence", () => {
     render(<ToolStepCard entry={entry({ result: "6.0" })} />);
     const card = screen.getByTestId("tool-step");
-    expect(within(card).getByText("✓")).toBeInTheDocument();
-    expect(within(card).getByText("Ran: ls -la")).toBeInTheDocument();
-    // The summary column stands in for the output at a glance — "6.0" here, a
-    // line count for multi-line output — before the row is ever opened.
-    expect(within(card).getByText("6.0")).toHaveClass("tool-step-summary");
+    expect(within(card).getByText("Bash")).toHaveClass("rail-tool");
+    // The argument alone — no verb. The tool's name is already the verb, and
+    // the rail's marker carries whether it ran.
+    expect(within(card).getByText("ls -la")).toHaveClass("rail-desc");
+    expect(within(card).queryByText("Ran: ls -la")).toBeNull();
+    // A derived description is a literal command, and is set as one.
+    expect(within(card).getByText("ls -la")).toHaveClass("rail-desc--mono");
+    // And what it produced is on the row too, unopened: the `OUT` preview is
+    // what the old right-hand summary column stood in for.
+    expect(within(card).getByText("6.0")).toHaveClass("step-io-out");
+  });
+
+  it("does not repeat a derived description as the IN line beneath it", () => {
+    // The description on a derived row already IS the argument, so an `IN` line
+    // would print the same string twice, one line apart. A model-authored
+    // description does not name the command, so there the line earns its place.
+    render(<ToolStepCard entry={entry()} />);
+    expect(screen.queryByText("IN")).toBeNull();
+    cleanup();
+    render(<ToolStepCard entry={entry()} title="Listing the workspace" />);
+    expect(screen.getByText("IN")).toBeInTheDocument();
+    expect(screen.getByText(stepArgument(entry()))).toHaveClass("step-io-in");
   });
 
   it("hides the command and its output until the row is opened, then reveals both", () => {
     render(<ToolStepCard entry={entry()} />);
-    // Collapsed: neither the Bash command nor the result <pre> is on screen.
+    // Collapsed: the SECOND line of the Bash command is not on screen (the row
+    // shows the first), and the result's <pre> is the clamped preview, not the
+    // detail's output pane.
     expect(screen.queryByText(/cd \/tmp/)).toBeNull();
     expect(screen.queryByTestId("tool-output")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /ran: ls -la/i }));
+    fireEvent.click(screen.getByRole("button", { name: /ls -la/i }));
 
     // Opened: the command (a Bash code block) and its STDOUT both appear, the
     // latter behind a "Hide output" toggle that starts open.
@@ -1157,12 +1222,34 @@ describe("ToolStepCard — a disclosure row", () => {
 
   it("uses the resolved title when one is passed, instead of re-deriving it", () => {
     render(<ToolStepCard entry={entry()} title="Custom narration title" />);
-    expect(screen.getByText("Custom narration title")).toBeInTheDocument();
+    const desc = screen.getByText("Custom narration title");
+    expect(desc).toHaveClass("rail-desc");
+    // Model-authored prose stays in the prose face — only a DERIVED description
+    // is set in mono, because only a derived one is a literal path or command.
+    expect(desc).not.toHaveClass("rail-desc--mono");
   });
 
   it("falls through to the next tier when the passed title is empty", () => {
     render(<ToolStepCard entry={entry()} title="" />);
-    expect(screen.getByText("Ran: ls -la")).toBeInTheDocument();
+    expect(screen.getByText("ls -la")).toHaveClass("rail-desc--mono");
+  });
+
+  it("prints an MCP call's name once, never beside itself", () => {
+    // With no `human_description` the argument resolves to exactly the tool's
+    // own name, and a row reading "execute_python_cell  execute_python_cell"
+    // says nothing the second time.
+    render(
+      <ToolStepCard
+        entry={entry({ tool: "mcp__notebook__execute_python_cell", input: {} })}
+      />,
+    );
+    const card = screen.getByTestId("tool-step");
+    expect(within(card).getByText("execute_python_cell")).toHaveClass(
+      "rail-tool",
+    );
+    expect(card.querySelector(".rail-desc")).toBeNull();
+    // And never the machine name from the triple.
+    expect(card.textContent).not.toContain("mcp__");
   });
 });
 
@@ -1220,14 +1307,17 @@ describe("ToolStepCard — a RUNNING step (live stdout)", () => {
 
   it("renders a result-less running step without inventing a result for it", () => {
     // The entry has no `result` yet (it merges later, with no second
-    // announcement), so nothing may promise one: no "Show output" text, and
-    // the summary falls back to the tool name rather than echoing the live tail.
+    // announcement), so nothing may promise one: no "Show output" text, and the
+    // row says only what the record holds — the tool and its command.
     render(<ToolStepCard entry={runningEntry("t1")} stdout="partial output" />);
     const card = screen.getByTestId("tool-step");
-    expect(within(card).getByText("Bash")).toHaveClass("tool-step-summary");
+    expect(within(card).getByText("Bash")).toHaveClass("rail-tool");
+    expect(within(card).getByText("wc -l data.csv")).toHaveClass("rail-desc");
     expect(screen.queryByText(/show output/i)).toBeNull();
-    // The live tail is shown inline on the always-visible row.
+    // The live tail fills the preview's OUT row, exactly where a landed
+    // result's first lines would be.
     expect(screen.getByText(stdoutPre("partial output"))).toBeInTheDocument();
+    expect(within(card).getByTestId("step-stdout")).toHaveClass("step-io-out");
   });
 
   it("gives each grouped step its own stdout, matched by toolUseId", () => {
@@ -1236,7 +1326,7 @@ describe("ToolStepCard — a RUNNING step (live stdout)", () => {
     const steps = [
       runningEntry("t1", "wc -l a.csv"),
       runningEntry("t2", "wc -l b.csv"),
-    ].map((e) => ({ entry: e, title: deterministicLabel(e) }));
+    ].map(resolvedStep);
     render(
       <ToolStepGroup
         steps={steps}
@@ -1351,9 +1441,9 @@ describe("golden transcript — no machine-facing text in the step rows", () => 
     expect(rows.some((t) => t.includes("understanding the workspace"))).toBe(
       true,
     );
-    // Each remaining row carries its own human label: the path, the
-    // model-authored MCP description.
-    expect(rows.some((t) => t.includes("Wrote results/kinome.csv"))).toBe(true);
+    // Each remaining row carries its own human label: the tool and the path it
+    // took, the model-authored MCP description.
+    expect(rows.some((t) => t.includes("Write results/kinome.csv"))).toBe(true);
     expect(rows.some((t) => t.includes("Scoring on-target activity"))).toBe(
       true,
     );

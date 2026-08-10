@@ -47,7 +47,7 @@ describe("Lykeion shell", () => {
       "Research Groups",
       "Agents",
       "Workflows",
-      "Runtimes",
+      "Machines",
     ]) {
       expect(
         screen.getByRole("link", { name: new RegExp(label, "i") }),

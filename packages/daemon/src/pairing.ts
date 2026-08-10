@@ -530,7 +530,11 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
           await finishPaired(
             res,
             200,
-            renderSuccessPage({ machineName: paired.machineName, labLabel: labLabel(paired) }),
+            renderSuccessPage({
+              machineName: paired.machineName,
+              labLabel: labLabel(paired),
+              labUrl: paired.lab,
+            }),
             { ok: true, state: paired },
           );
         } catch (err) {

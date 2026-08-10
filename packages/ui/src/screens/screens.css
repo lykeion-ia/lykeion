@@ -448,6 +448,17 @@ a.crumb:hover {
   color: var(--ink-tertiary);
 }
 
+/* The agent's brand mark, sized to the stroked glyph it stands in for so the
+   titles below it stay on one line whichever a row wears. Drawn in the brand's
+   own colour, set on the glyph by `TaskGlyph` (StudyScreen.tsx) — the mark is
+   a `currentColor` silhouette, so the ink it inherits is the whole of it. The
+   tertiary ink this box sets is what a mark falls back to when its brand has
+   no colour of its own to be in. */
+.study-task-mark {
+  width: 14px;
+  height: 14px;
+}
+
 .study-task-title {
   flex: 1 1 auto;
   min-width: 0;

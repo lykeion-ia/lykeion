@@ -375,6 +375,67 @@ it("cliFingerprint differs when sessionReady flips, with the id, version and ava
   expect(cliFingerprint(before)).not.toBe(cliFingerprint(after));
 });
 
+it("cliFingerprint differs when an agent that offered nothing knowable now offers a catalogue", () => {
+  // The case this exists for. A probe that reaches an adapter but cannot
+  // open a throwaway session — installed but not signed in, an entitlement
+  // refused — leaves the options UNKNOWN and everything else identical. Not
+  // counted here, the successful probe five minutes later compared equal to
+  // the failed one and was dropped, so the lab kept "unknown" for the life
+  // of the daemon and the composer offered a bare Default against an agent
+  // with a whole catalogue to give.
+  const before: ProbedCli[] = [
+    { id: "codex", name: "Codex", command: "codex", version: "1.0.0", available: true, sessionReady: true },
+  ];
+  const after: ProbedCli[] = [
+    {
+      ...before[0]!,
+      options: [
+        {
+          id: "model",
+          category: "model",
+          currentValue: "gpt-5.6-sol",
+          choices: [{ value: "gpt-5.6-sol", label: "GPT-5.6-Sol" }],
+        },
+      ],
+    },
+  ];
+  expect(cliFingerprint(before)).not.toBe(cliFingerprint(after));
+});
+
+it("cliFingerprint differs when an agent's catalogue itself changes", () => {
+  // A provider shipping a model is a change the lab has to see: the id,
+  // version, availability and readiness are all untouched by it.
+  const base: ProbedCli = {
+    id: "codex", name: "Codex", command: "codex", version: "1.0.0",
+    available: true, sessionReady: true,
+  };
+  const withOne: ProbedCli[] = [
+    {
+      ...base,
+      options: [
+        { id: "model", category: "model", currentValue: "gpt-5.5", choices: [{ value: "gpt-5.5", label: "GPT-5.5" }] },
+      ],
+    },
+  ];
+  const withTwo: ProbedCli[] = [
+    {
+      ...base,
+      options: [
+        {
+          id: "model",
+          category: "model",
+          currentValue: "gpt-5.5",
+          choices: [
+            { value: "gpt-5.5", label: "GPT-5.5" },
+            { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+          ],
+        },
+      ],
+    },
+  ];
+  expect(cliFingerprint(withOne)).not.toBe(cliFingerprint(withTwo));
+});
+
 it("offers no agent at all on a platform whose runs cannot be confined", async () => {
   const clis = await probeAgentClis({ dataDir: stateDir(), path: "", platform: "linux" });
   expect(clis.length).toBeGreaterThan(0);

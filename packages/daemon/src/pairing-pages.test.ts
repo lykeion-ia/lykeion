@@ -107,20 +107,45 @@ describe("setup page", () => {
 });
 
 describe("terminal pairing states", () => {
-  it("ends success with machine and lab identity but no onward action", () => {
+  it("ends success with machine and lab identity, and the way back to the lab", () => {
+    // This tab is the end of a trip that began in the lab: a command typed
+    // in a terminal opened a page nobody navigated to. Ending it by naming
+    // the lab and linking to it closes the round — the alternative is
+    // telling someone the tab is disposable and leaving them to find their
+    // own way back to an address they may never have typed.
     const html = renderSuccessPage({
       machineName: "Ana <Mac>",
       labLabel: 'Ana & Co "Lab"',
+      labUrl: "https://lab.example.edu",
     });
     expect(html).toContain("This machine is ready");
-    expect(html).toContain("Pairing is complete. It&#39;s safe to close this tab.");
     expect(html).toContain("Ana &lt;Mac&gt;");
     expect(html).toContain("Ana &amp; Co &quot;Lab&quot;");
-    expect(html).not.toMatch(/<button|Open Lykeion|View runtime/i);
+    expect(html).toContain('href="https://lab.example.edu"');
+    // Named, not "open the lab": whoever has two labs open needs to know
+    // which one this was.
+    expect(html).toContain("Access Ana &amp; Co &quot;Lab&quot;");
+    expect(html).not.toContain("safe to close this tab");
+  });
+
+  it("labels the way back with the address when the lab has no name of its own", () => {
+    // `labLabel` already resolves that fallback, so this asserts the page
+    // says whatever it was handed rather than inventing a name for a lab
+    // that has none — the common case, not the odd one.
+    const html = renderSuccessPage({
+      machineName: "Ana",
+      labLabel: "http://127.0.0.1:1421",
+      labUrl: "http://127.0.0.1:1421",
+    });
+    expect(html).toContain("Access http://127.0.0.1:1421");
   });
 
   it("gives outcome details dedicated readable, narrow-safe presentation", () => {
-    const html = renderSuccessPage({ machineName: "Ana", labLabel: "Lab" });
+    const html = renderSuccessPage({
+      machineName: "Ana",
+      labLabel: "Lab",
+      labUrl: "http://127.0.0.1:1421",
+    });
     expect(html).toContain(".machine-summary{");
     expect(html).toContain(".machine-summary dt{");
     expect(html).toContain(".recovery{");

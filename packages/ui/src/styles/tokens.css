@@ -68,6 +68,17 @@
   --danger-fg: color-mix(in srgb, var(--danger) 65%, var(--seed-ink));
   --success: #27a644;
 
+  /* A link in prose. Semantic rather than brand: the accent seed is a different
+     hue in every theme — rose on Midnight, magenta on Dawn — and a citation
+     wearing it would read as a warning rather than as somewhere to go. Blue is
+     what a link means, so it is fixed here like --warn and --danger are, and
+     mixed toward ink for the same reason --danger-fg is: the mix lightens on a
+     dark canvas and darkens on a light one, so one value stays legible across
+     all five themes. */
+  --link: #5b8dee;
+  --link-fg: color-mix(in srgb, var(--link) 78%, var(--seed-ink));
+  --link-hover: color-mix(in srgb, var(--link) 60%, var(--seed-ink));
+
   /* Type */
   --font-sans:
     -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI",

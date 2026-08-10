@@ -272,6 +272,14 @@ export interface Task {
   runCount: number;
   /** The latest turn's outcome. Absent until a turn has finished. */
   lastRunStatus?: "ok" | "failed";
+  /**
+   * The coding agent this Task is talking to — an `AgentCli.id`, read off its
+   * newest turn. A Task is one continuous conversation with one agent, so the
+   * newest turn is the one that says which; a list of Tasks can therefore
+   * name each one's agent without opening every transcript to find out.
+   * Absent until a turn has run: a Task nobody has spoken in is on nothing.
+   */
+  agent?: string;
   /** Pinned to the top of the Study's Task list. */
   pinned?: boolean;
   /** Which machine ran it. Absent until a runtime records one. */

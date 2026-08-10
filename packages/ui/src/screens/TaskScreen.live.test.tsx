@@ -179,10 +179,13 @@ describe("the live turn", () => {
     emit({ event: "log-entry", entry: readEntry("data.csv") });
 
     const card = await screen.findByTestId("tool-step");
-    expect(within(card).getByText("Read data.csv")).toBeInTheDocument();
-    // No `result` has merged yet, and none is invented: the summary column
-    // falls back to the tool name and no output disclosure is offered.
-    expect(within(card).getByText("Read")).toHaveClass("tool-step-summary");
+    // The row is the tool's NAME and the argument it was called with — the
+    // verb is the name, and the rail's marker says whether it ran.
+    expect(within(card).getByText("Read")).toHaveClass("rail-tool");
+    expect(within(card).getByText("data.csv")).toHaveClass("rail-desc");
+    // No `result` has merged yet, and none is invented: no IN/OUT preview at
+    // all, and no output disclosure offered.
+    expect(within(card).queryByTestId("step-io")).toBeNull();
     expect(
       within(card).queryByRole("button", { name: /show output/i }),
     ).toBeNull();
@@ -256,7 +259,7 @@ describe("the live turn", () => {
       live: { toolStdout: [{ toolUseId: "tu-b", text: "42 b.csv" }] },
     });
 
-    await screen.findByText("Ran: wc -l b.csv");
+    await screen.findByText("wc -l b.csv");
     const cardFor = (command: string) =>
       screen
         .getAllByTestId("tool-step")
@@ -309,7 +312,7 @@ describe("the live turn", () => {
     expect(screen.queryByTestId("live-thinking")).not.toBeInTheDocument();
     // The message it became renders exactly once, and the card is untouched.
     expect(screen.getAllByText("Strong candidates: 12 of 42.")).toHaveLength(1);
-    expect(screen.getByText("Read data.csv")).toBeInTheDocument();
+    expect(screen.getByText("data.csv")).toBeInTheDocument();
     expectStillRunning();
   });
 
@@ -329,7 +332,7 @@ describe("the live turn", () => {
     // not the exact node `findByText` resolves to.
     const bubble = await screen.findByText("Whole message");
     expect(bubble.closest(".msg--assistant")).not.toBeNull();
-    expect(screen.getByText("Read data.csv")).toBeInTheDocument();
+    expect(screen.getByText("data.csv")).toBeInTheDocument();
     expect(screen.queryByTestId("live-text")).not.toBeInTheDocument();
     expect(screen.queryByTestId("live-thinking")).not.toBeInTheDocument();
     expect(screen.queryByTestId("step-stdout")).not.toBeInTheDocument();
@@ -339,7 +342,7 @@ describe("the live turn", () => {
   it("keeps already-started cards on screen when the researcher stops the run", async () => {
     const { emit, user } = await startTurn();
     emit({ event: "log-entry", entry: readEntry("data.csv") });
-    expect(await screen.findByText("Read data.csv")).toBeInTheDocument();
+    expect(await screen.findByText("data.csv")).toBeInTheDocument();
 
     // Stop lives in the composer, in Send's place (see ComposerStop.test.tsx).
     await user.click(screen.getByRole("button", { name: "Stop" }));
@@ -348,13 +351,13 @@ describe("the live turn", () => {
     // — the cards must survive it. A stopped turn lands no record here (the
     // stream is simply cut), so nothing else can put them back on screen.
     expect(await screen.findByText("Run stopped")).toBeInTheDocument();
-    expect(screen.getByText("Read data.csv")).toBeInTheDocument();
+    expect(screen.getByText("data.csv")).toBeInTheDocument();
   });
 
   it("carries a stopped turn's cards into the transcript when the researcher continues", async () => {
     const { emit, user } = await startTurn();
     emit({ event: "log-entry", entry: readEntry("data.csv") });
-    expect(await screen.findByText("Read data.csv")).toBeInTheDocument();
+    expect(await screen.findByText("data.csv")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Stop" }));
 
     await user.type(screen.getByLabelText("Message the agent"), "try again");
@@ -363,7 +366,7 @@ describe("the live turn", () => {
     // The stopped turn graduates into the view. It has no landed record, so
     // its cards can only come from what the live turn accumulated — and the
     // NEW turn starts empty, so there is exactly one.
-    expect(screen.getAllByText("Read data.csv")).toHaveLength(1);
+    expect(screen.getAllByText("data.csv")).toHaveLength(1);
     expect(screen.getAllByTestId("tool-step")).toHaveLength(1);
   });
 });

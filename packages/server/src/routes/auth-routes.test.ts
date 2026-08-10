@@ -118,6 +118,37 @@ it("creates the owner on first run and signs them straight in", async () => {
   expect(actor).toEqual({ userId: expect.any(String), role: "owner" });
 });
 
+it("keeps the name the owner gave this lab", async () => {
+  // Setup is the only route that can ask: it answers once, and nothing else
+  // writes this column. What it holds is what a machine's pairing page, the
+  // link back from one, and Settings all call this lab.
+  const store = freshStore();
+  const res = await post(store, "/auth/setup", {
+    labName: "Ferrando Lab",
+    email: "ana@lab.example",
+    displayName: "Ana",
+    password: "a good long password",
+  });
+  expect(res!.status).toBe(200);
+  expect(store.get(`SELECT org_name FROM lab_settings WHERE id = 1`)!.org_name).toBe(
+    "Ferrando Lab",
+  );
+});
+
+it("leaves a lab set up without a name unnamed, rather than inventing one", async () => {
+  // Blank is what every reader of this column already treats as unnamed, and
+  // it is the state every lab created before the field existed is in. A
+  // default here — the address, the owner's name — would be a name nobody
+  // chose, shown as though they had.
+  const store = freshStore();
+  await post(store, "/auth/setup", {
+    email: "ana@lab.example",
+    displayName: "Ana",
+    password: "a good long password",
+  });
+  expect(store.get(`SELECT org_name FROM lab_settings WHERE id = 1`)!.org_name).toBe("");
+});
+
 it("stops offering setup once an owner exists", async () => {
   const store = freshStore();
   await post(store, "/auth/setup", { email: "a@l.example", displayName: "A", password: "password one" });

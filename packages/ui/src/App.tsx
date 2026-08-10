@@ -4,6 +4,7 @@ import type { LykeionApi, Transport } from "@lykeion/api";
 import { ApiProvider } from "./api/ApiContext";
 import { hasWorkspaceServer, selectApi } from "./api/select";
 import { useChangeChannel } from "./hooks/useChangeChannel";
+import { hasDestination, landingHash } from "./lib/landing";
 import { AuthGate } from "./shell/AuthGate";
 import { RouterProvider, useRoute } from "./router";
 import { ThemeProvider } from "./theme/ThemeContext";
@@ -58,6 +59,23 @@ export default function App({ api }: { api?: LykeionApi }) {
   );
   const currentUser = useCallback(() => resolved.api.currentUser(), [resolved]);
 
+  // Signing in is the one moment the landing rule applies. Held here rather
+  // than in the gate because it is the only place that has both the API to
+  // ask with and a single callback fired exactly once per sign-in — and
+  // because a rule expressed as routing instead would be unable to tell
+  // `#/studies` typed by the router's default apart from `#/studies` clicked
+  // in the rail, and would bounce anyone who went there on purpose.
+  const signedIn = useCallback(() => {
+    identityChanged();
+    if (hasDestination(window.location.hash)) return;
+    void landingHash(resolved.api).then((hash) => {
+      // Checked again on the way back: the answer took a round trip, and a
+      // member who navigated while it was in flight has since chosen.
+      if (hash !== null && !hasDestination(window.location.hash))
+        window.location.hash = hash;
+    });
+  }, [identityChanged, resolved]);
+
   const shell = (
     <ApiProvider api={resolved.api} key={identityGeneration}>
       <ChangeChannel transport={resolved.transport} />
@@ -80,7 +98,7 @@ export default function App({ api }: { api?: LykeionApi }) {
   return (
     <AuthGate
       currentUser={currentUser}
-      onSignedIn={identityChanged}
+      onSignedIn={signedIn}
       onSignedOut={identityChanged}
       // The same counter that remounts the data layer also tells the gate to
       // ask again. Nothing else can: `currentUser` closes over an API object

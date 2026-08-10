@@ -2,16 +2,19 @@ import { useState } from "react";
 import type { ExecutionLogEntry, TurnItem } from "@lykeion/api";
 import { ChevronRightIcon } from "../icons";
 import { ToolStepDetail } from "./ToolStepDetail";
+import { ToolStepPreview } from "./ToolStepPreview";
+import { RailRow, TurnRail, type RailMarker } from "./TurnRail";
 
 /**
- * Card/group rendering for one Execution Log entry — the "tool-step card"
- * the Task transcript renders for every tool a run took, interleaved
- * with prose. Shared by both the live in-flight turn and the persisted
- * transcript, since TaskScreen renders each of those through this same
- * code.
+ * Row/group rendering for one Execution Log entry — the "tool step" the Task
+ * transcript draws for every tool a run took, as one node on the turn's
+ * timeline rail (see `TurnRail`), interleaved with the prose and thinking that
+ * sit on the same rail. Shared by both the live in-flight turn and the
+ * persisted transcript, since TaskScreen renders each of those through this
+ * same code.
  *
  * An announced call carries `decision: "pending"` until execution or a gate
- * resolves it, so this same card is also the live running state.
+ * resolves it, so this same row is also the live running state.
  */
 
 export type StepStatus = "running" | "ok" | "blocked" | "error";
@@ -54,13 +57,6 @@ export function stepStatus(entry: ExecutionLogEntry): StepStatus {
   if (entry.isError) return "error";
   return "ok";
 }
-
-const STATUS_GLYPH: Record<StepStatus, string> = {
-  running: "…",
-  ok: "✓",
-  blocked: "⊘",
-  error: "✕",
-};
 
 function stringField(input: unknown, keys: string[]): string | undefined {
   if (!input || typeof input !== "object") return undefined;
@@ -125,6 +121,61 @@ export function deterministicLabel(entry: ExecutionLogEntry): string {
         return entry.tool.split("__").pop() || entry.tool;
       }
       return entry.tool || "Tool step";
+    }
+  }
+}
+
+/**
+ * The tool's name as the row prints it, in bold: `entry.tool` — with an MCP
+ * triple reduced to the bare tool at its end ("execute_python_cell", never
+ * `mcp__notebook__execute_python_cell`), because a machine name must not reach
+ * the researcher's row.
+ */
+export function toolName(entry: ExecutionLogEntry): string {
+  const tool = entry.tool;
+  if (!tool) return "Tool";
+  if (tool.startsWith("mcp__")) return tool.split("__").pop() || tool;
+  return tool;
+}
+
+/**
+ * The step's ARGUMENT alone, with no verb and no tense: Bash's first command
+ * line, Read/Write/Edit's path, an MCP call's model-authored
+ * `human_description`, else the tool's own name.
+ *
+ * Beside [`deterministicLabel`] rather than folded into it, because the two
+ * answer different questions. A LABEL is a sentence about what happened ("Wrote
+ * out.csv"), and the tense in it is what says whether it did. A rail row reads
+ * `tool name + argument` — the name is already the verb, so the description
+ * beside it must not carry a second one.
+ *
+ * Dropping the tense here is a deliberate WIDENING of a rule that already
+ * existed, not an oversight. `deterministicLabel` is tenseless for MCP tools
+ * today, on the grounds that "the glyph, not the tense, carries whether a
+ * blocked call ran". The rail extends that to every tool, and can afford to
+ * only because its markers keep the bargain: `blocked` and `error` draw a GLYPH
+ * rather than a differently-coloured dot, and every non-`ok` row also announces
+ * its status as a word (see `RailRow`). Take either of those away and the tense
+ * has to come back.
+ */
+export function stepArgument(entry: ExecutionLogEntry): string {
+  switch (entry.tool) {
+    case "Bash": {
+      const command = stringField(entry.input, ["command"]);
+      return command ? command.split("\n")[0] : entry.tool;
+    }
+    case "Write":
+    case "Edit":
+    case "Read": {
+      const path = stringField(entry.input, ["file_path", "path"]);
+      return path ?? entry.tool;
+    }
+    default: {
+      if (entry.tool?.startsWith("mcp__")) {
+        const description = stringField(entry.input, ["human_description"]);
+        if (description) return description;
+      }
+      return toolName(entry);
     }
   }
 }
@@ -209,10 +260,16 @@ function isPromotableNarration(text: string): boolean {
 export const SUMMARY_MAX_LEN = 100;
 
 /**
- * Right-hand summary for one step — tool-shaped, not generic: a multi-line
+ * A one-line, tool-shaped summary of what a step produced: a multi-line
  * result becomes a line count, a short single-line result is shown
  * verbatim (e.g. a bare `6.0`), and a step with no result
  * yet (or one too long to be a summary) falls back to the tool name.
+ *
+ * Nothing on the rail draws it: a collapsed row now shows the first lines of
+ * the output itself (`ToolStepPreview`'s `OUT`), which is what the summary
+ * column stood in for. Kept because it is the one place that knows how to say
+ * "what did this produce" in a single line, for a surface that has room for
+ * exactly one.
  */
 export function stepSummary(entry: ExecutionLogEntry): string {
   const result = entry.result;
@@ -229,11 +286,25 @@ export function stepSummary(entry: ExecutionLogEntry): string {
   return entry.tool || "Tool step";
 }
 
+/**
+ * Which tier decided a step's title: the adapter's own (`given`), the promoted
+ * narration before it (`narration`), or the deterministic fallback
+ * (`deterministic`).
+ *
+ * It travels with the title because the ROW renders the two kinds differently:
+ * the first two are model-authored prose and read as prose; the third is a
+ * literal path or command and reads as one, in mono. Deciding that from the
+ * title's TEXT would be a guess, and the tier is already known — `blocksOf`
+ * just resolved it.
+ */
+export type StepSource = "given" | "narration" | "deterministic";
+
 /** One step, its resolved title already decided by `blocksOf` (tier
  *  1/2/3), and pass-through to a bare `ToolStepCard`. */
 export interface ResolvedStep {
   entry: ExecutionLogEntry;
   title: string;
+  source: StepSource;
 }
 
 /** A render block: prose, or a run of consecutive tool steps with their
@@ -330,9 +401,17 @@ export function blocksOf(streamIn: TurnItem[]): StreamBlock[] {
       }
       const narration = pendingNarration;
       pendingNarration = undefined;
+      // One expression per tier, resolved in the same order and by the same
+      // `||` — an empty title is no title — so the tier recorded in `source`
+      // can never disagree with the title beside it.
+      const source: StepSource = item.entry.title
+        ? "given"
+        : narration
+          ? "narration"
+          : "deterministic";
       const title =
         item.entry.title || narration || deterministicLabel(item.entry);
-      const resolved: ResolvedStep = { entry: item.entry, title };
+      const resolved: ResolvedStep = { entry: item.entry, title, source };
       const last = blocks[blocks.length - 1];
       if (!startNewGroup && last && last.kind === "steps") {
         last.steps.push(resolved);
@@ -432,29 +511,35 @@ function groupHeaderText(steps: ResolvedStep[]): string {
   return `${mix === "none-ran" ? "Run" : "Ran"} ${steps.length} steps`;
 }
 
-/** One tool-step card: a DISCLOSURE row — status glyph, label, and a
- *  right-aligned tool-shaped summary on one always-visible line, which the
- *  researcher clicks to reveal the step's detail (its command over STDOUT, an
- *  Edit's diff, a web search's query over its results — see `ToolStepDetail`).
- *  Collapsed by default, so a transcript of many steps stays a compact list of
- *  rows and nothing is hidden that wasn't already — opening a row shows exactly
- *  this detail. `title`, when given, is the already-resolved label
- *  (from `blocksOf`); used standalone, it falls back to tier 1 then tier 3 (no
- *  stream context for tier 2 narration).
+/** One tool step, as a node on the turn's rail: a marker, the tool's NAME in
+ *  bold, and a muted description beside it — `Bash  find . -name '*.css'`. The
+ *  whole row is a disclosure the researcher clicks to reveal the step's detail
+ *  (its command over STDOUT, an Edit's diff, a web search's query over its
+ *  results — see `ToolStepDetail`). Collapsed by default, so a turn of many
+ *  steps stays a list of rows on one rail rather than a stack of boxes.
+ *
+ *  Collapsed, the row carries a clamped `IN`/`OUT` preview beneath it
+ *  (`ToolStepPreview`) — so the transcript says what each step DID without
+ *  anything being opened. Open, the preview gives way to the full detail, which
+ *  carries the same content: nothing is drawn in both places.
+ *
+ *  `title`/`source` are the already-resolved label and the tier that decided it
+ *  (from `blocksOf`). Used standalone there is no stream context for tier 2, so
+ *  the tier is read off the entry: an adapter title is `given`, anything else
+ *  falls to `deterministic`.
  *
  *  `stdout` is THIS tool's live output while it is still running (the caller
- *  matched it by `toolUseId`). While the row is COLLAPSED it renders inline
- *  below the row — output arriving right now is the reason the card is on screen
- *  — and it is never persisted; when the row is OPEN, the detail body renders
- *  this same output (as the tool's output pane) instead, so it is never shown
- *  twice. */
+ *  matched it by `toolUseId`), and is never persisted. It reaches the preview's
+ *  `OUT` row as the step's output, exactly as a landed result would. */
 export function ToolStepCard({
   entry,
   title,
+  source,
   stdout,
 }: {
   entry: ExecutionLogEntry;
   title?: string;
+  source?: StepSource;
   stdout?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -463,46 +548,66 @@ export function ToolStepCard({
    * The step's access left the study workspace. It is drawn as its OWN
    * affordance, deliberately not folded into `stepStatus`: the call ran and
    * succeeded, so it is neither an error nor blocked, and saying otherwise
-   * would be as false as the green ✓ this marker exists to qualify. An agent
+   * would be as false as the green marker this chip exists to qualify. An agent
    * CLI can execute such an access with no permission request ever reaching
-   * the seam (plan mode's auto-allow), so this marker is the only place the
+   * the seam (plan mode's auto-allow), so this chip is the only place the
    * researcher ever learns it happened.
    */
   const outside = leftTheWorkspace(entry);
+  const name = toolName(entry);
   // `||`, not `??`, and for the same reason as in `blocksOf`: an empty
   // title is no title, and must fall through to the next tier.
-  const label = title || entry.title || deterministicLabel(entry);
+  const given = title || entry.title;
+  const tier: StepSource = source ?? (given ? "given" : "deterministic");
+  const derived = tier === "deterministic";
+  const argument = stepArgument(entry);
+  // A derived row describes itself with the bare argument, set in mono because
+  // that is what it is — a literal path or command. A model-authored title
+  // (the adapter's, or the promoted narration) is prose, and is set as prose.
+  const description = derived ? argument : given || deterministicLabel(entry);
+  // The name is already on the row: an MCP call that authored no description of
+  // its own resolves to exactly it, and printing it twice says nothing the
+  // second time.
+  const describes = description !== name;
+  // The `IN` line carries the literal argument UNDER a model-authored
+  // description. On a derived row the description already is that argument, so
+  // the line would repeat it verbatim one line down; and an argument that came
+  // out as the bare tool name adds nothing the name has not already said.
+  const input = derived || argument === name ? undefined : argument;
 
   return (
-    <div
+    <RailRow
+      marker={status}
+      testid="tool-step"
       className={`tool-step tool-step--${status}${
         outside ? " tool-step--outside" : ""
       }${open ? " tool-step--open" : ""}`}
-      data-testid="tool-step"
     >
-      {/* A disclosure header: the chevron rotates to point down when open, and
-          the whole row toggles the detail body below. `aria-expanded` carries
-          the state the chevron shows — the same affordance the group header and
-          the "Show output" toggle use. */}
+      {/* The whole row toggles the detail below it. `aria-expanded` carries the
+          state — the same affordance the group header and the "Show output"
+          toggle use. */}
       <button
         type="button"
         className="tool-step-head"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
       >
-        <ChevronRightIcon
-          className={`tool-step-chevron${open ? " tool-step-chevron--open" : ""}`}
-          width={13}
-          height={13}
-        />
-        <span className="tool-step-glyph" aria-hidden="true">
-          {STATUS_GLYPH[status]}
-        </span>
-        <span className="tool-step-label">{label}</span>
+        <span className="rail-tool">{name}</span>
+        {describes && (
+          <>
+            {/* A real space between the two, so the row's text reads as
+                "Write results/out.csv" to a screen reader and to anything else
+                that takes it — the gap between them is CSS, and CSS is not
+                text. A whitespace-only node between flex items is not rendered,
+                so it costs no layout. */}{" "}
+            <span className={`rail-desc${derived ? " rail-desc--mono" : ""}`}>
+              {description}
+            </span>
+          </>
+        )}
         {outside && (
-          // Beside the label, not in the summary column: the summary yields
-          // first when space is tight (see task.css), and this must never be
-          // the part that gets truncated away.
+          // Beside the description, which yields first when space is tight (see
+          // task.css): this must never be the part that gets truncated away.
           <span
             className="tool-step-outside"
             title="This access fell outside the study workspace, and ran without a permission card."
@@ -510,24 +615,19 @@ export function ToolStepCard({
             outside workspace
           </span>
         )}
-        <span className="tool-step-summary">{stepSummary(entry)}</span>
       </button>
-      {open && (
+      {open ? (
         <div className="tool-step-detail" data-testid="tool-step-detail">
           <ToolStepDetail entry={entry} stdout={stdout} />
         </div>
+      ) : (
+        <ToolStepPreview
+          entry={entry}
+          {...(input ? { input } : {})}
+          {...(stdout ? { stdout } : {})}
+        />
       )}
-      {/* The live tail of a still-running tool, inline on the COLLAPSED row —
-          when the row is open the detail body carries this same output, so it
-          is never rendered in both places. */}
-      {!open && stdout && (
-        <div className="tool-step-body tool-step-body--live">
-          <pre className="step-stdout" data-testid="step-stdout">
-            {stdout}
-          </pre>
-        </div>
-      )}
-    </div>
+    </RailRow>
   );
 }
 
@@ -555,6 +655,7 @@ export function ToolStepGroup({
       <ToolStepCard
         entry={only.entry}
         title={only.title}
+        source={only.source}
         stdout={stdoutFor?.(only.entry.toolUseId)}
       />
     );
@@ -562,12 +663,33 @@ export function ToolStepGroup({
   return <ToolStepGroupCard steps={steps} stdoutFor={stdoutFor} />;
 }
 
-/** The multi-step case of [`ToolStepGroup`]: a disclosure whose header collapses
- *  the child cards. Split out so the collapse
+/**
+ * The rail marker for a whole group: the WORST thing that happened inside it.
+ *
+ * A header can never read calmer than the steps folded under it — collapsed,
+ * it is the only row on screen, and a green dot over a group containing a
+ * refusal would hide exactly the thing the researcher needs to see. Ordered so
+ * a failure outranks a refusal, which outranks work still in flight.
+ */
+function groupMarker(steps: ResolvedStep[]): RailMarker {
+  const statuses = steps.map((s) => stepStatus(s.entry));
+  if (statuses.includes("error")) return "error";
+  if (statuses.includes("blocked")) return "blocked";
+  if (statuses.includes("running")) return "running";
+  return "ok";
+}
+
+/** The multi-step case of [`ToolStepGroup`]: a disclosure whose header row
+ *  collapses the child rows. Split out so the collapse
  *  `useState` is only ever reached on the >1 path — the lone-step and empty
  *  cases return before it, and never call a hook they don't use. Default OPEN:
  *  nothing that renders today gets hidden on first paint; the researcher folds
- *  a group away, they are never handed it folded. */
+ *  a group away, they are never handed it folded.
+ *
+ *  The header is a node on the OUTER rail; the open body indents by one rail
+ *  column and puts its children on a nested, dimmer one, so a folded run reads
+ *  as one event in the turn and an unfolded one as its own small timeline
+ *  hanging off that event. */
 function ToolStepGroupCard({
   steps,
   stdoutFor,
@@ -578,38 +700,43 @@ function ToolStepGroupCard({
   const [open, setOpen] = useState(true);
   return (
     <div className="tool-step-group" data-testid="tool-step-group">
-      {/* A disclosure header: the chevron rotates to point down when open, and
-          the whole row toggles the group body. `aria-expanded` carries the
-          state the chevron shows. */}
-      <button
-        type="button"
-        className="tool-step-group-head"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-      >
-        <ChevronRightIcon
-          className={`tool-step-chevron${open ? " tool-step-chevron--open" : ""}`}
-          width={13}
-          height={13}
-        />
-        <span className="tool-step-group-title">{groupHeaderText(steps)}</span>
-        <span className="tool-step-group-summary">{steps.length} steps</span>
-      </button>
+      <RailRow marker={groupMarker(steps)} className="tool-step-group-row">
+        {/* A disclosure header: the chevron rotates to point down when open,
+            and the whole row toggles the group body. `aria-expanded` carries
+            the state the chevron shows. */}
+        <button
+          type="button"
+          className="tool-step-group-head"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+        >
+          <ChevronRightIcon
+            className={`tool-step-chevron${open ? " tool-step-chevron--open" : ""}`}
+            width={13}
+            height={13}
+          />
+          <span className="tool-step-group-title">{groupHeaderText(steps)}</span>
+          <span className="tool-step-group-summary">{steps.length} steps</span>
+        </button>
+      </RailRow>
       {open && (
         <div className="tool-step-group-body">
-          {/* The index is part of the key, not a substitute for the id: an
-              id-less call (`note_invoked` appends it with `tool_use_id: ""`) or
-              an orphan entry falls back to `ts`, and `ts` is epoch MILLISECONDS —
-              two such steps in one tick would otherwise share a key and be
-              reconciled as one card. */}
-          {steps.map((s, i) => (
-            <ToolStepCard
-              key={`${i}:${s.entry.toolUseId || s.entry.ts}`}
-              entry={s.entry}
-              title={s.title}
-              stdout={stdoutFor?.(s.entry.toolUseId)}
-            />
-          ))}
+          <TurnRail nested>
+            {/* The index is part of the key, not a substitute for the id: an
+                id-less call (`note_invoked` appends it with `tool_use_id: ""`) or
+                an orphan entry falls back to `ts`, and `ts` is epoch MILLISECONDS —
+                two such steps in one tick would otherwise share a key and be
+                reconciled as one row. */}
+            {steps.map((s, i) => (
+              <ToolStepCard
+                key={`${i}:${s.entry.toolUseId || s.entry.ts}`}
+                entry={s.entry}
+                title={s.title}
+                source={s.source}
+                stdout={stdoutFor?.(s.entry.toolUseId)}
+              />
+            ))}
+          </TurnRail>
         </div>
       )}
     </div>

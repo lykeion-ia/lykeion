@@ -803,6 +803,9 @@ export function taskChatConformance(makeApi: () => Promise<LykeionApi>): void {
       });
       expect(task.runCount).toBe(0);
       expect(task.lastRunStatus).toBeUndefined();
+      // On no agent either: nobody has spoken here, so there is nothing this
+      // Task is talking to yet.
+      expect(task.agent).toBeUndefined();
       const detail = await api.getTask(task.id);
       expect(detail.turns).toEqual([]);
       expect(detail.task.id).toBe(task.id);
@@ -1056,11 +1059,19 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
       });
       handle.close();
 
-      const { turns } = await api.getTask(task.id);
-      const turn = turns.find((t) => t.runId === handle.runId);
+      const detail = await api.getTask(task.id);
+      const turn = detail.turns.find((t) => t.runId === handle.runId);
       expect(turn).toBeDefined();
       expect(turn!.agent).toBe(runningOn);
       expect(turn!.agent).not.toBe("");
+      // And the Task itself carries the same answer, so a surface that lists
+      // Tasks can say what each is on without opening every transcript to
+      // find out. The newest turn is the authority, so the two can never
+      // disagree — a Task naming one agent while its last turn ran on another
+      // would send the next turn somewhere the conversation is not.
+      expect(detail.task.agent).toBe(turn!.agent);
+      const listed = (await api.listTasks()).find((t) => t.id === task.id);
+      expect(listed?.agent).toBe(turn!.agent);
     });
 
     it("detach is observer-only: the same handle can resubscribe and still complete", async () => {

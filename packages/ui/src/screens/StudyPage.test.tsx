@@ -16,7 +16,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createInMemoryApi } from "@lykeion/api";
+import { createInMemoryApi, type LykeionApi } from "@lykeion/api";
 import App from "../App";
 
 const CMP = "s_cmp";
@@ -582,13 +582,45 @@ describe("a Task row's actions on the Study page", () => {
       .getAllByRole("link")
       .map((a) => a.getAttribute("href"));
 
-  it("wears the chat glyph on every row, because a Task is a chat", async () => {
+  it("leads each row with the mark of the coding agent that Task is talking to", async () => {
+    // Which agent is on a piece of work is the fact that separates two rows
+    // of this list, so the row wears it — the same brand marks the composer's
+    // CLI dock wears, so one drawing means one agent everywhere on the page.
+    const base = createInMemoryApi();
+    const api: LykeionApi = {
+      ...base,
+      async getStudy(studyId) {
+        const detail = await base.getStudy(studyId);
+        return {
+          ...detail,
+          tasks: detail.tasks.map((t, i) => ({
+            ...t,
+            agent: ["claude", "cursor"][i % 2],
+          })),
+        };
+      },
+    };
+    openStudy(CMP, api);
+    const { tasks } = await api.getStudy(CMP);
+    await screen.findByRole("region", { name: "All tasks" });
+
+    const marks = [...taskList().querySelectorAll("[data-agent]")].map((el) =>
+      el.getAttribute("data-agent"),
+    );
+    expect(marks).toEqual(tasks.map((t) => t.agent));
+    // And the mark replaces the chat glyph rather than joining it.
+    expect(taskList().querySelectorAll('svg[data-icon="chat"]')).toHaveLength(0);
+  });
+
+  it("keeps the chat glyph on a Task nobody has run, which is on no agent yet", async () => {
+    // A Task is a chat before it is anything else, and the seeded lab's Tasks
+    // have run on nothing a brand mark exists for — so every row here falls
+    // back to the same glyph the rail's conversation control carries.
     const api = openStudy(CMP);
     const { tasks } = await api.getStudy(CMP);
     await screen.findByRole("region", { name: "All tasks" });
 
-    // The same glyph the rail's conversation control carries — one drawing for
-    // one idea, rather than a page that files what another page talks to.
+    expect(taskList().querySelectorAll("[data-agent]")).toHaveLength(0);
     expect(taskList().querySelectorAll('svg[data-icon="chat"]')).toHaveLength(
       tasks.length,
     );

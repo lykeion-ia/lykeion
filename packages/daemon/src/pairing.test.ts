@@ -792,7 +792,7 @@ it("exchanges the code and writes the token", async () => {
   expect(readState(session.dataDir)!.token).toBe("a-machine-token");
 });
 
-it("says on the page which lab the machine now belongs to", async () => {
+it("says on the page which lab the machine now belongs to, and links back to it", async () => {
   let verifier = "";
   const lab = await stubLab({ expectVerifier: (v) => v === verifier, labName: "Ana's Lab" });
   const session = await pairing({ lab: lab.base });
@@ -802,10 +802,13 @@ it("says on the page which lab the machine now belongs to", async () => {
   expect(res.status).toBe(200);
   expect(body).toContain("Lykeion");
   expect(body).toContain("This machine is ready");
-  expect(body).toContain("Pairing is complete. It&#39;s safe to close this tab.");
   expect(body).toContain("ana-macbook");
   expect(body).toContain("Ana&#39;s Lab");
-  expect(body).not.toMatch(/<button|Open Lykeion|View runtime/i);
+  // The name the lab gave for itself, pointing at the address this machine
+  // actually reached it on — the round trip that started in a browser tab
+  // and went through a terminal ends back where it began.
+  expect(body).toContain("Access Ana&#39;s Lab");
+  expect(body).toContain(`href="${lab.base}"`);
 });
 
 it("names the lab by its address on that page when the lab has no name of its own", async () => {

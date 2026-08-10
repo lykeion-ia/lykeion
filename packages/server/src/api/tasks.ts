@@ -46,7 +46,11 @@ function nonEmpty<T>(json: string): T[] | undefined {
   return parsed.length === 0 ? undefined : parsed;
 }
 
-export function toTask(row: Row, assignees: Assignee[] | undefined): Task {
+export function toTask(
+  row: Row,
+  assignees: Assignee[] | undefined,
+  agent: string | undefined,
+): Task {
   const labels = nonEmpty<string>(row.labels as string);
   const links = nonEmpty<string>(row.links as string);
   const subtasks = nonEmpty<Subtask>(row.subtasks as string);
@@ -67,6 +71,7 @@ export function toTask(row: Row, assignees: Assignee[] | undefined): Task {
     ...(subtasks ? { subtasks } : {}),
     runCount: row.run_count as number,
     ...(row.last_run_status === null ? {} : { lastRunStatus: row.last_run_status as "ok" | "failed" }),
+    ...(agent === undefined ? {} : { agent }),
     ...(row.pinned === 1 ? { pinned: true } : {}),
     ...(row.runtime_id === null ? {} : { runtimeId: row.runtime_id as string }),
     createdTs: row.created_ts as number,
@@ -74,8 +79,37 @@ export function toTask(row: Row, assignees: Assignee[] | undefined): Task {
   };
 }
 
-/** Hydrate task rows with their assignees in one extra query rather than
- *  one per row: a lab-wide list is otherwise N+1 round trips to the file. */
+/**
+ * The coding agent each of these Tasks is talking to: the agent of the
+ * session its newest turn belongs to. Read off the session rather than the
+ * turn for the same reason `taskTurnsForTask` does — a session *is* one
+ * agent's conversation, and a per-turn copy would be free to drift from it.
+ *
+ * The newest turn, not the newest *settled* one: a Task mid-run is talking to
+ * whatever is answering it right now, which is exactly what a reader of the
+ * list wants named.
+ */
+function agentsForTasks(store: Store, ids: string[]): Map<string, string> {
+  const placeholders = ids.map(() => "?").join(", ");
+  const byTask = new Map<string, string>();
+  for (const row of store.all(
+    `SELECT t.task_id AS task_id, s.agent AS agent
+       FROM turns t
+       JOIN sessions s ON s.id = t.session_id
+       JOIN (
+         SELECT task_id, MAX(seq) AS seq FROM turns
+          WHERE task_id IN (${placeholders})
+          GROUP BY task_id
+       ) newest ON newest.task_id = t.task_id AND newest.seq = t.seq`,
+    ids,
+  ))
+    byTask.set(row.task_id as string, row.agent as string);
+  return byTask;
+}
+
+/** Hydrate task rows with their assignees and their agent in two extra
+ *  queries rather than two per row: a lab-wide list is otherwise N+1 round
+ *  trips to the file, twice over. */
 export function taskRowsToTasks(store: Store, rows: Row[]): Task[] {
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id as string);
@@ -94,7 +128,10 @@ export function taskRowsToTasks(store: Store, rows: Row[]): Task[] {
     );
     byTask.set(row.task_id as string, list);
   }
-  return rows.map((row) => toTask(row, byTask.get(row.id as string)));
+  const agents = agentsForTasks(store, ids);
+  return rows.map((row) =>
+    toTask(row, byTask.get(row.id as string), agents.get(row.id as string)),
+  );
 }
 
 export function tasksApi(deps: Deps): TasksApi {

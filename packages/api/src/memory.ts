@@ -1089,7 +1089,14 @@ export function createInMemoryLab(
     task.updatedTs = ts;
     // Concurrent turns can finish out of order. The roll-up describes the
     // latest transcript turn, not whichever promise happened to settle last.
-    task.lastRunStatus = turns[turns.length - 1]!.status;
+    const newest = turns[turns.length - 1]!;
+    task.lastRunStatus = newest.status;
+    // Which agent the Task is on is the same kind of roll-up, read off the
+    // same turn: the newest one is where the next turn has to go. A turn that
+    // named none leaves the Task naming none rather than keeping an older
+    // turn's answer, which would say the Task is on an agent it is not.
+    if (newest.agent === undefined) delete task.agent;
+    else task.agent = newest.agent;
   };
 
   // Replay the seeded transcripts turn by turn. Going through `appendTurn` is

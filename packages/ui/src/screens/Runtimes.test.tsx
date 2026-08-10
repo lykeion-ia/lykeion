@@ -11,28 +11,31 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("Runtimes renders the always-present 'Add a computer' onboarding card", async () => {
+it("Runtimes renders the always-present onboarding card", async () => {
   const user = userEvent.setup();
   render(<App api={createInMemoryApi()} />);
-  await user.click(await screen.findByRole("link", { name: /Runtimes/i }));
-  // listRuntimes() returns nothing yet, so the table header is hidden and
-  // only the onboarding card renders. `findByText` throws on a second match,
-  // which is the assertion: the card carries one "Add a computer" — a
-  // heading — and no control beside it offering something it cannot do.
-  expect(await screen.findByText("Add a computer")).toBeInTheDocument();
+  await user.click(await screen.findByRole("link", { name: /Machines/i }));
+  // listRuntimes() returns nothing yet, so the tables are hidden and the
+  // steps are the whole page. `findByRole` throws on a second match, which
+  // is the assertion: one heading, and no control beside it offering
+  // something it cannot do.
+  expect(
+    await screen.findByRole("heading", { name: "Add your first computer" }),
+  ).toBeInTheDocument();
 });
 
-it("Runtimes surfaces the managed Python environment, absent on a fresh core", async () => {
+it("keeps this screen about machines, and does not inventory their environments", async () => {
+  // Environments used to sit under the roster. They are a property of a
+  // kernel rather than of the lab's machines, and a section that reported
+  // "Not set up" against a fresh install described a state nobody had asked
+  // about — on the screen whose subject is what to do next.
   const user = userEvent.setup();
   render(<App api={createInMemoryApi()} />);
-  await user.click(await screen.findByRole("link", { name: /Runtimes/i }));
-  // kernelEnvStatus() reports the honest first-install default — nothing faked.
-  // The row names the environment and what provisions it, and says where it
-  // stands; nothing here claims anything is bound to it, because nothing is.
-  expect(await screen.findByText("Environments")).toBeInTheDocument();
-  expect(await screen.findByText("python")).toBeInTheDocument();
-  expect(await screen.findByText("Python · uv")).toBeInTheDocument();
-  expect(await screen.findByText("Not set up")).toBeInTheDocument();
+  await user.click(await screen.findByRole("link", { name: /Machines/i }));
+  await screen.findByRole("heading", { name: /Add your first computer/i });
+
+  expect(screen.queryByText("Environments")).toBeNull();
+  expect(screen.queryByText("Python · uv")).toBeNull();
 });
 
 it("keeps the onboarding card up while identity is unknown, and after it fails to resolve", async () => {
@@ -46,11 +49,16 @@ it("keeps the onboarding card up while identity is unknown, and after it fails t
     currentUser: () => held,
   };
   render(<App api={api} />);
-  await user.click(await screen.findByRole("link", { name: /Runtimes/i }));
+  await user.click(await screen.findByRole("link", { name: /Machines/i }));
 
   // currentUser() has not answered yet — the card needs no identity at all,
-  // so it must not wait on one either.
-  expect(await screen.findByText("Add a computer")).toBeInTheDocument();
+  // so it must not wait on one either. An unknown identity owns no machine,
+  // which is the same state as having none, and it resolves to the steps
+  // rather than to the collapsed line: hiding them from somebody who may
+  // have no machine takes away the one thing this screen is for.
+  expect(
+    await screen.findByRole("heading", { name: "Add your first computer" }),
+  ).toBeInTheDocument();
 
   // The identity question then fails outright. The error is now visible,
   // and — this is the regression under test — the card is still there
@@ -60,7 +68,9 @@ it("keeps the onboarding card up while identity is unknown, and after it fails t
   await waitFor(() =>
     expect(screen.getByText(/session expired/i)).toBeInTheDocument(),
   );
-  expect(screen.getByText("Add a computer")).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Add your first computer" }),
+  ).toBeInTheDocument();
 });
 
 function machine(overrides: Partial<Runtime> = {}): Runtime {
@@ -92,7 +102,7 @@ it("removes a machine from the screen once its removal is confirmed", async () =
     },
   };
   render(<App api={api} />);
-  await user.click(await screen.findByRole("link", { name: /Runtimes/i }));
+  await user.click(await screen.findByRole("link", { name: /Machines/i }));
   await screen.findByText("ana-macbook");
 
   await user.click(screen.getByRole("button", { name: /Remove ana-macbook/i }));

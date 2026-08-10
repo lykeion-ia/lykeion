@@ -2,10 +2,14 @@ import { Fragment, useState, type ReactNode } from "react";
 import type { TaskTurn, TurnItem, TurnState } from "@lykeion/api";
 import { PencilIcon } from "../icons";
 import { blocksOf, ToolStepGroup } from "./ToolStep";
+import { RailRow, TurnRail } from "./TurnRail";
 import { AssistantMessage } from "./AssistantMessage";
 import { AssistantReply, replyText } from "./AssistantReply";
 import { CopyButton } from "./CopyButton";
 import { SubagentThread } from "./SubagentThread";
+// Edit and Revert below wear `.quiet-action`, which is defined here rather
+// than in task.css now that the Machines screen wears it too.
+import "../components.css";
 
 type CancelledTurnState = Extract<TurnState, { state: "cancelled" }>;
 
@@ -67,12 +71,22 @@ export function groupTaskTurns(
 }
 
 /**
- * One turn's ordered stream: prose paragraphs and tool-step cards, drawn in
- * the order they actually arrived. `blocksOf` does the whole fold (grouping
- * consecutive steps, resolving every card's label once) — the only decision
- * left here is the markup, and a prose block deliberately renders as the same
- * `.msg--assistant` bubble a stream-less turn does, so the two paths look
- * identical wherever no tool ran.
+ * One turn's ordered stream: prose paragraphs, thinking and tool steps, drawn
+ * in the order they actually arrived — each one a node on the turn's rail (see
+ * `TurnRail`). `blocksOf` does the whole fold (grouping consecutive steps,
+ * resolving every row's label once) — the only decision left here is the
+ * markup, and a prose block deliberately renders as the same `.msg--assistant`
+ * bubble a stream-less turn does, so the two paths look identical wherever no
+ * tool ran.
+ *
+ * Everything after the prompt goes on the rail, prose included. The rail is the
+ * record of what the agent did AND said, in one order; giving the prose its own
+ * ungoverned lane would put the two back in separate columns, which is the
+ * shape this replaced.
+ *
+ * The rows are emitted bare, not inside a `TurnRail` of their own: the caller
+ * owns the rail, because the live surface has to put its in-flight tail on the
+ * SAME one (see `TaskScreen`'s live block) rather than under a second.
  *
  * The LIVE turn renders through this same component, with `stdoutFor` wired
  * up: one renderer for the turn in flight and the turn reopened months later,
@@ -91,28 +105,40 @@ export function StreamView({
       {blocksOf(stream).map((block, i) =>
         block.kind === "text" ? (
           block.block === "thinking" ? (
-            <details
-              key={i}
-              className="turn-block turn-block--thinking"
-              data-testid="turn-block-thinking"
-              data-block-kind="thinking"
-            >
-              <summary>Thought</summary>
-              <AssistantMessage text={block.text} />
-            </details>
+            <RailRow key={i} marker="thinking">
+              <details
+                className="turn-block turn-block--thinking"
+                data-testid="turn-block-thinking"
+                data-block-kind="thinking"
+              >
+                <summary>Thought</summary>
+                <AssistantMessage text={block.text} />
+              </details>
+            </RailRow>
           ) : (
-            <div
-              key={i}
-              className={`turn-block turn-block--${block.block ?? "interim"}`}
-              data-testid={`turn-block-${block.block ?? "interim"}`}
-              data-block-kind={block.block ?? "interim"}
-              role={block.block === "error" ? "alert" : undefined}
-            >
-              <AssistantMessage text={block.text} />
-            </div>
+            <RailRow key={i} marker="prose">
+              <div
+                className={`turn-block turn-block--${block.block ?? "interim"}`}
+                data-testid={`turn-block-${block.block ?? "interim"}`}
+                data-block-kind={block.block ?? "interim"}
+                role={block.block === "error" ? "alert" : undefined}
+              >
+                <AssistantMessage text={block.text} />
+              </div>
+            </RailRow>
           )
         ) : (
-          <div key={i} data-testid="turn-block-tool" data-block-kind="tool">
+          // A steps block draws its OWN rows (one per step, or a header plus a
+          // nested rail), so this wrapper must not come between them and the
+          // rail's grid — `display: contents` keeps the block's identity for
+          // anything reading the transcript's shape while letting the rows
+          // through as the rail's own children.
+          <div
+            key={i}
+            className="turn-block-tool"
+            data-testid="turn-block-tool"
+            data-block-kind="tool"
+          >
             <ToolStepGroup steps={block.steps} stdoutFor={stdoutFor} />
           </div>
         ),
@@ -206,7 +232,7 @@ export function UserBubble({
           <>
             <button
               type="button"
-              className="msg-action"
+              className="quiet-action"
               disabled={disabled}
               {...(why ? { title: why } : {})}
               onClick={() => {
@@ -219,7 +245,7 @@ export function UserBubble({
             </button>
             <button
               type="button"
-              className="msg-action"
+              className="quiet-action"
               disabled={disabled}
               {...(why ? { title: why } : {})}
               onClick={() => setAsking("revert")}
@@ -310,11 +336,22 @@ function TurnView({
     <>
       <UserBubble prompt={prompt} {...(revert ? { revert } : {})} />
       <AssistantReply text={replyText(messages, stream)}>
-        {stream && stream.length > 0 ? (
-          <StreamView stream={stream} />
-        ) : (
-          messages.map((text, i) => <AssistantMessage text={text} key={i} />)
-        )}
+        {/* Both paths rail. A turn recorded before live streaming existed has
+            only its prose, and it is still the agent's reply to this prompt —
+            drawing it off the rail would make an old transcript a different
+            KIND of thing from a new one, when all that differs is how much of
+            it was recorded. */}
+        <TurnRail>
+          {stream && stream.length > 0 ? (
+            <StreamView stream={stream} />
+          ) : (
+            messages.map((text, i) => (
+              <RailRow key={i} marker="prose">
+                <AssistantMessage text={text} />
+              </RailRow>
+            ))
+          )}
+        </TurnRail>
       </AssistantReply>
       {status === "failed" && !cancelled && (
         <div className="run-line run-line--failed">Run failed</div>

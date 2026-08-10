@@ -386,8 +386,12 @@ async function probeAdapter(
     } catch {
       // An entitlement refusal, an unauthenticated CLI: the agent keeps the
       // `sessionReady` answer its handshake earned, and what it offers is
-      // left UNKNOWN rather than reported as nothing. The Task's first real
-      // session fills it in.
+      // left UNKNOWN rather than reported as nothing.
+      //
+      // The next probe that gets a session is what fills it in — which is
+      // why `cliFingerprint` counts the options. A real session reads the
+      // same answer when a turn starts, but keeps it to itself: nothing on
+      // the run path carries it back to the lab.
     }
     return { sessionReady: true, ...(options === undefined ? {} : { options }) };
   } catch (err) {
@@ -449,18 +453,28 @@ export async function probeAgentClis(options: ProbeOptions): Promise<ProbedCli[]
 /**
  * A probe's result, reduced to what two probes of the same machine are
  * judged identical on: which ids are present, at which version, whether
- * each is installed, and whether each can actually run a session. `id`
- * alone is not enough — a version bump on a CLI that was already known, one
- * that has left PATH, or an adapter that starts or stops answering, all
- * leave the id set unchanged and still have to compare as different. Sorted
- * by id first, so probing the catalogue in a different order never
- * registers as a change on its own.
+ * each is installed, whether each can actually run a session, and what each
+ * said it offers. `id` alone is not enough — a version bump on a CLI that
+ * was already known, one that has left PATH, or an adapter that starts or
+ * stops answering, all leave the id set unchanged and still have to compare
+ * as different. Sorted by id first, so probing the catalogue in a different
+ * order never registers as a change on its own.
+ *
+ * The options belong here for a reason worth stating. A probe that reaches
+ * an adapter but cannot open a throwaway session leaves them UNKNOWN rather
+ * than reporting them as nothing (see `probeAdapter`) — an ordinary outcome
+ * for a CLI that is installed but not signed in. Left out of this hash, the
+ * successful probe five minutes later compared equal to the failed one and
+ * was dropped, so the lab kept its "unknown" for the life of the daemon and
+ * the composer offered a bare *Default* against an agent that had a whole
+ * catalogue to give. Nothing else could correct it: a real session reads
+ * what the agent advertises, but keeps it to itself.
  */
 export function cliFingerprint(clis: ProbedCli[]): string {
   return JSON.stringify(
     [...clis]
       .sort((a, b) => a.id.localeCompare(b.id))
-      .map((cli) => [cli.id, cli.version, cli.available, cli.sessionReady]),
+      .map((cli) => [cli.id, cli.version, cli.available, cli.sessionReady, cli.options]),
   );
 }
 

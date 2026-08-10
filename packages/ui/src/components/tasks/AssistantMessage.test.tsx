@@ -81,6 +81,96 @@ describe("AssistantMessage", () => {
 });
 
 /**
+ * What makes a link look like one. The bug this covers is that nothing styled
+ * an anchor at all, so a citation read as prose — but the parts that can
+ * regress silently are the two with consequences: the favicon is a request to
+ * a host the AGENT named, and the glyph must never join the anchor's
+ * accessible name.
+ */
+describe("AssistantMessage — links", () => {
+  const faviconIn = (container: HTMLElement) =>
+    container.querySelector("img.msg-link-icon");
+
+  it("asks the cited site itself for the favicon, without a referrer", () => {
+    const { container } = render(
+      <AssistantMessage text="[source](https://www.nature.com/articles/s41586)" />,
+    );
+    const img = faviconIn(container);
+    expect(img).toHaveAttribute("src", "https://www.nature.com/favicon.ico");
+    expect(img).toHaveAttribute("referrerpolicy", "no-referrer");
+  });
+
+  it("leaves the link's accessible name as its text — the glyph is decorative", () => {
+    render(<AssistantMessage text="[source](https://example.com/a)" />);
+    // Would be "source " plus an icon name if the img carried alt text.
+    expect(screen.getByRole("link", { name: "source" })).toBeInTheDocument();
+  });
+
+  /**
+   * The privacy half of the contract: a reply that links only this Task's own
+   * output must not make the browser talk to anyone.
+   */
+  it("requests nothing for a relative artifact path", () => {
+    const { container } = render(
+      <AssistantMessage text="[kinome_genes.csv](artifacts/kinome_genes.csv)" />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("a")).toHaveClass("msg-link--internal");
+  });
+
+  it("falls back to a glyph when the site serves no /favicon.ico", () => {
+    const { container } = render(
+      <AssistantMessage text="[source](https://example.com/a)" />,
+    );
+    const img = faviconIn(container);
+    expect(img).not.toBeNull();
+    fireEvent.error(img as Element);
+    expect(faviconIn(container)).toBeNull();
+    expect(container.querySelector("svg.msg-link-icon")).toBeInTheDocument();
+    // And the link itself survives the swap.
+    expect(screen.getByRole("link", { name: "source" })).toBeInTheDocument();
+  });
+
+  it("shows the full URL while hovered, and drops it on leave", () => {
+    render(<AssistantMessage text="[source](https://example.com/a/very/long)" />);
+    const link = screen.getByRole("link", { name: "source" });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    // React synthesises mouseenter from mouseover, which is what a real
+    // pointer sends.
+    fireEvent.mouseOver(link);
+    const tip = screen.getByRole("tooltip");
+    expect(tip).toHaveTextContent("https://example.com/a/very/long");
+    expect(link).toHaveAttribute("aria-describedby", tip.id);
+
+    fireEvent.mouseOut(link);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("shows the same URL on keyboard focus", () => {
+    render(<AssistantMessage text="[source](https://example.com/a)" />);
+    const link = screen.getByRole("link", { name: "source" });
+    fireEvent.focus(link);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "https://example.com/a",
+    );
+    fireEvent.blur(link);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("drops the URL box when the transcript scrolls out from under it", () => {
+    render(<AssistantMessage text="[source](https://example.com/a)" />);
+    fireEvent.mouseOver(screen.getByRole("link", { name: "source" }));
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    // The listener is on window in CAPTURE phase, which is how it sees a
+    // scroll of `.conv-stream` — a scroll event does not bubble, but every
+    // event captures down from window first.
+    fireEvent.scroll(window);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+});
+
+/**
  * One block of a reply carries no controls of its own — Copy belongs to the
  * whole answer, so a two-paragraph reply offers one and not two. The control
  * itself is covered in TaskTranscript.test.tsx, where the reply is.

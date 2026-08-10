@@ -147,6 +147,11 @@ export async function handleAuthRoute(req: AuthRequest): Promise<AuthResult | un
     const email = field(body, "email");
     const displayName = field(body, "displayName");
     const password = field(body, "password");
+    // The lab's own name, asked for on the one screen that can ask for it.
+    // Optional, because a lab created before this route took it has none and
+    // is not broken by that: everything that says a lab's name falls back to
+    // the address it was reached at.
+    const labName = field(body, "labName");
     if (!email || !displayName || password.length < 8)
       return { status: 400, json: { error: "an email, a display name, and a password of at least 8 characters are required" } };
 
@@ -175,11 +180,17 @@ export async function handleAuthRoute(req: AuthRequest): Promise<AuthResult | un
         return;
       }
       const userId = createPerson(store, { email, displayName, passwordHash }, "owner", now);
-      // Both blank: a lab that has just been created has no organization
-      // and no identifier for one. Minting an opaque token here would put a
-      // random string in front of a researcher as their organization's id,
-      // and would make every honest read of the column answer with it.
-      store.run(`INSERT INTO lab_settings (id, org_name, org_id) VALUES (1, '', '')`);
+      // The name is whatever the owner called this lab, and blank when they
+      // called it nothing — an empty string is what every reader of this
+      // column already treats as "unnamed", so a lab created without one is
+      // in exactly the state every lab was in before the field existed.
+      //
+      // The id stays blank regardless. A lab that has just been created has
+      // no identifier for an organization, and minting an opaque token here
+      // would put a random string in front of a researcher as their
+      // organization's id, and would make every honest read of the column
+      // answer with it.
+      store.run(`INSERT INTO lab_settings (id, org_name, org_id) VALUES (1, ?, '')`, [labName]);
       cookie = startSession(store, userId, now, secure);
     });
     return conflict

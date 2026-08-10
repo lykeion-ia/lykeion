@@ -2,25 +2,8 @@ import { useMemo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { completeMarkdown } from "../../lib/markdown";
-import { openExternal } from "../../lib/open-external";
 import { CodeBlock } from "./CodeBlock";
-
-/**
- * A link inside an agent's reply never navigates the app away — the click is
- * intercepted and handed to `openExternal`, which opens it in a new tab
- * instead.
- */
-const MarkdownLink: Components["a"] = ({ href, children }) => (
-  <a
-    href={href}
-    onClick={(event) => {
-      event.preventDefault();
-      if (href) openExternal(href);
-    }}
-  >
-    {children}
-  </a>
-);
+import { MarkdownLink } from "./MarkdownLink";
 
 /**
  * A wide GFM table scrolls inside its own box rather than widening the whole

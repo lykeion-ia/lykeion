@@ -121,6 +121,41 @@ it("lastRunStatus and runtimeId are absent on a Task nothing has run yet, and re
   expect(after.task.runtimeId).toBe("rt_1");
 });
 
+it("a Task names the agent of its newest turn, so a list can say what each is talking to", async () => {
+  const store = freshStore();
+  addOwner(store, "u_owner");
+  const tasks = tasksApi(depsFor(store));
+
+  const task = await tasks.createTask({ stage: "background", title: "Talks to something" });
+  expect("agent" in task).toBe(false);
+
+  // Two turns on two sessions, the way a Task that changed agent mid-life
+  // reads on disk. Seeded directly for the same reason the roll-up columns
+  // above are: starting a real turn needs a machine this server has not got.
+  const turn = (id: string, sessionId: string, agent: string, seq: number) => {
+    store.run(
+      `INSERT INTO sessions (id, study_id, runtime_id, agent, opened_by, opened_ts, seq)
+       VALUES (?, 's_1', 'rt_1', ?, 'u_owner', ?, ?)`,
+      [sessionId, agent, NOW, nextSeq(store)],
+    );
+    store.run(
+      `INSERT INTO turns (id, session_id, task_id, prompt, started_ts, ended_ts, status, seq)
+       VALUES (?, ?, ?, 'go', ?, ?, 'ok', ?)`,
+      [id, sessionId, task.id, NOW, NOW, seq],
+    );
+  };
+  turn("turn_1", "sess_1", "claude", 1);
+
+  expect((await tasks.getTask(task.id)).task.agent).toBe("claude");
+  expect((await tasks.listTasks())[0].agent).toBe("claude");
+
+  // The newest turn wins — not the first one, and not whichever row the
+  // join happened to reach last.
+  turn("turn_2", "sess_2", "cursor", 2);
+  expect((await tasks.getTask(task.id)).task.agent).toBe("cursor");
+  expect((await tasks.listTasks())[0].agent).toBe("cursor");
+});
+
 it("createTask names the unknown study rather than surfacing a raw foreign-key failure", async () => {
   // `tasks.study_id` is a foreign key to `studies.id`, and this store runs
   // with `PRAGMA foreign_keys = ON`. Without a check ahead of the INSERT,
