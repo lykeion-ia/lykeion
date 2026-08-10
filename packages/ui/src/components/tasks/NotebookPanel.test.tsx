@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
+import type { ComponentProps } from "react";
+import { act, render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   createInMemoryApi,
@@ -9,9 +10,18 @@ import {
   type RunningKernel,
 } from "@lykeion/api";
 import { ApiProvider } from "../../api/ApiContext";
-import { NotebookPanel } from "./NotebookPanel";
+import { NotebookPanel as NotebookPanelUnderTest } from "./NotebookPanel";
 
-afterEach(cleanup);
+function NotebookPanel(
+  props: Omit<ComponentProps<typeof NotebookPanelUnderTest>, "sessionLabel">,
+) {
+  return <NotebookPanelUnderTest {...props} sessionLabel="Guide design" />;
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  cleanup();
+});
 
 let cellSeq = 0;
 function cell(overrides: Partial<NotebookCell> = {}): NotebookCell {
@@ -62,6 +72,109 @@ const env = (name: string): KernelEnvStatus => ({
   manager: name === "python" ? "uv" : "conda",
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+it("withdraws the previous Task's cells and kernel authority immediately", async () => {
+  const pendingCells = deferred<NotebookCell[]>();
+  const pendingKernels = deferred<RunningKernel[]>();
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    taskNotebook: async (taskId) =>
+      taskId === "task_a"
+        ? [cell({ name: "main", source: "task_a_secret = 42" })]
+        : pendingCells.promise,
+    listRunningKernels: vi
+      .fn<LykeionApi["listRunningKernels"]>()
+      .mockResolvedValueOnce([
+        kernel({ taskId: "task_a", name: "main", language: "python", state: "idle" }),
+      ])
+      .mockImplementationOnce(() => pendingKernels.promise),
+  };
+  const { rerender } = render(
+    <ApiProvider api={api}><NotebookPanel taskId="task_a" /></ApiProvider>,
+  );
+
+  await waitFor(() =>
+    expect(screen.getByTestId("notebook-cells")).toHaveTextContent("task_a_secret = 42"),
+  );
+  fireEvent.change(screen.getByLabelText(/Run Python on this kernel/i), {
+    target: { value: "task_a_secret" },
+  });
+  expect(screen.getByRole("button", { name: "Run" })).toBeEnabled();
+
+  rerender(
+    <ApiProvider api={api}><NotebookPanel taskId="task_b" /></ApiProvider>,
+  );
+
+  expect(screen.getByTestId("notebook-cells")).not.toHaveTextContent("task_a_secret = 42");
+  expect(screen.queryByText(/Connected to the agent.s live kernel/)).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Run code on this kernel")).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+
+  await act(async () => {
+    pendingCells.resolve([]);
+    pendingKernels.resolve([]);
+    await Promise.resolve();
+  });
+});
+
+it("discards Task A reads that resolve after Task B is active", async () => {
+  const taskACells = deferred<NotebookCell[]>();
+  const taskAKernels = deferred<RunningKernel[]>();
+  const taskBCell = cell({
+    name: "main",
+    language: "r",
+    source: "task_b_value <- 7",
+  });
+  const taskNotebook = vi
+    .fn<LykeionApi["taskNotebook"]>()
+    .mockImplementation(async (taskId) =>
+      taskId === "task_a" ? taskACells.promise : [taskBCell],
+    );
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    taskNotebook,
+    listRunningKernels: vi
+      .fn<LykeionApi["listRunningKernels"]>()
+      .mockImplementationOnce(() => taskAKernels.promise)
+      .mockResolvedValueOnce([
+        kernel({ taskId: "task_b", name: "main", language: "r", state: "idle" }),
+      ]),
+  };
+  const { rerender } = render(
+    <ApiProvider api={api}><NotebookPanel taskId="task_a" /></ApiProvider>,
+  );
+  await waitFor(() => expect(taskNotebook).toHaveBeenCalledWith("task_a"));
+
+  rerender(
+    <ApiProvider api={api}><NotebookPanel taskId="task_b" /></ApiProvider>,
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("notebook-cells")).toHaveTextContent("task_b_value <- 7"),
+  );
+  expect(screen.getByLabelText(/Run R on this kernel/i)).toBeInTheDocument();
+
+  await act(async () => {
+    taskACells.resolve([
+      cell({ name: "main", language: "python", source: "late_task_a = True" }),
+    ]);
+    taskAKernels.resolve([
+      kernel({ taskId: "task_a", name: "main", language: "python", state: "idle" }),
+    ]);
+    await Promise.resolve();
+  });
+
+  expect(screen.getByTestId("notebook-cells")).toHaveTextContent("task_b_value <- 7");
+  expect(screen.getByTestId("notebook-cells")).not.toHaveTextContent("late_task_a = True");
+  expect(screen.getByLabelText(/Run R on this kernel/i)).toBeInTheDocument();
+});
+
 it("groups a Task's cells by the context that ran them", async () => {
   const api: LykeionApi = {
     ...createInMemoryApi(),
@@ -71,7 +184,8 @@ it("groups a Task's cells by the context that ran them", async () => {
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
   await waitFor(() => expect(screen.getByText("import numpy as np")).toBeInTheDocument());
-  expect(screen.getByRole("tab", { name: /main/i })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByText("Main agent")).toBeInTheDocument();
+  expect(screen.queryByRole("tablist", { name: "Kernel context" })).toBeNull();
 });
 
 it("shows only the selected context's cells, and swaps them when the tab does", async () => {
@@ -99,7 +213,7 @@ it("shows only the selected context's cells, and swaps them when the tab does", 
   expect(screen.queryByText("import numpy as np")).not.toBeInTheDocument();
 });
 
-it("names a tab by its shared session only when every kernel in it agrees", async () => {
+it("names the static context without exposing an opaque session id", async () => {
   const api: LykeionApi = {
     ...createInMemoryApi(),
     taskNotebook: async () => [],
@@ -110,9 +224,9 @@ it("names a tab by its shared session only when every kernel in it agrees", asyn
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  const tab = await screen.findByRole("tab", { name: /main/i });
-  expect(tab).not.toHaveTextContent("ses_1");
-  expect(tab).not.toHaveTextContent("ses_2");
+  const context = await screen.findByText("Main agent");
+  expect(context).not.toHaveTextContent("ses_1");
+  expect(context).not.toHaveTextContent("ses_2");
 });
 
 it("keeps a cell's output out of the way until it is asked for", async () => {
@@ -122,8 +236,89 @@ it("keeps a cell's output out of the way until it is asked for", async () => {
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  const disclosure = await screen.findByText("output");
+  const disclosure = await screen.findByText(/^output/);
   expect(disclosure.closest("details")).not.toHaveAttribute("open");
+});
+
+it("keeps confirmed cells visible when a notebook refresh fails", async () => {
+  vi.useFakeTimers();
+  const confirmed = cell({ name: "main", source: "confirmed_result = 42" });
+  const taskNotebook = vi
+    .fn<LykeionApi["taskNotebook"]>()
+    .mockResolvedValueOnce([confirmed])
+    .mockRejectedValueOnce(new Error("notebook unavailable"))
+    .mockResolvedValueOnce([confirmed]);
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    taskNotebook,
+    listRunningKernels: async () => [
+      kernel({ name: "main", language: "python", state: "idle" }),
+    ],
+  };
+  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(screen.getByTestId("notebook-cells")).toHaveTextContent("confirmed_result = 42");
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1500);
+  });
+
+  expect(screen.getByTestId("notebook-cells")).toHaveTextContent("confirmed_result = 42");
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Could not refresh the notebook. Showing the last confirmed cells.",
+  );
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1500);
+  });
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
+it("withdraws live-kernel authority when kernel status cannot be refreshed", async () => {
+  vi.useFakeTimers();
+  const running = kernel({ name: "main", language: "python", state: "idle" });
+  const listRunningKernels = vi
+    .fn<LykeionApi["listRunningKernels"]>()
+    .mockResolvedValueOnce([running])
+    .mockRejectedValueOnce(new Error("kernel status unavailable"))
+    .mockResolvedValueOnce([running]);
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    taskNotebook: async () => [cell({ name: "main", source: "durable = True" })],
+    listRunningKernels,
+  };
+  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(screen.getByText(/Connected to the agent.s live kernel/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText(/Run Python on this kernel/i), {
+    target: { value: "2 + 2" },
+  });
+  expect(screen.getByRole("button", { name: "Run" })).toBeEnabled();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1500);
+  });
+
+  expect(screen.queryByText(/Connected to the agent.s live kernel/)).not.toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Kernel status is unavailable. Code execution is disabled.",
+  );
+  expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1500);
+  });
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(screen.getByText(/Connected to the agent.s live kernel/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Run" })).toBeEnabled();
 });
 
 it("names the language of the kernel it is showing", async () => {
@@ -176,12 +371,40 @@ it("shows a Task's cells, its kernel and its REPL while the managed env is still
 
   expect(await screen.findByTestId("notebook-setup")).toBeInTheDocument();
   await waitFor(() => expect(screen.getByText("import numpy as np")).toBeInTheDocument());
-  expect(screen.getByRole("tab", { name: /main/i })).toBeInTheDocument();
+  expect(screen.getByText("Main agent")).toBeInTheDocument();
   expect(screen.getByTestId("notebook-strip")).toHaveTextContent(/Python kernel/);
+  expect(
+    screen.getByRole("separator", { name: "Resize researcher console" }),
+  ).toHaveAttribute("aria-valuenow", "128");
   expect(screen.getByRole("button", { name: "Run" })).toBeInTheDocument();
   // The one place this sentence is true: `listRunningKernels` vouches for a
   // kernel on this Task, so "connected" is a fact and not a mock-up.
   expect(screen.getByText(/Connected to the agent.s live kernel/)).toBeInTheDocument();
+});
+
+it("restores the default console height when the Notebook remounts", async () => {
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    taskNotebook: async () => [cell({ name: "main", source: "import numpy as np" })],
+    listRunningKernels: async () => [
+      kernel({ name: "main", language: "python", state: "idle" }),
+    ],
+  };
+  const { unmount } = render(
+    <ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>,
+  );
+
+  const separator = await screen.findByRole("separator", {
+    name: "Resize researcher console",
+  });
+  fireEvent.keyDown(separator, { key: "ArrowUp", shiftKey: true });
+  expect(separator).toHaveAttribute("aria-valuenow", "192");
+
+  unmount();
+  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+  expect(
+    await screen.findByRole("separator", { name: "Resize researcher console" }),
+  ).toHaveAttribute("aria-valuenow", "128");
 });
 
 it("does not claim a live kernel when none is running", async () => {
@@ -321,6 +544,63 @@ it("runs a REPL cell against the selected context's kernel", async () => {
   await user.type(input, "np.pi");
   await user.click(screen.getByRole("button", { name: /^Run$/i }));
   await waitFor(() => expect(kernelExecute).toHaveBeenCalledWith(k.id, "np.pi"));
+});
+
+it("opens the exact researcher cell returned by execution when polling confirms it", async () => {
+  vi.useFakeTimers();
+  const k = kernel({ name: "main", language: "python", state: "idle" });
+  const freshCell = cell({
+    id: "fresh_cell",
+    name: "main",
+    source: "np.pi",
+    outputs: [{ kind: "stream", name: "stdout", text: "3.14159\n" }],
+  });
+  const taskNotebook = vi
+    .fn<LykeionApi["taskNotebook"]>()
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([freshCell])
+    .mockResolvedValueOnce([])
+    .mockResolvedValue([freshCell]);
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    taskNotebook,
+    listRunningKernels: async () => [k],
+    kernelExecute: async () => ({ cellId: freshCell.id }),
+  };
+  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  fireEvent.change(screen.getByLabelText(/Run Python on this kernel/i), {
+    target: { value: "np.pi" },
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1500);
+  });
+
+  const firstDisclosure = screen.getByText(/^output/).closest("details");
+  expect(firstDisclosure).toHaveAttribute("open");
+  await act(async () => {
+    fireEvent.click(screen.getByText(/^output/));
+    await Promise.resolve();
+  });
+  expect(firstDisclosure).not.toHaveAttribute("open");
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1500);
+  });
+  expect(screen.queryByText(/^output/)).not.toBeInTheDocument();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1500);
+  });
+  expect(screen.getByText(/^output/).closest("details")).not.toHaveAttribute("open");
 });
 
 it("runs a cell against the R kernel once its context is active", async () => {

@@ -1,85 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   KernelEnvStatus,
-  KernelMessage,
   Language,
   NotebookCell,
   RunningKernel,
 } from "@lykeion/api";
 import { useApi } from "../../api/ApiContext";
-import { useDirectory } from "../../hooks/useDirectory";
-import { useOutsideClick } from "../../hooks/useOutsideClick";
-import { CodeBlock } from "./CodeBlock";
 import { CloseIcon, NotebookIcon } from "../icons";
+import { NotebookAxis } from "./NotebookAxis";
+import { NotebookConsoleDock } from "./NotebookConsoleDock";
+import { NotebookLedger } from "./NotebookLedger";
+import {
+  buildNotebookContexts,
+  contextLabel,
+  kernelFor,
+  languagesOf,
+} from "./notebook-model";
+import "./notebook.css";
 
 /** How often the strip re-reads kernels + the notebook document while open. */
 const POLL_MS = 1500;
-
-/**
- * One name shared by every kernel and cell that ran under it — the grouping
- * axis a researcher actually thinks in: `"main"` for a session's own work, or
- * a delegated subagent's own name.
- */
-interface Context {
-  name: string;
-  kernels: RunningKernel[];
-  cells: NotebookCell[];
-}
-
-function buildContexts(kernels: RunningKernel[], cells: NotebookCell[]): Context[] {
-  const names = new Set<string>();
-  for (const k of kernels) names.add(k.name);
-  for (const c of cells) names.add(c.name);
-  return [...names]
-    .sort((a, b) => a.localeCompare(b))
-    .map((name) => ({
-      name,
-      kernels: kernels.filter((k) => k.name === name),
-      cells: cells.filter((c) => c.name === name),
-    }));
-}
-
-/**
- * What a context is called on its own tab.
- *
- * The identity's `name` and nothing derived from it. A session id is the only
- * other thing a kernel carries that could stand here, and it is a word this
- * lab minted for its own bookkeeping — putting it in front of a researcher
- * names nothing they have ever seen. `"main"` is the one value with a reading
- * better than itself: it is the session's own context, as opposed to a
- * delegated subagent's, and that is what it is called.
- */
-function contextLabel(name: string): string {
-  return name === "main" ? "Main agent" : name;
-}
-
-/** Every language this context has a kernel for or a cell from.
- *
- *  The union rather than the live kernels alone: a kernel that expired took
- *  its process, not its record, and a chip row built from processes would
- *  drop the language whose cells are still on screen underneath it. */
-function languagesOf(ctx: Context): Language[] {
-  const seen = new Set<Language>();
-  for (const k of ctx.kernels) seen.add(k.language);
-  for (const c of ctx.cells) seen.add(c.language);
-  return [...seen].sort((a, b) => a.localeCompare(b));
-}
-
-/** The kernel a context's strip and REPL speak for, given the selected
- *  language. Undefined when this context has run that language before and
- *  holds no process for it now, which the surface states rather than
- *  quietly substituting another kernel's. */
-function kernelFor(ctx: Context, language: Language | null): RunningKernel | undefined {
-  const ordered = [...ctx.kernels].sort(
-    (a, b) => a.language.localeCompare(b.language) || a.id.localeCompare(b.id),
-  );
-  if (language === null) return ordered[0];
-  return ordered.find((k) => k.language === language);
-}
-
-function languageLabel(language: Language): string {
-  return language === "r" ? "R" : "Python";
-}
 
 /**
  * The right-rail Notebook tab: every cell this Task's sessions have run, as
@@ -95,42 +35,84 @@ function languageLabel(language: Language): string {
  * splitting the list by language would be the surface deciding a researcher
  * no longer wants to know what ran between two of their own cells.
  */
-export function NotebookPanel({
-  taskId,
-  onClose,
-}: {
+interface NotebookPanelProps {
   taskId: string;
+  sessionLabel: string;
   onClose?: () => void;
-}) {
+  embedded?: boolean;
+}
+
+/** A Task identity owns every piece of notebook authority. The keyed inner
+ *  component makes a prop change a synchronous state boundary: no cell,
+ *  kernel, draft, warning, or selected context from the previous Task can be
+ *  rendered while the next Task's reads are still in flight. */
+export function NotebookPanel(props: NotebookPanelProps) {
+  return <NotebookPanelForTask key={props.taskId} {...props} />;
+}
+
+function NotebookPanelForTask({
+  taskId,
+  sessionLabel,
+  onClose,
+  embedded,
+}: NotebookPanelProps) {
   const api = useApi();
+  const requestGeneration = useRef(0);
   const [cells, setCells] = useState<NotebookCell[]>([]);
+  const [cellsLoaded, setCellsLoaded] = useState(false);
+  const [cellsWarning, setCellsWarning] = useState<string | null>(null);
   const [kernels, setKernels] = useState<RunningKernel[]>([]);
+  const [kernelsWarning, setKernelsWarning] = useState<string | null>(null);
   const [envStatus, setEnvStatus] = useState<KernelEnvStatus | null>(null);
   const [envs, setEnvs] = useState<KernelEnvStatus[]>([]);
   const [activeEnv, setActiveEnv] = useState<string | null>(null);
   const [activeName, setActiveName] = useState<string | null>(null);
   const [activeLang, setActiveLang] = useState<Language | null>(null);
   const [repl, setRepl] = useState("");
+  const [autoOpenCellId, setAutoOpenCellId] = useState<string | null>(null);
   const [replBusy, setReplBusy] = useState(false);
   const [replError, setReplError] = useState<string | null>(null);
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupError, setSetupError] = useState<string | null>(null);
   const [setupLog, setSetupLog] = useState<string[]>([]);
 
+  // A keyed Task change unmounts this state owner. Invalidate every read it
+  // started before any late completion can attempt to publish stale truth.
+  useEffect(
+    () => () => {
+      requestGeneration.current += 1;
+    },
+    [],
+  );
+
   const refreshCells = useCallback(async () => {
+    const generation = requestGeneration.current;
     try {
-      setCells(await api.taskNotebook(taskId));
+      const nextCells = await api.taskNotebook(taskId);
+      if (generation !== requestGeneration.current) return;
+      setCells(nextCells);
+      setCellsLoaded(true);
+      setCellsWarning(null);
     } catch {
-      /* transient — the next poll retries */
+      if (generation !== requestGeneration.current) return;
+      setCellsLoaded(true);
+      setCellsWarning(
+        "Could not refresh the notebook. Showing the last confirmed cells.",
+      );
     }
   }, [api, taskId]);
 
   const refreshKernels = useCallback(async () => {
+    const generation = requestGeneration.current;
     try {
       const all = await api.listRunningKernels();
+      if (generation !== requestGeneration.current) return;
       setKernels(all.filter((k) => k.taskId === taskId));
+      setKernelsWarning(null);
     } catch {
-      /* transient — the next poll retries */
+      if (generation !== requestGeneration.current) return;
+      setKernels([]);
+      setKernelsWarning("Kernel status is unavailable. Code execution is disabled.");
     }
   }, [api, taskId]);
 
@@ -177,7 +159,7 @@ export function NotebookPanel({
     };
   }, [refreshCells, refreshKernels, refreshEnvStatus, refreshEnvs]);
 
-  const contexts = useMemo(() => buildContexts(kernels, cells), [kernels, cells]);
+  const contexts = useMemo(() => buildNotebookContexts(kernels, cells), [kernels, cells]);
 
   useEffect(() => {
     setActiveName((cur) =>
@@ -204,6 +186,18 @@ export function NotebookPanel({
   // kernel the strip below it is describing.
   const shownLang = activeLang ?? selectedKernel?.language ?? languages[0] ?? null;
   const cellsToShow = selectedContext?.cells ?? [];
+
+  // Freshness is a one-shot instruction. The matching CellView has already
+  // initialized open in this commit; consuming the id keeps a later unmount
+  // and remount from overriding the researcher's manual disclosure choice.
+  useEffect(() => {
+    if (
+      autoOpenCellId !== null &&
+      cellsToShow.some((cell) => cell.id === autoOpenCellId)
+    ) {
+      setAutoOpenCellId(null);
+    }
+  }, [autoOpenCellId, cellsToShow]);
 
   const runSetup = useCallback(async () => {
     setSetupBusy(true);
@@ -241,7 +235,8 @@ export function NotebookPanel({
       // Returns only the id the cell will be recorded under — the executed
       // cell itself arrives on the next `taskNotebook` poll, the same way an
       // agent's does.
-      await api.kernelExecute(selectedKernel.id, code);
+      const result = await api.kernelExecute(selectedKernel.id, code);
+      setAutoOpenCellId(result.cellId);
       setRepl("");
     } catch (e) {
       setReplError(e instanceof Error ? e.message : String(e));
@@ -270,82 +265,46 @@ export function NotebookPanel({
     }
   }, [api, selectedKernel, refreshKernels]);
 
-  const onReplKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void runCell();
-    }
-  };
-
   return (
     <section className="notebook-panel" data-testid="notebook-panel">
-      <header className="art-header">
-        <span className="art-title">
-          <NotebookIcon />
-          Notebook
-        </span>
-        {onClose && (
-          <button
-            type="button"
-            className="art-icon-btn"
-            title="Close notebook"
-            aria-label="Close notebook"
-            onClick={onClose}
-          >
-            <CloseIcon />
-          </button>
-        )}
-      </header>
-
-      {/* Context first, language second, on one line: the tabs choose which
-          notebook is on screen and the chips choose which of that notebook's
-          kernels the strip and REPL below speak for. */}
-      {(contexts.length > 0 || languages.length > 1) && (
-        <div className="nbp-axis">
-          <div className="nbp-ctxtabs" role="tablist" aria-label="Kernel context">
-            {contexts.map((ctx) => (
-              <ContextTab
-                key={ctx.name}
-                ctx={ctx}
-                active={ctx.name === activeName}
-                onSelect={() => setActiveName(ctx.name)}
-              />
-            ))}
-          </div>
-          {languages.length > 1 && (
-            <div
-              className="nbp-langs"
-              role="radiogroup"
-              aria-label="Kernel language"
-              data-testid="notebook-langs"
+      {embedded !== true && (
+        <header className="art-header">
+          <span className="art-title">
+            <NotebookIcon />
+            Notebook
+          </span>
+          {onClose && (
+            <button
+              type="button"
+              className="art-icon-btn"
+              title="Close notebook"
+              aria-label="Close notebook"
+              onClick={onClose}
             >
-              {languages.map((lang) => (
-                <button
-                  key={lang}
-                  type="button"
-                  role="radio"
-                  aria-checked={lang === shownLang}
-                  className={`nbp-lang${lang === shownLang ? " is-active" : ""}`}
-                  onClick={() => setActiveLang(lang)}
-                >
-                  {languageLabel(lang)}
-                </button>
-              ))}
-            </div>
+              <CloseIcon />
+            </button>
           )}
-        </div>
+        </header>
       )}
 
-      <div className="nbp-cells" data-testid="notebook-cells">
-        {cellsToShow.length === 0 ? (
-          <p className="nbp-empty">
-            No cells yet. Ask the agent to run code, or wait for this context's
-            kernel to start one — each context keeps its own namespace.
-          </p>
-        ) : (
-          cellsToShow.map((cell) => <CellView key={cell.id} cell={cell} />)
-        )}
-      </div>
+      <NotebookAxis
+        contexts={contexts}
+        activeContext={activeName}
+        onContextChange={setActiveName}
+        languages={languages}
+        activeLanguage={shownLang}
+        onLanguageChange={setActiveLang}
+        sessionLabel={sessionLabel}
+      />
+
+      <NotebookLedger
+        cells={cellsToShow}
+        loading={!cellsLoaded}
+        warning={cellsWarning}
+        autoOpenCellId={autoOpenCellId}
+        contextLabel={selectedContext ? contextLabel(selectedContext.name) : null}
+        writable={selectedKernel !== undefined}
+      />
 
       {needsSetup && (
         <SetupState
@@ -359,98 +318,24 @@ export function NotebookPanel({
         />
       )}
 
-      {selectedKernel ? (
-        <KernelStrip
-          kernel={selectedKernel}
-          onRestart={() => void restart()}
-          onInterrupt={() => void interrupt()}
-        />
-      ) : (
-        shownLang !== null && (
-          <div className="nbp-strip nbp-strip--idle" data-testid="notebook-strip">
-            <span className="nbp-strip-lang">{languageLabel(shownLang)} kernel</span>
-            <span className="nbp-strip-state">not running</span>
-          </div>
-        )
-      )}
-
-      {selectedContext && (
-        <div className="nbp-footer" data-testid="notebook-footer">
-          <span>
-            {contextLabel(selectedContext.name)}
-            {selectedKernel && " — writable"}
-          </span>
-          <span className="nbp-footer-count">
-            {selectedContext.cells.length === 1
-              ? "1 cell"
-              : `${selectedContext.cells.length} cells`}
-          </span>
-        </div>
-      )}
-
-      <div className="nbp-repl">
-        {/* Conditional, because with no kernel in scope this is the one
-            outright false sentence the surface could carry: there is nothing
-            connected, and nothing shares a namespace with anything. */}
-        <p className="nbp-greeting">
-          {selectedKernel ? (
-            <>
-              Connected to the agent&rsquo;s live kernel — variables and state
-              are shared.
-            </>
-          ) : shownLang !== null ? (
-            <>
-              This context ran {languageLabel(shownLang)} here. Nothing is
-              holding that namespace now, so there is nothing to run against.
-            </>
-          ) : (
-            <>Nothing has run code on this Task yet.</>
-          )}
+      {kernelsWarning && (
+        <p className="nbp-warning" role="status">
+          {kernelsWarning}
         </p>
-        {replError && <p className="nbp-repl-error">{replError}</p>}
-        <div className="nbp-prompt">
-          <span className="nbp-caret" aria-hidden="true">
-            &gt;&gt;&gt;
-          </span>
-          <textarea
-            className="nbp-input"
-            rows={2}
-            aria-label={
-              selectedKernel
-                ? `Run ${languageLabel(selectedKernel.language)} on this kernel`
-                : "Run code on this kernel"
-            }
-            placeholder={selectedKernel ? "df.shape" : "No kernel to run against"}
-            value={repl}
-            disabled={replBusy || !selectedKernel}
-            onChange={(e) => setRepl(e.target.value)}
-            onKeyDown={onReplKey}
-          />
-          {/* While a cell is in flight the same slot carries the way to end
-              it. A researcher who has just started something that will not
-              come back needs the control then, not in a menu they have to
-              find with the surface busy. */}
-          {replBusy || selectedKernel?.state === "running" ? (
-            <button
-              type="button"
-              className="nbp-run nbp-run--stop"
-              onClick={() => void interrupt()}
-              disabled={!selectedKernel}
-            >
-              Interrupt
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="nbp-run"
-              onClick={() => void runCell()}
-              disabled={repl.trim().length === 0 || !selectedKernel}
-            >
-              Run
-            </button>
-          )}
-        </div>
-      </div>
+      )}
+
+      <NotebookConsoleDock
+        kernel={selectedKernel}
+        language={shownLang}
+        contextName={selectedContext?.name ?? null}
+        code={repl}
+        busy={replBusy}
+        error={replError}
+        onCodeChange={setRepl}
+        onRun={() => void runCell()}
+        onInterrupt={() => void interrupt()}
+        onRestart={() => void restart()}
+      />
     </section>
   );
 }
@@ -515,231 +400,4 @@ function SetupState({
       {log.length > 0 && <pre className="nbp-setup-log">{log.join("\n")}</pre>}
     </div>
   );
-}
-
-/** One context sub-tab: a state dot for its kernel and the context's name. */
-function ContextTab({
-  ctx,
-  active,
-  onSelect,
-}: {
-  ctx: Context;
-  active: boolean;
-  onSelect: () => void;
-}) {
-  const kernel = kernelFor(ctx, null);
-  return (
-    <button
-      type="button"
-      className={`nbp-ctxtab${active ? " is-active" : ""}`}
-      role="tab"
-      aria-selected={active}
-      onClick={onSelect}
-    >
-      {kernel && (
-        <span
-          className={`nbp-ctxtab-dot nbp-ctxtab-dot--${kernel.state}`}
-          aria-hidden="true"
-        />
-      )}
-      <span className="nbp-ctxtab-label">{contextLabel(ctx.name)}</span>
-    </button>
-  );
-}
-
-/**
- * The live-kernel strip: which kernel the REPL below runs in — its language,
- * the environment it is in, whether the agent is in the same namespace, where
- * it stands, and its lifecycle controls behind one menu.
- */
-function KernelStrip({
-  kernel,
-  onRestart,
-  onInterrupt,
-}: {
-  kernel: RunningKernel;
-  onRestart: () => void;
-  onInterrupt: () => void;
-}) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  useOutsideClick(menuRef, () => setMenuOpen(false), menuOpen);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setMenuOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [menuOpen]);
-
-  return (
-    <div className="nbp-strip" data-testid="notebook-strip">
-      <span className="nbp-strip-lang">{languageLabel(kernel.language)} kernel</span>
-      <span className="nbp-strip-env">{kernel.environment}</span>
-      <span className="nbp-strip-shared">shared with the agent</span>
-      <span className={`nbp-strip-state nbp-strip-state--${kernel.state}`}>
-        {kernel.state}
-      </span>
-      <div className="nbp-strip-menu" ref={menuRef}>
-        <button
-          type="button"
-          ref={triggerRef}
-          className="nbp-strip-more"
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          aria-label="Kernel actions"
-          onClick={() => setMenuOpen((o) => !o)}
-        >
-          ⋯
-        </button>
-        {menuOpen && (
-          <div className="nbp-strip-menulist" role="menu" aria-label="Kernel actions">
-            {/* Only while something is running: interrupting an idle kernel
-                reaches a cell that has already ended, and offering it then
-                promises an effect it cannot have. */}
-            {kernel.state === "running" && (
-              <button
-                type="button"
-                role="menuitem"
-                className="nbp-strip-menuitem"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onInterrupt();
-                }}
-              >
-                Interrupt
-              </button>
-            )}
-            <button
-              type="button"
-              role="menuitem"
-              className="nbp-strip-menuitem"
-              onClick={() => {
-                setMenuOpen(false);
-                onRestart();
-              }}
-            >
-              Restart
-              <span className="nbp-strip-menunote">clears every variable</span>
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** Who ran a cell, as far as this lab can say.
- *
- *  A researcher's own cell carries their member id, which the directory turns
- *  into the name their colleagues know them by. An agent's carries the agent's
- *  own id, which is already the word a researcher reads everywhere else. A
- *  member the directory has not heard of is named as unknown rather than as
- *  their id: an identifier in this position reads as a name, and it is not. */
-function CellBy({ cell }: { cell: NotebookCell }) {
-  const directory = useDirectory();
-  const { surface, by } = cell.origin;
-  if (surface === "agent") return <>agent · {by}</>;
-  if (!directory.loaded) return <>repl</>;
-  const user = directory.user(by);
-  return <>repl · {user ? user.displayName : "unknown member"}</>;
-}
-
-/** One cell: the execution counter, its language and who ran it, over the
- *  code it ran, with its output folded away until asked for. */
-function CellView({ cell }: { cell: NotebookCell }) {
-  const label = cell.executionCount > 0 ? cell.executionCount : " ";
-  return (
-    <div className={`nbp-cell${cell.ok ? "" : " nbp-cell--err"}`}>
-      {/* The cell's OWN language — a context can itself run Python and R side
-          by side, so each cell highlights under its own grammar and says
-          which one in its own header rather than inheriting the strip's. */}
-      <CodeBlock
-        code={cell.source}
-        lang={cell.language}
-        lineNumbers
-        meta={
-          <span className="nbp-cell-meta">
-            <span className="nbp-gutter">In [{label}]</span>
-            <span className="nbp-cell-lang">{cell.language}</span>
-            <span className="nbp-cell-by">
-              <CellBy cell={cell} />
-            </span>
-          </span>
-        }
-      />
-      {cell.outputs.length > 0 && (
-        <details className="nbp-output-wrap">
-          <summary className="nbp-output-summary">output</summary>
-          <div className="nbp-outputs">
-            {cell.outputs.map((out, i) => (
-              <OutputView key={i} out={out} />
-            ))}
-          </div>
-        </details>
-      )}
-    </div>
-  );
-}
-
-/** One `Record` of a kernel message's payload, or nothing when the message
- *  carries none. Every one of these crossed a machine this browser did not
- *  write and a store that keeps them as opaque JSON, so a message naming a
- *  kind this build does not know reaches here with no payload at all —
- *  indexing that would throw during render and take the whole Task screen
- *  down for everyone looking at it, over one cell's output. */
-function payload(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-/** Render one kernel message the way a notebook does: text mono, errors red, a
- *  figure inline, a spilled payload as a path note. */
-function OutputView({ out }: { out: KernelMessage }) {
-  if (out.kind === "stream") {
-    return <pre className="nbp-out nbp-stream">{out.text}</pre>;
-  }
-  if (out.kind === "error") {
-    const tb = Array.isArray(out.traceback) ? out.traceback.join("\n") : "";
-    return (
-      <pre className="nbp-out nbp-error">
-        {tb || `${out.ename}: ${out.evalue}`}
-      </pre>
-    );
-  }
-  // execute_result / display_data: image first, then text/plain, then spills.
-  const data = payload(out.data);
-  const png = data["image/png"];
-  if (typeof png === "string") {
-    const b64 = png.replace(/\s+/g, "");
-    return (
-      <div className="nbp-out nbp-image">
-        <img src={`data:image/png;base64,${b64}`} alt="cell output" />
-      </div>
-    );
-  }
-  const text = data["text/plain"];
-  if (typeof text === "string") {
-    return <pre className="nbp-out nbp-result">{text}</pre>;
-  }
-  const refs = payload(out.data_ref);
-  const refKeys = Object.keys(refs);
-  if (refKeys.length > 0) {
-    return (
-      <pre className="nbp-out nbp-result">
-        {refKeys
-          .map((mime) => {
-            const meta = refs[mime] as { path?: string } | undefined;
-            return `[${mime} → ${meta?.path ?? ".lykeion/outputs"}]`;
-          })
-          .join("\n")}
-      </pre>
-    );
-  }
-  return null;
 }

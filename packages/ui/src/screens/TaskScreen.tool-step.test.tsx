@@ -717,7 +717,7 @@ describe("Task transcript refresh on landing", () => {
 
 /**
  * The Task surface reports live plan progress above its composer — `Step N of
- * M`, with the Notebook pill that opens the inspector on the live kernel.
+ * M`, with the Notebook pill that opens the workspace on the live kernel.
  */
 describe("Task run strip", () => {
   it("reports Step N of M from the executing plan", async () => {
@@ -767,11 +767,14 @@ describe("Task run strip", () => {
     const strip = await screen.findByTestId("run-strip");
     expect(strip).toHaveTextContent("Step 2 of 3");
 
-    // The Notebook pill opens the inspector on the live kernel.
+    // The Notebook pill opens the workspace on the live kernel.
     await user.click(within(strip).getByRole("button", { name: /notebook/i }));
-    expect(
-      await screen.findByRole("tab", { name: "Notebook" }),
-    ).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByTestId("task-workspace")).toHaveAttribute(
+      "data-intent",
+      "split",
+    );
+    expect(screen.getByRole("heading", { name: "Notebook" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("notebook-panel")).toHaveLength(1);
   });
 
   it("shows no strip for a plain run with no plan steps", async () => {
@@ -793,11 +796,11 @@ describe("Task run strip", () => {
 
 /**
  * The Task surface's right-hand inspector — a wide pane with
- * Files · [open artifact] · Notebook.
+ * Files · [open artifact], with a Notebook workspace entry point.
  *
  * It opens only on the manual toggle (never mid-run on its own), lists the
  * artifacts this CHAT produced across all its turns, and opens one into a
- * viewer tab beside the Notebook.
+ * viewer tab and keeps a way to open the Notebook workspace.
  */
 describe("Task inspector pane", () => {
   const TURN_WITH_ARTIFACTS: TaskTurn = {
@@ -833,7 +836,7 @@ describe("Task inspector pane", () => {
     expect(panel).toHaveTextContent("build.py");
   });
 
-  it("opens an artifact into its own tab beside the Notebook", async () => {
+  it("opens an artifact into its own tab and retains a Notebook entry point", async () => {
     const user = userEvent.setup();
     window.location.hash = "#/studies/s_cmp/tasks/t_3";
     render(<App api={apiWithTurns([TURN_WITH_ARTIFACTS])} />);
@@ -842,10 +845,16 @@ describe("Task inspector pane", () => {
       await screen.findByRole("button", { name: /panel|inspector/i }),
     );
     await user.click(await screen.findByText("kinome_genes.csv"));
-    // The opened artifact gets a tab, and the Notebook tab is still there.
+    // The opened artifact gets a tab, and the Notebook entry point is still there.
     expect(
       await screen.findByRole("tab", { name: "kinome_genes.csv" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Notebook" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Notebook" }));
+    expect(await screen.findByTestId("task-workspace")).toHaveAttribute(
+      "data-intent",
+      "split",
+    );
+    expect(screen.queryByTestId("artifacts-panel")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("notebook-panel")).toHaveLength(1);
   });
 });

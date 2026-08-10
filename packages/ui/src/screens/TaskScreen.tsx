@@ -30,6 +30,10 @@ import {
   type ArtifactGroup,
 } from "../components/tasks/ArtifactsPanel";
 import { NotebookPanel } from "../components/tasks/NotebookPanel";
+import {
+  TaskWorkspaceShell,
+  useTaskWorkspace,
+} from "../components/tasks/TaskWorkspaceShell";
 import { ArtifactPane } from "../components/tasks/ArtifactPane";
 import { ModelSwitcher } from "../components/tasks/ModelSwitcher";
 import {
@@ -379,23 +383,25 @@ export function TaskScreen({
     setDraft((current) => current || runState.startError?.prompt || "");
   }, [runState.startError]);
 
-  // The right-hand inspector: the Study's live Notebook, this Task's
-  // artifacts, and one opened artifact. Manual toggle — it never steals the
-  // column mid-run.
+  // The right-hand inspector holds this Task's artifacts and an opened
+  // artifact. Notebook work stays in the workspace alongside the conversation.
+  const workspace = useTaskWorkspace(taskId);
   const [rightPaneOpen, setRightPaneOpen] = useState(false);
-  const [rightPaneTab, setRightPaneTab] = useState<
-    "files" | "notebook" | "artifact"
-  >("files");
+  const [rightPaneTab, setRightPaneTab] = useState<"files" | "artifact">(
+    "files",
+  );
   const [openArtifactPath, setOpenArtifactPath] = useState<string | null>(null);
   const openArtifact = useCallback((path: string) => {
+    workspace.closeNotebook({ restoreFocus: false });
     setOpenArtifactPath(path);
     setRightPaneTab("artifact");
     setRightPaneOpen(true);
-  }, []);
+  }, [workspace.closeNotebook]);
   const openFiles = useCallback(() => {
+    workspace.closeNotebook({ restoreFocus: false });
     setRightPaneTab("files");
     setRightPaneOpen(true);
-  }, []);
+  }, [workspace.closeNotebook]);
 
   // The model the next turn runs on. The CLI is NOT chosen here: this surface
   // carries no agent dock, so a turn started from it goes to the first
@@ -906,8 +912,8 @@ export function TaskScreen({
     study === undefined
       ? undefined
       : () => {
-          setRightPaneTab("notebook");
-          setRightPaneOpen(true);
+          setRightPaneOpen(false);
+          workspace.openNotebook();
         };
 
   const liveTurns = runState.runs.map((run) => ({
@@ -1023,136 +1029,138 @@ export function TaskScreen({
             onToggleRightPane={
               study === undefined
                 ? undefined
-                : () => setRightPaneOpen((o) => !o)
+                : () => {
+                    if (!rightPaneOpen) {
+                      workspace.closeNotebook({ restoreFocus: false });
+                    }
+                    setRightPaneOpen((open) => !open);
+                  }
             }
             divider={false}
           />
           <div className="task-main-body">
-            {/* Every Task opens here — the conversation, whether or not
-                anything has been said in it yet. A Task with no turns draws an
-                empty transcript over its composer rather than a surface of its
-                own: the chat is the Task, so there is nothing to enter first. */}
-            <section className="conversation" data-testid="conversation">
-              <div
-                className="conv-stream"
-                ref={stick.ref}
-                data-testid="conv-stream"
-              >
-                <div className="conv-column">
-                  <TaskTranscript
-                    history={history}
-                    viewTurns={viewTurns}
-                    liveTurns={liveTurns}
-                    terminalStatusByRunId={terminalStatusByRunId}
-                    {...(revertTurn ? { onRevertTurn: revertTurn } : {})}
-                    {...(editTurn ? { onEditTurn: editTurn } : {})}
-                  />
+            <TaskWorkspaceShell
+              controller={workspace}
+              conversation={
+                <section className="conversation" data-testid="conversation">
+                  <div
+                    className="conv-stream"
+                    ref={stick.ref}
+                    data-testid="conv-stream"
+                  >
+                    <div className="conv-column">
+                      <TaskTranscript
+                        history={history}
+                        viewTurns={viewTurns}
+                        liveTurns={liveTurns}
+                        terminalStatusByRunId={terminalStatusByRunId}
+                        {...(revertTurn ? { onRevertTurn: revertTurn } : {})}
+                        {...(editTurn ? { onEditTurn: editTurn } : {})}
+                      />
 
-                  {findings.length > 0 && (
-                    <div className="conv-review">
-                      <div className="card-eyebrow">Reviewer findings</div>
-                      {orderedFindings.map((f) => (
-                        <FindingCard
-                          key={f.id}
-                          finding={f}
-                          onResolve={resolveFinding}
-                        />
-                      ))}
+                      {findings.length > 0 && (
+                        <div className="conv-review">
+                          <div className="card-eyebrow">Reviewer findings</div>
+                          {orderedFindings.map((finding) => (
+                            <FindingCard
+                              key={finding.id}
+                              finding={finding}
+                              onResolve={resolveFinding}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              </div>
+                  </div>
 
-              <div className="composer-dock">
-                {!stick.pinned && (
-                  <button
-                    type="button"
-                    className="jump-to-latest"
-                    onClick={stick.jumpToLatest}
-                    aria-label="Jump to latest"
-                  >
-                    <span aria-hidden="true">↓</span> Jump to latest
-                  </button>
-                )}
-                <div className="composer-column">{composer}</div>
-              </div>
-            </section>
+                  <div className="composer-dock">
+                    {!stick.pinned && (
+                      <button
+                        type="button"
+                        className="jump-to-latest"
+                        onClick={stick.jumpToLatest}
+                        aria-label="Jump to latest"
+                      >
+                        <span aria-hidden="true">↓</span> Jump to latest
+                      </button>
+                    )}
+                    <div className="composer-column">{composer}</div>
+                  </div>
+                </section>
+              }
+              notebook={
+                study ? <NotebookPanel taskId={task.id} sessionLabel={task.title} embedded /> : null
+              }
+            />
           </div>
+        </div>
 
-          {/* The inspector is the Study's workspace — artifacts on disk and a
-              live kernel — so it exists only where there is one. Every way of
-              opening it is already off without a Study; this is the last of
-              them, and the one that keeps `ArtifactPane` from ever being
-              handed a Study id there is none of. */}
-          {rightPaneOpen && study !== undefined && (
-            <div className="task-rightpane">
-              <div
-                className="rightpane-tabs"
-                role="tablist"
-                aria-label="Right pane"
+        {/* Files and artifacts remain a separate grid column from the Task
+            workspace, and exist only for filed Tasks with a Study workspace. */}
+        {rightPaneOpen && study !== undefined && (
+          <div className="task-rightpane">
+            <div
+              className="rightpane-tabs"
+              role="tablist"
+              aria-label="Right pane"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightPaneTab === "files"}
+                className={`rightpane-tab${rightPaneTab === "files" ? " is-active" : ""}`}
+                onClick={openFiles}
               >
+                Files
+              </button>
+              {openArtifactPath && (
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={rightPaneTab === "files"}
-                  className={`rightpane-tab${rightPaneTab === "files" ? " is-active" : ""}`}
-                  onClick={() => setRightPaneTab("files")}
+                  aria-selected={rightPaneTab === "artifact"}
+                  className={`rightpane-tab${rightPaneTab === "artifact" ? " is-active" : ""}`}
+                  onClick={() => setRightPaneTab("artifact")}
+                  title={openArtifactPath}
                 >
-                  Files
+                  {openArtifactPath.split("/").pop()}
                 </button>
-                {openArtifactPath && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={rightPaneTab === "artifact"}
-                    className={`rightpane-tab${rightPaneTab === "artifact" ? " is-active" : ""}`}
-                    onClick={() => setRightPaneTab("artifact")}
-                    title={openArtifactPath}
-                  >
-                    {openArtifactPath.split("/").pop()}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={rightPaneTab === "notebook"}
-                  className={`rightpane-tab${rightPaneTab === "notebook" ? " is-active" : ""}`}
-                  onClick={() => setRightPaneTab("notebook")}
-                >
-                  Notebook
-                </button>
-                <button
-                  type="button"
-                  className="art-icon-btn rightpane-close"
-                  title="Close panel"
-                  aria-label="Close panel"
-                  onClick={() => setRightPaneOpen(false)}
-                >
-                  <CloseIcon />
-                </button>
-              </div>
-              {rightPaneTab === "files" ? (
-                <ArtifactsPanel
-                  groups={artifactGroups}
-                  onOpenArtifact={openArtifact}
-                />
-              ) : rightPaneTab === "artifact" && openArtifactPath ? (
-                <ArtifactPane
-                  studyId={study.id}
-                  path={openArtifactPath}
-                  onClose={() => {
-                    setOpenArtifactPath(null);
-                    setRightPaneTab("files");
-                  }}
-                />
-              ) : (
-                <NotebookPanel taskId={task.id} />
               )}
+              <button
+                type="button"
+                className="rightpane-tab"
+                onClick={openNotebook}
+              >
+                Notebook
+              </button>
+              <button
+                type="button"
+                className="art-icon-btn rightpane-close"
+                title="Close panel"
+                aria-label="Close panel"
+                onClick={() => setRightPaneOpen(false)}
+              >
+                <CloseIcon />
+              </button>
             </div>
-          )}
+            {rightPaneTab === "files" ? (
+              <ArtifactsPanel
+                groups={artifactGroups}
+                onOpenArtifact={openArtifact}
+              />
+            ) : rightPaneTab === "artifact" && openArtifactPath ? (
+              <ArtifactPane
+                studyId={study.id}
+                path={openArtifactPath}
+                onClose={() => {
+                  setOpenArtifactPath(null);
+                  setRightPaneTab("files");
+                }}
+              />
+            ) : null}
+          </div>
+        )}
         </div>
       </div>
-    </div>
   );
 }
 
