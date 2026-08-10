@@ -930,14 +930,16 @@ export function activeRunIdsForRuntime(store: Store, runtimeId: string): string[
 }
 
 /** Every durable, settled turn on a Task in transcript order, including its
- *  accumulated prose and execution steps. */
+ *  accumulated prose and execution steps and the agent it ran on. */
 export function taskTurnsForTask(store: Store, taskId: string): TaskTurn[] {
   return store
     .all(
-      `SELECT id, seq, prompt, started_ts, status, text, snapshot_taken, snapshot_reason
-         FROM turns
-        WHERE task_id = ? AND ended_ts IS NOT NULL
-        ORDER BY seq ASC`,
+      `SELECT t.id, t.seq, t.prompt, t.started_ts, t.status, t.text,
+              t.snapshot_taken, t.snapshot_reason, s.agent
+         FROM turns t
+         JOIN sessions s ON s.id = t.session_id
+        WHERE t.task_id = ? AND t.ended_ts IS NOT NULL
+        ORDER BY t.seq ASC`,
       [taskId],
     )
     .map((row) => {
@@ -948,6 +950,11 @@ export function taskTurnsForTask(store: Store, taskId: string): TaskTurn[] {
         sequence: row.seq as number,
         ts: row.started_ts as number,
         prompt: row.prompt as string,
+        // Read off the session rather than the turn: a session *is* one
+        // agent's conversation, and several turns share one, so the agent is
+        // the session's fact. A copy kept per turn would be free to drift
+        // from the session that actually ran it.
+        agent: row.agent as string,
         messages: text === "" ? [] : [text],
         ...(stream.length === 0 ? {} : { stream }),
         status: row.status === "ok" ? "ok" as const : "failed" as const,

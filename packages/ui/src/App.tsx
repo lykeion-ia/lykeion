@@ -66,10 +66,11 @@ export default function App({ api }: { api?: LykeionApi }) {
           <Workbench />
         </RouterProvider>
       </ThemeProvider>
-      {/* Dev-only annotation toolbar; stripped from prod builds and not
-          mounted under vitest, whose jsdom lacks the browser globals and
-          timers it needs. */}
-      {import.meta.env.DEV && import.meta.env.MODE !== "test" && <Agentation />}
+      {/* The annotation toolbar, in every build a browser is served — a lab
+          running from the workspace server is reviewed the same way the dev
+          server is. Still absent under vitest, whose jsdom lacks the browser
+          globals and timers it needs. */}
+      {import.meta.env.MODE !== "test" && <Agentation />}
     </ApiProvider>
   );
 

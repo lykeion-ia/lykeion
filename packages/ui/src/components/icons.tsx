@@ -193,6 +193,13 @@ export const CloseIcon = (p: IconProps) => (
   </Base>
 );
 
+/** The inverse of `ExpandIcon`: give the width back, corners pulling inward. */
+export const CollapseIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M3 8h5V3M21 8h-5V3M16 21v-5h5M8 21v-5H3" />
+  </Base>
+);
+
 export const SettingsIcon = (p: IconProps) => (
   <Base {...p}>
     <circle cx="12" cy="12" r="3" />

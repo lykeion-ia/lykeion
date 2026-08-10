@@ -16,12 +16,13 @@ import { useStickToBottom } from "../hooks/useStickToBottom";
 import { useTaskRun } from "../hooks/useTaskRun";
 import type { ManagedRun } from "../hooks/useRun";
 import { StatusIcon } from "../components/StatusIcon";
-import { CloseIcon } from "../components/icons";
+import { CloseIcon, CollapseIcon, ExpandIcon } from "../components/icons";
 import { Composer } from "../components/tasks/Composer";
 import { PermissionCard } from "../components/tasks/PermissionCard";
 import { QuestionCard } from "../components/tasks/QuestionCard";
 import { PlanCard } from "../components/tasks/PlanCard";
 import { TaskSidebar } from "../components/tasks/TaskSidebar";
+import { DeleteTaskModal } from "../components/tasks/DeleteTaskModal";
 import { TaskTabs, type TaskTab } from "../components/tasks/TaskTabs";
 import { RunStrip } from "../components/tasks/RunStrip";
 import {
@@ -30,10 +31,6 @@ import {
   type ArtifactGroup,
 } from "../components/tasks/ArtifactsPanel";
 import { NotebookPanel } from "../components/tasks/NotebookPanel";
-import {
-  TaskWorkspaceShell,
-  useTaskWorkspace,
-} from "../components/tasks/TaskWorkspaceShell";
 import { ArtifactPane } from "../components/tasks/ArtifactPane";
 import { ModelSwitcher } from "../components/tasks/ModelSwitcher";
 import {
@@ -383,41 +380,86 @@ export function TaskScreen({
     setDraft((current) => current || runState.startError?.prompt || "");
   }, [runState.startError]);
 
-  // The right-hand inspector holds this Task's artifacts and an opened
-  // artifact. Notebook work stays in the workspace alongside the conversation.
-  const workspace = useTaskWorkspace(taskId);
-  const [rightPaneOpen, setRightPaneOpen] = useState(false);
-  const [rightPaneTab, setRightPaneTab] = useState<"files" | "artifact">(
-    "files",
+  /**
+   * How much of the screen the inspector has: none, a column beside the
+   * conversation, or the whole thing. One value rather than a pair, because
+   * the states are ordered — the toggle walks them — and a pair can express
+   * combinations that have no meaning ("focused but closed").
+   *
+   * The chrome follows this: the header is split exactly when `split` puts two
+   * surfaces on screen, and is one bar in the other two.
+   */
+  const [paneMode, setPaneMode] = useState<"closed" | "split" | "focus">(
+    "closed",
   );
+  const rightPaneOpen = paneMode !== "closed";
+  // Everything the inspector can show, Notebook included. It is a tab here and
+  // nowhere else: there is no second place a Notebook can be opened, so there
+  // is no state that can put one on screen twice.
+  const [rightPaneTab, setRightPaneTab] = useState<
+    "files" | "artifact" | "notebook"
+  >("files");
   const [openArtifactPath, setOpenArtifactPath] = useState<string | null>(null);
-  const openArtifact = useCallback((path: string) => {
-    workspace.closeNotebook({ restoreFocus: false });
-    setOpenArtifactPath(path);
-    setRightPaneTab("artifact");
-    setRightPaneOpen(true);
-  }, [workspace.closeNotebook]);
-  const openFiles = useCallback(() => {
-    workspace.closeNotebook({ restoreFocus: false });
-    setRightPaneTab("files");
-    setRightPaneOpen(true);
-  }, [workspace.closeNotebook]);
+  const showInPane = useCallback(
+    (tab: "files" | "artifact" | "notebook") => {
+      setRightPaneTab(tab);
+      setPaneMode((mode) => (mode === "closed" ? "split" : mode));
+    },
+    [],
+  );
+  const openArtifact = useCallback(
+    (path: string) => {
+      setOpenArtifactPath(path);
+      showInPane("artifact");
+    },
+    [showInPane],
+  );
+  const openFiles = useCallback(() => showInPane("files"), [showInPane]);
 
-  // The model the next turn runs on. The CLI is NOT chosen here: this surface
-  // carries no agent dock, so a turn started from it goes to the first
-  // available CLI — the choice belongs to the Study's composer, which is where
-  // the work is started from. What that CLI offers is what the switcher lists.
+  // Which agent this Task is talking to, and the model the next turn runs on.
+  //
+  // A Task is one continuous conversation, so the agent is not chosen here:
+  // it is read off the conversation itself. The newest turn's agent is where
+  // the next turn has to go, and whose models the switcher must list —
+  // offering another agent's models would be a promise this surface cannot
+  // keep. A live run is newer authority than the settled transcript, and only
+  // a Task nobody has spoken in yet has neither, which is the one case that
+  // falls back to the lab's first available CLI.
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const effectiveCli = clis.find((c) => c.available) ?? clis[0];
+  const lastAgent =
+    runState.runs[runState.runs.length - 1]?.agent ??
+    history[history.length - 1]?.agent ??
+    null;
+  // Matched on id alone, availability deliberately not consulted: an agent
+  // whose machine has gone offline is still the one this Task is mid-
+  // conversation with, and quietly resolving to a different one would put
+  // another agent's models on screen — the exact defect this resolution
+  // exists to prevent. The composer's runtime blocker is what reports a
+  // machine that is not there.
+  const effectiveCli =
+    clis.find((c) => c.id === lastAgent) ??
+    clis.find((c) => c.available) ??
+    clis[0];
   const effectiveCliId = effectiveCli?.id ?? null;
   const modelOption = modelOptionOf(effectiveCli);
-  const effectiveModel = selectedModel ?? modelOption?.currentValue ?? null;
+  // A model picked for one agent is dropped when the Task turns out to be on
+  // another that does not offer it — the same invariant `StudyScreen`'s
+  // `selectCli` keeps, held here as a derivation rather than an effect
+  // because the switch is something the transcript does to this screen
+  // rather than something a control on it did.
+  const effectiveModel =
+    (selectedModel !== null && modelOption?.choices.some((c) => c.value === selectedModel)
+      ? selectedModel
+      : modelOption?.currentValue) ?? null;
 
   // Reviewer findings for this Task (loaded on open and after a run completes).
   const [findings, setFindings] = useState<Finding[]>([]);
   // Local Done-gate state: the marked-done optimism + any block message.
   const [markedDone, setMarkedDone] = useState(false);
   const [doneError, setDoneError] = useState<string | null>(null);
+  // The Task a researcher has asked to delete, held while they confirm it.
+  // Null whenever nothing is waiting on that answer.
+  const [pendingDelete, setPendingDelete] = useState<Task | null>(null);
   // A send held back until the researcher says which Study to file this Task
   // into. Null whenever no send is waiting on an answer.
   const [filing, setFiling] = useState<{
@@ -465,7 +507,7 @@ export function TaskScreen({
   useEffect(() => {
     setMarkedDone(false);
     setDoneError(null);
-    setRightPaneOpen(false);
+    setPaneMode("closed");
     setFiling(null);
     setPendingSend(null);
   }, [taskId]);
@@ -688,13 +730,15 @@ export function TaskScreen({
   // Delete a Task: it and its transcript go together, its tab is dropped, and
   // — if it was the one on screen — the surface moves to another open Task (or
   // back to the Study).
+  //
+  // A refusal is left to reject. This used to be swallowed and the tab closed
+  // regardless, which made a delete the core had refused indistinguishable
+  // from one it had done: the Task vanished from the screen and came back on
+  // the next read. The confirming dialog is a place to say so, and it stays
+  // open and reports it rather than reconciling around it.
   const deleteTask = async (id: string) => {
     const remaining = taskTabsFor(studyId).filter((t) => t.taskId !== id);
-    try {
-      await api.deleteTask(id);
-    } catch {
-      // Best-effort: still reconcile the UI with the core below.
-    }
+    await api.deleteTask(id);
     closeTaskTab(id);
     refreshTasks();
     invalidate();
@@ -909,12 +953,7 @@ export function TaskScreen({
   // shown against an empty workspace, which drops the composer's Notebook
   // button, the run strip's pill and the breadcrumb's toggle together.
   const openNotebook =
-    study === undefined
-      ? undefined
-      : () => {
-          setRightPaneOpen(false);
-          workspace.openNotebook();
-        };
+    study === undefined ? undefined : () => showInPane("notebook");
 
   const liveTurns = runState.runs.map((run) => ({
     runId: run.runId,
@@ -987,7 +1026,11 @@ export function TaskScreen({
       tasks={sidebarTasks}
       activeTaskId={taskId}
       onOpenTask={openTask}
-      onDeleteTask={(id) => void deleteTask(id)}
+      // The row only says who was asked for. Confirming is the screen's,
+      // because the menu unmounts the moment an item is chosen.
+      onDeleteTask={(id) =>
+        setPendingDelete(sidebarTasks.find((t) => t.id === id) ?? null)
+      }
       onRenameTask={(id, title) => void renameTask(id, title)}
       onPinTask={(id, pinned) => void pinTask(id, pinned)}
       onMoveTask={(id, destination) => void moveTask(id, destination)}
@@ -999,19 +1042,25 @@ export function TaskScreen({
     <div className="task-screen" data-testid="task-surface">
       <div
         className="task-columns"
+        data-pane-mode={paneMode}
         style={{
-          // The inspector takes a real share of the width when open, and none
-          // at all when closed.
-          gridTemplateColumns: `minmax(0, 1fr)${
-            rightPaneOpen ? " minmax(400px, 0.82fr)" : ""
-          }`,
+          // The inspector takes a real share of the width beside the
+          // conversation, all of it when focused, and none at all when closed.
+          gridTemplateColumns:
+            paneMode === "focus"
+              ? "minmax(0, 1fr)"
+              : `minmax(0, 1fr)${
+                  rightPaneOpen ? " minmax(400px, 0.82fr)" : ""
+                }`,
         }}
       >
         {railView === "context" &&
           railSlot &&
           sidebar &&
           createPortal(sidebar, railSlot)}
-        <div className="task-main">
+        {/* Focused, the inspector owns the screen and the conversation is not
+            drawn behind it — one surface, so one header. */}
+        <div className="task-main" hidden={paneMode === "focus"}>
           <TaskTabs
             // An unfiled Task's breadcrumb names the Lab's Task list, which is
             // the surface it belongs to until it is filed. Either way the name
@@ -1026,77 +1075,70 @@ export function TaskScreen({
             onMarkDone={markDone}
             doneError={doneError}
             rightPaneOpen={rightPaneOpen}
+            // The toggle belongs to whichever header reaches the screen's right
+            // edge. That is this bar only while the conversation is alone; the
+            // moment the inspector is on screen it owns that edge and carries
+            // the control itself, beside the tabs it acts on.
             onToggleRightPane={
-              study === undefined
+              study === undefined || rightPaneOpen
                 ? undefined
-                : () => {
-                    if (!rightPaneOpen) {
-                      workspace.closeNotebook({ restoreFocus: false });
-                    }
-                    setRightPaneOpen((open) => !open);
-                  }
+                : () => setPaneMode("split")
             }
             divider={false}
           />
           <div className="task-main-body">
-            <TaskWorkspaceShell
-              controller={workspace}
-              conversation={
-                <section className="conversation" data-testid="conversation">
-                  <div
-                    className="conv-stream"
-                    ref={stick.ref}
-                    data-testid="conv-stream"
-                  >
-                    <div className="conv-column">
-                      <TaskTranscript
-                        history={history}
-                        viewTurns={viewTurns}
-                        liveTurns={liveTurns}
-                        terminalStatusByRunId={terminalStatusByRunId}
-                        {...(revertTurn ? { onRevertTurn: revertTurn } : {})}
-                        {...(editTurn ? { onEditTurn: editTurn } : {})}
-                      />
+            <section className="conversation" data-testid="conversation">
+              <div
+                className="conv-stream"
+                ref={stick.ref}
+                data-testid="conv-stream"
+              >
+                <div className="conv-column">
+                  <TaskTranscript
+                    history={history}
+                    viewTurns={viewTurns}
+                    liveTurns={liveTurns}
+                    terminalStatusByRunId={terminalStatusByRunId}
+                    {...(revertTurn ? { onRevertTurn: revertTurn } : {})}
+                    {...(editTurn ? { onEditTurn: editTurn } : {})}
+                  />
 
-                      {findings.length > 0 && (
-                        <div className="conv-review">
-                          <div className="card-eyebrow">Reviewer findings</div>
-                          {orderedFindings.map((finding) => (
-                            <FindingCard
-                              key={finding.id}
-                              finding={finding}
-                              onResolve={resolveFinding}
-                            />
-                          ))}
-                        </div>
-                      )}
+                  {findings.length > 0 && (
+                    <div className="conv-review">
+                      <div className="card-eyebrow">Reviewer findings</div>
+                      {orderedFindings.map((finding) => (
+                        <FindingCard
+                          key={finding.id}
+                          finding={finding}
+                          onResolve={resolveFinding}
+                        />
+                      ))}
                     </div>
-                  </div>
+                  )}
+                </div>
+              </div>
 
-                  <div className="composer-dock">
-                    {!stick.pinned && (
-                      <button
-                        type="button"
-                        className="jump-to-latest"
-                        onClick={stick.jumpToLatest}
-                        aria-label="Jump to latest"
-                      >
-                        <span aria-hidden="true">↓</span> Jump to latest
-                      </button>
-                    )}
-                    <div className="composer-column">{composer}</div>
-                  </div>
-                </section>
-              }
-              notebook={
-                study ? <NotebookPanel taskId={task.id} sessionLabel={task.title} embedded /> : null
-              }
-            />
+              <div className="composer-dock">
+                {!stick.pinned && (
+                  <button
+                    type="button"
+                    className="jump-to-latest"
+                    onClick={stick.jumpToLatest}
+                    aria-label="Jump to latest"
+                  >
+                    <span aria-hidden="true">↓</span> Jump to latest
+                  </button>
+                )}
+                <div className="composer-column">{composer}</div>
+              </div>
+            </section>
           </div>
         </div>
 
-        {/* Files and artifacts remain a separate grid column from the Task
-            workspace, and exist only for filed Tasks with a Study workspace. */}
+        {/* The inspector: this Task's files, an opened artifact, and the
+            Notebook — every surface that is not the conversation, in one
+            column, reached by one tab strip. Exists only for filed Tasks,
+            which are the only ones with a Study workspace to inspect. */}
         {rightPaneOpen && study !== undefined && (
           <div className="task-rightpane">
             <div
@@ -1127,17 +1169,37 @@ export function TaskScreen({
               )}
               <button
                 type="button"
-                className="rightpane-tab"
-                onClick={openNotebook}
+                role="tab"
+                aria-selected={rightPaneTab === "notebook"}
+                className={`rightpane-tab${rightPaneTab === "notebook" ? " is-active" : ""}`}
+                onClick={() => setRightPaneTab("notebook")}
               >
                 Notebook
+              </button>
+              <span className="rightpane-tabs-gap" />
+              {/* Widen to the whole screen and back. The conversation is not
+                  drawn while this is focused, so the header stops being split
+                  and reads as the one bar it then is. */}
+              <button
+                type="button"
+                className="art-icon-btn"
+                aria-pressed={paneMode === "focus"}
+                title={paneMode === "focus" ? "Show conversation" : "Expand panel"}
+                aria-label={
+                  paneMode === "focus" ? "Show conversation" : "Expand panel"
+                }
+                onClick={() =>
+                  setPaneMode((mode) => (mode === "focus" ? "split" : "focus"))
+                }
+              >
+                {paneMode === "focus" ? <CollapseIcon /> : <ExpandIcon />}
               </button>
               <button
                 type="button"
                 className="art-icon-btn rightpane-close"
                 title="Close panel"
                 aria-label="Close panel"
-                onClick={() => setRightPaneOpen(false)}
+                onClick={() => setPaneMode("closed")}
               >
                 <CloseIcon />
               </button>
@@ -1156,10 +1218,27 @@ export function TaskScreen({
                   setRightPaneTab("files");
                 }}
               />
+            ) : rightPaneTab === "notebook" ? (
+              <NotebookPanel
+                taskId={task.id}
+                sessionLabel={task.title}
+                embedded
+              />
             ) : null}
           </div>
         )}
         </div>
+
+      {pendingDelete && (
+        <DeleteTaskModal
+          task={pendingDelete}
+          onClose={() => setPendingDelete(null)}
+          onConfirm={async () => {
+            await deleteTask(pendingDelete.id);
+            setPendingDelete(null);
+          }}
+        />
+      )}
       </div>
   );
 }

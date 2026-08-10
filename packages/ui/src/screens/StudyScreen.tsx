@@ -20,6 +20,7 @@ import { RowLink } from "../components/RowLink";
 import { Icon } from "../components/Icon";
 import { StudyFormModal } from "../components/studies/StudyFormModal";
 import { DeleteStudyModal } from "../components/studies/DeleteStudyModal";
+import { DeleteTaskModal } from "../components/tasks/DeleteTaskModal";
 import { ActionMenu } from "../components/ui/ActionMenu";
 import { InlineRename } from "../components/ui/InlineRename";
 import { TaskRowMenu } from "../components/tasks/TaskRowMenu";
@@ -77,6 +78,10 @@ export function StudyScreen({ studyId }: { studyId: string }) {
   // The Study's own two dialogs, and why the last head action failed.
   const [showEdit, setShowEdit] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // The Task a researcher has asked to delete from the list, held while they
+  // confirm it. Separate from the Study's own delete above: they guard
+  // different things and can never be open at once.
+  const [pendingTaskDelete, setPendingTaskDelete] = useState<Task | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // Which Task row is being renamed in place — at most one at a time.
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -234,16 +239,14 @@ export function StudyScreen({ studyId }: { studyId: string }) {
     closeTaskTab(taskId);
   };
 
-  // Deleting a Task is final — the core tombstones it — and, like the
-  // sidebar's delete, it is taken at the click. Nothing here can restore it,
-  // so no surface may offer to.
+  // Deleting a Task is final — the core tombstones it — and nothing here can
+  // restore it, so it is asked about first, the same way it is asked about
+  // from the Task's own sidebar. A refusal is left to reject: the dialog is
+  // where it can be reported, and closing over one would say the Task was
+  // gone when the next read will bring it back.
   const removeTask = async (taskId: string) => {
     setActionError(null);
-    try {
-      await api.deleteTask(taskId);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    }
+    await api.deleteTask(taskId);
     closeTaskTab(taskId);
     invalidate();
   };
@@ -296,7 +299,7 @@ export function StudyScreen({ studyId }: { studyId: string }) {
               onPin={() => void patchTask(task.id, { pinned: !task.pinned })}
               onRename={() => setRenamingId(task.id)}
               onMove={(destination) => void moveTask(task.id, destination)}
-              onDelete={() => void removeTask(task.id)}
+              onDelete={() => setPendingTaskDelete(task)}
             />
           </span>
         </>
@@ -525,6 +528,17 @@ export function StudyScreen({ studyId }: { studyId: string }) {
           taskCount={tasks.length}
           onClose={() => setConfirmDelete(false)}
           onConfirm={deleteStudy}
+        />
+      )}
+
+      {pendingTaskDelete && (
+        <DeleteTaskModal
+          task={pendingTaskDelete}
+          onClose={() => setPendingTaskDelete(null)}
+          onConfirm={async () => {
+            await removeTask(pendingTaskDelete.id);
+            setPendingTaskDelete(null);
+          }}
         />
       )}
     </div>

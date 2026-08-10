@@ -995,6 +995,74 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
       expect(completed.event).toBe("completed");
     });
 
+    it("a settled turn keeps the agent it ran on, so a Task reopened later knows what it is talking to", async () => {
+      // A Task is one continuous conversation with one agent. Reopened, its
+      // composer has to offer THAT agent's models and send the next turn to
+      // it — and `resumeRuns` answers only for runs still active, so a
+      // settled turn is the one place the fact survives a reload.
+      //
+      // What is asserted is a relationship, never a literal. An
+      // implementation resolves the agent itself: a caller may name none,
+      // and a lab may hold several machines offering the same one. So the
+      // requirement is that the turn keeps the same answer the live run
+      // gave, whatever that answer was.
+      const api = await makeApi();
+      const study = await api.createStudy({ title: "Which agent", key: "WCH" });
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "Run on something",
+      });
+      const handle = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "Run on something",
+        options: { planMode: false },
+      });
+
+      // Captured inside the subscription that drives the gates, so there is
+      // no window in which the run could settle before the snapshot is read.
+      let runningOn: string | undefined;
+      await new Promise<void>((resolve) => {
+        handle.onEvent((e) => {
+          switch (e.event) {
+            case "snapshot":
+              runningOn = e.snapshot.agent;
+              break;
+            case "plan-proposed":
+              handle.submit({ action: "approve-plan" });
+              break;
+            case "permission-card":
+              handle.submit({
+                action: "permission",
+                requestId: e.request.id,
+                decision: { decision: "allow", scope: "once" },
+              });
+              break;
+            case "question-asked":
+              handle.submit({
+                action: "answer-question",
+                requestId: e.request.requestId,
+                answer: { selected: [] },
+              });
+              break;
+            case "completed":
+              resolve();
+              break;
+            default:
+              break;
+          }
+        });
+      });
+      handle.close();
+
+      const { turns } = await api.getTask(task.id);
+      const turn = turns.find((t) => t.runId === handle.runId);
+      expect(turn).toBeDefined();
+      expect(turn!.agent).toBe(runningOn);
+      expect(turn!.agent).not.toBe("");
+    });
+
     it("detach is observer-only: the same handle can resubscribe and still complete", async () => {
       const api = await makeApi();
       const study = await api.createStudy({ title: "Detach and resume", key: "DAR" });

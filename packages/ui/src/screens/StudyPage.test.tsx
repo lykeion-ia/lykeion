@@ -712,7 +712,7 @@ describe("a Task row's actions on the Study page", () => {
     ).toBeNull();
   });
 
-  it("deletes a Task from the list", async () => {
+  it("asks before deleting a Task, and deletes nothing until it is answered", async () => {
     const user = userEvent.setup();
     const api = openStudy(CMP);
     const all = (await api.getStudy(CMP)).tasks;
@@ -721,6 +721,45 @@ describe("a Task row's actions on the Study page", () => {
 
     await openRowMenu(user, doomed.title);
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: /delete task/i }),
+    ).toBeInTheDocument();
+    // The Task is still there — a Task is its chat, and there is no archive
+    // to recover one from, so the click alone must not be enough.
+    expect((await api.getStudy(CMP)).tasks.length).toBe(all.length);
+  });
+
+  it("leaves the Task alone when the confirmation is dismissed", async () => {
+    const user = userEvent.setup();
+    const api = openStudy(CMP);
+    const all = (await api.getStudy(CMP)).tasks;
+    const doomed = all[0];
+    await screen.findByRole("region", { name: "All tasks" });
+
+    await openRowMenu(user, doomed.title);
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await screen.findByRole("dialog", { name: /delete task/i });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /delete task/i })).toBeNull(),
+    );
+    expect((await api.getStudy(CMP)).tasks.length).toBe(all.length);
+    expect(rowOrder()).toContain(rowHref(CMP, doomed.id));
+  });
+
+  it("deletes a Task from the list once the confirmation is answered", async () => {
+    const user = userEvent.setup();
+    const api = openStudy(CMP);
+    const all = (await api.getStudy(CMP)).tasks;
+    const doomed = all[0];
+    await screen.findByRole("region", { name: "All tasks" });
+
+    await openRowMenu(user, doomed.title);
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog", { name: /delete task/i });
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     await waitFor(async () =>
       expect((await api.getStudy(CMP)).tasks.length).toBe(all.length - 1),

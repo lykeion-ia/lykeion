@@ -767,13 +767,13 @@ describe("Task run strip", () => {
     const strip = await screen.findByTestId("run-strip");
     expect(strip).toHaveTextContent("Step 2 of 3");
 
-    // The Notebook pill opens the workspace on the live kernel.
+    // The Notebook pill opens the inspector on the live kernel — as a tab
+    // there, which is the only place a Notebook is ever drawn.
     await user.click(within(strip).getByRole("button", { name: /notebook/i }));
-    expect(await screen.findByTestId("task-workspace")).toHaveAttribute(
-      "data-intent",
-      "split",
+    expect(await screen.findByRole("tab", { name: "Notebook" })).toHaveAttribute(
+      "aria-selected",
+      "true",
     );
-    expect(screen.getByRole("heading", { name: "Notebook" })).toBeInTheDocument();
     expect(screen.getAllByTestId("notebook-panel")).toHaveLength(1);
   });
 
@@ -849,10 +849,10 @@ describe("Task inspector pane", () => {
     expect(
       await screen.findByRole("tab", { name: "kinome_genes.csv" }),
     ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Notebook" }));
-    expect(await screen.findByTestId("task-workspace")).toHaveAttribute(
-      "data-intent",
-      "split",
+    await user.click(screen.getByRole("tab", { name: "Notebook" }));
+    expect(screen.getByRole("tab", { name: "Notebook" })).toHaveAttribute(
+      "aria-selected",
+      "true",
     );
     expect(screen.queryByTestId("artifacts-panel")).not.toBeInTheDocument();
     expect(screen.getAllByTestId("notebook-panel")).toHaveLength(1);

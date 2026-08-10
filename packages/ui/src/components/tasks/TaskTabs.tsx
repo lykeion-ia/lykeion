@@ -52,7 +52,11 @@ export function TaskTabs({
   return (
     <div className={cn("shrink-0", divider && "border-b border-line")}>
       <CrumbStrip page={crumb} to={crumbTo}>
-        <div className="inline-flex items-center gap-0.5 rounded-lg border border-line bg-surface p-0.5">
+        {/* No box around the group and no fill under the active tab: these sit
+            on the same line as the crumb trail and name the same things at the
+            same level, so a container drawn around them read as a control of
+            its own. Selection and hover are carried by ink alone. */}
+        <div className="inline-flex items-center gap-0.5">
           {tabs.map((t) => {
             const active = t.id === activeId;
             return (
@@ -64,7 +68,7 @@ export function TaskTabs({
                   // level, and reading them at two sizes made the row look like
                   // two strips that happened to collide.
                   "inline-flex items-center rounded-md text-read transition-colors duration-[120ms]",
-                  active ? "bg-surface-3 text-fg" : "text-fg-subtle",
+                  active ? "text-fg" : "text-fg-subtle",
                 )}
               >
                 <button

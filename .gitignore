@@ -11,3 +11,6 @@ node_modules/
 # Agent worktrees — a live checkout, not source
 .claude/worktrees/
 .worktrees/
+
+# Browser-automation scratch — snapshots and console logs from a driven session
+.playwright-mcp/

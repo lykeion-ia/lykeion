@@ -982,6 +982,32 @@ it("gives back the same step it was given, for every shape an output takes", () 
   );
 });
 
+it("reports the agent a settled turn ran on", () => {
+  // The composer of a reopened Task reads this to know which agent it is
+  // talking to, and therefore whose models it may offer. Nothing else
+  // durably records it: a run's snapshot is gone once the run is not active.
+  const store = freshStore();
+  const { turnId } = freshTurn(store, { agent: "codex" });
+  finishTurn(store, turnId, { endedTs: 20, status: "ok" });
+
+  expect(taskTurnsForTask(store, "t_1")[0]!.agent).toBe("codex");
+});
+
+it("gives each turn its own session's agent, never the Task's first", () => {
+  // A Task can be worked on by more than one agent over its life — the
+  // second session is a different conversation, and the transcript has to
+  // say so. This is what reading the agent off the session buys: a copy
+  // stamped per turn could be written once and then describe every turn
+  // after it.
+  const store = freshStore();
+  const first = freshTurn(store, { agent: "claude" });
+  finishTurn(store, first.turnId, { endedTs: 20, status: "ok" });
+  const second = freshTurn(store, { agent: "codex" });
+  finishTurn(store, second.turnId, { endedTs: 30, status: "ok" });
+
+  expect(taskTurnsForTask(store, "t_1").map((t) => t.agent)).toEqual(["claude", "codex"]);
+});
+
 it("keeps a Task working while a sibling turn is still outstanding", () => {
   // A turn settling does not mean the Task is waiting on a person: a
   // researcher who typed ahead has more turns queued behind this one, and a

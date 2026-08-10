@@ -347,6 +347,20 @@ export interface TaskTurn {
   ts: number;
   /** The researcher's prompt for this turn. */
   prompt: string;
+  /**
+   * The agent this turn actually ran on — an `AgentCli.id`, and the
+   * implementation's own resolution of it rather than whatever the caller
+   * asked for: a caller may name no agent at all, and a lab may hold several
+   * machines offering the same one.
+   *
+   * A Task is one continuous conversation with one agent, so the newest
+   * turn's answer is what the next turn has to go to and what the composer
+   * must offer models for. `resumeRuns` cannot supply that — it answers only
+   * for runs still active — which leaves a settled turn as the one place the
+   * fact survives a reload. Absent on turns recorded before this field
+   * existed.
+   */
+  agent?: string;
   /** The assistant's prose replies for this turn, in arrival order. */
   messages: string[];
   /**

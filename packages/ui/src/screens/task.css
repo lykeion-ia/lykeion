@@ -34,6 +34,13 @@
   min-height: 0;
 }
 
+/* `hidden` is a UA rule, and `display: flex` above outranks it. Focusing the
+   inspector hides this column, so the attribute has to be honoured explicitly
+   or the conversation stays on screen underneath the pane that replaced it. */
+.task-main[hidden] {
+  display: none;
+}
+
 .task-main-body {
   flex: 1;
   min-height: 0;
@@ -207,7 +214,22 @@
   flex-direction: column;
   gap: 12px;
   padding-block: 4px 12px;
-  border-bottom: 1px solid var(--hairline);
+}
+
+/* The seam belongs BETWEEN two concurrent runs, so it is drawn by the second
+   one rather than under every one. Under the last block it ruled off nothing:
+   it sat directly beneath the run line ("Planning…") and read as a border on
+   the composer rather than a boundary between turns.
+
+   `:not(:last-child)` would not do — reviewer findings render into this same
+   column after the transcript, so the last live turn is not reliably the last
+   child, and the stray rule would come back exactly when there is most on
+   screen to misread it. */
+.live-turn + .live-turn {
+  border-top: 1px solid var(--hairline);
+  /* Matches the 12px below the block above, so the seam sits centred between
+     two runs rather than crowding the lower one. */
+  padding-block-start: 12px;
 }
 
 .live-turn-head {
@@ -3145,9 +3167,12 @@ button.run-strip-notebook:hover {
   transform: rotate(180deg);
 }
 
+/* Drops BELOW the pill — the composer it hangs off sits in the page, so the
+   room is underneath and the menu opens the way its chevron points. The one
+   place that isn't true is the docked composer, overridden below. */
 .cli-menu {
   position: absolute;
-  bottom: calc(100% + 8px);
+  top: calc(100% + 8px);
   right: 0;
   width: 264px;
   max-height: min(52vh, 320px);
@@ -3158,6 +3183,15 @@ button.run-strip-notebook:hover {
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
   padding: 5px;
   z-index: 60;
+}
+
+/* The docked composer is pinned to the bottom of the pane: there is no room
+   under it, so its menu keeps opening upward. Dropping down there would put
+   the list off the bottom of the window, where no scroll reaches it. */
+.composer-card--docked .cli-menu {
+  top: auto;
+  bottom: calc(100% + 8px);
+  box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.6);
 }
 
 .cli-menu-head {
@@ -3484,6 +3518,15 @@ pre.code-block-pre {
   font-weight: 550;
 }
 
+/* The pane's own controls — widen, close — sit together at the far right of
+   its header, which is the edge of the screen whenever the pane is open. The
+   spacer is what puts them there, so close no longer escapes the tabs on a
+   margin of its own; that would have left the widen button stranded beside
+   them. */
+.rightpane-tabs-gap {
+  flex: 1 1 auto;
+}
+
 .rightpane-close {
-  margin-left: auto;
+  margin-left: 0;
 }

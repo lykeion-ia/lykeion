@@ -109,6 +109,20 @@ export function adapterEnvFor(agent: string): Record<string, string> {
   return {};
 }
 
+/**
+ * Whether this agent's thought channel is carried at all.
+ *
+ * Codex's is not. Dropped at the source rather than hidden where it renders,
+ * so that the turn in flight and the same turn reopened later agree: a thought
+ * suppressed at render would still have streamed to whoever had the page open
+ * while it ran, and would still sit in the recovery snapshot a reload reads.
+ * Nothing else about the turn changes — the prose either side of a dropped
+ * thought arrives as it always did.
+ */
+export function carriesThinking(agent: string): boolean {
+  return agent !== "codex";
+}
+
 export interface LiveSession {
   /**
    * Starts one turn. Callers serialise turns themselves: wait for a turn's
@@ -611,6 +625,10 @@ export async function startSession(options: {
         return;
       }
       case "agent_thought_chunk": {
+        // An agent whose thought channel this machine does not carry is left
+        // exactly where it was — `lastVisibleUpdate` too, so a thought cannot
+        // be what a later update is ordered against.
+        if (!carriesThinking(options.agent)) return;
         const chunk = (update.content as { text?: string })?.text ?? "";
         thinking += chunk;
         lastVisibleUpdate = "thought";

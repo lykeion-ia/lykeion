@@ -333,199 +333,52 @@
   }
 }
 
-.nbp-console-dock {
-  --notebook-console-height: 128px;
-  height: var(--notebook-console-height);
-  flex: 0 0 var(--notebook-console-height);
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-}
-
-.nbp-console-separator {
-  height: 8px;
-  margin-top: -4px;
-  cursor: ns-resize;
-  flex: 0 0 auto;
-  touch-action: none;
-  outline: none;
-}
-
-.nbp-console-separator:focus-visible {
-  background: var(--accent);
-}
-
-.nbp-strip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 6px 0 12px;
-  height: 30px;
-  border-top: 1px solid var(--hairline);
-  background: var(--surface-2);
-  font-size: var(--type-micro);
-  color: var(--ink-tertiary);
-  flex: 0 0 auto;
-  min-width: 0;
-}
-
-.nbp-strip-lang,
-.nbp-strip-context,
-.nbp-strip-env {
-  flex: 0 0 auto;
-}
-
-.nbp-strip-lang { color: var(--ink-muted); }
-
-.nbp-strip-context,
-.nbp-strip-shared {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.nbp-strip-context { color: var(--ink-subtle); }
-
-.nbp-strip-env {
-  font-family: var(--font-mono);
-  color: var(--ink-tertiary);
-  background: var(--surface-3);
-  border-radius: 4px;
-  padding: 1px 5px;
-}
-
-.nbp-strip-state {
-  margin-left: auto;
-  flex: 0 0 auto;
-  text-transform: capitalize;
-  font-variant-numeric: tabular-nums;
-}
-
-.nbp-strip-state--running { color: var(--warn); }
-.nbp-strip-state--crashed { color: var(--danger); }
-.nbp-strip-state--idle { color: var(--success); }
-.nbp-strip--idle .nbp-strip-state { color: var(--ink-tertiary); }
-
-.nbp-strip-menu { position: relative; flex: 0 0 auto; }
-
-.nbp-strip-more {
-  appearance: none;
-  border: 1px solid transparent;
-  background: none;
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--type-meta);
-  line-height: 1;
-  color: var(--ink-tertiary);
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-}
-
-.nbp-strip-more:hover { color: var(--ink); background: var(--surface-3); }
-
-.nbp-strip-menulist {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 4px);
-  z-index: 20;
-  min-width: 190px;
-  display: flex;
-  flex-direction: column;
-  padding: 4px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--surface-3);
-  box-shadow: var(--shadow-pop);
-}
-
-.nbp-strip-menuitem {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  appearance: none;
-  border: 0;
-  background: none;
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--type-meta);
-  color: var(--ink);
-  text-align: left;
-  padding: 5px 8px;
-  border-radius: 6px;
-}
-
-.nbp-strip-menuitem:hover { background: var(--surface-4); }
-.nbp-strip-menunote { font-size: var(--type-micro); color: var(--ink-tertiary); }
-
-.nbp-repl {
-  padding: 8px 12px 10px;
-  border-top: 1px solid var(--hairline);
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.nbp-greeting {
-  margin: 0 0 6px;
-  font-size: var(--type-micro);
-  color: var(--ink-tertiary);
-  line-height: 1.45;
-}
-
-.nbp-prompt { display: flex; align-items: flex-start; gap: 8px; }
-
-.nbp-caret {
-  font-family: var(--font-mono);
-  font-size: var(--type-meta);
-  color: var(--ink-tertiary);
-  padding-top: 7px;
-  flex: 0 0 auto;
-}
-
-.nbp-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  resize: none;
-  min-height: 32px;
-  font-family: var(--font-mono);
-  font-size: var(--type-meta);
-  line-height: 1.4;
-  color: var(--ink);
-  background: var(--surface-1);
-  border: 1px solid var(--hairline);
-  border-radius: 7px;
-  padding: 6px 8px;
-}
-
-.nbp-input:disabled { opacity: 0.6; cursor: default; }
-
-.nbp-run {
-  appearance: none;
-  border: 1px solid var(--hairline);
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--type-meta);
-  color: var(--ink);
-  background: var(--surface-3);
-  height: 30px;
-  padding: 0 12px;
-  border-radius: 7px;
-  flex: 0 0 auto;
-}
-
-.nbp-run:hover:not(:disabled) { background: var(--surface-4); }
-.nbp-run:disabled { opacity: 0.45; cursor: default; }
-.nbp-run--stop { color: var(--warn); }
-
 .nbp-repl-error {
   margin: 0 0 6px;
   font-size: var(--type-micro);
   color: var(--danger);
   font-family: var(--font-mono);
   white-space: pre-wrap;
+}
+
+/* The one line under the ledger. Deliberately quiet — it is read once, when a
+   reader wonders what held the cells above, and never again. */
+.nbp-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border-top: 1px solid var(--hairline);
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
+}
+
+.nbp-status-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nbp-status-state--running { color: var(--warn); }
+.nbp-status-state--crashed { color: var(--danger); }
+.nbp-status-state--idle { color: var(--success); }
+
+.nbp-status-action {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink-subtle);
+  padding: 0;
+}
+
+.nbp-status-action:hover { color: var(--ink); }
+
+.nbp-status-count {
+  font-variant-numeric: tabular-nums;
 }
 
 .nbp-setup {

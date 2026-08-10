@@ -305,6 +305,11 @@ export function fixtureArtifacts(): Record<string, ArtifactBlob> {
 /** A fixed timestamp base so seed data is deterministic (2026-07-01). */
 const T0 = 1_782_000_000;
 
+/** What ran a turn when no lab did. This core answers turns itself, and
+ *  naming the simulation is better than leaving the field empty and letting
+ *  a reader take the absence for a turn that predates the field. */
+const SIMULATED_AGENT = "simulated";
+
 /**
  * The two people every seed starts from. A lab always has an owner; the
  * second member exists so that assignment, mentions and attribution have
@@ -1054,7 +1059,12 @@ export function createInMemoryLab(
     status: "ok" | "failed",
     run: RunRecord | undefined,
     messages: string[],
-    meta?: { parentRunId?: string; subagent?: string; sequence?: number },
+    meta?: {
+      parentRunId?: string;
+      subagent?: string;
+      sequence?: number;
+      agent?: string;
+    },
   ) => {
     const task = tasks.find((t) => t.id === input.taskId);
     if (!task) return;
@@ -1098,6 +1108,10 @@ export function createInMemoryLab(
         turn.status ?? "ok",
         undefined,
         turn.messages,
+        // The same agent the run path names when no lab named one. A seeded
+        // turn that carried no agent would be the one turn in the store whose
+        // Task could not say what it had been talking to.
+        { agent: SIMULATED_AGENT },
       );
     }
   }
@@ -1541,6 +1555,11 @@ export function createInMemoryLab(
         startingTask.updatedTs = tick();
       }
       const sequence = nextTurnSequence(input.taskId);
+      // Resolved once, and read by both the live snapshot and the turn this
+      // run eventually lands, so the two can never disagree about what ran.
+      // A core with no lab behind it has no CLI to name, and "simulated" is
+      // the honest name for what answered instead of one.
+      const agent = input.options.agent ?? SIMULATED_AGENT;
       let handle: SimulatedRun;
       const onComplete = (
         status: "ok" | "failed",
@@ -1560,7 +1579,7 @@ export function createInMemoryLab(
             task.updatedTs = tick();
           }
         }
-        appendTurn(input, status, run, messages, { sequence });
+        appendTurn(input, status, run, messages, { sequence, agent });
         activeRuns.delete(handle.runId);
       };
       let active: {
@@ -1712,7 +1731,7 @@ export function createInMemoryLab(
           runId: handle.runId,
           sequence,
           prompt: input.prompt,
-          agent: input.options.agent ?? "simulated",
+          agent,
           state: { state: "planning" },
           stream: [],
           live: {},
@@ -1857,6 +1876,7 @@ export function createInMemoryLab(
           parentRunId: input.parentRunId,
           subagent: input.persona.name,
           sequence,
+          agent: input.options.agent ?? SIMULATED_AGENT,
         });
         delegatedSequences.delete(handle.runId);
       };

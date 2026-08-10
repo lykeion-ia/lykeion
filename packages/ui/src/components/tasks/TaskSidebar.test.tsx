@@ -74,7 +74,13 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>, row: string) {
 }
 
 describe("TaskSidebar row actions", () => {
-  it("deletes a Task via the kebab menu", async () => {
+  /**
+   * The row names the Task and stops there. Confirming belongs to the screen
+   * above it, and not by preference: `ActionMenu` closes on select, so a
+   * dialog raised from inside the menu would unmount with the menu that
+   * raised it. See `TaskScreen.delete.test.tsx` for the confirmation itself.
+   */
+  it("asks the screen to delete a Task, and leaves the confirming to it", async () => {
     const user = userEvent.setup();
     const onDeleteTask = vi.fn();
     renderSidebar({ onDeleteTask });

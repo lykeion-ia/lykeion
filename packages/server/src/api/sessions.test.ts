@@ -626,6 +626,9 @@ it("reopens a completed turn with prose and execution steps in their durable arr
       sequence: lab.store.get(`SELECT seq FROM turns WHERE id = ?`, [runId])!.seq,
       ts: 1_800_000_000,
       prompt: "inspect counts",
+      // The agent the run resolved to, read back off the session it opened —
+      // this is the whole-object proof that it survives the wire.
+      agent: "claude",
       messages: ["Before the read.After the read."],
       stream: [
         { kind: "text", text: "Before the read.", block: "interim" },

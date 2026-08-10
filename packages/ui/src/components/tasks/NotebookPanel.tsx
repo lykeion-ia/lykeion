@@ -8,7 +8,7 @@ import type {
 import { useApi } from "../../api/ApiContext";
 import { CloseIcon, NotebookIcon } from "../icons";
 import { NotebookAxis } from "./NotebookAxis";
-import { NotebookConsoleDock } from "./NotebookConsoleDock";
+import { NotebookStatusBar } from "./NotebookStatusBar";
 import { NotebookLedger } from "./NotebookLedger";
 import {
   buildNotebookContexts,
@@ -68,10 +68,10 @@ function NotebookPanelForTask({
   const [activeEnv, setActiveEnv] = useState<string | null>(null);
   const [activeName, setActiveName] = useState<string | null>(null);
   const [activeLang, setActiveLang] = useState<Language | null>(null);
-  const [repl, setRepl] = useState("");
-  const [autoOpenCellId, setAutoOpenCellId] = useState<string | null>(null);
-  const [replBusy, setReplBusy] = useState(false);
-  const [replError, setReplError] = useState<string | null>(null);
+  /** Why the last Interrupt or Restart did not happen. Kept visible rather
+   *  than swallowed: those are the two controls on this surface that act, and
+   *  one that silently fails reads as one that did nothing. */
+  const [kernelError, setKernelError] = useState<string | null>(null);
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupError, setSetupError] = useState<string | null>(null);
   const [setupLog, setSetupLog] = useState<string[]>([]);
@@ -187,18 +187,6 @@ function NotebookPanelForTask({
   const shownLang = activeLang ?? selectedKernel?.language ?? languages[0] ?? null;
   const cellsToShow = selectedContext?.cells ?? [];
 
-  // Freshness is a one-shot instruction. The matching CellView has already
-  // initialized open in this commit; consuming the id keeps a later unmount
-  // and remount from overriding the researcher's manual disclosure choice.
-  useEffect(() => {
-    if (
-      autoOpenCellId !== null &&
-      cellsToShow.some((cell) => cell.id === autoOpenCellId)
-    ) {
-      setAutoOpenCellId(null);
-    }
-  }, [autoOpenCellId, cellsToShow]);
-
   const runSetup = useCallback(async () => {
     setSetupBusy(true);
     setSetupError(null);
@@ -226,42 +214,25 @@ function NotebookPanelForTask({
   // behind a button that provisions an environment none of them is in.
   const needsSetup = envStatus !== null && envStatus.state !== "ready";
 
-  const runCell = useCallback(async () => {
-    const code = repl.trim();
-    if (!code || replBusy || !selectedKernel) return;
-    setReplBusy(true);
-    setReplError(null);
-    try {
-      // Returns only the id the cell will be recorded under — the executed
-      // cell itself arrives on the next `taskNotebook` poll, the same way an
-      // agent's does.
-      const result = await api.kernelExecute(selectedKernel.id, code);
-      setAutoOpenCellId(result.cellId);
-      setRepl("");
-    } catch (e) {
-      setReplError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setReplBusy(false);
-    }
-  }, [api, repl, replBusy, selectedKernel]);
-
   const restart = useCallback(async () => {
     if (!selectedKernel) return;
+    setKernelError(null);
     try {
       await api.kernelRestart(selectedKernel.id);
       await refreshKernels();
     } catch (e) {
-      setReplError(e instanceof Error ? e.message : String(e));
+      setKernelError(e instanceof Error ? e.message : String(e));
     }
   }, [api, selectedKernel, refreshKernels]);
 
   const interrupt = useCallback(async () => {
     if (!selectedKernel) return;
+    setKernelError(null);
     try {
       await api.kernelInterrupt(selectedKernel.id);
       await refreshKernels();
     } catch (e) {
-      setReplError(e instanceof Error ? e.message : String(e));
+      setKernelError(e instanceof Error ? e.message : String(e));
     }
   }, [api, selectedKernel, refreshKernels]);
 
@@ -301,7 +272,11 @@ function NotebookPanelForTask({
         cells={cellsToShow}
         loading={!cellsLoaded}
         warning={cellsWarning}
-        autoOpenCellId={autoOpenCellId}
+        // Nothing on this surface runs a cell any more, so there is never one
+        // freshly executed to open. The ledger keeps the capability — a cell
+        // that failed still opens itself — and this is simply no longer a
+        // caller of it.
+        autoOpenCellId={null}
         contextLabel={selectedContext ? contextLabel(selectedContext.name) : null}
         writable={selectedKernel !== undefined}
       />
@@ -324,15 +299,16 @@ function NotebookPanelForTask({
         </p>
       )}
 
-      <NotebookConsoleDock
+      {kernelError && (
+        <p className="nbp-warning" role="alert">
+          {kernelError}
+        </p>
+      )}
+
+      <NotebookStatusBar
         kernel={selectedKernel}
         language={shownLang}
-        contextName={selectedContext?.name ?? null}
-        code={repl}
-        busy={replBusy}
-        error={replError}
-        onCodeChange={setRepl}
-        onRun={() => void runCell()}
+        cellCount={cellsToShow.length}
         onInterrupt={() => void interrupt()}
         onRestart={() => void restart()}
       />

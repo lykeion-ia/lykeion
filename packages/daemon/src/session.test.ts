@@ -163,6 +163,26 @@ it("carries thinking on its own channel, never glued to prose", async () => {
   expect(events.filter((e) => e.event === "assistant-text-final")).toHaveLength(1);
 });
 
+it("drops Codex's thought chunks, on the live channel and the transcript alike", async () => {
+  const { s, events } = await session(
+    [
+      { emit: "agent_thought_chunk", text: "weighing it up" },
+      { emit: "agent_message_chunk", text: "done" },
+    ],
+    [],
+    { agent: "codex" },
+  );
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(events.filter((e) => e.event === "assistant-thought")).toEqual([]);
+  const live = events.filter((e) => e.event === "live") as Array<{ live: { thinking?: string } }>;
+  expect(live.every((e) => e.live.thinking === undefined)).toBe(true);
+  // The prose either side of it is untouched: what is dropped is the thought
+  // channel, not the turn.
+  const prose = events.filter((e) => e.event === "assistant-text") as Array<{ text: string }>;
+  expect(prose.map((p) => p.text).join("")).toBe("done");
+});
+
 it("joins a cell to the kernel call whose input is the cell's source, at most once", async () => {
   const { s, events } = await session([
     {
