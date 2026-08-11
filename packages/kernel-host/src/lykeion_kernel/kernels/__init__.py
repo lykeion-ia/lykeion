@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -20,3 +21,28 @@ class KernelIdentity:
     task_id: str
     name: str
     language: str
+
+
+class Kernel(Protocol):
+    """What the registry holds, whatever language is behind it.
+
+    Written down rather than introduced: `PythonKernel` satisfies every member
+    of this today and the registry already calls exactly these. What it buys is
+    a second implementation that cannot quietly differ from the first.
+    """
+
+    @property
+    def pid(self) -> int: ...
+
+    @property
+    def start_token(self) -> str: ...
+
+    def alive(self) -> bool: ...
+
+    def execute(self, source: str) -> dict[str, Any]: ...
+
+    def interrupt(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+    def stderr_tail(self) -> str: ...

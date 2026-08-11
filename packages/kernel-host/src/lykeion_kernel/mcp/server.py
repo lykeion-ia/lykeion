@@ -1,9 +1,12 @@
-"""The two tools this machine publishes, and the kernel they run in.
+"""The tools this machine publishes, and the kernels they run in.
 
-Both are bound to one `Reach` when the server is built — the kernel, and who
-is running the cell — so neither tool takes a kernel as an argument. That is
-the whole of what keeps an agent inside the namespace it was given: there is
-no field on either tool that names one.
+One runner per language this machine can start a kernel in, and the shell — so
+a machine with R publishes three and a machine without it two.
+
+Every one of them is bound to one `Reach` when the server is built — the
+context, the Task, and who is running the cell — so no tool takes a kernel as
+an argument. That is the whole of what keeps an agent inside the namespaces it
+was given: there is no field on any tool that names one.
 
 A tool answers with the cell, twice over. The structured half is the record
 the lab keeps; the text half is what the agent reads, which is the cell's own
@@ -14,7 +17,7 @@ keeps and the record the agent's transcript keeps name the same event.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import asyncio
@@ -32,10 +35,12 @@ SHELL = "/bin/sh"
 
 @dataclass(frozen=True)
 class Reach:
-    """One kernel, and who is reaching it.
+    """One context's kernels, and who is reaching them.
 
     Everything a tool needs beyond the code itself, decided by the daemon and
-    fixed before the agent's first message is read.
+    fixed before the agent's first message is read. The identity's language is
+    the one an unaddressed call would run in; each tool names its own, because
+    a context owns one kernel per language it writes.
     """
 
     registry: Registry
@@ -100,34 +105,61 @@ def _answer(cell: dict[str, Any]) -> types.CallToolResult:
     )
 
 
-TOOLS = [
-    types.Tool(
-        name="execute_python_cell",
-        title="Execute Python cell",
-        description=(
-            "Run Python in this Task's kernel. The namespace is held open between "
-            "calls, so a name bound by one call is still bound in the next."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {"code": {"type": "string", "description": "The Python to run."}},
-            "required": ["code"],
-        },
+EXECUTE_PYTHON_CELL = types.Tool(
+    name="execute_python_cell",
+    title="Execute Python cell",
+    description=(
+        "Run Python in this Task's kernel. The namespace is held open between "
+        "calls, so a name bound by one call is still bound in the next."
     ),
-    types.Tool(
-        name="execute_shell_cell",
-        title="Execute shell cell",
-        description=(
-            "Run one shell command inside the same boundary as this Task's kernel, "
-            "in the Task's own directory. Its output comes back as the cell's output."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {"command": {"type": "string", "description": "The command to run."}},
-            "required": ["command"],
-        },
+    inputSchema={
+        "type": "object",
+        "properties": {"code": {"type": "string", "description": "The Python to run."}},
+        "required": ["code"],
+    },
+)
+
+EXECUTE_R_CELL = types.Tool(
+    name="execute_r_cell",
+    title="Execute R cell",
+    description=(
+        "Run R in this Task's R kernel. The namespace is held open between "
+        "calls, so a name bound by one call is still bound in the next."
     ),
-]
+    inputSchema={
+        "type": "object",
+        "properties": {"code": {"type": "string", "description": "The R to run."}},
+        "required": ["code"],
+    },
+)
+
+EXECUTE_SHELL_CELL = types.Tool(
+    name="execute_shell_cell",
+    title="Execute shell cell",
+    description=(
+        "Run one shell command inside the same boundary as this Task's kernel, "
+        "in the Task's own directory. Its output comes back as the cell's output."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {"command": {"type": "string", "description": "The command to run."}},
+        "required": ["command"],
+    },
+)
+
+# The one place a language and the tool that runs it are written down together,
+# so "can be started" and "is published" cannot drift apart: a language with no
+# row here is one no agent is ever offered a way to reach.
+_BY_LANGUAGE = {"python": EXECUTE_PYTHON_CELL, "r": EXECUTE_R_CELL}
+
+
+def tools_for(languages: tuple[str, ...]) -> list[types.Tool]:
+    """What this machine publishes: one runner per language it can start a
+    kernel in, and the shell. A machine with no R publishes no
+    `execute_r_cell`."""
+    return [_BY_LANGUAGE[language] for language in languages if language in _BY_LANGUAGE] + [
+        EXECUTE_SHELL_CELL
+    ]
 
 
 def _text(arguments: dict[str, Any] | None, key: str) -> str:
@@ -178,26 +210,44 @@ def cell_for(reach: Reach, source: str, tool_use_id: str | None) -> dict[str, An
 
 def server_for(reach: Reach) -> Server[Any]:
     """The MCP server one connection is answered by."""
+    # Settled when the connection is answered rather than per call: what this
+    # machine can run was resolved once, when the host started, and a set built
+    # on every call would be the same set every time.
+    published = tools_for(tuple(runnable.language for runnable in reach.registry.runnables))
+    named = {tool.name for tool in published}
+    runners = {tool.name: language for language, tool in _BY_LANGUAGE.items()}
 
     async def on_list_tools(
         _ctx: Any, _params: types.PaginatedRequestParams | None
     ) -> types.ListToolsResult:
-        return types.ListToolsResult(tools=TOOLS)
+        return types.ListToolsResult(tools=published)
 
     async def on_call_tool(
         _ctx: Any, params: types.CallToolRequestParams
     ) -> types.CallToolResult:
+        if params.name not in named:
+            raise ValueError(f"this machine publishes no tool named {params.name}")
+        # Which language a call runs in is the tool's own name. A model picks
+        # it the way it picks any tool and there is no enum it can get wrong —
+        # a wrong enum would mint a real cell in the wrong namespace, with a
+        # syntax error as its output. The shell runs in the Python kernel,
+        # inside the same boundary and the same Task directory.
+        if params.name == "execute_shell_cell":
+            source = shell_source(_text(params.arguments, "command"))
+            language = "python"
+        else:
+            source = _text(params.arguments, "code")
+            language = runners[params.name]
+        identity = replace(reach.identity, language=language)
+        tool_use_id = tool_use_id_from(getattr(params, "meta", None))
         # Off the loop, because a cell holds whatever is running it for as
         # long as it runs. Run here, this connection could not answer a ping
         # or a cancellation for the length of a researcher's slowest cell.
-        if params.name == "execute_python_cell":
-            source = _text(params.arguments, "code")
-        elif params.name == "execute_shell_cell":
-            source = shell_source(_text(params.arguments, "command"))
-        else:
-            raise ValueError(f"this machine publishes no tool named {params.name}")
-        tool_use_id = tool_use_id_from(getattr(params, "meta", None))
-        return _answer(await asyncio.to_thread(cell_for, reach, source, tool_use_id))
+        return _answer(
+            await asyncio.to_thread(
+                cell_for, replace(reach, identity=identity), source, tool_use_id
+            )
+        )
 
     return Server(
         "notebook",

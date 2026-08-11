@@ -30,3 +30,6 @@ packages = ["src/lykeion_kernel"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests that need a real interpreter this machine may not have. Marked rather
+# than skipped by a local condition, so a run can select or exclude them.
+markers = ["integration: needs an interpreter installed on the machine running it"]

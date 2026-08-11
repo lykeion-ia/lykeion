@@ -17,6 +17,7 @@ from pathlib import Path
 
 from lykeion_kernel.host import serve
 from lykeion_kernel.kernels.python import DRIVER
+from lykeion_kernel.registry import Registry
 
 
 def test_answers_the_bytes_the_daemon_actually_sends():
@@ -26,7 +27,7 @@ def test_answers_the_bytes_the_daemon_actually_sends():
     serve(stdin, stdout)
     reply = json.loads(stdout.getvalue().strip())
     assert reply["id"] == 1
-    assert reply["result"]["protocol"] == 1
+    assert reply["result"]["protocol"] == 2
 
 
 def test_answers_the_compact_bytes_the_daemon_writes_with_no_spaces():
@@ -37,20 +38,24 @@ def test_answers_the_compact_bytes_the_daemon_writes_with_no_spaces():
     serve(stdin, stdout)
     reply = json.loads(stdout.getvalue().strip())
     assert reply["id"] == 2
-    assert reply["result"]["protocol"] == 1
+    assert reply["result"]["protocol"] == 2
 
 
-def test_says_what_a_kernel_of_this_machine_has_to_be_able_to_read():
-    # The daemon renders the boundary and cannot work any of this out. A host
-    # that named nothing here would have every kernel refused by the operating
-    # system before its first instruction, with nothing said about why.
+def test_the_greeting_names_one_descriptor_per_language_this_machine_runs():
+    holding = Registry(["/usr/bin/env"])
     stdin = io.StringIO('{"id":4,"method":"host.hello","params":{}}\n')
     stdout = io.StringIO()
-    serve(stdin, stdout)
-    result = json.loads(stdout.getvalue().strip())["result"]
-    assert result["environment"] == "python"
-    assert result["interpreter"] in result["reads"]
-    assert str(Path(DRIVER).parent) in result["reads"]
+    serve(stdin, stdout, holding)
+    result = json.loads(stdout.getvalue())["result"]
+    assert result["protocol"] == 2
+    python = next(d for d in result["languages"] if d["language"] == "python")
+    assert python["environment"] == "python"
+    assert str(Path(DRIVER).parent) in python["reads"]
+    # The singulars are gone rather than kept alongside. A field nothing
+    # renders is one the next reader has to work out is dead.
+    assert "environment" not in result
+    assert "reads" not in result
+    assert "interpreter" not in result
 
 
 def test_a_failed_call_comes_back_shaped_the_way_the_daemon_reads_one():

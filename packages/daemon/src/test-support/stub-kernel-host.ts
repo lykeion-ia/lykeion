@@ -17,8 +17,10 @@
  * request ever arrives again. The daemon's own end of the pipe learns this
  * asynchronously, on its own clock, not the instant this runs.
  * Any request not named by `--die-on` is answered: `host.hello` with
- * `{protocol: 1}`, anything else with an error, the same split the real
- * host draws between a known method and an unknown one.
+ * `{protocol: 2, languages: [...]}`, anything else with an error, the same
+ * split the real host draws between a known method and an unknown one.
+ * `--languages <a,b>` names the descriptors `host.hello` reports, one per
+ * language named, comma-separated and defaulting to `python` alone.
  *
  * `LYKEION_STUB_EXIT_MARKER`, when set, is appended to with this process's
  * pid the moment SIGTERM arrives — the one way a test can tell a process it
@@ -42,6 +44,10 @@ const announce = announceIndex === -1 ? undefined : args[announceIndex + 1];
 const splitHello = args.includes("--split-hello");
 const closeStdinOnIndex = args.indexOf("--close-stdin-on");
 const closeStdinOn = closeStdinOnIndex === -1 ? undefined : args[closeStdinOnIndex + 1];
+const languagesIndex = args.indexOf("--languages");
+const languages = (languagesIndex === -1 ? "python" : (args[languagesIndex + 1] ?? ""))
+  .split(",")
+  .filter(Boolean);
 
 // Reading stdin is otherwise the only handle keeping this process's own
 // event loop open, so a run that is going to destroy it needs something
@@ -62,7 +68,17 @@ input.on("line", (line) => {
   if (message.method !== undefined && message.method === dieOn) process.exit(1);
   if (message.id === undefined) return;
   if (message.method === "host.hello") {
-    const reply = `${JSON.stringify({ id: message.id, result: { protocol: 1 } })}\n`;
+    const reply = `${JSON.stringify({
+      id: message.id,
+      result: {
+        protocol: 2,
+        languages: languages.map((language) => ({
+          language,
+          environment: language,
+          reads: [],
+        })),
+      },
+    })}\n`;
     if (splitHello) {
       const cut = Math.floor(reply.length / 2);
       process.stdout.write(reply.slice(0, cut));

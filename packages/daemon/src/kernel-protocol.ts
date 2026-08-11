@@ -12,7 +12,7 @@ export type HostMessage =
   | { id: number; error: { message: string } }
   | { method: string; params: unknown };
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** Whether this is an answer to something, rather than an announcement. */
 export function isReply(message: HostMessage): message is

@@ -11,6 +11,7 @@ import {
 } from "@lykeion/api";
 import { ApiProvider } from "../../api/ApiContext";
 import { NotebookPanel as NotebookPanelUnderTest } from "./NotebookPanel";
+import recordedRCell from "./__fixtures__/r-cell.json";
 
 function NotebookPanel(
   props: Omit<ComponentProps<typeof NotebookPanelUnderTest>, "sessionLabel">,
@@ -603,6 +604,33 @@ it("keeps a language whose kernel has gone, and says nothing holds it", async ()
   expect(status).toHaveTextContent(/^R/);
   expect(status).toHaveTextContent(/view only — nothing is holding that namespace now/);
   expect(screen.queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
+});
+
+it("shows the R chip and the R cell from output a real R kernel produced", async () => {
+  const recorded = recordedRCell as unknown as NotebookCell;
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    taskNotebook: async () => [{ ...recorded, id: "cell_recorded", name: "main" }],
+    listRunningKernels: async () => [
+      kernel({ taskId: "task_r", name: "main", language: "python", state: "idle" }),
+      kernel({ taskId: "task_r", name: "main", language: "r", state: "idle" }),
+    ],
+  };
+  const { container } = render(
+    <ApiProvider api={api}><NotebookPanel taskId="task_r" /></ApiProvider>,
+  );
+
+  const langs = await screen.findByTestId("notebook-langs");
+  expect(within(langs).getByRole("radio", { name: "R" })).toBeInTheDocument();
+  // The output the panel renders is the output the machine produced, not a
+  // shape written by hand to match what the panel already did. Read off the
+  // output region rather than the whole ledger: the cell's own source says
+  // "hi" as well, and an assertion that source alone satisfies would go green
+  // against a panel rendering no output at all.
+  await waitFor(() =>
+    expect(container.querySelector(".nbp-outputs")).toHaveTextContent(/hi/),
+  );
+  expect(container.querySelector(".nbp-outputs")).toHaveTextContent(/\[1\] 2/);
 });
 
 it("offers a way to end a cell while one is running", async () => {

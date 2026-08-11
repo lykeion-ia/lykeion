@@ -717,8 +717,7 @@ export function startRuns(options: {
       }
       const hello = (await host.call("host.hello", {})) as {
         protocol?: unknown;
-        environment?: string;
-        reads?: string[];
+        languages?: Array<{ language: string; environment: string; reads: string[] }>;
       };
       // Read rather than merely declared at both ends. The wire shapes below
       // are written twice, once here and once in the host, and this number is
@@ -729,13 +728,41 @@ export function startRuns(options: {
           `this machine's kernel host speaks protocol ${JSON.stringify(hello.protocol)} ` +
             `and this daemon speaks ${PROTOCOL_VERSION}`,
         );
-      const { prefix } = kernelConfinementFor({
-        platform: options.platform ?? process.platform,
-        workspace: cwd,
-        dataDir: options.dataDir,
-        grants,
-        reads: hello.reads ?? [],
-      });
+      // One boundary per language, not one shared. Each descriptor's reads
+      // render their own policy, so a kernel confined for one language is
+      // never reused for another.
+      //
+      // What a shared union would actually cost is narrower than it first
+      // looks, and worth writing down as measured rather than as assumed. On
+      // the common install, most of R's library tree is already reachable
+      // from a Python cell whatever this does: `SYSTEM_READ` grants `/opt`,
+      // and a Python kernel inside a real boundary lists
+      // /opt/homebrew/lib/R/4.6/site-library and reads
+      // /opt/homebrew/Cellar/r/4.6.1/lib/R/library/stats/DESCRIPTION today.
+      // Splitting the boundary does not take that away and was never going
+      // to.
+      //
+      // The entry it does separate is the one R puts under the researcher's
+      // own home — R_LIBS_USER, which is where install.packages() writes by
+      // default and therefore where a researcher's own packages, and
+      // whatever data sits beside them, actually live. That path is denied by
+      // default and reachable only because R's descriptor named it. Union the
+      // two and a Python cell inherits it; keep them apart and it does not.
+      // Measured both ways in sandbox.kernel.test.ts, against the operating
+      // system rather than against the profile text.
+      const prefixes: Record<string, string[]> = {};
+      const environments: Record<string, string> = {};
+      for (const descriptor of hello.languages ?? []) {
+        const { prefix } = kernelConfinementFor({
+          platform: options.platform ?? process.platform,
+          workspace: cwd,
+          dataDir: options.dataDir,
+          grants,
+          reads: descriptor.reads ?? [],
+        });
+        prefixes[descriptor.language] = prefix;
+        environments[descriptor.language] = descriptor.environment;
+      }
       // The directory the socket goes in, before the host is asked to bind
       // one inside it.
       ensureKernelSocketDir();
@@ -743,8 +770,8 @@ export function startRuns(options: {
         session_id: sessionId,
         task_id: taskId,
         workspace: cwd,
-        environment: hello.environment ?? "",
-        prefix,
+        prefixes,
+        environments,
         socket,
         token,
       });

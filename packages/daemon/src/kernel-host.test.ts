@@ -46,7 +46,10 @@ function stub(...args: string[]): KernelHost {
 
 it("asks the host what it is, and gets an answer", async () => {
   const host = stub();
-  await expect(host.call("host.hello", {})).resolves.toEqual({ protocol: 1 });
+  await expect(host.call("host.hello", {})).resolves.toEqual({
+    protocol: 2,
+    languages: [{ language: "python", environment: "python", reads: [] }],
+  });
   await host.stop();
 });
 
@@ -76,7 +79,10 @@ it("is not running once it has been stopped", async () => {
 
 it("reassembles a reply whose bytes arrive split across two chunks", async () => {
   const host = stub("--split-hello");
-  await expect(host.call("host.hello", {})).resolves.toEqual({ protocol: 1 });
+  await expect(host.call("host.hello", {})).resolves.toEqual({
+    protocol: 2,
+    languages: [{ language: "python", environment: "python", reads: [] }],
+  });
   await host.stop();
 });
 

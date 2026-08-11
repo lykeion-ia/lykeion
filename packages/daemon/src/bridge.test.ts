@@ -13,6 +13,7 @@ import {
   kernelSocketPath,
 } from "./kernels";
 import { readBridgeArguments } from "./bridge";
+import { PROTOCOL_VERSION } from "./kernel-protocol";
 import { confinementFor } from "./agent-home";
 import { canonicalPath, confine, policyFor, programLocation } from "./sandbox";
 
@@ -148,8 +149,12 @@ function speaking(relay: ChildProcess) {
         isError?: boolean;
       }>;
     },
-    tools(): Promise<{ tools: Array<{ name: string }> }> {
-      return ask("tools/list", {}) as Promise<{ tools: Array<{ name: string }> }>;
+    tools(): Promise<{
+      tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }>;
+    }> {
+      return ask("tools/list", {}) as Promise<{
+        tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }>;
+      }>;
     },
   };
 }
@@ -167,16 +172,29 @@ async function reachingAKernel() {
   });
   hosts.push(host);
   const hello = (await host.call("host.hello", {})) as {
-    environment: string;
-    reads: string[];
+    protocol: number;
+    languages: Array<{ language: string; environment: string; reads: string[] }>;
   };
-  const { prefix } = kernelConfinementFor({
-    platform: "darwin",
-    workspace,
-    dataDir,
-    grants: [],
-    reads: hello.reads,
-  });
+  // The one place the two constants meet with nothing stubbed between them.
+  // Each package declares this number for itself, and a bump that landed on one
+  // side and not the other is a daemon that refuses every host on the machine —
+  // into a console line rather than onto anything a suite reads, so a half-bump
+  // that nothing asserted here would ship green and take every Task's kernel
+  // tools with it.
+  expect(hello.protocol).toBe(PROTOCOL_VERSION);
+  const prefixes: Record<string, string[]> = {};
+  const environments: Record<string, string> = {};
+  for (const descriptor of hello.languages) {
+    const { prefix } = kernelConfinementFor({
+      platform: "darwin",
+      workspace,
+      dataDir,
+      grants: [],
+      reads: descriptor.reads,
+    });
+    prefixes[descriptor.language] = prefix;
+    environments[descriptor.language] = descriptor.environment;
+  }
   ensureKernelSocketDir();
   const token = kernelSessionToken();
   // Awaited, and the relay is started only afterwards. A cell arriving before
@@ -185,8 +203,8 @@ async function reachingAKernel() {
     session_id: "se_1",
     task_id: "tk_1",
     workspace,
-    environment: hello.environment,
-    prefix,
+    prefixes,
+    environments,
     socket: kernelSocketPath(workspace),
     token,
   });
@@ -213,7 +231,7 @@ async function reachingAKernel() {
   relays.push(relay);
   const agent = speaking(relay);
   await agent.open();
-  return { agent, workspace, host, token };
+  return { agent, workspace, host, token, hello };
 }
 
 onDarwin("carries a variable from one of an agent's tool calls to the next", async () => {
@@ -238,15 +256,42 @@ onDarwin("writes a cell that says which Task ran it and who ran it", async () =>
   expect(cell?.language).toBe("python");
 }, 120_000);
 
-onDarwin("publishes exactly the two tools, and neither of them names a kernel", async () => {
-  const { agent } = await reachingAKernel();
+onDarwin("publishes one runner per language and a shell, and neither names a kernel", async () => {
+  const { agent, hello } = await reachingAKernel();
 
   const published = await agent.tools();
 
-  expect(published.tools.map((tool) => tool.name).sort()).toEqual([
-    "execute_python_cell",
+  const expected = [
     "execute_shell_cell",
-  ]);
+    ...hello.languages.map((descriptor) => `execute_${descriptor.language}_cell`),
+  ];
+  expect(published.tools.map((tool) => tool.name).sort()).toEqual(expected.sort());
+  // The point of the test, unchanged: no tool has a field naming a kernel.
+  for (const tool of published.tools)
+    expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("kernel");
+}, 120_000);
+
+onDarwin("runs a real R cell through the tool this machine published for it", async (ctx) => {
+  // The whole of what this axis is for, with nothing stubbed: a real R
+  // descriptor, a real boundary rendered from the reads R itself named, a real
+  // Rscript behind it. Publishing the tool and being able to reach a namespace
+  // through it are two claims, and only the second one is worth anything.
+  const { agent, hello } = await reachingAKernel();
+  if (!hello.languages.some((descriptor) => descriptor.language === "r"))
+    ctx.skip("this machine has no Rscript, so it holds no R kernels");
+
+  const answer = await agent.call("execute_r_cell", { code: "kept <- 41\ncat(kept + 1)" });
+
+  const said = (answer.content ?? []).map((part) => part.text ?? "").join("");
+  expect(said).toContain("42");
+  // A cell that ran in R says so, and says which boundary it ran inside — R's
+  // own, not the one this Task's Python kernel was started in.
+  expect(answer.structuredContent?.cell?.language).toBe("r");
+  expect(answer.structuredContent?.cell?.environment).toBe("r");
+  // One namespace, held open between calls, reached without naming a kernel.
+  const next = await agent.call("execute_r_cell", { code: "cat(kept)" });
+  expect((next.content ?? []).map((part) => part.text ?? "").join("")).toContain("41");
+  expect(next.structuredContent?.cell?.kernelId).toBe(answer.structuredContent?.cell?.kernelId);
 }, 120_000);
 
 onDarwin("runs a cell inside the Task's own directory and nowhere else", async () => {

@@ -66,8 +66,8 @@ def confined(spoken, workspace: Path) -> None:
                 "session_id": IDENTITY["session_id"],
                 "task_id": IDENTITY["task_id"],
                 "workspace": str(workspace),
-                "environment": "python",
-                "prefix": ["/usr/bin/env"],
+                "prefixes": {"python": ["/usr/bin/env"]},
+                "environments": {"python": "python"},
             },
         }
     )
@@ -86,7 +86,7 @@ def test_a_second_request_is_answered_while_a_cell_is_still_running(spoken, tmp_
     spoken.send({"id": 2, "method": "host.hello", "params": {}})
     answered = spoken.until(lambda: spoken.reply(2), "the second request answered")
 
-    assert answered["result"]["protocol"] == 1
+    assert answered["result"]["protocol"] == 2
     # Answered while the first is still in flight, rather than after it.
     assert spoken.reply(1) is None
 

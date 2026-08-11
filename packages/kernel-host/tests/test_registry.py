@@ -41,8 +41,8 @@ def confine_session(
         session_id=session_id,
         task_id=task_id,
         workspace=workspace,
-        environment=environment,
-        prefix=["/usr/bin/env", f"{BOUNDARY}={says}"],
+        prefixes={"python": ["/usr/bin/env", f"{BOUNDARY}={says}"]},
+        environments={"python": environment},
     )
 
 
@@ -498,3 +498,59 @@ def test_a_host_that_is_stopping_leaves_no_kernel_running(registry, tmp_path):
     assert registry.list()[0]["state"] == "stopped"
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+def test_a_language_this_machine_cannot_run_is_refused_before_a_kernel_is_minted(registry):
+    # Named as a language nothing here has a launcher for, which is what this
+    # is about. R was the stand-in until this machine grew one, and a test that
+    # kept it would be asserting the refusal against a language that runs.
+    identity = KernelIdentity(session_id="ses_1", task_id="task_1", name="main", language="julia")
+    with pytest.raises(ValueError, match="no julia kernels"):
+        registry.arriving(identity)
+    # Refused where the entry would have been minted. An entry with no
+    # launcher behind it is a kernel `listRunningKernels` reports to the whole
+    # lab and no cell can ever run in.
+    assert registry.list() == []
+
+
+def test_it_is_refused_where_a_cell_runs_as_well_as_where_it_arrived(registry):
+    identity = KernelIdentity(session_id="ses_1", task_id="task_1", name="main", language="julia")
+    with pytest.raises(ValueError, match="no julia kernels"):
+        registry.execute(identity, "1", origin={"surface": "agent", "by": "claude"})
+    assert registry.list() == []
+
+
+def test_python_is_launched_through_the_table_and_still_runs(registry):
+    identity = KernelIdentity(session_id="ses_1", task_id="task_1", name="main", language="python")
+    cell = registry.execute(identity, "1 + 1", origin={"surface": "agent", "by": "claude"})
+    assert cell["ok"] is True
+    assert cell["language"] == "python"
+
+
+def test_a_cell_records_the_environment_its_own_language_was_confined_for(registry):
+    registry.configure_session(
+        session_id="ses_1",
+        task_id="task_1",
+        workspace=None,
+        prefixes={"python": ["/usr/bin/env"]},
+        environments={"python": "python-3.12"},
+    )
+    identity = KernelIdentity(session_id="ses_1", task_id="task_1", name="main", language="python")
+    cell = registry.execute(identity, "1", origin={"surface": "agent", "by": "claude"})
+    assert cell["environment"] == "python-3.12"
+
+
+def test_a_language_absent_from_the_prefix_map_is_never_launched(registry):
+    # The one new way the invariant — that no argument list reachable from
+    # this host puts an interpreter outside a boundary — could have been
+    # broken by making the prefix plural.
+    registry.configure_session(
+        session_id="ses_1",
+        task_id="task_1",
+        workspace=None,
+        prefixes={"r": ["/usr/bin/env"]},
+        environments={"r": "r"},
+    )
+    identity = KernelIdentity(session_id="ses_1", task_id="task_1", name="main", language="python")
+    with pytest.raises(ValueError, match="no confinement was supplied"):
+        registry.execute(identity, "1", origin={"surface": "agent", "by": "claude"})

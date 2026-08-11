@@ -32,7 +32,7 @@ def test_answers_hello_with_what_it_is():
 
     line = stdout.getvalue().strip()
     assert '"id": 1' in line
-    assert '"protocol": 1' in line
+    assert '"protocol": 2' in line
 
 
 def test_an_unknown_method_is_answered_rather_than_ignored():
@@ -58,8 +58,8 @@ def test_a_call_whose_params_are_not_an_object_is_answered_and_the_host_goes_on(
                 "session_id": "ses_1",
                 "task_id": "tk_1",
                 "workspace": str(tmp_path),
-                "environment": "python",
-                "prefix": ["/usr/bin/env"],
+                "prefixes": {"python": ["/usr/bin/env"]},
+                "environments": {"python": "python"},
             },
         }
     )
@@ -101,11 +101,13 @@ def test_a_notification_naming_an_unknown_method_is_not_answered_either():
 def test_a_handler_that_raises_is_answered_with_what_went_wrong():
     stdout = io.StringIO()
 
-    serve(request("kernel.execute", {**CELL, "language": "r", "source": "1"}, 9), stdout)
+    # A language nothing here has a launcher for. R was that until this machine
+    # grew one, and a handler asked for a language that runs raises nothing.
+    serve(request("kernel.execute", {**CELL, "language": "julia", "source": "1"}, 9), stdout)
 
     reply = replies(stdout)[0]
     assert reply["id"] == 9
-    assert "holds no r kernels" in reply["error"]["message"]
+    assert "holds no julia kernels" in reply["error"]["message"]
 
 
 def test_a_cell_missing_what_the_lab_records_of_it_is_refused():
@@ -132,7 +134,7 @@ def test_a_kernel_this_host_does_not_hold_is_named_back_rather_than_invented():
 def test_a_notification_whose_handler_raises_is_still_not_answered():
     stdout = io.StringIO()
 
-    serve(request("kernel.execute", {**CELL, "language": "r", "source": "1"}), stdout)
+    serve(request("kernel.execute", {**CELL, "language": "julia", "source": "1"}), stdout)
 
     assert stdout.getvalue() == ""
 
@@ -160,8 +162,10 @@ def test_a_session_the_daemon_confines_gets_its_boundary_and_starts_kernels_in_i
                 "session_id": "ses_1",
                 "task_id": "tk_1",
                 "workspace": str(tmp_path),
-                "environment": "python",
-                "prefix": ["/usr/bin/env", "LYKEION_BOUNDARY=what-the-daemon-rendered"],
+                "prefixes": {
+                    "python": ["/usr/bin/env", "LYKEION_BOUNDARY=what-the-daemon-rendered"]
+                },
+                "environments": {"python": "python"},
             },
         }
     )
@@ -189,21 +193,30 @@ def test_a_confinement_missing_what_it_is_made_of_is_refused():
         "session_id": "ses_1",
         "task_id": "tk_1",
         "workspace": "/w",
-        "environment": "python",
-        "prefix": [],
+        "prefixes": {"python": []},
+        "environments": {"python": "python"},
     }
-    for missing in ("session_id", "task_id", "workspace", "environment"):
+    for missing in ("session_id", "task_id", "workspace"):
         stdout = io.StringIO()
         params = {key: value for key, value in whole.items() if key != missing}
         serve(request("kernel.configure_session", params, 1), stdout)
         assert f"needs a {missing}" in replies(stdout)[0]["error"]["message"]
 
-    # A boundary is an argument list, and anything else is not one this host
-    # could concatenate an interpreter onto.
-    for prefix in ("--", [7], None):
+    # A boundary is one argument list per language, and anything else is not
+    # one this host could concatenate an interpreter onto.
+    for prefixes in ("--", {"python": [7]}, {"python": "not-a-list"}, None):
         stdout = io.StringIO()
-        serve(request("kernel.configure_session", {**whole, "prefix": prefix}, 1), stdout)
-        assert "list of arguments" in replies(stdout)[0]["error"]["message"]
+        serve(request("kernel.configure_session", {**whole, "prefixes": prefixes}, 1), stdout)
+        assert "one argument list per language" in replies(stdout)[0]["error"]["message"]
+
+    # An environment is one name per language, named the same way.
+    for environments in ("--", {"python": 7}, None):
+        stdout = io.StringIO()
+        serve(
+            request("kernel.configure_session", {**whole, "environments": environments}, 1),
+            stdout,
+        )
+        assert "environment is named once per language" in replies(stdout)[0]["error"]["message"]
 
 
 def test_the_host_says_which_kernels_it_is_holding():

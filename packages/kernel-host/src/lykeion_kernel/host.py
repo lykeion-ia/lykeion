@@ -29,19 +29,12 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from pathlib import Path
 from typing import Any, Callable, IO, NamedTuple
 
 from .kernels import KernelIdentity
-from .kernels.python import DRIVER
 from .mcp.endpoint import Endpoints
 from .protocol import PROTOCOL_VERSION, read_messages, write_message
-from .registry import DEFAULT_ENVIRONMENT, Place, Registry
-
-# Every language a kernel of this machine can be. Refused by name rather
-# than by starting a Python interpreter for it, which would run a
-# researcher's R and report a syntax error in their own code.
-LANGUAGES = ("python",)
+from .registry import Place, Registry
 
 # How long the calls still being answered are given, together, once the
 # stream has ended. Long enough for one that was about to finish to write
@@ -63,30 +56,17 @@ class Holding(NamedTuple):
 Handler = Callable[[Holding, dict[str, Any], Place | None], dict[str, Any]]
 
 
-def _reads(interpreter: str) -> list[str]:
-    """Every place a kernel of this machine has to be able to read in order to
-    start at all.
-
-    The daemon is the only thing that can express a boundary and it cannot
-    work any of this out: which interpreter `uv` resolved is a fact about this
-    process, and the file a kernel is told to run is a fact about this
-    package. So they are reported rather than guessed at.
-
-    Both prefixes are named because they are two places: the interpreter a
-    kernel is launched through is a link out of its environment, and a
-    boundary is written where the operating system will look, which is where
-    the link lands.
-    """
-    named = [interpreter, sys.prefix, sys.base_prefix, str(Path(DRIVER).parent)]
-    return list(dict.fromkeys(named))
-
-
 def _hello(holding: Holding, _params: dict[str, Any], _place: Place | None) -> dict[str, Any]:
     return {
         "protocol": PROTOCOL_VERSION,
-        "environment": DEFAULT_ENVIRONMENT,
-        "interpreter": holding.registry.interpreter,
-        "reads": _reads(holding.registry.interpreter),
+        "languages": [
+            {
+                "language": runnable.language,
+                "environment": runnable.environment,
+                "reads": list(runnable.reads),
+            }
+            for runnable in holding.registry.runnables
+        ],
     }
 
 
@@ -138,8 +118,8 @@ def _configure_session(
         session_id=_text(params, "session_id"),
         task_id=_text(params, "task_id"),
         workspace=workspace,
-        environment=_text(params, "environment"),
-        prefix=_prefix(params),
+        prefixes=_prefixes(params),
+        environments=_environments(params),
         token=token if isinstance(token, str) and token else None,
     )
     # After the session is known and never before it: the greeting a
@@ -189,25 +169,41 @@ def _text(params: dict[str, Any], key: str) -> str:
     return value
 
 
-def _prefix(params: dict[str, Any]) -> list[str]:
-    # An argument list and nothing else. Anything this process cannot
-    # concatenate an interpreter onto is refused where it arrived rather than
-    # where a kernel would fail to start.
-    prefix = params.get("prefix")
-    if not isinstance(prefix, list) or not all(isinstance(part, str) for part in prefix):
-        raise ValueError("a confinement is a list of arguments")
-    return list(prefix)
+def _prefixes(params: dict[str, Any]) -> dict[str, list[str]]:
+    # One argument list per language, and nothing else. Anything this process
+    # cannot concatenate an interpreter onto is refused where it arrived
+    # rather than where a kernel would fail to start.
+    prefixes = params.get("prefixes")
+    if not isinstance(prefixes, dict):
+        raise ValueError("a confinement is one argument list per language")
+    built: dict[str, list[str]] = {}
+    for language, prefix in prefixes.items():
+        if (
+            not isinstance(language, str)
+            or not isinstance(prefix, list)
+            or not all(isinstance(part, str) for part in prefix)
+        ):
+            raise ValueError("a confinement is one argument list per language")
+        built[language] = list(prefix)
+    return built
+
+
+def _environments(params: dict[str, Any]) -> dict[str, str]:
+    environments = params.get("environments")
+    if not isinstance(environments, dict) or not all(
+        isinstance(language, str) and isinstance(name, str)
+        for language, name in environments.items()
+    ):
+        raise ValueError("an environment is named once per language")
+    return dict(environments)
 
 
 def _identity(params: dict[str, Any]) -> KernelIdentity:
-    language = _text(params, "language")
-    if language not in LANGUAGES:
-        raise ValueError(f"this machine holds no {language} kernels")
     return KernelIdentity(
         session_id=_text(params, "session_id"),
         task_id=_text(params, "task_id"),
         name=_text(params, "name"),
-        language=language,
+        language=_text(params, "language"),
     )
 
 

@@ -12,7 +12,7 @@ import json
 import threading
 from typing import Any, IO, Iterator
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 # One writer at a time. Everything a host answers goes onto a single stream
 # the other end reads a line at a time, so two of them written together must

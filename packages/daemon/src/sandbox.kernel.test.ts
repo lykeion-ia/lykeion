@@ -521,4 +521,48 @@ onDarwin("a boundary around something that declared no home", () => {
     expect(key.stdout).not.toContain("AN ENVIRONMENTS STOWAWAY KEY");
     expect(key.code).not.toBe(0);
   });
+
+  it("keeps one language's library tree out of another language's boundary", async () => {
+    // Why runs.ts renders one boundary per language rather than one union of
+    // them, asked of the operating system rather than of the profile text.
+    //
+    // It is asked here because it cannot be asked from runs.ts's own suite,
+    // and the difference is not academic: a path absent from a profile is not
+    // thereby denied. `SYSTEM_READ` grants /opt, so on the common homebrew
+    // install a Python cell reads /opt/homebrew/lib/R/4.6/site-library and
+    // the whole of R's Cellar tree today, boundary or no boundary — measured
+    // on this machine, `ls` and a `cat` of stats/DESCRIPTION, both code 0. A
+    // test written against the profile's words would have gone green on that
+    // and called it confinement.
+    //
+    // The entry the split genuinely separates is the one R puts under the
+    // researcher's own home: R_LIBS_USER, where install.packages() writes,
+    // and therefore where a researcher's own packages and whatever sits
+    // beside them actually live. Stood in for below by a directory outside
+    // every grant, which is what a home path is to a kernel: the policy
+    // declares no home at all.
+    const home = fresh();
+    const library = join(home, "R", "arm64", "4.6", "library", "somepkg");
+    mkdirSync(library, { recursive: true });
+    writeFileSync(join(library, "DESCRIPTION"), "Package: somepkg\n");
+    const workspace = fresh();
+    const pythonEnv = fresh();
+
+    // R's own boundary, written from R's own reads, opens it.
+    const rs = await inside(
+      { workspace, readable: [join(home, "R")] },
+      `cat ${library}/DESCRIPTION`,
+    );
+    expect(rs.stdout).toContain("Package: somepkg");
+    expect(rs.code).toBe(0);
+
+    // Python's, written from Python's, does not — and would if the two were
+    // rendered from one union of their reads.
+    const pythons = await inside(
+      { workspace, readable: [pythonEnv] },
+      `cat ${library}/DESCRIPTION`,
+    );
+    expect(pythons.stdout).not.toContain("Package: somepkg");
+    expect(pythons.code).not.toBe(0);
+  });
 });

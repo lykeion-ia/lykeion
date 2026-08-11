@@ -30,6 +30,7 @@ import pytest
 from mcp.client.session import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 
+from lykeion_kernel.interpreters import runnables
 from lykeion_kernel.kernels import KernelIdentity
 from lykeion_kernel.mcp.endpoint import (
     Endpoints,
@@ -78,8 +79,8 @@ def mcp(registry: Registry, tmp_path) -> Iterator[Calling]:
         session_id="se_1",
         task_id="tk_1",
         workspace=str(tmp_path),
-        environment="python",
-        prefix=["/usr/bin/env"],
+        prefixes={"python": ["/usr/bin/env"]},
+        environments={"python": "python"},
     )
     reach = Reach(
         registry=registry,
@@ -165,9 +166,28 @@ def test_both_calls_reach_the_same_kernel(mcp: Calling):
 
 def test_a_tool_names_nothing_a_caller_could_point_at_another_kernel(mcp: Calling):
     published = {tool.name: tool.input_schema for tool in mcp.tools().tools}
-    assert sorted(published) == ["execute_python_cell", "execute_shell_cell"]
+    # The shell tool and one runner per language this machine can start a
+    # kernel in — so a machine with R publishes three and one without two.
+    expected = ["execute_shell_cell"] + [
+        f"execute_{runnable.language}_cell" for runnable in runnables()
+    ]
+    assert sorted(published) == sorted(expected)
     assert list(published["execute_python_cell"]["properties"]) == ["code"]
     assert list(published["execute_shell_cell"]["properties"]) == ["command"]
+
+
+def test_a_machine_with_no_r_publishes_no_way_to_run_it():
+    from lykeion_kernel.mcp.server import tools_for
+
+    assert [tool.name for tool in tools_for(("python",))] == [
+        "execute_python_cell",
+        "execute_shell_cell",
+    ]
+    assert [tool.name for tool in tools_for(("python", "r"))] == [
+        "execute_python_cell",
+        "execute_r_cell",
+        "execute_shell_cell",
+    ]
 
 
 def test_execute_shell_cell_brings_its_output_back_as_the_cell_it_ran(mcp: Calling):
@@ -247,8 +267,8 @@ def listening(registry: Registry, short_dir: str) -> Iterator[str]:
         session_id="se_1",
         task_id="tk_1",
         workspace=workspace,
-        environment="python",
-        prefix=["/usr/bin/env"],
+        prefixes={"python": ["/usr/bin/env"]},
+        environments={"python": "python"},
         token=GIVEN,
     )
     endpoints = Endpoints(registry)
@@ -289,8 +309,8 @@ def test_a_session_nothing_minted_a_word_for_reaches_no_kernels(
         session_id="se_1",
         task_id="tk_1",
         workspace=workspace,
-        environment="python",
-        prefix=["/usr/bin/env"],
+        prefixes={"python": ["/usr/bin/env"]},
+        environments={"python": "python"},
     )
     endpoints = Endpoints(registry)
     path = os.path.join(short_dir, "host.sock")
@@ -366,8 +386,8 @@ def test_a_connection_cannot_reach_a_session_confined_for_another_task(
         session_id="se_2",
         task_id="tk_2",
         workspace=elsewhere,
-        environment="python",
-        prefix=["/usr/bin/env"],
+        prefixes={"python": ["/usr/bin/env"]},
+        environments={"python": "python"},
     )
     refused = _said(listening, {"session": "se_2", "task": "tk_2", "name": "main", "agent": "claude", "token": GIVEN})
     assert "not a session of the Task this socket belongs to" in refused["error"]["message"]

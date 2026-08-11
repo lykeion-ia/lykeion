@@ -1,0 +1,30 @@
+{
+  "kernelId": "k_recorded",
+  "name": "main",
+  "language": "r",
+  "environment": "r",
+  "executionCount": 1,
+  "source": "cat('hi\\n')\n1 + 1",
+  "origin": {
+    "surface": "agent",
+    "by": "claude"
+  },
+  "ok": true,
+  "wallMs": 0,
+  "ts": 0,
+  "outputs": [
+    {
+      "kind": "stream",
+      "name": "stdout",
+      "text": "hi\n"
+    },
+    {
+      "kind": "execute_result",
+      "execution_count": 1,
+      "data": {
+        "text/plain": "[1] 2"
+      },
+      "data_ref": {}
+    }
+  ]
+}

@@ -153,14 +153,20 @@ function queuedPositions(
  *  which is what makes "before" and "after" observable at all: a machine that
  *  did not wait for it would have opened its session while this was still
  *  unanswered. */
-function stubKernelHost(configuring: number, protocol: unknown = PROTOCOL_VERSION) {
+function stubKernelHost(
+  configuring: number,
+  protocol: unknown = PROTOCOL_VERSION,
+  languages: Array<{ language: string; environment: string; reads: string[] }> = [
+    { language: "python", environment: "python", reads: [] },
+  ],
+) {
   const asked: string[] = [];
   const answering: { configured?: { token?: string } } = {};
   const cellListeners: Array<(params: unknown) => void> = [];
   const host: KernelHost = {
     call: async (method, params) => {
       asked.push(method);
-      if (method === "host.hello") return { protocol, environment: "python", reads: [] };
+      if (method === "host.hello") return { protocol, languages };
       if (method === "kernel.configure_session") {
         answering.configured = params as { token?: string };
         await new Promise((resolve) => setTimeout(resolve, configuring));
@@ -253,6 +259,52 @@ it("gives a session a kernel before it starts the agent it names one to", async 
   const carried = args[args.indexOf("--token") + 1];
   expect(carried).toBeTruthy();
   expect(kernels.configured?.token).toBe(carried);
+});
+
+it("writes each language's boundary from that language's own reads alone", async () => {
+  // Named for what it can prove, which is a property of the policy TEXT and
+  // not of the permission that text produces. It was called "renders one
+  // boundary per language and never one shared between them", and read as
+  // proof that a Python cell cannot reach R's libraries; it is not, and no
+  // assertion made from this side of the wire could be. A path absent from a
+  // profile may still be readable, because `SYSTEM_READ` grants whole trees
+  // this never names — /opt among them, which is where a homebrew R keeps
+  // most of itself. The denial that actually holds is the one under the
+  // researcher's home, and it is asserted where it can be asked of the
+  // operating system: sandbox.kernel.test.ts.
+  //
+  // What is left here is still worth holding, and is the part the wiring
+  // owns: each descriptor's reads reach that language's policy and no
+  // other's, so nothing above ever hands a kernel a boundary built for a
+  // language it is not. The reads below are stood in for by paths outside
+  // /opt precisely so this stays a statement about routing rather than one
+  // that borrows a system grant and looks like confinement.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    { language: "python", environment: "python", reads: ["/nowhere/python/env"] },
+    { language: "r", environment: "r", reads: ["/nowhere/r/site-library"] },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_two_languages"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    prefixes: Record<string, string[]>;
+    environments: Record<string, string>;
+  };
+  expect(Object.keys(configured.prefixes).sort()).toEqual(["python", "r"]);
+  expect(configured.environments).toEqual({ python: "python", r: "r" });
+  // Told apart, not merely both present: one prefix built from the union of
+  // both descriptors would satisfy every line below except these two.
+  expect(configured.prefixes.python).not.toEqual(configured.prefixes.r);
+  expect(configured.prefixes.python.join(" ")).toContain("/nowhere/python/env");
+  expect(configured.prefixes.r.join(" ")).toContain("/nowhere/r/site-library");
+  expect(configured.prefixes.python.join(" ")).not.toContain("/nowhere/r/site-library");
+  expect(configured.prefixes.r.join(" ")).not.toContain("/nowhere/python/env");
 });
 
 it("forwards a cell the kernel host announces to the run currently taking its session's turn", async () => {
@@ -2619,7 +2671,10 @@ it("records a REPL cell once even when an agent holds the same session's turn", 
   const host: KernelHost = {
     call: async (method) => {
       if (method === "host.hello")
-        return { protocol: PROTOCOL_VERSION, environment: "python", reads: [] };
+        return {
+          protocol: PROTOCOL_VERSION,
+          languages: [{ language: "python", environment: "python", reads: [] }],
+        };
       if (method !== "kernel.execute") return {};
       // The host answers the call AND announces the cell, which is what the
       // real one does: one event, written twice, because the two ends of it

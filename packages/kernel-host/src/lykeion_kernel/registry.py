@@ -18,13 +18,20 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
-from .kernels import KernelIdentity
-from .kernels.python import PythonKernel, launch
+from .interpreters import Runnable, runnables
+from .kernels import Kernel, KernelIdentity
+from .kernels.python import launch as launch_python
+from .kernels.r import launch as launch_r
 
-# The environment a kernel of this machine runs in. One name until a machine
-# holds more than one, and carried on every cell because a result computed
-# in a different environment is a different result.
-DEFAULT_ENVIRONMENT = "python"
+# One launcher per language this host can start a kernel in, called with the
+# identity, the prefix the daemon rendered, the interpreter to run, and the
+# directory to run it in.
+Launcher = Callable[[KernelIdentity, list[str], str, "str | None"], Kernel]
+
+# A language with no row here is refused by name. Nothing consults a second
+# list of names kept beside this one, so "can be started" and "is published"
+# are one fact rather than two that can drift apart.
+LAUNCHERS: dict[str, Launcher] = {"python": launch_python, "r": launch_r}
 
 
 def kernel_id_for(identity: KernelIdentity) -> str:
@@ -130,17 +137,17 @@ class Turn:
 
 @dataclass(frozen=True)
 class Confinement:
-    """The boundary one session's kernels are started inside.
+    """The boundaries one session's kernels are started inside, one per
+    language.
 
-    Decided on the other side of the wire and arriving already assembled: an
-    argv prefix an interpreter is concatenated onto, the one directory that
-    boundary lets a kernel write, and the environment those kernels run in.
+    Decided on the other side of the wire and arriving already assembled.
     Nothing in this process can build one, which is what keeps a kernel from
-    ever being started outside one.
+    ever being started outside one — and one boundary per language is what
+    keeps a Python cell out of R's library tree.
     """
 
-    prefix: tuple[str, ...]
-    environment: str
+    prefixes: dict[str, tuple[str, ...]]
+    environments: dict[str, str]
     # Both absent on the one this host was constructed with, which describes
     # no Task and no directory: what the daemon supplies is drawn around one
     # Task's workspace, and what a constructor supplies is drawn around none.
@@ -153,6 +160,12 @@ class Confinement:
     # one for, which reaches no kernels at all.
     token: str | None = None
 
+    def prefix_for(self, language: str) -> tuple[str, ...]:
+        return self.prefixes.get(language, ())
+
+    def environment_for(self, language: str) -> str:
+        return self.environments.get(language, "")
+
 
 @dataclass
 class Entry:
@@ -160,7 +173,7 @@ class Entry:
 
     identity: KernelIdentity
     turn: Turn = field(default_factory=Turn)
-    kernel: PythonKernel | None = None
+    kernel: Kernel | None = None
     incarnation: int = 0
     execution_count: int = 0
     started_ts: int | None = None
@@ -183,16 +196,25 @@ class Registry:
         self,
         prefix: list[str],
         *,
-        environment: str = DEFAULT_ENVIRONMENT,
         interpreter: str = sys.executable,
     ) -> None:
+        # Resolved once, here, because asking per session would put a
+        # subprocess on the path of every turn.
+        self._runnables = runnables(interpreter)
+        self._by_language = {runnable.language: runnable for runnable in self._runnables}
         # What a session this host was told nothing about falls back to. A
         # host is constructed before any session exists and `serve()` passes
         # no prefix at all, so the fallback starts nothing until a daemon has
-        # said what a boundary is.
-        self._unconfigured = Confinement(prefix=tuple(prefix), environment=environment)
+        # said what a boundary is — one entry per language this machine can
+        # run, all behind the constructor's own prefix, because that prefix
+        # describes no particular session's boundary to draw them apart by.
+        self._unconfigured = Confinement(
+            prefixes={runnable.language: tuple(prefix) for runnable in self._runnables},
+            environments={
+                runnable.language: runnable.environment for runnable in self._runnables
+            },
+        )
         self._sessions: dict[str, Confinement] = {}
-        self._interpreter = interpreter
         self._entries: dict[str, Entry] = {}
         self._lock = threading.Lock()
         # Where a cell goes once it has run, assigned by whatever holds the
@@ -202,24 +224,19 @@ class Registry:
         self.on_cell: Callable[[dict[str, Any]], None] | None = None
 
     @property
-    def interpreter(self) -> str:
-        """The interpreter every kernel here is launched through.
-
-        Reported because the daemon renders the boundary and cannot work this
-        out: which interpreter this process is running is a fact about how it
-        was started, and a boundary that did not let a kernel read it would
-        refuse the kernel before its first instruction.
-        """
-        return self._interpreter
+    def runnables(self) -> tuple[Runnable, ...]:
+        """Every language this host can start a kernel in, as the greeting
+        reports them."""
+        return self._runnables
 
     def configure_session(
         self,
         *,
         session_id: str,
         task_id: str,
-        workspace: str,
-        environment: str,
-        prefix: list[str],
+        workspace: str | None,
+        prefixes: dict[str, list[str]],
+        environments: dict[str, str],
         token: str | None = None,
     ) -> None:
         """The boundary this session's kernels are to be started inside.
@@ -232,8 +249,10 @@ class Registry:
         """
         with self._lock:
             self._sessions[session_id] = Confinement(
-                prefix=tuple(prefix),
-                environment=environment,
+                prefixes={
+                    language: tuple(prefix) for language, prefix in prefixes.items()
+                },
+                environments=dict(environments),
                 task_id=task_id,
                 workspace=workspace,
                 token=token,
@@ -259,6 +278,7 @@ class Registry:
         the order the threads carrying them happen to be scheduled. Nothing
         here waits on the cell in front, so the stream goes on being read.
         """
+        self._runnable_for(identity.language)
         return self._entry_for(kernel_id_for(identity), identity).turn.place()
 
     def execute(
@@ -275,6 +295,7 @@ class Registry:
         A cell whose place was already taken by whoever received it waits on
         that place; one that arrives here without a place takes it now.
         """
+        self._runnable_for(identity.language)
         kernel_id = kernel_id_for(identity)
         entry = self._entry_for(kernel_id, identity)
         with entry.turn.taken(place):
@@ -300,7 +321,7 @@ class Registry:
             "taskId": identity.task_id,
             "name": identity.name,
             "language": identity.language,
-            "environment": self._boundary_of(entry).environment,
+            "environment": self._boundary_of(entry).environment_for(identity.language),
             "executionCount": count,
             "source": source,
             "origin": {"surface": origin["surface"], "by": origin["by"]},
@@ -318,12 +339,16 @@ class Registry:
     def interrupt(self, kernel_id: str) -> None:
         """Ends the cell running in this kernel, and leaves the kernel up.
 
-        A kernel with nothing in it is signalled all the same rather than
-        checked first: a cell can finish inside the gap such a check would
-        open. What makes that safe is the kernel itself, which takes signals
-        only for the length of a cell and is deaf to them everywhere else —
-        so an interrupt arriving a moment late is delivered nowhere rather
-        than to whatever ran next.
+        Asked of the kernel without checking first whether it has a cell in
+        it: a cell can finish inside the gap such a check would open, and
+        each language's kernel knows better than this does what a signal
+        would mean to it just then. A Python kernel is deaf to one except for
+        the length of a cell, by its own arrangement, so a late interrupt is
+        delivered nowhere at all. An R kernel cannot be deaf — base R has no
+        `signal()` to be deaf with — so its host holds the signal instead,
+        sending only between the driver's own `run` record and the terminator
+        that answers it, and its driver answers every cell it began whatever
+        reaches it.
         """
         entry = self._known(kernel_id)
         if entry.kernel is not None:
@@ -405,7 +430,7 @@ class Registry:
             raise ValueError(f"this machine holds no kernel named {kernel_id}")
         return entry
 
-    def _running(self, entry: Entry) -> PythonKernel:
+    def _running(self, entry: Entry) -> Kernel:
         if entry.kernel is None:
             return self._replace(entry)
         if not entry.kernel.alive():
@@ -419,6 +444,18 @@ class Registry:
     def _confinement_for(self, session_id: str) -> Confinement:
         with self._lock:
             return self._sessions.get(session_id, self._unconfigured)
+
+    def _runnable_for(self, language: str) -> Runnable:
+        """What this machine would start a kernel of this language with.
+
+        Refused here rather than at a launch that has already stopped whatever
+        was running: a language this machine cannot run is not a kernel that
+        starts late.
+        """
+        runnable = self._by_language.get(language)
+        if runnable is None or language not in LAUNCHERS:
+            raise ValueError(f"this machine holds no {language} kernels")
+        return runnable
 
     def _boundary_of(self, entry: Entry) -> Confinement:
         """The boundary this kernel is inside, rather than the one its session
@@ -436,7 +473,7 @@ class Registry:
             return entry.confinement
         return self._confinement_for(entry.identity.session_id)
 
-    def _replace(self, entry: Entry) -> PythonKernel:
+    def _replace(self, entry: Entry) -> Kernel:
         # Resolved before anything is stopped and before anything is spawned:
         # a kernel that cannot be started is no reason to end the one already
         # running, and a refusal made here is one no argument list was ever
@@ -449,15 +486,17 @@ class Registry:
                 f"this session is confined for {confinement.task_id}, "
                 f"and {entry.identity.task_id} is another Task's work"
             )
-        if not confinement.prefix:
+        prefix = confinement.prefix_for(entry.identity.language)
+        if not prefix:
             raise ValueError("no confinement was supplied for this kernel")
         if entry.kernel is not None:
             entry.kernel.stop()
-        entry.kernel = launch(
+        runnable = self._runnable_for(entry.identity.language)
+        entry.kernel = LAUNCHERS[entry.identity.language](
             entry.identity,
-            list(confinement.prefix),
-            interpreter=self._interpreter,
-            cwd=confinement.workspace,
+            list(prefix),
+            runnable.interpreter,
+            confinement.workspace,
         )
         entry.confinement = confinement
         entry.incarnation += 1
@@ -478,7 +517,7 @@ class Registry:
             "incarnation": entry.incarnation,
             "executionCount": entry.execution_count,
             "queueDepth": entry.turn.depth,
-            "environment": self._boundary_of(entry).environment,
+            "environment": self._boundary_of(entry).environment_for(entry.identity.language),
         }
         # Absent rather than zero: nothing has started and nothing has
         # happened are facts about a kernel, and a timestamp of zero is a
