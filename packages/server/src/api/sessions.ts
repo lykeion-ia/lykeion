@@ -30,7 +30,7 @@ export type SessionsApi = Pick<
   "startRun" | "resumeRuns" | "submitRunDecision" | "runHistory" | "revertTurn"
 >;
 
-interface ResolvedRuntime {
+export interface ResolvedRuntime {
   runtimeId: string;
   ownerId: string;
   name: string;
@@ -59,7 +59,7 @@ function turnIsActive(store: Store, runId: string): boolean {
  * resolves the same way, over every available CLI rather than one named
  * CLI.
  */
-function resolveRuntimeForAgent(
+export function resolveRuntimeForAgent(
   store: Store,
   agent: string | undefined,
   callerId: string,

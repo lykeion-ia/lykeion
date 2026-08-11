@@ -6,6 +6,7 @@ import type { Channel } from "../channel";
 import type { RunRelay } from "../run-relay";
 import type { RevertRegistry } from "../run-revert";
 import type { KernelListRegistry } from "../kernel-list-registry";
+import type { TitleRegistry } from "../title-registry";
 import type { PendingCells } from "../kernel-cells";
 import type { ChangeRecorder } from "./changes";
 import { absentApi } from "./absent";
@@ -14,6 +15,7 @@ import { configSurfaceApi } from "./config-surface";
 import { settingsApi } from "./settings";
 import { studiesApi } from "./studies";
 import { tasksApi } from "./tasks";
+import { taskNamingApi } from "./task-naming";
 import { runtimesApi } from "./runtimes";
 import { sessionsApi } from "./sessions";
 import { kernelsApi } from "./kernels";
@@ -38,6 +40,9 @@ export interface Deps {
   /** `kernel-list` asks waiting on a runtime's own kernel host to say what
    *  it is holding. Held for the process's lifetime, like `runs`. */
   kernelLists: KernelListRegistry;
+  /** `name-task` asks waiting on a machine to summarize a Task's opening
+   *  message. Held for the process's lifetime, like `runs`. */
+  titles: TitleRegistry;
   /** The REPL cells this lab has asked a machine to run and is still waiting
    *  to be told the outcome of. Held for the process's lifetime, like
    *  `runs`. */
@@ -73,6 +78,7 @@ export function createWorkspaceApi(deps: Deps): LykeionApi {
     ...accountApi(deps),
     ...studiesApi(deps),
     ...tasksApi(deps),
+    ...taskNamingApi(deps),
     ...runtimesApi(deps),
     ...sessionsApi(deps),
     ...kernelsApi(deps),

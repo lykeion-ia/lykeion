@@ -15,6 +15,10 @@ import { createInterface } from "node:readline";
 
 type Directive =
   | { emit: "agent_message_chunk"; text: string }
+  /** Sends back the prompt this turn was given, verbatim, as one message
+   *  chunk. What a caller uses to see from outside exactly what its own
+   *  client put in front of an agent — the only place that is observable. */
+  | { emit: "echo_prompt" }
   | { emit: "agent_thought_chunk"; text: string }
   | {
       emit: "tool_call";
@@ -445,7 +449,13 @@ async function askPermission(
   });
 }
 
-async function play(script: Directive[]): Promise<string> {
+/** The text of a `session/prompt` call, every block of it joined. */
+function promptTextOf(params: unknown): string {
+  const blocks = (params as { prompt?: Array<{ text?: string }> } | undefined)?.prompt ?? [];
+  return blocks.map((block) => block.text ?? "").join("");
+}
+
+async function play(script: Directive[], asked = ""): Promise<string> {
   // Reset per prompt: `cancelled` marks this turn as stopped, not this
   // process, so a script driving more than one prompt through one stub must
   // not have its second turn find a `wait` step already cancelled by
@@ -496,6 +506,10 @@ async function play(script: Directive[]): Promise<string> {
       continue;
     }
     const update: Record<string, unknown> = { sessionUpdate: step.emit };
+    if (step.emit === "echo_prompt") {
+      update.sessionUpdate = "agent_message_chunk";
+      update.content = { type: "text", text: asked };
+    }
     if (step.emit === "agent_message_chunk" || step.emit === "agent_thought_chunk")
       update.content = { type: "text", text: step.text };
     if (step.emit === "tool_call") {
@@ -572,7 +586,9 @@ createInterface({ input: process.stdin }).on("close", stopToolServers).on("line"
     if (marker) appendFileSync(marker, `${process.pid}\n`);
     const script = scripts[Math.min(promptCount, scripts.length - 1)];
     promptCount += 1;
-    void play(script).then((stopReason) => send({ jsonrpc: "2.0", id: msg.id, result: { stopReason } }));
+    void play(script, promptTextOf(msg.params)).then((stopReason) =>
+      send({ jsonrpc: "2.0", id: msg.id, result: { stopReason } }),
+    );
     return;
   }
   if (msg.method === "session/cancel") {

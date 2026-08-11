@@ -16,6 +16,7 @@ import type { Store } from "./store/store";
 import { failDroppedRuns } from "./run-recovery";
 import { createRevertRegistry } from "./run-revert";
 import { createKernelListRegistry } from "./kernel-list-registry";
+import { createTitleRegistry } from "./title-registry";
 import { createPendingCells } from "./kernel-cells";
 
 /**
@@ -60,7 +61,7 @@ function freshLabServer(existingDir?: string): Promise<RawServer> {
 
   const listener = createRequestListener({
     store, config, secure: false, indexHtml, channel, openStreams, runs: relay,
-    reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), pendingCells: createPendingCells(),
+    reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
   });
   const server = createHttpServer(listener);
 

@@ -86,7 +86,7 @@
   --font-mono:
     ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 
-  /* The type scale. Eight rungs, and every size in the UI is one of them —
+  /* The type scale. Nine rungs, and every size in the UI is one of them —
      there is no size in this app that is not named here.
 
      Sized in `rem` against an `html` that declares no font-size, so 1rem is
@@ -98,14 +98,24 @@
      a size carries should say what it is for. `ui` is the workhorse — rows,
      nav, inputs, buttons, most of the chrome. Below it `sub` carries
      descriptions and helper text, `meta` carries timestamps and counts, and
-     `micro` is the floor: badges and glyph labels, and nothing in the app
-     renders smaller. Above it `read` is the conversation, then titles.
+     `micro` carries badges and glyph labels. Above it `read` is the
+     conversation, then titles.
+
+     `nano` is the floor, and nothing in the app renders smaller. It exists
+     for one job the rungs above it cannot do: the column-header line over a
+     table, which names what each column holds, is read once, and then wants
+     to get out of the way of the rows. At `micro` it still reads as content
+     — one step under the row text is not a step a reader sees — and the
+     whole point of that line is to recede. Reach for it there and nowhere
+     else; anything a reader is meant to come back to belongs at `micro` or
+     above.
 
      Tailwind reads these through the `--text-*` bridge in tailwind.css, so a
      `text-ui` utility and a `font-size: var(--type-ui)` are the same rung by
      construction. Each rung pairs with a line-height because Tailwind emits
      one whether or not we define it; leave the pair out and the utility's
      line-height silently falls back to whatever it inherits. */
+  --type-nano: 0.425rem; /* 10px */
   --type-micro: 0.75rem; /* 12px */
   --type-meta: 0.8125rem; /* 13px */
   --type-sub: 0.875rem; /* 14px */
@@ -115,6 +125,9 @@
   --type-display: 1.5rem; /* 24px */
   --type-hero: 2rem; /* 32px */
 
+  /* Tighter than `micro`'s: this rung sets one short uppercase line, never a
+     paragraph, and the leading a run of prose wants is slack under it. */
+  --type-nano--lh: 1.3;
   --type-micro--lh: 1.35;
   --type-meta--lh: 1.4;
   --type-sub--lh: 1.45;

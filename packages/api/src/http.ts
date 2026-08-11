@@ -160,6 +160,7 @@ export function createHttpApi(transport: Transport): LykeionApi {
     updateTask: call("updateTask"),
     deleteTask: call("deleteTask"),
     getTask: call("getTask"),
+    nameTask: call("nameTask"),
     listConversations: call("listConversations"),
     getConversation: call("getConversation"),
     createConversation: call("createConversation"),

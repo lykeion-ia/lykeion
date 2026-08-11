@@ -318,6 +318,13 @@
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  /* The same ground Files stands on (`.artifacts-panel`). These two are the
+     same slot of the Task screen shown one at a time, so a background on one
+     and none on the other made the right pane change colour with the tab —
+     which reads as the panel loading rather than as the tab switching. Set
+     here rather than on `.nbp-cells`, so the header and status line sit on
+     it too, exactly as Files' own header does. */
+  background: var(--sidebar);
 }
 
 @keyframes nbp-pulse {

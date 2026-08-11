@@ -4,14 +4,14 @@ import type { StandingGrant } from "./store/sessions";
 
 /**
  * One instruction the lab hands a runtime over its command stream: start a
- * turn, answer something a running turn asked, stop one, or reach a kernel
- * directly. Every kind shares this one shape because they travel the same
- * stream in the same envelope — only `runId` is ever guaranteed present. A
- * kernel command belongs to no turn, so it carries a `runId` of its own
- * choosing — `kernelExecute` uses the cell id it just minted,
- * `kernelInterrupt`/`kernelRestart` use the kernel id, and `kernel-list`
- * uses a request id nothing else in this relay reuses — rather than leaving
- * the field empty.
+ * turn, answer something a running turn asked, stop one, reach a kernel
+ * directly, or summarize a Task's opening message into a name for it. Every
+ * kind shares this one shape because they travel the same stream in the same
+ * envelope — only `runId` is ever guaranteed present. A command that belongs
+ * to no turn carries a `runId` of its own choosing — `kernelExecute` uses the
+ * cell id it just minted, `kernelInterrupt`/`kernelRestart` use the kernel
+ * id, and `kernel-list` and `name-task` each use a request id nothing else in
+ * this relay reuses — rather than leaving the field empty.
  *
  * Every kernel command travels over `deliverNow`, never `enqueue`: it is
  * never queued for a later connection at all, so `publish`'s pruning by
@@ -27,7 +27,8 @@ export interface RunCommand {
     | "kernel-execute"
     | "kernel-interrupt"
     | "kernel-restart"
-    | "kernel-list";
+    | "kernel-list"
+    | "name-task";
   runId: string;
   studyId?: string;
   taskId?: string;

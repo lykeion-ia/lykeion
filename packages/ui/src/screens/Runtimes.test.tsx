@@ -20,7 +20,7 @@ it("Runtimes renders the always-present onboarding card", async () => {
   // is the assertion: one heading, and no control beside it offering
   // something it cannot do.
   expect(
-    await screen.findByRole("heading", { name: "Add your first computer" }),
+    await screen.findByRole("heading", { name: "Add your first machine" }),
   ).toBeInTheDocument();
 });
 
@@ -32,7 +32,7 @@ it("keeps this screen about machines, and does not inventory their environments"
   const user = userEvent.setup();
   render(<App api={createInMemoryApi()} />);
   await user.click(await screen.findByRole("link", { name: /Machines/i }));
-  await screen.findByRole("heading", { name: /Add your first computer/i });
+  await screen.findByRole("heading", { name: /Add your first machine/i });
 
   expect(screen.queryByText("Environments")).toBeNull();
   expect(screen.queryByText("Python · uv")).toBeNull();
@@ -57,7 +57,7 @@ it("keeps the onboarding card up while identity is unknown, and after it fails t
   // rather than to the collapsed line: hiding them from somebody who may
   // have no machine takes away the one thing this screen is for.
   expect(
-    await screen.findByRole("heading", { name: "Add your first computer" }),
+    await screen.findByRole("heading", { name: "Add your first machine" }),
   ).toBeInTheDocument();
 
   // The identity question then fails outright. The error is now visible,
@@ -69,7 +69,7 @@ it("keeps the onboarding card up while identity is unknown, and after it fails t
     expect(screen.getByText(/session expired/i)).toBeInTheDocument(),
   );
   expect(
-    screen.getByRole("heading", { name: "Add your first computer" }),
+    screen.getByRole("heading", { name: "Add your first machine" }),
   ).toBeInTheDocument();
 });
 

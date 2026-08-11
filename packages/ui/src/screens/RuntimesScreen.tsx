@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApi } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
 import { RuntimesList } from "../components/library/RuntimesList";
-import { KernelTree } from "../components/library/KernelTree";
+import { taskLabeller } from "../components/library/KernelTree";
 import { ScreenHeader } from "../components/ui/ScreenHeader";
 
 /**
@@ -50,6 +50,10 @@ export function RuntimesScreen() {
   const studies = usePromise(() => api.listStudies({ includeArchived: true }), [api, tick]);
 
   const runtimes = q.data ?? [];
+  const taskLabel = useMemo(
+    () => taskLabeller(tasks.data ?? [], studies.data ?? []),
+    [tasks.data, studies.data],
+  );
 
   const onInterrupt = useCallback(
     (kernelId: string) => {
@@ -71,19 +75,19 @@ export function RuntimesScreen() {
       {me.error && <p className="px-5 text-ui text-danger">{me.error}</p>}
 
       <div className="flex-1 overflow-auto px-5 pb-5 pt-4">
-        {/* What is running comes first: it is the only part of this screen
-            that changes while somebody is looking at it. */}
-        <KernelTree
+        {/* One list. What is running is not a view beside the roster but a
+            fact about a machine on it, so it opens out of that machine's own
+            row — the tree that used to sit above named every busy machine a
+            second time and left a reader matching the two lists by eye. */}
+        <RuntimesList
           runtimes={runtimes}
           kernels={kernels.data ?? []}
-          tasks={tasks.data ?? []}
-          studies={studies.data ?? []}
+          taskLabel={taskLabel}
           now={Date.now() / 1000}
+          meId={me.data?.id ?? null}
           onInterrupt={onInterrupt}
           onRestart={onRestart}
         />
-
-        <RuntimesList runtimes={runtimes} meId={me.data?.id ?? null} />
       </div>
     </div>
   );

@@ -1,12 +1,10 @@
 import { CrumbStrip } from "../ScreenCrumb";
+import { TaskTabStrip } from "./TaskTabStrip";
 import { cn } from "../../lib/utils";
 import type { Route } from "../../router";
 
-export interface TaskTab {
-  id: string;
-  label: string;
-  closable?: boolean;
-}
+export type { TaskTab } from "./TaskTabStrip";
+import type { TaskTab } from "./TaskTabStrip";
 
 /**
  * The full-chat breadcrumb strip. Its geometry is `CrumbStrip`'s, shared with
@@ -14,6 +12,11 @@ export interface TaskTab {
  * the click; what this adds is the load the strip carries — the conversation
  * tabs (+ a Files tab when open), the Task's Mark Done action, and the
  * top-right menu button that toggles the Files right pane.
+ *
+ * The tabs ride in `CrumbStrip`'s band rather than beside the trail, because
+ * they name the conversation directly below them and so sit on ITS column.
+ * `TaskTabStrip` is the band's content; `.crumb-strip--banded` in
+ * screens/task.css is what puts it on the column.
  */
 export function TaskTabs({
   crumb,
@@ -51,65 +54,22 @@ export function TaskTabs({
 }) {
   return (
     <div className={cn("shrink-0", divider && "border-b border-line")}>
-      <CrumbStrip page={crumb} to={crumbTo}>
-        {/* No box around the group and no fill under the active tab: these sit
-            on the same line as the crumb trail and name the same things at the
-            same level, so a container drawn around them read as a control of
-            its own. Selection and hover are carried by ink alone. */}
-        <div className="inline-flex items-center gap-0.5">
-          {tabs.map((t) => {
-            const active = t.id === activeId;
-            return (
-              <span
-                key={t.id}
-                className={cn(
-                  // Matches `CrumbTrail`'s size — the tabs and the trail sit on
-                  // one line in `CrumbStrip`, naming the same thing at the same
-                  // level, and reading them at two sizes made the row look like
-                  // two strips that happened to collide.
-                  "inline-flex items-center rounded-md text-read transition-colors duration-[120ms]",
-                  active ? "text-fg" : "text-fg-subtle",
-                )}
-              >
-                <button
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => onSelect(t.id)}
-                  className={cn(
-                    "h-7 rounded-md px-2.5",
-                    active ? "text-fg" : "hover:text-fg",
-                  )}
-                >
-                  {t.label}
-                </button>
-                {t.closable && (
-                  <button
-                    type="button"
-                    aria-label={`Close ${t.label}`}
-                    onClick={() => onClose(t.id)}
-                    className="mr-1 grid h-4 w-4 place-items-center rounded text-fg-subtle hover:text-fg"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                      <path
-                        d="M2.5 2.5l5 5M7.5 2.5l-5 5"
-                        stroke="currentColor"
-                        strokeWidth="1.3"
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                  </button>
-                )}
-              </span>
-            );
-          })}
-        </div>
-
-        <span className="flex-1" />
-
+      <CrumbStrip
+        page={crumb}
+        to={crumbTo}
+        band={
+          <TaskTabStrip
+            tabs={tabs}
+            activeId={activeId}
+            onSelect={onSelect}
+            onClose={onClose}
+          />
+        }
+      >
         {showMarkDone && (
           <button
             type="button"
-            className="h-7 rounded-md border border-line-strong bg-surface-2 px-2.5 text-sub text-fg-muted hover:bg-surface-3 hover:text-fg"
+            className="h-7 whitespace-nowrap rounded-md border border-line-strong bg-surface-2 px-2.5 text-sub text-fg-muted hover:bg-surface-3 hover:text-fg"
             onClick={onMarkDone}
           >
             Mark Done
@@ -123,7 +83,7 @@ export function TaskTabs({
             aria-pressed={rightPaneOpen}
             onClick={onToggleRightPane}
             className={cn(
-              "grid h-[30px] w-[30px] place-items-center rounded-lg",
+              "grid h-[30px] w-[30px] shrink-0 place-items-center rounded-lg",
               rightPaneOpen
                 ? "bg-surface-2 text-accent"
                 : "text-fg-subtle hover:bg-surface hover:text-fg",

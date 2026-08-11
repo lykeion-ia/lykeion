@@ -7,12 +7,14 @@
 import { LykeionError } from "./errors";
 import type {
   LykeionApi,
+  NameTaskInput,
   NewResearchGroup,
   NewStudy,
   NewTask,
   PairMachineInput,
   TaskPatch,
 } from "./api";
+import { cleanSummaryTitle, promptNeedsSummary, titleFromPrompt } from "./task-title";
 import type {
   Assignee,
   Study,
@@ -157,6 +159,22 @@ export function curatedCatalog(): CatalogEntry[] {
       server: stdio("mcp-chembl"),
     },
   ];
+}
+
+/**
+ * This core's stand-in for a summarizer: the opening clause, six words of it.
+ *
+ * A real lab names a Task by spending an agent CLI on somebody's machine, and
+ * this core has neither. It fakes one the same way it fakes a run — well
+ * enough that the surface can be driven end to end in a browser, and
+ * deterministically, so a test that asserts a name gets the same one twice.
+ * The words come out of the prompt rather than out of a phrase book because a
+ * fabricated title that has nothing to do with the message would make the
+ * seeded lab read as though the naming were broken.
+ */
+function localSummary(prompt: string): string {
+  const clause = prompt.trim().split(/(?<=[.!?])\s+|\n/)[0] ?? "";
+  return clause.split(/\s+/).filter(Boolean).slice(0, 6).join(" ");
 }
 
 /** Infer a MIME type from a path's extension. */
@@ -1461,6 +1479,21 @@ export function createInMemoryLab(
       const task = tasks.find((t) => t.id === taskId);
       if (!task) throw new LykeionError("not-found", `no such task: ${taskId}`);
       return clone({ task, turns: transcripts.get(taskId) ?? [] });
+    },
+    async nameTask(input: NameTaskInput) {
+      const task = tasks.find((t) => t.id === input.taskId);
+      if (!task) throw new LykeionError("not-found", `no such task: ${input.taskId}`);
+      // Every gate a real lab applies, applied here in the same order — this
+      // core has no machine to ask, but it is the one the UI runs against on
+      // its own, and a naming that skipped the gates here would let a screen
+      // work in the browser and rename over an authored title in a real lab.
+      if (!promptNeedsSummary(input.prompt)) return null;
+      if (task.title !== titleFromPrompt(input.prompt)) return null;
+      const title = cleanSummaryTitle(localSummary(input.prompt));
+      if (title === null || title === task.title) return null;
+      task.title = title;
+      task.updatedTs = tick();
+      return title;
     },
     async listRuntimes() {
       return [];

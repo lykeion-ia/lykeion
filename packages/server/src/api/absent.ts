@@ -17,7 +17,8 @@ export const NO_RUNTIME =
  * excluded on purpose: something else in the composition root already
  * answers them, and folding them in here would let this file quietly grow a
  * second, stale answer for one of them. Every Study and Task method is
- * excluded for the same reason — `studiesApi` and `tasksApi` own those, and
+ * excluded for the same reason — `studiesApi` and `tasksApi` own those, with
+ * `nameTask` belonging to `taskNamingApi`, and
  * so are the invite, offboarding and settings methods — `accountApi` and
  * `settingsApi` own those — and so are the customization-engine and
  * research-group methods, which `configSurfaceApi` owns, and so are pairing
@@ -42,6 +43,7 @@ export function absentApi(
   | "listStudies" | "getStudy" | "createStudy" | "updateStudy"
   | "archiveStudy" | "restoreStudy" | "deleteStudy"
   | "listTasks" | "createTask" | "updateTask" | "deleteTask" | "getTask" | "myWork"
+  | "nameTask"
   | "createInvite" | "listInvites" | "revokeInvite" | "removeMember"
   | "getSettings" | "setTheme"
   | "listSkills" | "createSkill" | "setSkillEnabled"

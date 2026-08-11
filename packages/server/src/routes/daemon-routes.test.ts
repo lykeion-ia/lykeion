@@ -364,6 +364,191 @@ it("a report records the one entry when a known id's availability flips, with th
   expect(changeLogCount(store)).toBe(2);
 });
 
+it("a report records the one entry when an agent fills in options it could not name before", () => {
+  // The case the composer is built on. A probe that reaches an adapter but
+  // cannot open a throwaway session — a cold start, a CLI not signed in —
+  // reports the agent `sessionReady` with its options UNKNOWN. The probe five
+  // minutes later opens one and reports the whole catalogue. Id, version,
+  // availability and readiness are identical across the two, so a comparison
+  // blind to the options calls the second report a repeat of the first: the
+  // row is rewritten, nothing is announced, and every page open at the time
+  // keeps offering a bare *Default* against an agent with a catalogue to
+  // give. The daemon's own `cliFingerprint` counts the options for exactly
+  // this reason; the lab's gate has to agree, or the report the daemon took
+  // care to send dies here.
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  const unknown = {
+    platform: "macos-aarch64",
+    daemonVersion: "0.1.0",
+    capabilities: [],
+    clis: [
+      { id: "codex", name: "Codex", command: "codex", version: "1.0.0", available: true, sessionReady: true },
+    ],
+  };
+  expect(post(store, "/daemon/report", unknown, "Bearer a-real-token")!.status).toBe(200);
+  expect(changeLogCount(store)).toBe(1);
+
+  const answered = {
+    ...unknown,
+    clis: [
+      {
+        ...unknown.clis[0]!,
+        options: [
+          {
+            id: "model",
+            category: "model",
+            currentValue: "gpt-5.6-sol",
+            choices: [{ value: "gpt-5.6-sol", label: "GPT-5.6-Sol" }],
+          },
+        ],
+      },
+    ],
+  };
+  expect(post(store, "/daemon/report", answered, "Bearer a-real-token")!.status).toBe(200);
+  expect(changeLogCount(store)).toBe(2);
+
+  // And the same answer again is not news, so the gate stays shut on a report
+  // that repeats what the lab already holds.
+  expect(post(store, "/daemon/report", answered, "Bearer a-real-token")!.status).toBe(200);
+  expect(changeLogCount(store)).toBe(2);
+});
+
+it("keeps the catalogue a machine already reported when a later probe could not ask", () => {
+  // The bug a researcher meets as the model picker emptying itself for no
+  // reason they did anything to cause.
+  //
+  // A probe that reaches an adapter but cannot open a throwaway session
+  // reports the agent ready with its options UNKNOWN, and it is an ordinary
+  // outcome: `session/new` against a real CLI authenticates and enumerates,
+  // it is slow enough to sit near the probe's own timeout, and it is slowest
+  // exactly when the machine is busy — which is when somebody is using this
+  // product. The daemon is careful about it and reports nothing rather than
+  // nothing-found. Written straight through, that care is undone here: the
+  // row is rewritten with NULL, the whole catalogue this lab already had is
+  // gone, and the composer falls back to a bare *Default* until some later
+  // probe happens to succeed.
+  //
+  // Unknown is the ABSENCE of information. It cannot be allowed to replace
+  // information, so a report that says nothing about what an agent offers
+  // leaves standing whatever the lab was last told.
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  const base = {
+    id: "codex",
+    name: "Codex",
+    command: "codex",
+    version: "1.0.0",
+    available: true,
+    sessionReady: true,
+  };
+  const options = [
+    {
+      id: "model",
+      category: "model",
+      currentValue: "gpt-5.6-sol",
+      choices: [{ value: "gpt-5.6-sol", label: "GPT-5.6-Sol" }],
+    },
+  ];
+  const envelope = (clis: unknown[]) => ({
+    platform: "macos-aarch64",
+    daemonVersion: "0.1.0",
+    capabilities: [],
+    clis,
+  });
+
+  expect(
+    post(store, "/daemon/report", envelope([{ ...base, options }]), "Bearer a-real-token")!.status,
+  ).toBe(200);
+  expect(changeLogCount(store)).toBe(1);
+
+  // The next probe reaches the adapter and gets no session out of it.
+  expect(
+    post(store, "/daemon/report", envelope([base]), "Bearer a-real-token")!.status,
+  ).toBe(200);
+
+  const stored = store.get(`SELECT options FROM runtime_clis WHERE cli_id = 'codex'`)!;
+  expect(JSON.parse(stored.options as string)).toEqual(options);
+  // And nothing was announced, because as far as this lab is concerned
+  // nothing about the agent changed — which is the same thing the row now
+  // says.
+  expect(changeLogCount(store)).toBe(1);
+});
+
+it("lets an agent that genuinely offers nothing say so, over a catalogue it used to have", () => {
+  // The other half of the rule, and the reason this cannot simply be "never
+  // overwrite". An agent that advertised an EMPTY list has answered the
+  // question — it opened a session and offered nothing — and that answer has
+  // to land, or an agent that drops its options keeps advertising a
+  // catalogue it no longer has.
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  const base = {
+    id: "codex",
+    name: "Codex",
+    command: "codex",
+    version: "1.0.0",
+    available: true,
+    sessionReady: true,
+  };
+  const envelope = (clis: unknown[]) => ({
+    platform: "macos-aarch64",
+    daemonVersion: "0.1.0",
+    capabilities: [],
+    clis,
+  });
+
+  post(
+    store,
+    "/daemon/report",
+    envelope([{ ...base, options: [{ id: "model", category: "model", choices: [{ value: "m", label: "M" }] }] }]),
+    "Bearer a-real-token",
+  );
+  expect(changeLogCount(store)).toBe(1);
+
+  expect(
+    post(store, "/daemon/report", envelope([{ ...base, options: [] }]), "Bearer a-real-token")!.status,
+  ).toBe(200);
+
+  const stored = store.get(`SELECT options FROM runtime_clis WHERE cli_id = 'codex'`)!;
+  expect(JSON.parse(stored.options as string)).toEqual([]);
+  expect(changeLogCount(store)).toBe(2);
+});
+
+it("a report records the one entry when an agent's options change under an unchanged id, version and readiness", () => {
+  // A provider ships a model and the adapter starts advertising it. Nothing
+  // else about the agent moved, and a researcher with the page open is the
+  // one person who needs to know.
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  const option = (choices: Array<{ value: string; label: string }>) => ({
+    platform: "macos-aarch64",
+    daemonVersion: "0.1.0",
+    capabilities: [],
+    clis: [
+      {
+        id: "codex",
+        name: "Codex",
+        command: "codex",
+        version: "1.0.0",
+        available: true,
+        sessionReady: true,
+        options: [{ id: "model", category: "model", choices }],
+      },
+    ],
+  });
+  const before = option([{ value: "gpt-5.5", label: "GPT-5.5" }]);
+  expect(post(store, "/daemon/report", before, "Bearer a-real-token")!.status).toBe(200);
+  expect(changeLogCount(store)).toBe(1);
+
+  const after = option([
+    { value: "gpt-5.5", label: "GPT-5.5" },
+    { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+  ]);
+  expect(post(store, "/daemon/report", after, "Bearer a-real-token")!.status).toBe(200);
+  expect(changeLogCount(store)).toBe(2);
+});
+
 it("a report records the one entry when only the platform, daemon version, or capabilities differ", () => {
   const store = freshStore();
   // Matches exactly what `insertPairedMachine` already stored — platform,

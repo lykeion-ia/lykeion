@@ -13,6 +13,7 @@ import { createChannel } from "../channel";
 import { createRunRelay, type RunCommand, type RunRelay } from "../run-relay";
 import { createRevertRegistry } from "../run-revert";
 import { createKernelListRegistry } from "../kernel-list-registry";
+import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
 import { createRequestListener } from "../http";
 import { apiFor, signUpOwner } from "../test-support/server-api";
@@ -62,7 +63,7 @@ function freshLabServer(): Promise<{
     openStreams,
     runs: relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), pendingCells: createPendingCells(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
     now: () => clock,
   });
   const server = createHttpServer(listener);

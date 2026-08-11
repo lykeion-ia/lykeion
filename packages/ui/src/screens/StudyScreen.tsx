@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import {
   STAGES,
   STAGE_LABELS,
+  titleFromPrompt,
   type Stage,
   type StudyPatch,
   type Task,
@@ -35,6 +36,7 @@ import { modelOptionOf, noChoiceReason } from "../lib/agent-options";
 import { cliIcon } from "../lib/cli-icons";
 import { cliInk } from "../lib/cli-brand";
 import { stashRun } from "../lib/pending-run";
+import { nameChatAfterFirstMessage } from "../lib/task-naming";
 import {
   closeTaskTab,
   closeTaskTabsForStudy,
@@ -154,7 +156,7 @@ export function StudyScreen({ studyId }: { studyId: string }) {
       task = await api.createTask({
         studyId,
         stage: "background",
-        title: text.slice(0, 80),
+        title: titleFromPrompt(text),
       });
     } catch (err) {
       // Minting the Task IS the send — there is nothing to hand off to without
@@ -171,6 +173,9 @@ export function StudyScreen({ studyId }: { studyId: string }) {
       agent: effectiveCliId,
       model: effectiveModel,
     });
+    // Fired before the navigation, not after: it is about the Task, not about
+    // this screen, and it outlives the screen either way.
+    nameChatAfterFirstMessage(api, task.id, text, effectiveCliId, () => invalidate());
     invalidate();
     navigate({ name: "task", studyId, taskId: task.id });
   };

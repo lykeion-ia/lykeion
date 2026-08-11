@@ -1,8 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { RunningKernel, Runtime, Study, Task } from "@lykeion/api";
-import { KernelTree } from "./KernelTree";
+import { createInMemoryApi, type RunningKernel, type Runtime, type Study, type Task } from "@lykeion/api";
+import { ApiProvider } from "../../api/ApiContext";
+import { taskLabeller } from "./KernelTree";
+import { RuntimesList } from "./RuntimesList";
 
 afterEach(cleanup);
 
@@ -69,18 +71,26 @@ const STUDIES: Study[] = [
   } as unknown as Study,
 ];
 
+/**
+ * The kernels as a researcher reaches them: nested inside the roster row for
+ * the machine holding them. There is no kernel view apart from the roster any
+ * more, so exercising one through anything but a row would be testing a
+ * composition the screen does not use.
+ */
 function tree(runtimes: Runtime[], kernels: RunningKernel[], handlers = {}) {
   return render(
-    <KernelTree
-      runtimes={runtimes}
-      kernels={kernels}
-      tasks={TASKS}
-      studies={STUDIES}
-      now={NOW}
-      onInterrupt={vi.fn()}
-      onRestart={vi.fn()}
-      {...handlers}
-    />,
+    <ApiProvider api={createInMemoryApi()}>
+      <RuntimesList
+        runtimes={runtimes}
+        kernels={kernels}
+        taskLabel={taskLabeller(TASKS, STUDIES)}
+        now={NOW}
+        meId="u_you"
+        onInterrupt={vi.fn()}
+        onRestart={vi.fn()}
+        {...handlers}
+      />
+    </ApiProvider>,
   );
 }
 
@@ -161,10 +171,54 @@ it("reaches the kernel the row is for when Restart is chosen", async () => {
   expect(onRestart).toHaveBeenCalledWith(k.id);
 });
 
-it("lists no machine that is holding nothing", () => {
-  const { container } = tree([machine({ id: "rt_2", name: "empty-box" })], []);
-  expect(screen.queryByText("empty-box")).not.toBeInTheDocument();
-  expect(container).toBeEmptyDOMElement();
+it("gives a machine holding nothing no disclosure, and still lists the machine", () => {
+  // The rule the old tree kept by hiding the machine outright. It cannot hide
+  // it any more — this IS the roster, and a machine running nothing is still
+  // a machine somebody paired — so the same fact is carried by the row having
+  // nothing to open and saying nothing about kernels.
+  tree([machine({ id: "rt_2", name: "empty-box" })], []);
+
+  expect(screen.getByText("empty-box")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { expanded: true })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { expanded: false })).not.toBeInTheDocument();
+  expect(screen.queryByText(/kernel/i)).not.toBeInTheDocument();
+});
+
+it("says on the row how many kernels a machine holds and how many are working", () => {
+  // The one thing the machine header carried that the roster row did not
+  // already say. Its memory and processor columns are not missed: nothing
+  // reports either, so both read as em dashes on every machine.
+  tree([machine()], [kernel({ state: "running" }), kernel({ state: "idle" })]);
+
+  // Asserted through the disclosure's accessible name, which is the machine
+  // and its summary — the Task group nested under it happens to hold the same
+  // two kernels and says so in the same words, and a bare text query could
+  // not tell which of the two levels answered.
+  expect(
+    screen.getByRole("button", { name: "ana-macbook — 2 kernels · 1 running" }),
+  ).toBeInTheDocument();
+});
+
+it("opens a machine's kernels out of its own row, and closes them again", async () => {
+  const user = userEvent.setup();
+  tree([machine()], [kernel()]);
+
+  // Open on arrival: a machine holding kernels is holding them now, and what
+  // is running is the reason to be on this screen while something is.
+  // Named exactly: the row also carries a Remove control naming the same
+  // machine, and a loose match would not say which one was clicked.
+  const row = screen.getByRole("button", { name: "ana-macbook — 1 kernel" });
+  expect(row).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByText("CRISPR kinase screen › KIN-14 Kinome screen")).toBeInTheDocument();
+
+  await user.click(row);
+  expect(row).toHaveAttribute("aria-expanded", "false");
+  expect(
+    screen.queryByText("CRISPR kinase screen › KIN-14 Kinome screen"),
+  ).not.toBeInTheDocument();
+  // The machine stays on the roster with its row closed — collapsing what it
+  // holds is not the machine leaving the lab.
+  expect(screen.getByText("ana-macbook")).toBeInTheDocument();
 });
 
 it("names a Task it cannot resolve as one, rather than printing its id", () => {

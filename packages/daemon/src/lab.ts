@@ -217,7 +217,8 @@ export interface RunCommand {
     | "kernel-execute"
     | "kernel-interrupt"
     | "kernel-restart"
-    | "kernel-list";
+    | "kernel-list"
+    | "name-task";
   runId: string;
   studyId?: string;
   taskId?: string;
@@ -467,4 +468,25 @@ export async function postKernelList(
   signal: AbortSignal,
 ): Promise<void> {
   await callLab(lab, "/daemon/kernel/list", token, { requestId, kernels }, signal);
+}
+
+/**
+ * Answers the lab's `name-task` command with what this machine's summarizer
+ * made of the Task's opening message — or `null`, which is this machine
+ * saying it asked and got nowhere.
+ *
+ * Answering `null` matters more than it looks. The lab is holding a call open
+ * on this, and its only other way out is a deadline measured in tens of
+ * seconds; a machine that knows now that there is no title coming should say
+ * so now. Nothing is lost either way — the Task keeps the name it has — but
+ * one of the two costs a researcher half a minute of a promise going nowhere.
+ */
+export async function postTaskTitle(
+  lab: string,
+  token: string,
+  requestId: string,
+  title: string | null,
+  signal: AbortSignal,
+): Promise<void> {
+  await callLab(lab, "/daemon/task/title", token, { requestId, title }, signal);
 }

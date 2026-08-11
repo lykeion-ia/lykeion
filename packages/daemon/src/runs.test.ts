@@ -36,6 +36,7 @@ async function stubLab(commands: unknown[]) {
   const live: string[][] = [];
   const cells: Record<string, unknown>[] = [];
   const kernelListReplies: Array<{ requestId: string; kernels: unknown[] }> = [];
+  const titleReplies: Array<{ requestId: string; title: string | null }> = [];
   let commandStream: import("node:http").ServerResponse | undefined;
   let seq = 0;
   const server = createServer((req, res) => {
@@ -58,6 +59,8 @@ async function stubLab(commands: unknown[]) {
       if (req.url === "/daemon/cell") cells.push(parsed);
       if (req.url === "/daemon/kernel/list")
         kernelListReplies.push(parsed as { requestId: string; kernels: unknown[] });
+      if (req.url === "/daemon/task/title")
+        titleReplies.push(parsed as { requestId: string; title: string | null });
       res.writeHead(200, { "content-type": "application/json" });
       res.end("{}");
     });
@@ -75,6 +78,7 @@ async function stubLab(commands: unknown[]) {
     live,
     cells,
     kernelListReplies,
+    titleReplies,
     commandConnected(): boolean {
       return commandStream !== undefined;
     },
@@ -2788,4 +2792,74 @@ it("answers the lab's kernel-list ask with an empty list when this machine holds
 
   await until(() => lab.kernelListReplies.length > 0, "the kernel list reaching the lab");
   expect(lab.kernelListReplies).toEqual([{ requestId: "klreq_2", kernels: [] }]);
+});
+
+it("answers the lab's name-task ask with what the summarizer made of the message", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { emit: "agent_message_chunk", text: "Python kernel range check" },
+  ]);
+  subsystem(lab.base, data);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({
+    type: "name-task",
+    runId: "ntreq_1",
+    taskId: "t_1",
+    agent: "claude",
+    prompt:
+      "Use the live Python kernel. Run one cell that sets values = list(range(30)) and prints each.",
+  });
+
+  await until(() => lab.titleReplies.length > 0, "the title reaching the lab");
+  expect(lab.titleReplies).toEqual([{ requestId: "ntreq_1", title: "Python kernel range check" }]);
+});
+
+it("answers a name-task ask with null, rather than silence, when it has no adapter to ask", async () => {
+  // Silence would cost the lab its whole deadline for an answer this machine
+  // already knows: there is no program here to summarize with.
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const r = startRuns({
+    lab: lab.base,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () => undefined,
+  });
+  running.push(r);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({ type: "name-task", runId: "ntreq_2", taskId: "t_1", agent: "claude", prompt: "x".repeat(120) });
+
+  await until(() => lab.titleReplies.length > 0, "the refusal reaching the lab");
+  expect(lab.titleReplies).toEqual([{ requestId: "ntreq_2", title: null }]);
+});
+
+it("names one Task at a time, declining the rest rather than forking an agent per open chat", async () => {
+  // Four chats opened in a moment is four `name-task` asks in a moment, and
+  // each one launches an agent CLI. Only the first is spent; the others are
+  // answered now, and their Tasks keep the names their prompts gave them.
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { wait: true, timeoutMs: 300 },
+    { emit: "agent_message_chunk", text: "The one that ran" },
+  ]);
+  subsystem(lab.base, data);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  for (const requestId of ["ntreq_a", "ntreq_b", "ntreq_c"])
+    lab.send({ type: "name-task", runId: requestId, taskId: "t_1", agent: "claude", prompt: "y".repeat(120) });
+
+  await until(() => lab.titleReplies.length === 3, "all three asks being answered");
+  expect(lab.titleReplies.filter((r) => r.title === null).map((r) => r.requestId)).toEqual([
+    "ntreq_b",
+    "ntreq_c",
+  ]);
+  expect(lab.titleReplies.find((r) => r.requestId === "ntreq_a")?.title).toBe("The one that ran");
 });

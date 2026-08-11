@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import {
   FINDING_CLASS_LABELS,
   SEVERITY_LABELS,
+  titleFromPrompt,
   type Finding,
   type Severity,
   type Study,
@@ -41,6 +42,7 @@ import {
 import { RailRow, TurnRail } from "../components/tasks/TurnRail";
 import { AssistantMessage } from "../components/tasks/AssistantMessage";
 import { modelOptionOf, noChoiceReason } from "../lib/agent-options";
+import { nameChatAfterFirstMessage } from "../lib/task-naming";
 import { useRouter, type Route } from "../router";
 import {
   closeTaskTab,
@@ -576,15 +578,35 @@ export function TaskScreen({
     );
   }, [api, taskId, refreshTasks]);
 
+  /** Take the name a summary wrote and put it everywhere this surface shows
+   *  a title. The change channel repaints every other tab in the lab; this is
+   *  what repaints the strip in front of the researcher who sent the
+   *  message. */
+  const adoptTitle = useCallback(
+    (title: string) => {
+      renameTaskTab(taskId, title);
+      refreshTasks();
+      setTaskNonce((n) => n + 1);
+      invalidate();
+    },
+    [taskId, refreshTasks, invalidate],
+  );
+
   /**
    * Name a chat after the message that started it.
    *
-   * A Task minted from a composer takes the truncated prompt as its title, but
+   * A Task minted from a composer takes the cut-down prompt as its title, but
    * one started from the sidebar's New is minted before there is any prompt to
    * take — so it lands under a placeholder, and the first send is where the
    * real title is WRITTEN. The title stays an authored field: nothing derives
    * it at render time, a rename replaces it for good, and a second turn leaves
    * it alone.
+   *
+   * The cut prompt goes in straight away and the lab is asked, in the same
+   * breath, for something better. The ask takes a second or two and may come
+   * back with nothing, which is exactly why the cut is written first rather
+   * than waited on: the chat is named the whole time, and a summary — if one
+   * arrives — replaces a name nobody has touched.
    *
    * Guarded on both halves of "this chat has never been spoken in": no run has
    * landed, and the title is still the one `newTask` minted. A Task the
@@ -594,22 +616,22 @@ export function TaskScreen({
   const titleFromFirstSend = useCallback(
     (text: string) => {
       if (!task || task.runCount !== 0 || task.title !== NEW_TASK_TITLE) return;
-      const title = text.trim().slice(0, 80);
+      const title = titleFromPrompt(text);
       if (!title) return;
       api.updateTask(taskId, { title }).then(
         () => {
-          renameTaskTab(taskId, title);
-          refreshTasks();
-          setTaskNonce((n) => n + 1);
-          invalidate();
+          adoptTitle(title);
+          nameChatAfterFirstMessage(api, taskId, text, effectiveCliId, adoptTitle);
         },
         () => {
           // Best-effort: the chat runs either way, and it keeps the
           // placeholder rather than losing the send over a naming write.
+          // Nothing is asked to summarize either — the lab replaces a derived
+          // name and this one was never written.
         },
       );
     },
-    [api, task, taskId, refreshTasks, invalidate],
+    [api, task, taskId, adoptTitle, effectiveCliId],
   );
 
   const start = runState.start;

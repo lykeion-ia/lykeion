@@ -32,6 +32,21 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  /* The measure the transcript, the composer AND the breadcrumb's tab band
+     share — each centres a column of this width, so the input lines up under
+     the messages and the tabs line up over them. One knob tunes the whole
+     reading width.
+
+     Declared HERE, not on `.conversation`, because the tab band lives in the
+     breadcrumb strip — a sibling of the conversation, not a descendant. Two
+     declarations would be two measures the moment one is tuned, and the band
+     sitting a few pixels off the column it names is exactly the drift this
+     hoist exists to make impossible.
+
+     `ch` resolves at each use site against that element's own font-size. The
+     strip and the column both inherit the body's 15px, so the two land on the
+     same width; `.msg` reads it at the chat's 16px, as it always has. */
+  --conv-measure: 100ch;
 }
 
 /* `hidden` is a UA rule, and `display: flex` above outranks it. Focusing the
@@ -39,6 +54,108 @@
    or the conversation stays on screen underneath the pane that replaced it. */
 .task-main[hidden] {
   display: none;
+}
+
+/* ------------------------------------------------------------
+   The breadcrumb's tab band
+   ------------------------------------------------------------ */
+
+/* The strip carries three things — the trail back up, the open-Task tabs, and
+   this Task's actions — and the tabs are not merely the next item after the
+   trail: they name the conversation directly below them, so they sit on ITS
+   column. That is a job for tracks, not for a flex row.
+
+   The middle track is non-flexible, so the sizing algorithm maximises it into
+   the free space up to `--conv-measure` while the side tracks rest on their
+   `min-content` floors; the two `1fr` tracks then split what is left EQUALLY,
+   which centres the band on the strip. `.conv-column` is centred on the same
+   axis — the strip's 20px padding and the stream's 18px + scrollbar-gutter
+   inset are both symmetric, so the two boxes share the pane's centre line — so
+   wherever the column is at its measure, the band lands exactly on it.
+
+   And where the pane is too narrow for that, the inspector open or the window
+   small, the band is the track that yields first: it is the only one whose
+   floor is 0. The trail keeps its width, the actions keep theirs, and the row
+   reads as it did before the band existed. No breakpoint and no threshold to
+   maintain — the degrade is what the algorithm already does. */
+.crumb-strip--banded {
+  display: grid;
+  grid-template-columns:
+    minmax(min-content, 1fr)
+    minmax(0, var(--conv-measure))
+    minmax(min-content, 1fr);
+}
+
+/* The open-Task tabs, clipped to the band's track. A Study holds any number of
+   Tasks and every open one is a tab, so the row has to be able to run past its
+   own width — and it stops at the column's right edge rather than shoving the
+   Task's actions along in front of it. */
+.crumb-band {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Makes this the tabs' `offsetParent`, so `offsetLeft` is read against the
+     band's own content origin — which is what scrolling the active tab into
+     view measures against. Unpositioned, the nearest positioned ancestor is
+     the document and every offset is out by the width of the app's Rail. */
+  position: relative;
+  /* A tab is drawn as ink, not as a box — no fill, no border — so the only
+     thing the eye can align is the LABEL. Its button pads the text by
+     `--crumb-tab-pad`, so the band starts that much left of its track and the
+     first tab's first letter lands on the column's edge. The track's right
+     edge is untouched, which is where the tabs are asked to stop. */
+  --crumb-tab-pad: 10px;
+  margin-inline-start: calc(-1 * var(--crumb-tab-pad));
+  /* The app's scrollbar is styled and so takes real height: ten pixels of it
+     under a 28px row draws a second rule right beside the crumb. The fade
+     below is what says "there is more", and it costs no space. */
+  scrollbar-width: none;
+}
+
+.crumb-band::-webkit-scrollbar {
+  display: none;
+}
+
+.crumb-band > * {
+  flex-shrink: 0;
+}
+
+/* A soft edge wherever tabs continue past the clip — the same language the
+   clamped tool output speaks (`.step-io`). A mask rather than a gradient
+   overlay, so it holds on whatever the strip is painted over. The attribute is
+   set from the scroll position, so an edge with nothing beyond it stays hard. */
+.crumb-band[data-overflow="start"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 24px);
+  mask-image: linear-gradient(to right, transparent, #000 24px);
+}
+
+.crumb-band[data-overflow="end"] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 24px),
+    transparent
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+}
+
+.crumb-band[data-overflow="both"] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 24px,
+    #000 calc(100% - 24px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 24px,
+    #000 calc(100% - 24px),
+    transparent
+  );
 }
 
 .task-main-body {
@@ -144,12 +261,9 @@
   margin-top: 8px;
 }
 
-/* Conversation column. */
+/* Conversation column. `--conv-measure` is inherited from `.task-main`, which
+   is where it has to live for the breadcrumb's tab band to read the same one. */
 .conversation {
-  /* The measure the transcript and composer share — both centre a column of
-     this width so the input lines up directly under the messages. One knob
-     tunes the whole reading width. */
-  --conv-measure: 100ch;
   /* Height of the hover-revealed actions strip, and the room reserved for it.
      The strip is `position: absolute`, so it adds nothing to the flow: this
      one value sizes it AND reserves its space, so the two cannot drift apart.

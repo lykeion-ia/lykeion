@@ -18,6 +18,7 @@ import { createChannel, type Channel, type Send } from "./channel";
 import { createRunRelay, type RunCommand, type RunRelay } from "./run-relay";
 import { createRevertRegistry, type RevertRegistry } from "./run-revert";
 import { createKernelListRegistry, type KernelListRegistry, type RawKernelReport } from "./kernel-list-registry";
+import { createTitleRegistry, type TitleRegistry } from "./title-registry";
 import { createPendingCells, type PendingCells } from "./kernel-cells";
 import { failDroppedRuns } from "./run-recovery";
 import { readReportedCell, recordCell } from "./store/cells";
@@ -150,6 +151,7 @@ export async function startServer(
   const runs = createRunRelay();
   const reverts: RevertRegistry = createRevertRegistry();
   const kernelLists: KernelListRegistry = createKernelListRegistry();
+  const titles: TitleRegistry = createTitleRegistry();
   const pendingCells: PendingCells = createPendingCells();
   // Every open `/events` or `/daemon/commands` response, so `close()` can
   // end them itself: a stream nobody tears down keeps its heartbeat alive
@@ -168,7 +170,8 @@ export async function startServer(
   const indexHtml = rawIndex.replace("</head>", `${MARKER}</head>`);
 
   const listener = createRequestListener({
-    store, config, secure, indexHtml, now, channel, openStreams, runs, reverts, kernelLists, pendingCells,
+    store, config, secure, indexHtml, now, channel, openStreams, runs, reverts, kernelLists, titles,
+    pendingCells,
   });
   const server = secure
     ? createHttpsServer(
@@ -219,6 +222,9 @@ export function createRequestListener(deps: {
   /** `kernel-list` asks waiting on a runtime's own kernel host, so
    *  `/daemon/kernel/list` can settle the one it names. */
   kernelLists: KernelListRegistry;
+  /** `name-task` asks waiting on a machine to summarize a Task's opening
+   *  message, so `/daemon/task/title` can settle the one it names. */
+  titles: TitleRegistry;
   /** The REPL cells this lab has asked a machine to run, so `/daemon/cell`
    *  can recognize the one it is being told about. */
   pendingCells: PendingCells;
@@ -229,7 +235,8 @@ export function createRequestListener(deps: {
    *  tiebreaks do the work rather than happening to pass on real time. */
   now?: () => number;
 }): (req: IncomingMessage, res: ServerResponse) => void {
-  const { store, config, secure, indexHtml, channel, openStreams, runs, reverts, kernelLists, pendingCells } = deps;
+  const { store, config, secure, indexHtml, channel, openStreams, runs, reverts, kernelLists, titles, pendingCells } =
+    deps;
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
 
   return (req, res) => {
@@ -544,6 +551,31 @@ export function createRequestListener(deps: {
             return sendJson(res, 403, { error: "this machine was not asked for that kernel list" });
           return sendJson(res, 200, { ok: true });
         }
+        if (path === "/daemon/task/title") {
+          const machine = resolveMachine(store, req.headers.authorization);
+          if (!machine) return sendJson(res, 401, { error: "no such machine" });
+          const b = body as { requestId?: unknown; title?: unknown } | null;
+          const requestId = b?.requestId;
+          // `null` is a real answer here — a machine saying it asked and got
+          // nowhere — and it is a better one than silence, because it frees
+          // the waiting call now rather than at its deadline. Only a missing
+          // or wrongly-typed field is a bad request.
+          const title = b?.title === undefined ? null : b.title;
+          if (typeof requestId !== "string" || (title !== null && typeof title !== "string"))
+            return sendJson(res, 400, { error: "a requestId and a title (or null) are required" });
+          // Bound before it is trusted: whatever the far side sends travels
+          // into a title column and out to every open tab, and a machine
+          // sending a megabyte of it must not be able to make that this
+          // lab's problem. What survives is still cleaned by `nameTask`.
+          if (typeof title === "string" && title.length > 4096)
+            return sendJson(res, 400, { error: "that is not a title" });
+          // Held to the same binding as `/daemon/kernel/list`, for the same
+          // reason: the bearer token proves some paired machine is calling,
+          // never that it is the one this ask went to.
+          if (!titles.settle(machine.runtimeId, requestId, title))
+            return sendJson(res, 403, { error: "this machine was not asked to name that task" });
+          return sendJson(res, 200, { ok: true });
+        }
         if (path === "/daemon/cell") {
           const machine = resolveMachine(store, req.headers.authorization);
           if (!machine) return sendJson(res, 401, { error: "no such machine" });
@@ -647,7 +679,9 @@ export function createRequestListener(deps: {
         // module is handed, so whatever any of them records is in the queue
         // the `flush` below drains.
         const changes = changeRecorder({ store, actorId: actor.userId, now, channel });
-        const api = createWorkspaceApi({ store, actor, now, config, channel, changes, runs, reverts, kernelLists, pendingCells });
+        const api = createWorkspaceApi({
+          store, actor, now, config, channel, changes, runs, reverts, kernelLists, titles, pendingCells,
+        });
         const method = path.slice("/rpc/".length);
         if (!rpcMethods(api).has(method)) return sendJson(res, 404, { error: `no such method: ${method}` });
         try {

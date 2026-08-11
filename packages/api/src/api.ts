@@ -148,6 +148,21 @@ export interface TaskPatch {
   pinned?: boolean;
 }
 
+/** What {@link LykeionApi.nameTask} reads to name a Task. */
+export interface NameTaskInput {
+  taskId: string;
+  /** The message the chat opened with — the whole of what the summarizer is
+   *  shown. Naming reads the ask, never the workspace. */
+  prompt: string;
+  /**
+   * Which agent CLI summarizes; omitted → the lab's first available. This is
+   * the same resolution `startRun` performs on {@link RunOptions.agent}, so a
+   * send that names its agent has the naming land on the very machine the
+   * turn itself is about to run on.
+   */
+  agent?: string;
+}
+
 /** The workbench data API. All methods are async — the real impl is IPC. */
 export interface LykeionApi {
   coreInfo(): Promise<CoreInfo>;
@@ -203,6 +218,27 @@ export interface LykeionApi {
    * has no Study to name.
    */
   getTask(taskId: string): Promise<TaskDetail>;
+
+  /**
+   * Name a Task after the message that started it, with an agent CLI as the
+   * summarizer — the few words a reader scans a tab strip by, in place of the
+   * opening prompt's first eighty characters.
+   *
+   * Resolves with the title written, or `null` where the Task kept the name it
+   * already had. `null` is the ordinary answer, not a failure: no machine
+   * paired, the machine offline, the CLI silent, the summary unusable, or the
+   * Task renamed by a person while this was in flight — an authored name is
+   * never overwritten — all settle here. A caller has nothing to handle,
+   * because a Task that is not renamed is still correctly named.
+   *
+   * Rejects only for a Task that does not exist, which is a caller's own bug
+   * rather than a naming that did not come off.
+   *
+   * Naming is one-shot and never runs itself: a Task is named at its first
+   * send, by the surface that sent it, and a second call on a Task whose title
+   * a person has since touched answers `null`.
+   */
+  nameTask(input: NameTaskInput): Promise<string | null>;
 
   /**
    * The Conversations the current member is in — threads about a Task, held

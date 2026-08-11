@@ -9,6 +9,7 @@
 export * from "./types";
 export * from "./errors";
 export * from "./api";
+export * from "./task-title";
 export * from "./conversation";
 export * from "./run";
 export * from "./review";
@@ -50,6 +51,7 @@ export const Commands = {
   updateTask: "update_task",
   deleteTask: "delete_task",
   getTask: "get_task",
+  nameTask: "name_task",
   listConversations: "list_conversations",
   getConversation: "get_conversation",
   createConversation: "create_conversation",

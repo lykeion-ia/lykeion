@@ -1,11 +1,12 @@
-import { useId, useState, type ReactNode } from "react";
-import type { Runtime } from "@lykeion/api";
+import { useState, type ReactNode } from "react";
+import type { RunningKernel, Runtime } from "@lykeion/api";
 import { useApi, useInvalidateData } from "../../api/ApiContext";
-import { MonitorIcon } from "../icons";
+import { ChevronDownIcon, MonitorIcon } from "../icons";
 import { ConfirmModal } from "../ui/ConfirmModal";
 import { CopyButton } from "../tasks/CopyButton";
 import { cn } from "../../lib/utils";
 import { formatAgo } from "../../lib/task-meta";
+import { kernelSummary, MachineKernels } from "./KernelTree";
 
 interface HealthMeta {
   label: string;
@@ -98,58 +99,120 @@ function BlockTitle({ id, children }: { id?: string; children: ReactNode }) {
 
 function RuntimeRow({
   runtime,
+  kernels,
+  taskLabel,
+  now,
+  onInterrupt,
+  onRestart,
   onRemove,
 }: {
   runtime: Runtime;
-  /** Present only for a row in "Your machines" — the control this renders
+  /** What this machine is holding. Empty is the ordinary case — a machine
+   *  running nothing is still a machine — and the row is then a plain row
+   *  with nothing to open. */
+  kernels: RunningKernel[];
+  taskLabel: (taskId: string) => string;
+  now: number;
+  onInterrupt: (kernelId: string) => void;
+  onRestart: (kernelId: string) => void;
+  /** Present only for a machine the caller owns — the control this renders
    *  must never reach a machine that is not the caller's own. */
   onRemove?: (runtime: Runtime) => void;
 }) {
   const health = HEALTH_META[runtime.health];
+  const summary = kernelSummary(kernels, runtime.health);
+  // Open by default, as the tree this replaced was: a machine holding kernels
+  // is holding them right now, and the reason to look at this screen while
+  // something is running is to see what. A machine holding nothing has no
+  // disclosure at all, so this decides nothing for it.
+  const [open, setOpen] = useState(true);
+  const holding = kernels.length > 0;
+
   return (
-    <li
-      className={cn(
-        "grid items-center gap-3 border-b border-line-soft px-3 py-2.5 text-ui",
-        GRID_COLS,
-      )}
-    >
-      <span className="truncate font-medium text-fg">{runtime.name}</span>
-      <span
-        className={cn("inline-flex items-center gap-1.5", health.textClass)}
-      >
-        <span className={cn("h-2 w-2 shrink-0 rounded-full", health.dotClass)} />
-        {health.label}
-      </span>
-      <span className="tabular-nums text-fg-muted">
-        {formatAgo(runtime.lastSeenTs)}
-      </span>
-      <span className="truncate text-fg-subtle">{runtime.platform}</span>
-      <span className="flex flex-col gap-0.5 text-meta text-fg-tertiary">
-        {/* Absent and empty mean different things here, and an empty cell
-            would read as the second whichever one it was: a machine that is
-            not the caller's own carries no `clis` key at all, because the
-            lab never tells anybody what is on somebody else's PATH. */}
-        {runtime.clis === undefined ? (
-          <span className="text-fg-subtle">
-            Not shown — only the member who paired this machine sees its
-            tools.
-          </span>
-        ) : (
-          <CliInventory clis={runtime.clis} />
-        )}
-      </span>
-      <span className="flex justify-end">
-        {onRemove && (
+    <li className="border-b border-line-soft">
+      <div className={cn("grid items-center gap-3 px-3 py-2.5 text-ui", GRID_COLS)}>
+        {/* The name cell is the disclosure when there is something to
+            disclose. A machine holding nothing keeps the same indent, so the
+            names still line up down the column rather than stepping in and
+            out with whatever happens to be running. */}
+        {holding ? (
           <button
             type="button"
-            onClick={() => onRemove(runtime)}
-            aria-label={`Remove ${runtime.name}`}
-            className="shrink-0 rounded-md border border-line-strong px-2.5 py-1 text-sub text-fg hover:bg-surface"
+            aria-expanded={open}
+            aria-label={`${runtime.name} — ${summary}`}
+            onClick={() => setOpen((o) => !o)}
+            className="-ml-1 flex min-w-0 items-center gap-1.5 rounded-md py-0.5 pl-1 pr-1.5 text-left hover:bg-surface-2"
           >
-            Remove
+            <ChevronDownIcon
+              width={12}
+              height={12}
+              className={cn(
+                "shrink-0 text-fg-tertiary transition-transform",
+                !open && "-rotate-90",
+              )}
+            />
+            <span className="truncate font-medium text-fg">{runtime.name}</span>
           </button>
+        ) : (
+          <span className="truncate pl-[18px] font-medium text-fg">{runtime.name}</span>
         )}
-      </span>
+        <span
+          className={cn("inline-flex items-center gap-1.5", health.textClass)}
+        >
+          <span className={cn("h-2 w-2 shrink-0 rounded-full", health.dotClass)} />
+          {health.label}
+        </span>
+        <span className="tabular-nums text-fg-muted">
+          {formatAgo(runtime.lastSeenTs)}
+        </span>
+        <span className="truncate text-fg-subtle">{runtime.platform}</span>
+        <span className="flex flex-col gap-0.5 text-meta text-fg-tertiary">
+          {/* Absent and empty mean different things here, and an empty cell
+              would read as the second whichever one it was: a machine that is
+              not the caller's own carries no `clis` key at all, because the
+              lab never tells anybody what is on somebody else's PATH. */}
+          {runtime.clis === undefined ? (
+            <span className="text-fg-subtle">
+              Not shown — only the member who paired this machine sees its
+              tools.
+            </span>
+          ) : (
+            <CliInventory clis={runtime.clis} />
+          )}
+          {/* What this machine is holding, under what it can run: the counts
+              the header of the old tree carried, in the one place that now
+              names this machine. */}
+          {summary && <span className="tabular-nums text-fg-muted">{summary}</span>}
+        </span>
+        <span className="flex justify-end">
+          {onRemove && (
+            <button
+              type="button"
+              onClick={() => onRemove(runtime)}
+              aria-label={`Remove ${runtime.name}`}
+              className="shrink-0 rounded-md border border-line-strong px-2.5 py-1 text-sub text-fg hover:bg-surface"
+            >
+              Remove
+            </button>
+          )}
+        </span>
+      </div>
+
+      {/* The kernels themselves, in a list of their own nested in this row —
+          `<li>` is the only child an `<ul>` may have, so the levels below
+          cannot be siblings of the machines they belong to. */}
+      {holding && open && (
+        <ul>
+          <MachineKernels
+            runtime={runtime}
+            kernels={kernels}
+            taskLabel={taskLabel}
+            now={now}
+            onInterrupt={onInterrupt}
+            onRestart={onRestart}
+          />
+        </ul>
+      )}
     </li>
   );
 }
@@ -157,37 +220,79 @@ function RuntimeRow({
 function RuntimeTable({
   label,
   runtimes,
+  kernels,
+  taskLabel,
+  now,
+  meId,
+  onInterrupt,
+  onRestart,
   onRemove,
 }: {
   label: string;
   runtimes: Runtime[];
-  onRemove?: (runtime: Runtime) => void;
+  /** Every kernel the lab can see, across all machines — split per row here
+   *  rather than by the caller, so a machine holding none is not a case
+   *  anybody upstream has to remember to pass. */
+  kernels: RunningKernel[];
+  taskLabel: (taskId: string) => string;
+  now: number;
+  /** Which of these machines are the caller's own. Not a heading any more —
+   *  one roster carries every machine — but still what decides which rows
+   *  may offer Remove, and that is a rule about ownership, never about where
+   *  a row happens to sit. */
+  meId: string;
+  onInterrupt: (kernelId: string) => void;
+  onRestart: (kernelId: string) => void;
+  onRemove: (runtime: Runtime) => void;
 }) {
-  // The heading IS the list's accessible name rather than a second copy of
-  // the same words beside it. Two tables with identical column headers and
-  // nothing between them are indistinguishable on screen, and the split is
-  // the privacy rule made visible — which of these machines are yours.
-  const headingId = useId();
   if (runtimes.length === 0) return null;
   return (
     <section className="mb-4">
-      <BlockTitle id={headingId}>{label}</BlockTitle>
-      <ul aria-labelledby={headingId}>
+      {/* No visible heading: one roster on a screen that is already called
+          Machines, where a title would only say the word again. The name
+          survives as an `aria-label` — with nothing on screen to repeat, it
+          duplicates nothing, and a list of machines still announces as one
+          rather than as an unnamed list. */}
+      <ul aria-label={label}>
         <li
           className={cn(
-            "grid items-center gap-3 border-b border-line px-3 py-2 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary",
+            // `text-nano`, the rung that exists for this line: it names what
+            // each column holds, is read once, and then wants to get out of
+            // the way of the machines, which are what the screen is for. Size
+            // alone did not do it — one rung under the row text is not a step
+            // a reader sees — so the weight comes down to normal and the ink
+            // a shade with it. Tracking goes up as the size comes down, or
+            // small uppercase closes into a block.
+            "grid items-center gap-3 border-b border-line px-3 py-2 text-nano font-normal uppercase tracking-[0.7px] text-fg-subtle",
             GRID_COLS,
           )}
         >
-          <span>Machine</span>
+          {/* Indented past where a disclosure chevron sits, so the label
+              stands over the names rather than over the arrows. */}
+          <span className="pl-[18px]">Machine</span>
           <span>Health</span>
           <span>Last seen</span>
-          <span>Platform</span>
+          {/* What the cell under it actually holds: `macos-aarch64`, an OS and
+              a CPU architecture joined by a dash. "Platform" is the word the
+              contract uses for the field and it names nothing a reader can
+              see — it would just as well head a column of "web" and "desktop". */}
+          <span>OS &amp; arch</span>
           <span>CLIs</span>
           <span />
         </li>
         {runtimes.map((runtime) => (
-          <RuntimeRow key={runtime.id} runtime={runtime} onRemove={onRemove} />
+          <RuntimeRow
+            key={runtime.id}
+            runtime={runtime}
+            kernels={kernels.filter((k) => k.runtimeId === runtime.id)}
+            taskLabel={taskLabel}
+            now={now}
+            onInterrupt={onInterrupt}
+            onRestart={onRestart}
+            // Passed only for a machine the caller owns, so the control
+            // cannot be rendered against somebody else's in the first place.
+            {...(runtime.ownerId === meId ? { onRemove } : {})}
+          />
         ))}
       </ul>
     </section>
@@ -244,7 +349,7 @@ function RemoveMachineModal({
  * Collapsed once the member has a machine, because then it is a chore rather
  * than the reason they are here.
  */
-function AddAComputer({ firstMachine }: { firstMachine: boolean }) {
+function AddAMachine({ firstMachine }: { firstMachine: boolean }) {
   const [open, setOpen] = useState(firstMachine);
   const command = `pnpm daemon --lab ${window.location.origin}`;
 
@@ -259,14 +364,14 @@ function AddAComputer({ firstMachine }: { firstMachine: boolean }) {
         className="mb-4 flex items-center gap-2 rounded-md px-2 py-1.5 text-sub text-fg-muted hover:bg-surface-2 hover:text-fg"
       >
         <MonitorIcon width={14} height={14} />
-        Add a computer
+        Add a machine
       </button>
     );
 
   return (
     <section className="mb-4">
       <BlockTitle>
-        {firstMachine ? "Add your first computer" : "Add a computer"}
+        {firstMachine ? "Add your first machine" : "Add a machine"}
       </BlockTitle>
       <div className="rounded-lg border border-dashed border-line bg-surface p-5">
         {/* Three steps and nothing else. What a daemon is for is answered by
@@ -368,13 +473,26 @@ function Step({
 
 export function RuntimesList({
   runtimes,
+  kernels = [],
+  taskLabel = () => "",
+  now = 0,
   meId,
+  onInterrupt = () => {},
+  onRestart = () => {},
 }: {
   runtimes: Runtime[];
+  /** What the lab can see running, for the rows to open onto. Defaulted, so
+   *  a caller that only wants the roster — and every test that predates the
+   *  kernels living here — still gets one. */
+  kernels?: RunningKernel[];
+  taskLabel?: (taskId: string) => string;
+  now?: number;
   /** `null` while the caller's identity is unknown — not yet answered, or
-   *  the answer failed. The grouped lists need it to sort "yours" from
-   *  everyone else's; the onboarding card below does not. */
+   *  the answer failed. The roster needs it to decide which rows may offer
+   *  Remove; the onboarding card below does not. */
   meId: string | null;
+  onInterrupt?: (kernelId: string) => void;
+  onRestart?: (kernelId: string) => void;
 }) {
   const api = useApi();
   const invalidate = useInvalidateData();
@@ -386,26 +504,35 @@ export function RuntimesList({
     invalidate();
   };
 
-  // The screen around this owns the scroll, so that the kernel tree above and
-  // the environments below move with the roster rather than each holding a
-  // viewport of its own.
+  // The screen around this owns the scroll, so that the roster and the
+  // environments below it move together rather than each holding a viewport
+  // of its own.
   return (
     <div>
       {meId !== null && (
-        <>
-          <RuntimeTable
-            label="Your machines"
-            runtimes={runtimes.filter((r) => r.ownerId === meId)}
-            onRemove={setPendingRemove}
-          />
-          <RuntimeTable
-            label="Lab's machines"
-            runtimes={runtimes.filter((r) => r.ownerId !== meId)}
-          />
-        </>
+        <RuntimeTable
+          label="Lab's machines"
+          // One roster: the lab's machines are the lab's, and splitting them
+          // into "yours" and "theirs" made a heading out of something every
+          // row already says for itself — a Remove control, and a CLIs cell
+          // that reads "not shown" on a machine that is not the caller's.
+          // The caller's own still read first, so the machines they can act
+          // on do not have to be hunted for in a roster of somebody else's.
+          runtimes={[
+            ...runtimes.filter((r) => r.ownerId === meId),
+            ...runtimes.filter((r) => r.ownerId !== meId),
+          ]}
+          kernels={kernels}
+          taskLabel={taskLabel}
+          now={now}
+          meId={meId}
+          onInterrupt={onInterrupt}
+          onRestart={onRestart}
+          onRemove={setPendingRemove}
+        />
       )}
 
-      <AddAComputer
+      <AddAMachine
         // The first machine is onboarding; the second is a chore. Somebody
         // with none is on this screen to be told what to do, so the steps
         // are the page. Somebody who already has one came for the roster,

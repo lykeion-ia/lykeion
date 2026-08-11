@@ -12,9 +12,11 @@ import {
   postRunLive,
   postRunReverted,
   postRunSnapshot,
+  postTaskTitle,
   type KernelCellReport,
   type RunCommand,
 } from "./lab";
+import { namingDir, summarizeTask } from "./naming";
 import { createRetryLoop } from "./retry";
 import { ensureTaskDir } from "./workspace";
 import { confinementFor } from "./agent-home";
@@ -170,6 +172,9 @@ export function startRuns(options: {
   const commandsController = new AbortController();
   const eventsController = new AbortController();
   let stopped = false;
+  /** Whether a naming session is running right now. One at a time, lab-wide
+   *  — see `handleNameTask`. */
+  let naming = false;
   // Set by the retry loop's `onRefused`: no amount of retrying fixes a
   // machine the lab has explicitly revoked, so this is what stops
   // `connectLoop` from opening the command stream again.
@@ -1179,6 +1184,57 @@ export function startRuns(options: {
       );
   }
 
+  /**
+   * Summarize a Task's opening message into a name for it, answered back to
+   * the lab's own `name-task` ask.
+   *
+   * One at a time, lab-wide. Opening a chat is a burst activity — a
+   * researcher who has just sat down opens four — and each of these launches
+   * an agent CLI, so without this a moment of enthusiasm forks four model
+   * processes on their laptop while they are waiting on the first real turn.
+   * A naming that arrives while one is already running is declined outright
+   * rather than queued: the lab is holding a call open on it, and a Task that
+   * keeps its prompt-derived name has lost nothing worth making anyone wait
+   * for.
+   *
+   * Nothing here touches the run path. A naming that fails, hangs or is
+   * declined is answered `null` and forgotten; no session it opens is ever
+   * installed in `liveSessions`, so `stop`, `cancel` and the queueing that
+   * serialises real turns are all indifferent to it.
+   */
+  function handleNameTask(command: RunCommand): void {
+    const requestId = command.runId;
+    const { agent, prompt } = command;
+    const answer = (title: string | null): void => {
+      void postTaskTitle(options.lab, options.token, requestId, title, eventsController.signal).catch(
+        () => {
+          // The lab's own wait covers this: an answer that never lands leaves
+          // the Task named as it already was, which is where a failure here
+          // leaves it too.
+        },
+      );
+    };
+    if (prompt === undefined || agent === undefined || naming || stopped) return answer(null);
+    // The same lookup a run resolves through, so naming is never launched
+    // through a program probing did not vet.
+    const adapter = options.adapterFor(agent);
+    if (adapter === undefined) return answer(null);
+
+    naming = true;
+    void summarizeTask({
+      adapter,
+      agent,
+      prompt,
+      cwd: namingDir(options.workDir),
+      dataDir: options.dataDir,
+      ...(options.platform === undefined ? {} : { platform: options.platform }),
+    })
+      .then(answer, () => answer(null))
+      .finally(() => {
+        naming = false;
+      });
+  }
+
   function handleCommand(seq: number, command: RunCommand): void {
     lastCommandSeq = seq;
     if (command.type === "start-run") return handleStartRun(command);
@@ -1189,6 +1245,7 @@ export function startRuns(options: {
     if (command.type === "kernel-restart") return handleKernelRestart(command);
     if (command.type === "kernel-execute") return handleKernelExecute(command);
     if (command.type === "kernel-list") return handleKernelList(command);
+    if (command.type === "name-task") return handleNameTask(command);
   }
 
   const retries = createRetryLoop({

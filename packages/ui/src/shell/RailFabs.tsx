@@ -26,7 +26,7 @@ export function RailFabs({
         title="Navigation"
         onClick={() => onChange("nav")}
       >
-        <Icon name="sidebar" size={16} />
+        <Icon name="sidebar" size={20} />
       </button>
       <button
         type="button"
@@ -36,7 +36,7 @@ export function RailFabs({
         title="Task details"
         onClick={() => onChange("context")}
       >
-        <Icon name="chat" size={16} />
+        <Icon name="chat" size={20} />
       </button>
     </div>
   );

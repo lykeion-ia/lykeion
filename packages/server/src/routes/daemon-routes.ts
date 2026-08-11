@@ -145,20 +145,86 @@ function parseClis(entries: unknown[]): ReportedCli[] {
   return out;
 }
 
-/** Whether two CLI sets differ, compared on `(cli_id, version, available,
- *  sessionReady)` — a name or command changing without any of those is not a
- *  fact this lab needs to hear about again. */
+/**
+ * Whether two CLI sets differ, compared on `(cli_id, version, available,
+ * sessionReady, options)` — a name or command changing without any of those
+ * is not a fact this lab needs to hear about again.
+ *
+ * The options are in the comparison for the same reason the daemon's own
+ * `cliFingerprint` counts them, and the two gates have to agree or the
+ * report the daemon took care to send dies on arrival. A probe that reaches
+ * an adapter but cannot open a throwaway session — a cold start, a CLI not
+ * signed in — reports the agent ready with its options UNKNOWN, an ordinary
+ * outcome; the probe that opens one later reports the whole catalogue with
+ * every other field identical. Compared without the options, that second
+ * report reads as a repeat of the first: the row IS rewritten, but nothing
+ * is announced, so every page already open keeps the snapshot it loaded and
+ * goes on offering a bare *Default* against an agent with a catalogue to
+ * give. Nothing else corrects it — a real session reads what the agent
+ * advertises but keeps it to itself — so the researcher's only way out is a
+ * reload they have no reason to know they need.
+ *
+ * Compared as the column stores them, which is what the daemon sent: a
+ * repeated report re-serializes the same body to the same text. An agent
+ * that advertised nothing (`[]`) and one no session could be opened against
+ * (`null`) are different answers here, as they are everywhere else.
+ */
 function cliSetChanged(
-  stored: Array<{ cliId: string; version: string; available: boolean; sessionReady: boolean }>,
+  stored: StoredCli[],
   reported: ReportedCli[],
+  optionsOf: (cli: ReportedCli) => string | null,
 ): boolean {
   if (stored.length !== reported.length) return true;
-  const key = (id: string, version: string, available: boolean, sessionReady: boolean) =>
-    `${id} ${version} ${available} ${sessionReady}`;
+  // Keyed as JSON rather than a delimited string: a version is free-form and
+  // routinely holds spaces ("2.1.226 (Claude Code)"), so a separator that can
+  // occur inside a field cannot be what tells the fields apart.
+  const key = (
+    id: string,
+    version: string,
+    available: boolean,
+    sessionReady: boolean,
+    options: string | null,
+  ) => JSON.stringify([id, version, available, sessionReady, options]);
   const storedKeys = new Set(
-    stored.map((row) => key(row.cliId, row.version, row.available, row.sessionReady)),
+    stored.map((row) => key(row.cliId, row.version, row.available, row.sessionReady, row.options)),
   );
-  return reported.some((cli) => !storedKeys.has(key(cli.id, cli.version, cli.available, cli.sessionReady)));
+  return reported.some(
+    (cli) => !storedKeys.has(key(cli.id, cli.version, cli.available, cli.sessionReady, optionsOf(cli))),
+  );
+}
+
+interface StoredCli {
+  cliId: string;
+  version: string;
+  available: boolean;
+  sessionReady: boolean;
+  options: string | null;
+}
+
+/**
+ * What each agent's options column should hold after this report — the one
+ * answer the comparison above and the insert below both read, so they can
+ * never disagree about what "unchanged" means.
+ *
+ * A report that says nothing about what an agent offers leaves standing
+ * whatever this lab was last told. UNKNOWN is the ABSENCE of information and
+ * must never replace information: `session/new` against a real CLI
+ * authenticates and enumerates, which is slow enough to sit near the probe's
+ * own timeout and is slowest exactly when the machine is busy — that is,
+ * while somebody is using this product. Written straight through, one such
+ * probe wipes a catalogue the lab holds perfectly good, and the composer
+ * drops to a bare *Default* until some later probe happens to succeed. That
+ * is the picker emptying itself for no reason a researcher did anything to
+ * cause, and no reason they can act on.
+ *
+ * An EMPTY list is not that. It is an agent that opened a session and offered
+ * nothing, which is an answer, and it lands — otherwise an agent that drops
+ * its options would go on advertising a catalogue it no longer has.
+ */
+function optionsKeeper(stored: StoredCli[]): (cli: ReportedCli) => string | null {
+  const held = new Map(stored.map((row) => [row.cliId, row.options]));
+  return (cli) =>
+    cli.options === undefined ? (held.get(cli.id) ?? null) : JSON.stringify(cli.options);
 }
 
 /**
@@ -313,21 +379,25 @@ function report(req: DaemonRequest): DaemonResult {
       machine.runtimeId,
     ])!;
     const existing = store
-      .all(`SELECT cli_id, version, available, session_ready FROM runtime_clis WHERE runtime_id = ?`, [
-        machine.runtimeId,
-      ])
+      .all(
+        `SELECT cli_id, version, available, session_ready, options FROM runtime_clis WHERE runtime_id = ?`,
+        [machine.runtimeId],
+      )
       .map((row) => ({
         cliId: row.cli_id as string,
         version: row.version as string,
         available: row.available === 1,
         sessionReady: row.session_ready === 1,
+        options: (row.options as string | null) ?? null,
       }));
 
     const metaChanged =
       current.platform !== platform ||
       current.daemon_version !== daemonVersion ||
       current.capabilities !== capabilitiesJson;
-    const changed = metaChanged || cliSetChanged(existing, clis);
+    // Read once, before the delete below takes the rows this reads from out.
+    const optionsFor = optionsKeeper(existing);
+    const changed = metaChanged || cliSetChanged(existing, clis, optionsFor);
 
     store.run(
       `UPDATE runtimes SET platform = ?, daemon_version = ?, capabilities = ?, last_seen_ts = ? WHERE id = ?`,
@@ -350,9 +420,10 @@ function report(req: DaemonRequest): DaemonResult {
           cli.sessionReady ? 1 : 0,
           cli.sessionReadyReason ?? null,
           // An empty list and no list at all are different answers, so an
-          // agent that advertised nothing is stored as `[]` and one no
-          // session could be opened against stays NULL.
-          cli.options === undefined ? null : JSON.stringify(cli.options),
+          // agent that advertised nothing is stored as `[]` while one no
+          // session could be opened against keeps whatever this lab already
+          // held — NULL only when it never held anything.
+          optionsFor(cli),
           nextSeq(store),
         ],
       );

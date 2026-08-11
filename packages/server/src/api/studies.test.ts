@@ -9,6 +9,7 @@ import { createChannel } from "../channel";
 import { createRunRelay } from "../run-relay";
 import { createRevertRegistry } from "../run-revert";
 import { createKernelListRegistry } from "../kernel-list-registry";
+import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
 import { changeRecorder } from "./changes";
 import { studiesApi } from "./studies";
@@ -71,7 +72,7 @@ function depsFor(store: Store): Deps {
     channel,
     runs: createRunRelay(),
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), pendingCells: createPendingCells(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
     changes: changeRecorder({ store, actorId: actor.userId, now: () => NOW, channel }),
   };
 }

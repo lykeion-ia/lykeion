@@ -69,9 +69,22 @@ describe("the Study page", () => {
     ).toHaveAttribute("href", "#/studies");
 
     // The strip the trail sits in, which is what fixes where it lands on the
-    // page. Held across the click below: a second strip built by hand on one
-    // side of the hand-off is how the crumb ends up a few pixels off.
-    const strip = crumb().parentElement!.className;
+    // page — its height, its padding, its alignment. Held across the click
+    // below: a second strip built by hand on one side of the hand-off is how
+    // the crumb ends up a few pixels off.
+    //
+    // Everything BUT the layout mode, which the two surfaces are entitled to
+    // differ on: the Task surface lays its strip out in three tracks so the
+    // open-Task tabs can sit on the conversation's own column, where the Study
+    // page needs no more than a flex line. That choice moves the tabs. What it
+    // must not move is the trail, and the classes compared here are the ones
+    // that decide.
+    const geometry = (el: Element) =>
+      el.className
+        .split(" ")
+        .filter((c) => c !== "flex" && c !== "crumb-strip--banded")
+        .join(" ");
+    const strip = geometry(crumb().parentElement!);
 
     // The trail is the same one the Task surface shows, so the strip reads
     // unchanged across the click that opens a run.
@@ -81,7 +94,7 @@ describe("the Study page", () => {
     expect(
       within(crumb()).getByRole("link", { name: "Studies" }),
     ).toHaveAttribute("href", "#/studies");
-    expect(crumb().parentElement!.className).toBe(strip);
+    expect(geometry(crumb().parentElement!)).toBe(strip);
   });
 
   it("takes the Study's name in a Task's breadcrumb back up to the Study", async () => {

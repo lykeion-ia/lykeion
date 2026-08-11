@@ -25,6 +25,8 @@
      so without the pair that declaration is invalid and the line-height
      quietly falls back to whatever it inherits. */
   --text-*: initial;
+  --text-nano: var(--type-nano);
+  --text-nano--line-height: var(--type-nano--lh);
   --text-micro: var(--type-micro);
   --text-micro--line-height: var(--type-micro--lh);
   --text-meta: var(--type-meta);

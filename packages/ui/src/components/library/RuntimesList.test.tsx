@@ -110,16 +110,25 @@ it("says a machine has nothing installed rather than counting silently to itself
   expect(screen.queryByText(/claude/i)).toBeNull();
 });
 
-it("separates your machines from the rest of the lab", () => {
+it("lists every machine in the lab on one roster, the caller's own first", () => {
   renderList(
-    [machine(), machine({ id: "rt_2", name: "bo-workstation", ownerId: "u_bo" })],
+    [
+      machine({ id: "rt_2", name: "bo-workstation", ownerId: "u_bo" }),
+      machine(),
+    ],
     "u_you",
   );
-  const yours = screen.getByRole("list", { name: "Your machines" });
-  expect(within(yours).getByText("ana-macbook")).toBeInTheDocument();
-  expect(within(yours).queryByText("bo-workstation")).toBeNull();
-  const elsewhere = screen.getByRole("list", { name: "Lab's machines" });
-  expect(within(elsewhere).getByText("bo-workstation")).toBeInTheDocument();
+  const roster = screen.getByRole("list", { name: "Lab's machines" });
+  expect(within(roster).getByText("ana-macbook")).toBeInTheDocument();
+  expect(within(roster).getByText("bo-workstation")).toBeInTheDocument();
+  // Ordered rather than merely present: the machines a researcher can act on
+  // read first, even when the lab hands them back the other way round.
+  const names = within(roster)
+    .getAllByRole("listitem")
+    .map((row) => row.textContent ?? "");
+  expect(names.findIndex((t) => t.includes("ana-macbook"))).toBeLessThan(
+    names.findIndex((t) => t.includes("bo-workstation")),
+  );
 });
 
 it("says nothing about what is installed on somebody else's machine", () => {
@@ -129,32 +138,23 @@ it("says nothing about what is installed on somebody else's machine", () => {
   expect(screen.queryByText(/not installed/i)).toBeNull();
 });
 
-it("gives each group a heading a sighted researcher can read, and names the list by it rather than by a second copy", () => {
+it("carries no heading over the roster, and still announces the list as one of machines", () => {
   renderList(
     [machine(), machine({ id: "rt_2", name: "bo-workstation", ownerId: "u_bo" })],
     "u_you",
   );
 
-  // Visible, and a heading — not an aria-label the screen never shows. Two
-  // tables carrying the same column headers are otherwise identical on
-  // screen, and which one is yours is the whole point of the split.
-  const mine = screen.getByRole("heading", { name: "Your machines" });
-  const theirs = screen.getByRole("heading", { name: "Lab's machines" });
-  expect(mine).toBeVisible();
-  expect(theirs).toBeVisible();
+  // Nothing titles the roster on screen — not the heading the yours/theirs
+  // split used to carry, and not the merged one that replaced it.
+  expect(screen.queryByRole("heading", { name: "Your machines" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "Lab's machines" })).toBeNull();
 
-  // The heading IS the list's accessible name. Were it a separate
-  // `aria-label`, the words would exist twice and be announced twice; this
-  // asserts the list is named by that very element.
-  const yours = screen.getByRole("list", { name: "Your machines" });
-  expect(yours.getAttribute("aria-labelledby")).toBe(mine.id);
-  expect(yours.getAttribute("aria-label")).toBeNull();
-  expect(mine.id).not.toBe("");
-  expect(
-    screen.getByRole("list", { name: "Lab's machines" }).getAttribute(
-      "aria-labelledby",
-    ),
-  ).toBe(theirs.id);
+  // The name survives where it costs nothing to see: with no visible title
+  // to repeat, an `aria-label` duplicates nothing, and the alternative is a
+  // list of machines that announces as an unnamed list.
+  const roster = screen.getByRole("list", { name: "Lab's machines" });
+  expect(roster.getAttribute("aria-label")).toBe("Lab's machines");
+  expect(roster.getAttribute("aria-labelledby")).toBeNull();
 });
 
 it("says a colleague's tools are withheld rather than leaving the column blank", () => {
@@ -198,7 +198,7 @@ it("says the version is unknown for an installed command that would not name its
 it("carries the command itself, addressed to this lab, and promises nothing it cannot do", () => {
   renderList([], "u_you");
 
-  const card = screen.getByRole("heading", { name: "Add your first computer" }).closest("section");
+  const card = screen.getByRole("heading", { name: "Add your first machine" }).closest("section");
   expect(card).not.toBeNull();
   // A file name is not somewhere a browser can go, so the card has to carry
   // the command itself — filled in with this lab's own address, which is the
@@ -228,7 +228,7 @@ it("says a browser tab is coming, because nothing else will", () => {
   // opens, from a command typed in a terminal, and reads as unrelated.
   renderList([], "u_you");
 
-  const card = screen.getByRole("heading", { name: "Add your first computer" }).closest("section");
+  const card = screen.getByRole("heading", { name: "Add your first machine" }).closest("section");
   expect(card).toHaveTextContent(/setup page opens in your browser/i);
   expect(card).toHaveTextContent(/approve the request back here/i);
 });
@@ -238,21 +238,21 @@ it("steps out of the way once the member has a machine of their own", () => {
   // the loudest thing on a page whose subject is now the table above it.
   renderList([machine({ ownerId: "u_you" })], "u_you");
 
-  expect(screen.queryByText("Add your first computer")).toBeNull();
+  expect(screen.queryByText("Add your first machine")).toBeNull();
   expect(screen.queryByText(/setup page opens in your browser/i)).toBeNull();
   // Still reachable — a second machine is a real thing to want.
-  expect(screen.getByRole("button", { name: "Add a computer" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Add a machine" })).toBeInTheDocument();
 });
 
 it("reopens the steps on request, for a second machine", async () => {
   const user = userEvent.setup();
   renderList([machine({ ownerId: "u_you" })], "u_you");
 
-  await user.click(screen.getByRole("button", { name: "Add a computer" }));
+  await user.click(screen.getByRole("button", { name: "Add a machine" }));
 
   // Not "your first" this time: the wording follows what is actually true.
   expect(
-    screen.getByRole("heading", { name: "Add a computer" }),
+    screen.getByRole("heading", { name: "Add a machine" }),
   ).toBeInTheDocument();
   expect(screen.getByText(/setup page opens in your browser/i)).toBeInTheDocument();
 });
@@ -261,7 +261,7 @@ it("keeps asking a member whose colleagues have machines but who has none", () =
   // Runtimes are owned, and only the member who paired one can run on it.
   renderList([machine({ ownerId: "u_them" })], "u_you");
 
-  expect(screen.getByText("Add your first computer")).toBeInTheDocument();
+  expect(screen.getByText("Add your first machine")).toBeInTheDocument();
 });
 
 it("offers Remove on your own machine and on none of the lab's others", () => {
@@ -269,13 +269,15 @@ it("offers Remove on your own machine and on none of the lab's others", () => {
     [machine(), machine({ id: "rt_2", name: "bo-workstation", ownerId: "u_bo" })],
     "u_you",
   );
-  const yours = screen.getByRole("list", { name: "Your machines" });
+  // One roster now holds both, so which row offers Remove is the only thing
+  // separating them — the privacy rule has to hold on ownership alone, with
+  // no heading left to carry it.
+  const roster = screen.getByRole("list", { name: "Lab's machines" });
   expect(
-    within(yours).getByRole("button", { name: /Remove ana-macbook/i }),
+    within(roster).getByRole("button", { name: /Remove ana-macbook/i }),
   ).toBeInTheDocument();
-  const elsewhere = screen.getByRole("list", { name: "Lab's machines" });
   expect(
-    within(elsewhere).queryByRole("button", { name: /Remove bo-workstation/i }),
+    within(roster).queryByRole("button", { name: /Remove bo-workstation/i }),
   ).toBeNull();
 });
 

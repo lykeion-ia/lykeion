@@ -12,6 +12,12 @@ import { ChevronDownIcon } from "../icons";
  * would put a researcher's own kernel and a colleague's beside each other with
  * nothing between them.
  *
+ * The top level is not here. It is the roster row in `RuntimesList`, which a
+ * machine's kernels now open out of — one list on this screen instead of a
+ * tree of running machines above a table of all of them, which named every
+ * busy machine twice and made a reader match the two by eye. What this module
+ * owns is everything under that row: the Task grouping and the kernel rows.
+ *
  * Every figure here is what the machine holding the kernel reported, and no
  * figure is invented to fill a column. A machine reports no memory or
  * processor use at all today, so those columns read `—` on every row: that is
@@ -225,7 +231,19 @@ function TaskGroup({
   );
 }
 
-function MachineGroup({
+/**
+ * One machine's kernels, grouped by the Task running them — the two inner
+ * levels of the tree, rendered as `<li>`s for the roster's own list.
+ *
+ * The machine level above them is the roster row this nests inside: that row
+ * already names the machine, says whether it is answering and when it was
+ * last seen, so a header of our own here would say the name twice and put a
+ * second, poorer summary of the same machine directly above the first. What
+ * the row cannot say on its own is how many kernels are under it and how
+ * many are working — `kernelSummary` is that sentence, rendered up there
+ * beside the name rather than down here.
+ */
+export function MachineKernels({
   runtime,
   kernels,
   taskLabel,
@@ -240,9 +258,6 @@ function MachineGroup({
   onInterrupt: (kernelId: string) => void;
   onRestart: (kernelId: string) => void;
 }) {
-  const [open, setOpen] = useState(true);
-  const running = kernels.filter((k) => stateOf(k, runtime.health) === "running").length;
-
   const byTask = useMemo(() => {
     const groups = new Map<string, RunningKernel[]>();
     for (const kernel of kernels) {
@@ -254,119 +269,57 @@ function MachineGroup({
   }, [kernels]);
 
   return (
-    <li>
-      <ul>
-        <li className="border-b border-line">
-          <button
-            type="button"
-            aria-expanded={open}
-            onClick={() => setOpen((o) => !o)}
-            className="flex w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-surface-2"
-          >
-            <ChevronDownIcon
-              width={12}
-              height={12}
-              className={cn(
-                "shrink-0 text-fg-tertiary transition-transform",
-                !open && "-rotate-90",
-              )}
-            />
-            <span className="min-w-0 flex-1 truncate text-sub font-medium text-fg">
-              {runtime.name}
-            </span>
-            {/* Memory and processor use per machine are figures nothing on
-                this machine reports, and a totals row built out of them would
-                be arithmetic over nothing. The kernel count IS known — it is
-                the number of rows below — so that is what the header says. */}
-            <span className="shrink-0 text-meta tabular-nums text-fg-tertiary">
-              {formatBytes(undefined)} memory · {formatCores(undefined)} cores ·{" "}
-              {kernels.length === 1 ? "1 kernel" : `${kernels.length} kernels`}
-              {" · "}
-              {running} running
-            </span>
-          </button>
-        </li>
-        {open &&
-          byTask.map(([taskId, held]) => (
-            <TaskGroup
-              key={taskId}
-              label={taskLabel(taskId)}
-              kernels={held}
-              health={runtime.health}
-              now={now}
-              onInterrupt={onInterrupt}
-              onRestart={onRestart}
-            />
-          ))}
-      </ul>
-    </li>
+    <>
+      {byTask.map(([taskId, held]) => (
+        <TaskGroup
+          key={taskId}
+          label={taskLabel(taskId)}
+          kernels={held}
+          health={runtime.health}
+          now={now}
+          onInterrupt={onInterrupt}
+          onRestart={onRestart}
+        />
+      ))}
+    </>
   );
 }
 
 /**
- * Every kernel this lab can currently see, under the machine holding it.
+ * What a machine is holding, in the few words that fit beside its name on the
+ * roster row: how many kernels, and how many of them are actually working.
  *
- * Machines with no kernels are not listed: this is a view of what is running,
- * and the roster below it is where a machine that is holding nothing belongs.
+ * Memory and processor use per machine are deliberately not here. Nothing on
+ * a machine reports either one today, so a total built from them would be
+ * arithmetic over nothing — which is why the header this replaced spent half
+ * its width on two em dashes. The counts ARE known: they are the rows this
+ * row opens onto.
+ *
+ * Empty for a machine holding nothing, so the roster says nothing at all
+ * rather than "0 kernels" against every machine that is simply idle.
  */
-export function KernelTree({
-  runtimes,
-  kernels,
-  tasks,
-  studies,
-  now,
-  onInterrupt,
-  onRestart,
-}: {
-  runtimes: Runtime[];
-  kernels: RunningKernel[];
-  tasks: Task[];
-  studies: Study[];
-  now: number;
-  onInterrupt: (kernelId: string) => void;
-  onRestart: (kernelId: string) => void;
-}) {
-  const taskLabel = useMemo(() => {
-    const studyOf = new Map(studies.map((s) => [s.id, s]));
-    const byId = new Map(tasks.map((t) => [t.id, t]));
-    return (taskId: string): string => {
-      const task = byId.get(taskId);
-      // A Task this lab cannot name is named as one it cannot name. Its id is
-      // a word this lab minted for itself, and printing it here would read as
-      // a title.
-      if (!task) return "A Task not in this list";
-      const study = task.studyId ? studyOf.get(task.studyId) : undefined;
-      const number = study ? `${study.key}-${task.number}` : `TSK-${task.number}`;
-      return study ? `${study.title} › ${number} ${task.title}` : `${number} ${task.title}`;
-    };
-  }, [tasks, studies]);
-
-  const holding = runtimes
-    .map((runtime) => ({
-      runtime,
-      kernels: kernels.filter((k) => k.runtimeId === runtime.id),
-    }))
-    .filter((group) => group.kernels.length > 0);
-
-  if (holding.length === 0) return null;
-
-  return (
-    <section className="mb-4">
-      <ul>
-        {holding.map(({ runtime, kernels: held }) => (
-          <MachineGroup
-            key={runtime.id}
-            runtime={runtime}
-            kernels={held}
-            taskLabel={taskLabel}
-            now={now}
-            onInterrupt={onInterrupt}
-            onRestart={onRestart}
-          />
-        ))}
-      </ul>
-    </section>
-  );
+export function kernelSummary(kernels: RunningKernel[], health: Runtime["health"]): string {
+  if (kernels.length === 0) return "";
+  const count = kernels.length === 1 ? "1 kernel" : `${kernels.length} kernels`;
+  const running = kernels.filter((k) => stateOf(k, health) === "running").length;
+  return running > 0 ? `${count} · ${running} running` : count;
 }
 
-export default KernelTree;
+/**
+ * Names for the tree's middle level: a Task as a researcher would recognise
+ * it, built once for a whole render rather than per kernel.
+ */
+export function taskLabeller(tasks: Task[], studies: Study[]): (taskId: string) => string {
+  const studyOf = new Map(studies.map((s) => [s.id, s]));
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  return (taskId: string): string => {
+    const task = byId.get(taskId);
+    // A Task this lab cannot name is named as one it cannot name. Its id is
+    // a word this lab minted for itself, and printing it here would read as
+    // a title.
+    if (!task) return "A Task not in this list";
+    const study = task.studyId ? studyOf.get(task.studyId) : undefined;
+    const number = study ? `${study.key}-${task.number}` : `TSK-${task.number}`;
+    return study ? `${study.title} › ${number} ${task.title}` : `${number} ${task.title}`;
+  };
+}

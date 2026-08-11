@@ -49,6 +49,7 @@ import type { ErrorCode } from "./errors";
 import type { RunEvent } from "./run";
 import { MAX_TURNS_OUTSTANDING } from "./run";
 import { MAX_AVATAR_BYTES } from "./account";
+import { titleFromPrompt } from "./task-title";
 
 /** A real 1×1 PNG, as a data URL. The avatar tests need bytes an
  *  implementation would actually accept, not a plausible-looking string. */
@@ -787,6 +788,82 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
       );
       // Unfiled sorts after every filed Task, however low its number.
       expect(ids.indexOf(loose.id)).toBe(ids.length - 1);
+    });
+  });
+}
+
+export function taskNamingConformance(makeApi: () => Promise<LykeionApi>): void {
+  describe("naming a Task after the message that started it", () => {
+    // What every implementation owes here is narrow on purpose. Whether a
+    // summary is produced at all depends on a machine being paired and an
+    // agent CLI answering, which a conformance lab has no business requiring
+    // — so nothing below asserts that a Task *was* renamed, or what it was
+    // renamed to. What is held to is the shape of the answer: `null` means
+    // the Task kept its name, a string means the Task now has that exact
+    // name, and neither the guards nor the error are optional.
+
+    it("answers null and changes nothing when the Task carries a name a person gave it", async () => {
+      // The whole safety property of naming: a summary that lands on a Task
+      // somebody has already named is dropped, not applied. Without this, a
+      // researcher who renames a chat in the seconds after sending it watches
+      // their name get overwritten by a machine.
+      const api = await makeApi();
+      const study = await api.createStudy({ title: "Naming", key: "NAM" });
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "background",
+        title: "A name I chose myself",
+      });
+
+      expect(
+        await api.nameTask({
+          taskId: task.id,
+          prompt:
+            "Use the live Python kernel and run one cell that sets values = list(range(30)) and prints each one.",
+        }),
+      ).toBeNull();
+      expect((await api.getTask(task.id)).task.title).toBe("A name I chose myself");
+    });
+
+    it("answers null for a message already short enough to be a title", async () => {
+      const api = await makeApi();
+      const study = await api.createStudy({ title: "Naming", key: "NA2" });
+      const prompt = "Fix the axis labels";
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "background",
+        title: titleFromPrompt(prompt),
+      });
+
+      expect(await api.nameTask({ taskId: task.id, prompt })).toBeNull();
+      expect((await api.getTask(task.id)).task.title).toBe(prompt);
+    });
+
+    it("agrees with itself: what it answers is what the Task is called afterwards", async () => {
+      // The one case that covers an implementation which really does summarize
+      // and one that cannot, without either side having to know which it is.
+      const api = await makeApi();
+      const study = await api.createStudy({ title: "Naming", key: "NA3" });
+      const prompt =
+        "Use the live Python kernel. Run one cell that sets values = list(range(30)) and prints every value on its own line.";
+      const minted = titleFromPrompt(prompt);
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "background",
+        title: minted,
+      });
+
+      const answer = await api.nameTask({ taskId: task.id, prompt });
+      const title = (await api.getTask(task.id)).task.title;
+      if (answer === null) expect(title).toBe(minted);
+      else expect(title).toBe(answer);
+    });
+
+    it("names which Task it could not find", async () => {
+      const api = await makeApi();
+      await expect(
+        api.nameTask({ taskId: "t_nope", prompt: "whatever this was going to be about" }),
+      ).rejects.toMatchObject({ code: "not-found" });
     });
   });
 }
@@ -2074,6 +2151,7 @@ const AREAS = [
   identityConformance,
   studiesConformance,
   tasksConformance,
+  taskNamingConformance,
   taskChatConformance,
   membersConformance,
   conversationsUsageSettingsConformance,
