@@ -14,11 +14,13 @@ import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
+import { markTaskDone } from "../test/task-row-menu";
 
 const STUDY = "s_cmp";
 // The seeded Task that IS a conversation: two turns, and In Review, which is
 // the state Mark Done is offered from.
 const TASK = "t_3";
+const TASK_TITLE = "Preprocess two-photon calcium traces";
 
 beforeEach(cleanup);
 
@@ -40,7 +42,7 @@ describe("re-reading the open Task", () => {
       /Motion-correct the deprivation cohort/i,
     );
 
-    await user.click(await screen.findByRole("button", { name: "Mark Done" }));
+    await markTaskDone(user, TASK_TITLE);
 
     await waitFor(async () =>
       expect((await api.getTask(TASK)).task.status).toBe("done"),

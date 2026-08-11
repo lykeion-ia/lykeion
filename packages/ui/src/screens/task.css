@@ -3421,6 +3421,40 @@ button.run-strip-notebook:hover {
   margin: 4px 5px;
 }
 
+/* The agent named in the Task's breadcrumb strip (`AgentLabel`). Sized to the
+   30px pane toggle it stands beside so the strip keeps one baseline. */
+.task-agent-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: var(--type-sub);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+/* Holds either the brand mark or, for a brand with none bundled, its 2-letter
+   monogram — so both fall on the same box and the name beside them does not
+   shift with which one a Task wears. The muted ink this sets is what a mark
+   falls back to when its brand has no colour of its own to be drawn in;
+   `AgentLabel` overrides it with the brand's ink where there is one. */
+.task-agent-mark {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+}
+
+.task-agent-glyph {
+  width: 14px;
+  height: 14px;
+}
+
 /* CLI switcher — the composer pill + detected-CLIs dropdown. */
 .cli-tile {
   width: 22px;

@@ -117,6 +117,41 @@ describe("TaskSidebar row actions", () => {
     expect(items).toEqual(["Pin", "Rename", "Delete"]);
   });
 
+  it("moves the row's own Task along its lifecycle", async () => {
+    const user = userEvent.setup();
+    const onSetTaskStatus = vi.fn();
+    renderSidebar({
+      tasks: [
+        tk("t_a", "First task"),
+        tk("t_b", "Second task", { status: "in-review" }),
+      ],
+      onSetTaskStatus,
+    });
+
+    await openMenu(user, "Second task");
+    await user.hover(screen.getByRole("menuitem", { name: /^Status/ }));
+    await user.click(screen.getByRole("menuitem", { name: "Done" }));
+
+    expect(onSetTaskStatus).toHaveBeenCalledWith("t_b", "done");
+  });
+
+  it("marks each row with the status that row's own Task is on", async () => {
+    const user = userEvent.setup();
+    renderSidebar({
+      tasks: [
+        tk("t_a", "First task", { status: "todo" }),
+        tk("t_b", "Second task", { status: "in-review" }),
+      ],
+      onSetTaskStatus: vi.fn(),
+    });
+
+    await openMenu(user, "Second task");
+    await user.hover(screen.getByRole("menuitem", { name: /^Status/ }));
+    expect(
+      screen.getByRole("menuitem", { name: /In Review/ }).textContent,
+    ).toContain("Current");
+  });
+
   it("shows only the actions it was given a handler for", async () => {
     const user = userEvent.setup();
     renderSidebar({ onPinTask: vi.fn() });

@@ -14,9 +14,11 @@ import { render, screen, within, cleanup, waitFor } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
+import { currentTaskStatus, markTaskDone } from "../test/task-row-menu";
 
 // CMP-3 is in-review, so it opens straight into the full chat interface.
 const CMP3 = "#/studies/s_cmp/tasks/t_3";
+const CMP3_TITLE = "Preprocess two-photon calcium traces";
 
 beforeEach(cleanup);
 
@@ -83,7 +85,7 @@ describe("Task run surface", () => {
     window.location.hash = CMP3;
     render(<App api={api} />);
 
-    await user.click(await screen.findByRole("button", { name: "Mark Done" }));
+    await markTaskDone(user, CMP3_TITLE);
     await waitFor(async () =>
       expect((await api.getTask("t_3")).task.status).toBe("done"),
     );
@@ -100,8 +102,10 @@ describe("Task run surface", () => {
     await waitFor(async () =>
       expect((await api.getTask("t_3")).task.status).toBe("in-review"),
     );
-    expect(
-      await screen.findByRole("button", { name: "Mark Done" }),
-    ).toBeInTheDocument();
+    // The row menu agrees: the local Done is gone and the Task reads where the
+    // new turn left it, not where the previous body of work ended.
+    await waitFor(async () =>
+      expect(await currentTaskStatus(user, CMP3_TITLE)).toBe("In Review"),
+    );
   });
 });

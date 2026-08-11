@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Study, Task } from "@lykeion/api";
+import type { Study, Task, TaskStatus } from "@lykeion/api";
 import { useApi, useInvalidateData } from "../../api/ApiContext";
 import { StudyFormModal } from "../studies/StudyFormModal";
 import { InlineRename } from "../ui/InlineRename";
@@ -32,6 +32,7 @@ export function TaskSidebar({
   onRenameTask,
   onPinTask,
   onMoveTask,
+  onSetTaskStatus,
   studies,
 }: {
   study: Study;
@@ -51,6 +52,9 @@ export function TaskSidebar({
   onPinTask?: (taskId: string, pinned: boolean) => void;
   /** File a Task under another Study. Omit to drop Move from the menu. */
   onMoveTask?: (taskId: string, studyId: string) => void;
+  /** Move a Task along its lifecycle. Omit to drop Status from the actions
+   *  menu. */
+  onSetTaskStatus?: (taskId: string, status: TaskStatus) => void;
   /** Every Study, as move destinations. This one is dropped from the list. */
   studies?: Study[];
 }) {
@@ -96,6 +100,7 @@ export function TaskSidebar({
           <TaskRowMenu
             title={t.title}
             pinned={!!t.pinned}
+            status={t.status}
             className="tsb-task-actions"
             triggerClassName="tsb-task-kebab"
             studies={studies}
@@ -106,6 +111,11 @@ export function TaskSidebar({
               onMoveTask ? (studyId) => onMoveTask(t.id, studyId) : undefined
             }
             onDelete={onDeleteTask ? () => onDeleteTask(t.id) : undefined}
+            onSetStatus={
+              onSetTaskStatus
+                ? (status) => onSetTaskStatus(t.id, status)
+                : undefined
+            }
           />
         </>
       )}

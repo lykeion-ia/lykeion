@@ -1586,11 +1586,13 @@ export function createInMemoryLab(
           "conflict",
           `task ${input.taskId} already has ${outstanding} turns waiting, which is as far ahead as this lab lets you type`,
         );
-      // Starting genuinely new work after an explicit Done reopens the Task.
-      // This boundary lets completion preserve a later Done written while a
-      // sibling was already running without making Done permanent forever.
+      // A turn in flight IS the work in progress, whatever the Task said
+      // before it started — which is also what reopens a Task after an
+      // explicit Done. One rule rather than two: completion still preserves a
+      // later Done written while a sibling was already running (see
+      // `onComplete`), so Done is neither permanent nor lost.
       const startingTask = tasks.find((task) => task.id === input.taskId);
-      if (startingTask?.status === "done") {
+      if (startingTask && startingTask.status !== "in-progress") {
         startingTask.status = "in-progress";
         startingTask.updatedTs = tick();
       }

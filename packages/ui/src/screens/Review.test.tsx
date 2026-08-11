@@ -4,8 +4,10 @@
  * Opens CMP-3 (in-review, with a seeded high-severity finding) straight into
  * the full chat; the Reviewer's findings render inline in the conversation.
  * Clicking Resolve flips a finding to resolved. The Done-gate is exercised too:
- * Mark Done (in the breadcrumb) is blocked while the high finding is open, then
- * succeeds after resolve. Role/text-based, agnostic to the markup.
+ * Mark Done (in the Task's row menu) is blocked while the high finding is open,
+ * then succeeds after resolve — and the refusal is reported at the head of the
+ * Task surface, wherever the menu that asked was. Role/text-based, agnostic to
+ * the markup.
  */
 
 import { describe, expect, it, beforeEach } from "vitest";
@@ -13,8 +15,10 @@ import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
+import { markTaskDone } from "../test/task-row-menu";
 
 const CMP3 = "#/studies/s_cmp/tasks/t_3";
+const CMP3_TITLE = "Preprocess two-photon calcium traces";
 
 beforeEach(cleanup);
 
@@ -53,9 +57,8 @@ describe("Review", () => {
     window.location.hash = CMP3;
     render(<App api={createInMemoryApi()} />);
 
-    // CMP-3 is In Review, so Mark Done is offered in the breadcrumb.
-    const markDone = await screen.findByRole("button", { name: "Mark Done" });
-    await user.click(markDone);
+    // CMP-3 is In Review, so its row menu offers Mark Done.
+    await markTaskDone(user, CMP3_TITLE);
 
     // The gate blocks with the count message.
     expect(
@@ -70,7 +73,7 @@ describe("Review", () => {
     await screen.findByText("Resolved");
 
     // Now Mark Done succeeds — the block message is gone.
-    await user.click(screen.getByRole("button", { name: "Mark Done" }));
+    await markTaskDone(user, CMP3_TITLE);
     expect(
       screen.queryByText(/unresolved high-severity Reviewer finding/i),
     ).not.toBeInTheDocument();

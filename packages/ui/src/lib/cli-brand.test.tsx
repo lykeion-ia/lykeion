@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cliBrand, cliInk } from "./cli-brand";
+import { cliBrand, cliInk, cliName } from "./cli-brand";
 
 describe("cliBrand", () => {
   it("returns a brand icon component for a known id, plus its colour", () => {
@@ -18,6 +18,22 @@ describe("cliBrand", () => {
     const b = cliBrand("zed-unknown", "Zed");
     expect(b.icon).toBeNull();
     expect(b.mono).toBe("ZE");
+  });
+});
+
+describe("cliName", () => {
+  it("writes a brand's name the way the brand does", () => {
+    // Not title-casing: that produces "Opencode" and "Codebuddy", which are
+    // not what either is called.
+    expect(cliName("opencode")).toBe("OpenCode");
+    expect(cliName("codebuddy")).toBe("CodeBuddy");
+    expect(cliName("codex")).toBe("Codex");
+  });
+
+  it("capitalises an id it has never heard of rather than dropping it", () => {
+    // An unrecognised agent still ran the turn, and a Task on one is not a
+    // Task on none.
+    expect(cliName("weirdtool")).toBe("Weirdtool");
   });
 });
 

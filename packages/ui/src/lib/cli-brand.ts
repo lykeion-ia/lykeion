@@ -41,6 +41,38 @@ const FGS: Record<string, string> = {
   claude: "#ffffff",
 };
 
+/**
+ * How each brand writes its own name. Detection reports a name alongside the
+ * id, and that name is the better source — it comes from the machine that
+ * found the CLI. This is the fallback for when there is no detection to ask:
+ * a Task names the agent a turn RAN on, and that agent need not be installed
+ * on the machine now reading the Task. Capitalisation is the brand's own, not
+ * a rule applied to the id — "OpenCode" and "CodeBuddy" are not what
+ * title-casing produces.
+ */
+const NAMES: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  gemini: "Gemini",
+  copilot: "Copilot",
+  cursor: "Cursor",
+  opencode: "OpenCode",
+  kimi: "Kimi",
+  kiro: "Kiro",
+  qoder: "Qoder",
+  codebuddy: "CodeBuddy",
+  hermes: "Hermes",
+  openclaw: "OpenClaw",
+  pi: "Pi",
+};
+
+/** What to call a CLI known only by its id. An id nobody has a name for is
+ *  capitalised rather than dropped: an unrecognised agent still ran the turn,
+ *  and its id is the truest thing left to call it. */
+export function cliName(id: string): string {
+  return NAMES[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
+}
+
 // Curated 2-letter monos for known ids (badge fallback when there's no icon).
 const MONOS: Record<string, string> = {
   claude: "CC",

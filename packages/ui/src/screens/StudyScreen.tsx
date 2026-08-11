@@ -304,6 +304,7 @@ export function StudyScreen({ studyId }: { studyId: string }) {
             <TaskRowMenu
               title={task.title}
               pinned={!!task.pinned}
+              status={task.status}
               triggerClassName="study-task-kebab"
               studies={studies}
               currentStudyId={studyId}
@@ -311,6 +312,7 @@ export function StudyScreen({ studyId }: { studyId: string }) {
               onRename={() => setRenamingId(task.id)}
               onMove={(destination) => void moveTask(task.id, destination)}
               onDelete={() => setPendingTaskDelete(task)}
+              onSetStatus={(status) => void patchTask(task.id, { status })}
             />
           </span>
         </>

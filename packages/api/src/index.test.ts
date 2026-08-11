@@ -1686,7 +1686,7 @@ describe("a Task's transcript (in-memory)", () => {
     expect(after.lastRunStatus).toBe("ok");
   });
 
-  it("a failed turn still lands on the Task, and leaves its status where it was", async () => {
+  it("a failed turn still lands on the Task, and leaves it started rather than In Review", async () => {
     const { api, study } = await fixture();
     const task = await chatTask(api, study.id, "try it");
     const handle = await api.startRun({
@@ -1708,8 +1708,12 @@ describe("a Task's transcript (in-memory)", () => {
     expect(after.turns).toHaveLength(1);
     expect(after.task.runCount).toBe(1);
     expect(after.task.lastRunStatus).toBe("failed");
-    // ...but only work that actually landed moves the Task on.
-    expect(after.task.status).toBe("todo");
+    // ...but only work that actually landed moves the Task on to In Review,
+    // which is what "waiting to be checked" means and this turn produced
+    // nothing to check. It does not go back to Todo either: Todo is work
+    // nobody has started, and somebody started this. The outcome is
+    // `lastRunStatus`'s to carry; the status carries where the work stands.
+    expect(after.task.status).toBe("in-progress");
   });
 
   it("deleting one Task leaves the Study's other Tasks and their chats alone", async () => {

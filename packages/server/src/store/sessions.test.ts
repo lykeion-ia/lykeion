@@ -1046,6 +1046,45 @@ it("keeps a Task working while a sibling turn is still outstanding", () => {
   expect(store.get(`SELECT status FROM tasks WHERE id = ?`, ["t_1"])?.status).toBe("in-review");
 });
 
+it("a recorded turn puts its Task In Progress, from Todo and from Done alike", () => {
+  // The other half of the rule the test above ends on. A turn in flight IS
+  // the work in progress, whatever the Task said before it started — which is
+  // also what reopens a Task after an explicit Done, since `finishTurn`'s own
+  // `status <> 'done'` guard would otherwise hold it Done for good.
+  const store = freshStore();
+  store.run(
+    `INSERT INTO users (id, email, display_name, password, created_ts, seq)
+     VALUES ('u_1', 'owner@example.test', 'Owner', 'x', 1, ?)`,
+    [nextSeq(store)],
+  );
+  store.run(
+    `INSERT INTO studies (id, key, title, created_by, created_ts, updated_ts, seq)
+     VALUES ('s_1', 'ONE', 'One', 'u_1', 1, 1, ?)`,
+    [nextSeq(store)],
+  );
+  store.run(
+    `INSERT INTO tasks
+       (id, number, study_id, stage, title, status, priority, created_by,
+        created_ts, updated_ts, seq)
+     VALUES ('t_1', 1, 's_1', 'background', 'Never started', 'todo',
+             'no-priority', 'u_1', 1, 1, ?)`,
+    [nextSeq(store)],
+  );
+  const statusNow = () =>
+    store.get(`SELECT status FROM tasks WHERE id = ?`, ["t_1"])?.status;
+
+  const first = freshTurn(store);
+  expect(statusNow()).toBe("in-progress");
+  finishTurn(store, first.turnId, { endedTs: 7, status: "ok" });
+  expect(statusNow()).toBe("in-review");
+
+  store.run(`UPDATE tasks SET status = 'done' WHERE id = 't_1'`);
+  recordTurn(store, {
+    sessionId: first.sessionId, taskId: "t_1", prompt: "more", startedTs: 8,
+  });
+  expect(statusNow()).toBe("in-progress");
+});
+
 it("counts what a Task still has outstanding, so a queue can be bounded and placed", () => {
   const store = freshStore();
   const first = freshTurn(store, { prompt: "first" });

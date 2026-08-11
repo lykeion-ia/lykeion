@@ -54,6 +54,22 @@ describe("promptNeedsSummary — which messages are worth a model call", () => {
     expect(promptNeedsSummary("Fix the labels\nthen re-run it")).toBe(true);
   });
 
+  it("takes a short message that opens in lower case: a name opens like a name", () => {
+    expect(promptNeedsSummary("which skills set have you access to?")).toBe(true);
+  });
+
+  it("declines a short question that already reads as a name — a title may ask something", () => {
+    // `cleanSummaryTitle` keeps a question mark on purpose, as part of a name
+    // a researcher would have typed themselves. The two have to agree: a
+    // question a summary is allowed to END on is one a prompt is allowed to BE.
+    expect(promptNeedsSummary("Why does the kernel stall?")).toBe(false);
+  });
+
+  it("declines one that opens on a character with no case, which says nothing either way", () => {
+    expect(promptNeedsSummary("`fit.py` crashes on load")).toBe(false);
+    expect(promptNeedsSummary("3 cells fail after the merge")).toBe(false);
+  });
+
   it("declines an empty message — there is nothing to summarize", () => {
     expect(promptNeedsSummary("   ")).toBe(false);
   });

@@ -316,8 +316,17 @@ export function runtimeOwnerForTurn(store: Store, turnId: string): string | unde
   return row ? (row.owner_id as string) : undefined;
 }
 
-/** Records a fresh turn — a run — as `running` and returns its id, which is
- *  what the rest of the system calls a run's id. */
+/**
+ * Records a fresh turn — a run — as `running` and returns its id, which is
+ * what the rest of the system calls a run's id.
+ *
+ * The Task moves with it: a turn in flight IS the work in progress, whatever
+ * the Task said before it started, and that is also what reopens a Task after
+ * an explicit Done. Written in the same transaction as the turn, so no reader
+ * can find a running turn whose Task has not moved. `finishTurn` is the other
+ * half — it lands the Task In Review, and its own `status <> 'done'` guard
+ * still preserves a Done written while this run was live.
+ */
 export function recordTurn(
   store: Store,
   params: {
@@ -329,21 +338,27 @@ export function recordTurn(
 ): string {
   const seq = nextSeq(store);
   const id = `run_${seq}`;
-  store.run(
-    `INSERT INTO turns
-       (id, session_id, task_id, prompt, started_ts, status, seq, last_frame_seq, recovery_snapshot)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-    [
-      id,
-      params.sessionId,
-      params.taskId,
-      params.prompt,
-      params.startedTs,
-      "running",
-      seq,
-      JSON.stringify(INITIAL_RECOVERY),
-    ],
-  );
+  store.tx(() => {
+    store.run(
+      `INSERT INTO turns
+         (id, session_id, task_id, prompt, started_ts, status, seq, last_frame_seq, recovery_snapshot)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+      [
+        id,
+        params.sessionId,
+        params.taskId,
+        params.prompt,
+        params.startedTs,
+        "running",
+        seq,
+        JSON.stringify(INITIAL_RECOVERY),
+      ],
+    );
+    store.run(
+      `UPDATE tasks SET status = 'in-progress' WHERE id = ? AND status <> 'in-progress'`,
+      [params.taskId],
+    );
+  });
   return id;
 }
 

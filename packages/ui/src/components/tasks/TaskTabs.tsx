@@ -1,4 +1,5 @@
 import { CrumbStrip } from "../ScreenCrumb";
+import { AgentLabel } from "./AgentLabel";
 import { TaskTabStrip } from "./TaskTabStrip";
 import { cn } from "../../lib/utils";
 import type { Route } from "../../router";
@@ -10,8 +11,12 @@ import type { TaskTab } from "./TaskTabStrip";
  * The full-chat breadcrumb strip. Its geometry is `CrumbStrip`'s, shared with
  * the Study page this surface is opened from, so the trail does not move under
  * the click; what this adds is the load the strip carries — the conversation
- * tabs (+ a Files tab when open), the Task's Mark Done action, and the
+ * tabs (+ a Files tab when open), the agent the Task is talking to, and the
  * top-right menu button that toggles the Files right pane.
+ *
+ * The strip names rather than acts. Which agent a Task is on holds for the
+ * whole page, which is what earns a place at its head; the Task's own actions
+ * are per-Task and live in the row menu that already holds the rest of them.
  *
  * The tabs ride in `CrumbStrip`'s band rather than beside the trail, because
  * they name the conversation directly below them and so sit on ITS column.
@@ -25,9 +30,9 @@ export function TaskTabs({
   activeId,
   onSelect,
   onClose,
-  showMarkDone,
-  onMarkDone,
-  doneError,
+  agent,
+  agentName,
+  statusError,
   rightPaneOpen,
   onToggleRightPane,
   divider = true,
@@ -40,9 +45,14 @@ export function TaskTabs({
   activeId: string;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
-  showMarkDone: boolean;
-  onMarkDone: () => void;
-  doneError: string | null;
+  /** The `AgentCli.id` this Task ran on, absent until a turn has run. */
+  agent?: string;
+  /** What detection calls that CLI, when this machine detected it. */
+  agentName?: string;
+  /** A status write the core refused — the Done-gate, most of the time. The
+   *  strip is where the Task surface says so, wherever the menu that asked
+   *  was. */
+  statusError: string | null;
   rightPaneOpen: boolean;
   /** Toggle the right-hand inspector. Omit where there is nothing for it to
    *  inspect — an unfiled Task has no workspace, so no files and no kernel —
@@ -66,15 +76,7 @@ export function TaskTabs({
           />
         }
       >
-        {showMarkDone && (
-          <button
-            type="button"
-            className="h-7 whitespace-nowrap rounded-md border border-line-strong bg-surface-2 px-2.5 text-sub text-fg-muted hover:bg-surface-3 hover:text-fg"
-            onClick={onMarkDone}
-          >
-            Mark Done
-          </button>
-        )}
+        <AgentLabel agent={agent} name={agentName} />
 
         {onToggleRightPane && (
           <button
@@ -105,9 +107,9 @@ export function TaskTabs({
         )}
       </CrumbStrip>
 
-      {doneError && (
+      {statusError && (
         <p className="px-5 pb-2 text-sub text-danger" role="alert">
-          {doneError}
+          {statusError}
         </p>
       )}
     </div>

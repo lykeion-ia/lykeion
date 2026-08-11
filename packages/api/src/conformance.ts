@@ -1151,6 +1151,125 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
       expect(listed?.agent).toBe(turn!.agent);
     });
 
+    it("a run in flight puts its Task In Progress, and settling puts it In Review", async () => {
+      // The lifecycle a board reads is driven by the work, not by a person
+      // remembering to move a card: a turn in flight IS the work in progress,
+      // and a turn that landed is work waiting to be checked. Without this a
+      // Task sat on Todo through its own first run and jumped straight to In
+      // Review, which no reader could tell from a Task nobody had started.
+      const api = await makeApi();
+      const study = await api.createStudy({ title: "Moves itself", key: "MVS" });
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "Run and settle",
+      });
+      expect((await api.getTask(task.id)).task.status).toBe("todo");
+
+      const handle = await api.startRun({
+        studyId: study.id,
+        taskId: task.id,
+        prompt: "Run and settle",
+        options: { planMode: false },
+      });
+      // Read before the run is driven — `startRun` has already recorded the
+      // turn, so the Task has already moved with it.
+      expect((await api.getTask(task.id)).task.status).toBe("in-progress");
+
+      await new Promise<void>((resolve) => {
+        handle.onEvent((e) => {
+          switch (e.event) {
+            case "plan-proposed":
+              handle.submit({ action: "approve-plan" });
+              break;
+            case "permission-card":
+              handle.submit({
+                action: "permission",
+                requestId: e.request.id,
+                decision: { decision: "allow", scope: "once" },
+              });
+              break;
+            case "question-asked":
+              handle.submit({
+                action: "answer-question",
+                requestId: e.request.requestId,
+                answer: { selected: [] },
+              });
+              break;
+            case "completed":
+              resolve();
+              break;
+            default:
+              break;
+          }
+        });
+      });
+      handle.close();
+
+      expect((await api.getTask(task.id)).task.status).toBe("in-review");
+    });
+
+    it("starting new work on a Done Task reopens it", async () => {
+      // Done is where a body of work ended, not a lid on the Task. Asking it
+      // for something new is the researcher saying there is more, and the
+      // Task rejoins the board — otherwise the completion guard that protects
+      // a Done written mid-run would keep it Done for good.
+      const api = await makeApi();
+      const study = await api.createStudy({ title: "Reopens", key: "ROP" });
+      const task = await api.createTask({
+        studyId: study.id,
+        stage: "methods",
+        title: "Finished, then not",
+      });
+
+      const runToCompletion = async () => {
+        const handle = await api.startRun({
+          studyId: study.id,
+          taskId: task.id,
+          prompt: "More please",
+          options: { planMode: false },
+        });
+        await new Promise<void>((resolve) => {
+          handle.onEvent((e) => {
+            switch (e.event) {
+              case "plan-proposed":
+                handle.submit({ action: "approve-plan" });
+                break;
+              case "permission-card":
+                handle.submit({
+                  action: "permission",
+                  requestId: e.request.id,
+                  decision: { decision: "allow", scope: "once" },
+                });
+                break;
+              case "question-asked":
+                handle.submit({
+                  action: "answer-question",
+                  requestId: e.request.requestId,
+                  answer: { selected: [] },
+                });
+                break;
+              case "completed":
+                resolve();
+                break;
+              default:
+                break;
+            }
+          });
+        });
+        handle.close();
+      };
+
+      await runToCompletion();
+      await api.updateTask(task.id, { status: "done" });
+      expect((await api.getTask(task.id)).task.status).toBe("done");
+
+      await runToCompletion();
+      // In Review, not Done: the second run reopened the Task on the way in,
+      // so its completion had something to move.
+      expect((await api.getTask(task.id)).task.status).toBe("in-review");
+    });
+
     it("detach is observer-only: the same handle can resubscribe and still complete", async () => {
       const api = await makeApi();
       const study = await api.createStudy({ title: "Detach and resume", key: "DAR" });

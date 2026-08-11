@@ -15,10 +15,12 @@ import {
 } from "@lykeion/api";
 import App from "../App";
 import { stashRun } from "../lib/pending-run";
+import { currentTaskStatus } from "../test/task-row-menu";
 
 afterEach(cleanup);
 
 const ROUTE = "#/studies/s_cmp/tasks/t_3";
+const CMP5_TITLE = "Fit orientation tuning curves per neuron";
 
 const CLIS: AgentCli[] = [
   {
@@ -117,9 +119,6 @@ describe("the Task page with recovered live turns", () => {
       "Step 1 of 1",
     );
     expect(within(block).getByText("How deep should Codex go?")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Mark Done" }),
-    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
 
@@ -298,9 +297,9 @@ describe("the Task page with recovered live turns", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("live-turn")).not.toBeInTheDocument(),
     );
-    expect(
-      await screen.findByRole("button", { name: "Mark Done" }),
-    ).toBeInTheDocument();
+    expect(await currentTaskStatus(userEvent.setup(), CMP5_TITLE)).toBe(
+      "In Review",
+    );
   });
 
   it("does not let an older delayed Task query overwrite the reconciled completion status", async () => {
@@ -370,14 +369,16 @@ describe("the Task page with recovered live turns", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("live-turn")).not.toBeInTheDocument(),
     );
-    expect(
-      await screen.findByRole("button", { name: "Mark Done" }),
-    ).toBeInTheDocument();
+    expect(await currentTaskStatus(userEvent.setup(), CMP5_TITLE)).toBe(
+      "In Review",
+    );
 
     await act(async () => resolveOldRead(stale));
 
-    expect(
-      screen.getByRole("button", { name: "Mark Done" }),
-    ).toBeInTheDocument();
+    // The stale read carried the pre-completion status; the row still reads
+    // the reconciled one.
+    expect(await currentTaskStatus(userEvent.setup(), CMP5_TITLE)).toBe(
+      "In Review",
+    );
   });
 });

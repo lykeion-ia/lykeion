@@ -25,9 +25,11 @@
  *  and starts being scanned over. */
 export const PROMPT_TITLE_MAX = 80;
 
-/** At or under this, a single-line message IS its own title: "Fix the axis
- *  labels" cannot be improved by summarizing it, and spending an agent's cold
- *  start to try would be slower and worse than doing nothing. */
+/** At or under this, a single-line message is short enough to BE a title —
+ *  "Fix the axis labels" cannot be improved by summarizing it, and spending an
+ *  agent's cold start to try would be slower and worse than doing nothing.
+ *  Short enough is necessary and not sufficient: see {@link promptNeedsSummary},
+ *  which also asks whether the message reads like a name. */
 export const SHORT_PROMPT_MAX = 48;
 
 /** Longest title a summary may become. Shorter than {@link PROMPT_TITLE_MAX}
@@ -82,19 +84,52 @@ export function titleFromPrompt(prompt: string): string {
 }
 
 /**
+ * Whether this message opens the way a name opens.
+ *
+ * A researcher who typed a title capitalized it. One who typed a sentence at
+ * an agent — "which skills set have you access to?" — did not, and that lower
+ * case opening is the whole of the difference between a name and a line of
+ * speech that happens to be short.
+ *
+ * A character with no case at all is read as yes rather than no. A message
+ * opening on a backtick, a digit or a glyph from a script without cases has
+ * said nothing either way about what it is, and the answer to "no signal" is
+ * to leave the Task with the name it already has: that costs a slightly plain
+ * title now and again, where the other way costs an agent's cold start every
+ * time somebody opens a chat with a filename.
+ */
+function opensLikeAName(trimmed: string): boolean {
+  const first = trimmed[0] ?? "";
+  return first === first.toUpperCase();
+}
+
+/**
  * Whether this message is worth asking a summarizer about.
  *
- * No for a short single-line message, which already reads as a title, and no
- * for an empty one, which has nothing in it to summarize. A line break is
- * enough to say yes however short the message is: a title never contains one,
- * and a cut that lands mid-break renders as two lines in a strip built for
- * one.
+ * No for an empty message, which has nothing in it to summarize, and no for a
+ * short single-line one that already reads as a title. A line break is enough
+ * to say yes however short the message is: a title never contains one, and a
+ * cut that lands mid-break renders as two lines in a strip built for one.
+ *
+ * "Already reads as a title" is asked as a question about the message, not
+ * just about its length, because length alone was answering the wrong one.
+ * "which skills set have you access to?" is thirty-six characters and needs a
+ * summary more than a long message does — it is nobody's idea of a name, and
+ * being short is exactly why the cut this feature exists to avoid never fires
+ * on it, so the raw sentence stands in the tab strip forever.
+ *
+ * The question mark is deliberately not part of the test. `cleanSummaryTitle`
+ * keeps one when a summarizer's answer ends on it, as part of a name a
+ * researcher would have typed themselves — so a question a summary is allowed
+ * to END on has to be one a prompt is allowed to BE, or the two halves of this
+ * module would disagree about what a title is.
  */
 export function promptNeedsSummary(prompt: string): boolean {
   const trimmed = prompt.trim();
   if (trimmed.length === 0) return false;
   if (trimmed.includes("\n")) return true;
-  return trimmed.length > SHORT_PROMPT_MAX;
+  if (trimmed.length > SHORT_PROMPT_MAX) return true;
+  return !opensLikeAName(trimmed);
 }
 
 /** Strip one layer of wrapping at a time, for as long as the whole string is

@@ -1,7 +1,7 @@
 /**
  * The per-Task kebab menu, shared by every surface that lists Tasks: Pin ·
- * Rename · Move to study · Delete. Each action is only offered when its
- * handler is supplied, so a caller that can do less still gets a coherent
+ * Rename · Status · Move to study · Delete. Each action is only offered when
+ * its handler is supplied, so a caller that can do less still gets a coherent
  * menu rather than rows that do nothing.
  */
 
@@ -35,12 +35,14 @@ function renderMenu(props: Partial<Parameters<typeof TaskRowMenu>[0]> = {}) {
     <TaskRowMenu
       title="Fit tuning curves"
       pinned={false}
+      status="in-review"
       studies={STUDIES}
       currentStudyId="s_cmp"
       onPin={vi.fn()}
       onRename={vi.fn()}
       onMove={vi.fn()}
       onDelete={vi.fn()}
+      onSetStatus={vi.fn()}
       {...props}
     />,
   );
@@ -52,7 +54,7 @@ const open = (user: ReturnType<typeof userEvent.setup>) =>
   );
 
 describe("TaskRowMenu", () => {
-  it("offers Pin · Rename · Move · Delete, in that order", async () => {
+  it("offers Pin · Rename · Status · Move · Delete, in that order", async () => {
     const user = userEvent.setup();
     renderMenu();
     await open(user);
@@ -60,9 +62,78 @@ describe("TaskRowMenu", () => {
     expect(screen.getAllByRole("menuitem").map((el) => el.textContent)).toEqual([
       "Pin",
       "Rename",
+      "Status",
       "Move to study",
       "Delete",
     ]);
+  });
+
+  /**
+   * The menu writes a status in exactly one place. A "Mark Done" row beside a
+   * submenu that also holds Done asked the reader which of two identical
+   * things they meant, and there is no answer to that question.
+   */
+  it("has one way to write a status, not a Done shortcut beside a Done entry", async () => {
+    const user = userEvent.setup();
+    renderMenu();
+    await open(user);
+
+    expect(screen.queryByRole("menuitem", { name: /Mark Done/ })).toBeNull();
+    const beforeSubmenu = screen.getAllByRole("menuitem").length;
+    await user.hover(screen.getByRole("menuitem", { name: /^Status/ }));
+    expect(screen.getAllByRole("menuitem", { name: /Done/ })).toHaveLength(1);
+    expect(screen.getAllByRole("menuitem").length).toBe(beforeSubmenu + 4);
+  });
+
+  it("names every status in the submenu, marks the current one, and sets the rest", async () => {
+    const user = userEvent.setup();
+    const onSetStatus = vi.fn();
+    renderMenu({ status: "in-progress", onSetStatus });
+    await open(user);
+    await user.hover(screen.getByRole("menuitem", { name: /^Status/ }));
+
+    // Where the Task already is is named rather than offered — `detail` is
+    // the only mark a menu item has, and it lands in the row's name.
+    expect(
+      screen.getByRole("menuitem", { name: /In Progress/ }).textContent,
+    ).toContain("Current");
+    await user.click(screen.getByRole("menuitem", { name: "Todo" }));
+    expect(onSetStatus).toHaveBeenCalledWith("todo");
+  });
+
+  it("reaches Done from the submenu whatever the Task's status", async () => {
+    // Including from Done itself, which is how a Task is reopened — the
+    // lifecycle is a place to move around in, not a one-way street.
+    for (const status of ["todo", "in-progress", "in-review"] as const) {
+      const user = userEvent.setup();
+      const onSetStatus = vi.fn();
+      renderMenu({ status, onSetStatus });
+      await open(user);
+      await user.hover(screen.getByRole("menuitem", { name: /^Status/ }));
+
+      await user.click(screen.getByRole("menuitem", { name: "Done" }));
+      expect(onSetStatus).toHaveBeenCalledWith("done");
+      cleanup();
+    }
+  });
+
+  it("does nothing when the status the Task is already on is chosen", async () => {
+    const user = userEvent.setup();
+    const onSetStatus = vi.fn();
+    renderMenu({ status: "todo", onSetStatus });
+    await open(user);
+    await user.hover(screen.getByRole("menuitem", { name: /^Status/ }));
+
+    await user.click(screen.getByRole("menuitem", { name: /Todo/ }));
+    expect(onSetStatus).not.toHaveBeenCalled();
+  });
+
+  it("drops Status when it cannot write one", async () => {
+    const user = userEvent.setup();
+    renderMenu({ onSetStatus: undefined });
+    await open(user);
+
+    expect(screen.queryByRole("menuitem", { name: /^Status/ })).toBeNull();
   });
 
   it("offers the inverse on a Task that is already pinned", async () => {
@@ -99,7 +170,12 @@ describe("TaskRowMenu", () => {
 
   it("shows only the actions it was given a handler for", async () => {
     const user = userEvent.setup();
-    renderMenu({ onRename: undefined, onMove: undefined, onDelete: undefined });
+    renderMenu({
+      onRename: undefined,
+      onMove: undefined,
+      onDelete: undefined,
+      onSetStatus: undefined,
+    });
     await open(user);
 
     expect(screen.getAllByRole("menuitem").map((el) => el.textContent)).toEqual([
@@ -113,6 +189,7 @@ describe("TaskRowMenu", () => {
       onRename: undefined,
       onMove: undefined,
       onDelete: undefined,
+      onSetStatus: undefined,
     });
     expect(container).toBeEmptyDOMElement();
   });

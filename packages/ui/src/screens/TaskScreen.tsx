@@ -457,6 +457,13 @@ export function TaskScreen({
     clis[0];
   const effectiveCliId = effectiveCli?.id ?? null;
   const modelOption = modelOptionOf(effectiveCli);
+  // What the breadcrumb names. The same chain, then the Task's own record —
+  // which is the one thing that still answers on a reload, before the
+  // transcript this reads from has arrived. Deliberately NOT `effectiveCli`:
+  // its fallback to any available CLI keeps the model switcher honest and
+  // would make this label name an agent the Task never ran on.
+  const taskAgent = lastAgent ?? task?.agent;
+  const agentName = clis.find((c) => c.id === taskAgent)?.name;
   // A model picked for one agent is dropped when the Task turns out to be on
   // another that does not offer it — the same invariant `StudyScreen`'s
   // `selectCli` keeps, held here as a derivation rather than an effect
@@ -469,9 +476,10 @@ export function TaskScreen({
 
   // Reviewer findings for this Task (loaded on open and after a run completes).
   const [findings, setFindings] = useState<Finding[]>([]);
-  // Local Done-gate state: the marked-done optimism + any block message.
-  const [markedDone, setMarkedDone] = useState(false);
-  const [doneError, setDoneError] = useState<string | null>(null);
+  // Local lifecycle state: the status this surface has just written for the
+  // open Task, and any refusal the core answered a status write with.
+  const [localStatus, setLocalStatus] = useState<TaskStatus | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
   // The Task a researcher has asked to delete, held while they confirm it.
   // Null whenever nothing is waiting on that answer.
   const [pendingDelete, setPendingDelete] = useState<Task | null>(null);
@@ -520,8 +528,8 @@ export function TaskScreen({
   // reset here — the parked send above all — is exactly what that send is
   // waiting on.
   useEffect(() => {
-    setMarkedDone(false);
-    setDoneError(null);
+    setLocalStatus(null);
+    setStatusError(null);
     setPaneMode("closed");
     setFiling(null);
     setPendingSend(null);
@@ -564,19 +572,6 @@ export function TaskScreen({
     },
     [api, studyId, taskId],
   );
-
-  const markDone = useCallback(() => {
-    setDoneError(null);
-    api.updateTask(taskId, { status: "done" }).then(
-      () => {
-        setMarkedDone(true);
-        setTaskNonce((n) => n + 1);
-        refreshTasks();
-      },
-      (err: unknown) =>
-        setDoneError(err instanceof Error ? err.message : String(err)),
-    );
-  }, [api, taskId, refreshTasks]);
 
   /** Take the name a summary wrote and put it everywhere this surface shows
    *  a title. The change channel repaints every other tab in the lab; this is
@@ -640,10 +635,11 @@ export function TaskScreen({
       // The composer's draft is owned here — clear it on send the same way
       // `Composer`'s own internal state would.
       setDraft("");
-      // Done was optimism for the previous body of work. A real new turn on
-      // this same mounted Task reopens it; if start later fails, the retained
-      // durable Task still supplies Done rather than this local flag.
-      setMarkedDone(false);
+      // Whatever status this surface last wrote was about the previous body
+      // of work. A real new turn on this same mounted Task reopens it; if
+      // start later fails, the retained durable Task still supplies the status
+      // rather than this local one.
+      setLocalStatus(null);
       titleFromFirstSend(text);
       start(text, { planMode, agent: effectiveCliId, model: effectiveModel });
     },
@@ -808,6 +804,31 @@ export function TaskScreen({
     refreshTasks();
   };
 
+  /**
+   * Move a Task along its lifecycle. Unlike rename and pin, a refusal here is
+   * reported rather than reconciled away: the Done-gate exists to be heard,
+   * and a Task that silently stayed In Review would leave a researcher
+   * clicking the same item again.
+   *
+   * The menu that asks can sit on any row in the sidebar, but the strip that
+   * answers heads the open Task — so a message about another Task names it.
+   */
+  const setTaskStatus = async (id: string, status: TaskStatus) => {
+    setStatusError(null);
+    try {
+      await api.updateTask(id, { status });
+      if (id === taskId) {
+        setLocalStatus(status);
+        setTaskNonce((n) => n + 1);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const other = id === taskId ? undefined : tasks.find((t) => t.id === id);
+      setStatusError(other ? `${other.title}: ${message}` : message);
+    }
+    refreshTasks();
+  };
+
   // Filing a Task under another Study takes it out of this sidebar, so it is
   // reconciled the way a delete is: drop the tab that pointed at it here, and
   // move off it if it was the Task on screen. The Task itself is untouched —
@@ -940,20 +961,17 @@ export function TaskScreen({
   if (!task) return <div className="screen" aria-busy="true" />;
 
   // Once a run lands, the Task is In Review (optimistic; the store agrees).
-  // A successful Mark Done wins over both.
-  const liveStatus: TaskStatus = markedDone
-    ? "done"
-    : runState.runs.some(
-          (run) => run.run !== null || run.state.state === "completed",
-        )
+  // A status this surface wrote itself wins over both: an explicit write is
+  // newer authority than anything derived from the runs it followed.
+  const liveStatus: TaskStatus =
+    localStatus ??
+    (runState.runs.some(
+      (run) => run.run !== null || run.state.state === "completed",
+    )
       ? "in-review"
-      : task.status;
+      : task.status);
   const anyRunning = runState.runs.some((run) => run.running);
   const activeRun = runState.runs.find((run) => run.running);
-  // Finishing any live sibling can still update this Task. Keep Done out of
-  // reach until all of them settle; the stores also preserve a later Done as
-  // the authoritative write if another client creates this race directly.
-  const showMarkDone = liveStatus === "in-review" && !anyRunning;
 
   // Discards the newest turn and puts the Task's files back. Undefined
   // while a run is live: a turn cannot be pulled out from under one that is
@@ -1050,6 +1068,13 @@ export function TaskScreen({
     (a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
   );
 
+  // The open Task's row reads the status this surface knows rather than the
+  // one the list was read with: a turn that has just landed has already moved
+  // the Task on, and the row menu offers Done off the back of it.
+  const sidebarRows = sidebarTasks.map((t) =>
+    t.id === taskId ? { ...t, status: liveStatus } : t,
+  );
+
   // The left pane lists the Study's Tasks, so it exists only where there is a
   // Study. An unfiled Task leaves the slot to the app Rail (see `ownsRail`).
   const sidebar = study && (
@@ -1058,7 +1083,7 @@ export function TaskScreen({
       filesActive={rightPaneOpen && rightPaneTab === "files"}
       onNew={() => void newTask()}
       onOpenFiles={openFiles}
-      tasks={sidebarTasks}
+      tasks={sidebarRows}
       activeTaskId={taskId}
       onOpenTask={openTask}
       // The row only says who was asked for. Confirming is the screen's,
@@ -1069,6 +1094,10 @@ export function TaskScreen({
       onRenameTask={(id, title) => void renameTask(id, title)}
       onPinTask={(id, pinned) => void pinTask(id, pinned)}
       onMoveTask={(id, destination) => void moveTask(id, destination)}
+      // Offered while a run is live too: the stores keep an explicit status
+      // written mid-run as the newer authority, so a Done chosen here is not
+      // a write about to be overtaken by the turn that is still going.
+      onSetTaskStatus={(id, status) => void setTaskStatus(id, status)}
       studies={studies}
     />
   );
@@ -1104,9 +1133,13 @@ export function TaskScreen({
             activeId={taskId}
             onSelect={openTask}
             onClose={closeTab}
-            showMarkDone={showMarkDone}
-            onMarkDone={markDone}
-            doneError={doneError}
+            // The agent the Task RAN on, not the one the composer would use
+            // next: `effectiveCli` falls back to any available CLI so there
+            // are always models to offer, which is right there and would be a
+            // lie here.
+            {...(taskAgent ? { agent: taskAgent } : {})}
+            {...(agentName === undefined ? {} : { agentName })}
+            statusError={statusError}
             rightPaneOpen={rightPaneOpen}
             // The toggle belongs to whichever header reaches the screen's right
             // edge. That is this bar only while the conversation is alone; the
