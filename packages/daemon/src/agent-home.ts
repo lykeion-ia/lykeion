@@ -161,21 +161,42 @@ function homesFor(workspace: string): Record<string, AgentHome> {
  * belong to none of its own bundle but to `~/.agents/skills`, a directory
  * this list did not yet carry.
  *
- * `~/.agents` and `~/.gsd` are both a shared, cross-tool skills catalogue —
- * the same shape `~/.claude/skills` is, just not scoped to one CLI's config
- * directory, so nothing above already denies it. `~/.gsd` was found holding
- * a second copy of some of the same skill names, under a `.migrated-to-agents`
- * marker recording that its own catalogue moved to `~/.agents` and left
- * residue behind — denying only one would still leave the other reachable.
- * `~/.mcp-auth` is `mcp-remote`'s own OAuth cache for whatever remote MCP
- * servers the researcher has authenticated to outside any agent Lykeion
- * runs — the same shape as `.credentials.json` moved out from under any one
- * CLI's config directory: live third-party tokens, not any agent's own.
+ * Nor only the agents this machine can run. The list is derived from the
+ * whole catalogue rather than from the entries carrying an `isolation`,
+ * because being undeclared is what makes a CLI dangerous here, not what
+ * makes it safe: Lykeion not knowing how to confine Gemini does nothing
+ * about the researcher's own Gemini sitting in `~/.gemini` with its OAuth
+ * credentials and its MCP tokens, reachable through the same blanket read.
+ * An entry earns its denial by being a CLI, and gains its declaration
+ * later — or never.
  */
 function researcherHomes(): string[] {
   return [
-    join(homedir(), ".claude"),
-    join(homedir(), ".codex"),
+    // Every CLI the catalogue names, declared or not. A CLI Lykeion cannot
+    // yet run is not a CLI whose installation is safe to read: the danger is
+    // the researcher's copy of it, which exists on their machine whether or
+    // not this daemon knows how to confine the thing. Deriving the list here
+    // is what stops it drifting from the catalogue — hand-maintained, it
+    // already fell behind twice, and the second time `~/.gemini` sat
+    // readable with `oauth_creds.json` and `mcp-oauth-tokens.json` in it
+    // while `gemini` had been a catalogue row all along.
+    //
+    // `~/.<command>` because that is what every installation on this machine
+    // has been observed to use — `.claude`, `.codex`, `.gemini`, `.copilot`,
+    // `.openclaw`, five for five. A CLI keeping its configuration somewhere
+    // else is not covered by this and needs its own path recorded; that
+    // belongs on the catalogue row rather than here, and is phase 2's.
+    ...CATALOGUE.map((entry) => join(homedir(), `.${entry.command}`)),
+    // The stores that belong to no single CLI, so no row derives them.
+    // `~/.agents` and `~/.gsd` are both a shared, cross-tool skills catalogue
+    // — the same shape `~/.claude/skills` is, just not scoped to one CLI's
+    // config directory. `~/.gsd` was found holding a second copy of some of
+    // the same skill names under a `.migrated-to-agents` marker recording
+    // that its catalogue moved and left residue behind, so denying only one
+    // would leave the other reachable. `~/.mcp-auth` is `mcp-remote`'s own
+    // OAuth cache for whatever remote MCP servers the researcher has
+    // authenticated to outside any agent Lykeion runs — live third-party
+    // tokens, not any agent's own.
     join(homedir(), ".agents"),
     join(homedir(), ".gsd"),
     join(homedir(), ".mcp-auth"),

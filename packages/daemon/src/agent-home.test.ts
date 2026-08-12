@@ -196,7 +196,28 @@ it("declares nothing for an agent nobody has declared", () => {
  *  reach. Written out by name rather than read back off `researcherHomes`,
  *  which is the list under test: a test fed by the thing it is checking
  *  passes just as happily with three of these deleted. */
-const RESEARCHER_HOMES = [".claude", ".codex", ".agents", ".gsd", ".mcp-auth"];
+const RESEARCHER_HOMES = [
+  // One per catalogue entry, spelled out rather than mapped over `CATALOGUE`:
+  // a list built from the same source as the code under test would keep
+  // agreeing with it after an entry was dropped from both.
+  ".claude",
+  ".codex",
+  ".gemini",
+  ".copilot",
+  ".cursor",
+  ".opencode",
+  ".kimi",
+  ".kiro",
+  ".qoder",
+  ".codebuddy",
+  ".hermes",
+  ".openclaw",
+  ".pi",
+  // The cross-tool stores, which belong to no entry and so derive from none.
+  ".agents",
+  ".gsd",
+  ".mcp-auth",
+];
 
 it("renders every researcher home as a deny the kernel reads after the allow that would open it", () => {
   // The one test that crosses the whole chain this branch exists to
