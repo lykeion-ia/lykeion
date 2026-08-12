@@ -5,8 +5,16 @@ export interface ConfirmModalProps {
   /** What this dialog is, for anyone not reading it with their eyes. */
   label: string;
   heading: string;
-  /** The thing being acted on, named the way its own surface names it. */
-  subject: ReactNode;
+  /**
+   * The thing being acted on, named the way its own surface names it.
+   *
+   * Omitted where the surface that raised the dialog has already named it and
+   * repeating it says nothing — a row's own menu, say, where the researcher
+   * pointed at the thing to get here. Left out rather than passed empty, so
+   * the slot collapses instead of opening a gap: `space-y-3` spaces siblings,
+   * and an absent one has nothing to be spaced from.
+   */
+  subject?: ReactNode;
   /**
    * What is lost, in the caller's own words and its own elements — rendered
    * as given rather than wrapped, because one action needs a sentence and

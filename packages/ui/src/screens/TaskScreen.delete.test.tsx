@@ -45,7 +45,11 @@ describe("deleting a Task from the sidebar", () => {
     expect(deleteTask).not.toHaveBeenCalled();
   });
 
-  it("names the Task it is about to take", async () => {
+  it("says what deleting costs without naming the Task again", async () => {
+    // The researcher opened this from the doomed row's own menu, so the title
+    // would answer a question they already asked by pointing. What the dialog
+    // is for is the part they cannot see from the row: that the chat goes
+    // with it, and that nothing here takes it back.
     const user = userEvent.setup();
     const api = createInMemoryApi();
     window.location.hash = ROUTE;
@@ -56,8 +60,8 @@ describe("deleting a Task from the sidebar", () => {
     await chooseDelete(user, doomed.title);
 
     const dialog = await screen.findByRole("dialog", { name: /delete task/i });
-    expect(within(dialog).getByText(doomed.title)).toBeInTheDocument();
     expect(within(dialog).getByText(/cannot be undone/i)).toBeInTheDocument();
+    expect(within(dialog).queryByText(doomed.title)).toBeNull();
   });
 
   it("leaves the Task alone when the confirmation is dismissed", async () => {

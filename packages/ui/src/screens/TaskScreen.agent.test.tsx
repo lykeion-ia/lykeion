@@ -2,10 +2,15 @@
  * The agent named at the head of the Task surface.
  *
  * Which coding agent a Task is talking to holds for the whole page, so the
- * breadcrumb is where it belongs. What is under test is WHICH agent it names:
- * the one the turns actually ran on, never the one the composer would fall
- * back to. The two differ exactly when the Task's agent is not installed on
+ * breadcrumb is where it belongs. What is under test is WHICH agent it names,
+ * and the order is the whole rule: any history at all outranks the composer's
+ * fallback, so a Task that has spoken names what spoke and never what is
+ * merely installed. The two differ exactly when the Task's agent is not on
  * the machine now reading it — a Task outlives the laptop that ran it.
+ *
+ * Only a Task with no history of any kind falls through to the agent its
+ * first turn is about to go to, which is the one case where there is no past
+ * run that naming it could misreport.
  */
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -51,6 +56,21 @@ async function apiWithTaskOn(
   };
 }
 
+/** The same seeded Task with nothing said in it yet: no turns, and no agent
+ *  recorded against it. What a Task looks like between "New Task" and its
+ *  first Send. */
+async function apiWithUnrunTask(clis: AgentCli[]): Promise<LykeionApi> {
+  const base = createInMemoryApi();
+  const seeded = await base.getTask("t_3");
+  const { agent: _neverRan, ...task } = seeded.task;
+  return {
+    ...base,
+    listAgentClis: async () => clis,
+    getTask: async (taskId: string) =>
+      taskId === "t_3" ? { task, turns: [] } : base.getTask(taskId),
+  };
+}
+
 /** The breadcrumb strip — the trail's own row, where the label rides. */
 async function strip(): Promise<HTMLElement> {
   const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
@@ -82,5 +102,31 @@ describe("the agent named in the Task's breadcrumb", () => {
 
     const crumb = within(await strip());
     expect(await crumb.findByText("Claude Code")).toBeInTheDocument();
+  });
+
+  it("names the agent a Task about to run its first turn will go to", async () => {
+    // Nothing has spoken here yet, so there is no past run for this to
+    // misreport — and the researcher is one Send away from an agent the head
+    // of the page stayed silent about. It names the one the turn will reach.
+    const api = await apiWithUnrunTask([cli("claude", "Claude Code")]);
+    window.location.hash = ROUTE;
+    render(<App api={api} />);
+
+    const crumb = within(await strip());
+    expect(await crumb.findByText("Claude Code")).toBeInTheDocument();
+  });
+
+  it("stays silent on an unrun Task when the lab has no CLI to send to", async () => {
+    // The prospect is the whole reason to name anything here, and there is
+    // none: no machine of this member's is offering an agent. A placeholder
+    // would promise a dispatch this lab cannot make.
+    const api = await apiWithUnrunTask([]);
+    window.location.hash = ROUTE;
+    render(<App api={api} />);
+
+    const crumb = within(await strip());
+    await crumb.findByRole("navigation", { name: "Breadcrumb" });
+    expect(crumb.queryByText("Claude Code")).toBeNull();
+    expect(crumb.queryByText("Claude")).toBeNull();
   });
 });

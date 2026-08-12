@@ -459,10 +459,19 @@ export function TaskScreen({
   const modelOption = modelOptionOf(effectiveCli);
   // What the breadcrumb names. The same chain, then the Task's own record —
   // which is the one thing that still answers on a reload, before the
-  // transcript this reads from has arrived. Deliberately NOT `effectiveCli`:
-  // its fallback to any available CLI keeps the model switcher honest and
-  // would make this label name an agent the Task never ran on.
-  const taskAgent = lastAgent ?? task?.agent;
+  // transcript this reads from has arrived — and only then the agent the next
+  // turn would go to.
+  //
+  // The rule the first two links keep is that this never names an agent a
+  // past turn did not run on, and the order is what keeps it: any history at
+  // all wins, so `effectiveCliId` is reached only for a Task with no live
+  // run, no transcript and no record — the one case where there is no past
+  // run to misname. It is the value `start()` is handed rather than a second
+  // opinion about it, so the head of the Task and the dispatch cannot drift.
+  // A Task nobody has spoken in is still on its way to an agent, and naming
+  // it is the honest drawing of that; the first turn to land promotes
+  // `lastAgent` and this link never answers for that Task again.
+  const taskAgent = lastAgent ?? task?.agent ?? effectiveCliId;
   const agentName = clis.find((c) => c.id === taskAgent)?.name;
   // A model picked for one agent is dropped when the Task turns out to be on
   // another that does not offer it — the same invariant `StudyScreen`'s
@@ -1133,10 +1142,11 @@ export function TaskScreen({
             activeId={taskId}
             onSelect={openTask}
             onClose={closeTab}
-            // The agent the Task RAN on, not the one the composer would use
-            // next: `effectiveCli` falls back to any available CLI so there
-            // are always models to offer, which is right there and would be a
-            // lie here.
+            // The agent the Task ran on, or — before it has run at all — the
+            // one its first turn is about to go to. See `taskAgent`: history
+            // outranks the prospect, so this names a past run correctly or
+            // names no past run at all. Absent when the lab has no CLI to
+            // dispatch to, which is a Task on its way nowhere yet.
             {...(taskAgent ? { agent: taskAgent } : {})}
             {...(agentName === undefined ? {} : { agentName })}
             statusError={statusError}
@@ -1297,7 +1307,6 @@ export function TaskScreen({
 
       {pendingDelete && (
         <DeleteTaskModal
-          task={pendingDelete}
           onClose={() => setPendingDelete(null)}
           onConfirm={async () => {
             await deleteTask(pendingDelete.id);

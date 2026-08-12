@@ -546,7 +546,6 @@ export function StudyScreen({ studyId }: { studyId: string }) {
 
       {pendingTaskDelete && (
         <DeleteTaskModal
-          task={pendingTaskDelete}
           onClose={() => setPendingTaskDelete(null)}
           onConfirm={async () => {
             await removeTask(pendingTaskDelete.id);

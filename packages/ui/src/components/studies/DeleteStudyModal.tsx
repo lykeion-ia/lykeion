@@ -47,7 +47,7 @@ export function DeleteStudyModal({
             transcript, and the Study's files leave the workspace with it.
           </p>
           <p className="text-sub leading-snug text-fg-subtle">
-            This removes the Study and everything it holds. In this session it
+            This removes the Study and everything it holds. It
             cannot be undone.
           </p>
         </>

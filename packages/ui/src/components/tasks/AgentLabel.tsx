@@ -17,8 +17,12 @@ import { cliBrand, cliInk, cliName } from "../../lib/cli-brand";
  * or white have no ink of their own to be in and keep the strip's — see
  * `cliInk`.
  *
- * Renders nothing without an agent. A Task nobody has run is on no agent, and
- * an empty strip is the honest drawing of that.
+ * Renders nothing without an agent, which is a fact about this component
+ * rather than about unrun Tasks: a Task nobody has spoken in is named for the
+ * agent its first turn is about to go to, and its caller resolves that before
+ * asking for anything here. What reaches this with no agent is a surface with
+ * nothing to dispatch to at all — no CLI in the lab — and an empty strip is
+ * the honest drawing of that.
  */
 export function AgentLabel({
   agent,
