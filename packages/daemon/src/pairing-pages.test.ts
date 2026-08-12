@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  renderAgentSignInPage,
   renderExchangeFailurePage,
   renderExpiredLinkPage,
   renderExpiredRequestPage,
@@ -193,5 +194,98 @@ describe("terminal pairing states", () => {
     expect(html.match(/\[redacted\]/g)).toHaveLength(4);
     expect(html).toContain("return to the daemon terminal");
     expect(html.match(/class="recovery"/g)).toHaveLength(1);
+  });
+});
+
+describe("agent sign-in page", () => {
+  const base = { machineName: "studio-mbp", labLabel: "Kellogg Lab", labUrl: "http://127.0.0.1:1421" };
+
+  it("offers a sign-in for each agent that has none", () => {
+    const html = renderAgentSignInPage({
+      ...base,
+      agents: [
+        { agent: "claude", name: "Claude Code", available: true, signedIn: false },
+        { agent: "codex", name: "Codex", available: true, signedIn: true, account: "r@lab.org" },
+      ],
+    });
+    expect(html).toContain("Claude Code");
+    expect(html).toContain('data-agent="claude"');
+    // The one already signed in says who it is, and offers nothing to press.
+    expect(html).toContain("r@lab.org");
+    expect(html).not.toContain('data-agent="codex"');
+  });
+
+  it("shows an agent this machine does not have, and refuses to offer a sign-in for it", () => {
+    // The defect this closes: `agentAuthStates` reports an uninstalled CLI as
+    // signed out, so a machine with only Claude showed a live Sign in button
+    // for Codex. Pressing it spawned an ENOENT nothing surfaced, the route had
+    // already answered 202, and the row read "Continue in your browser…" for
+    // as long as the tab stayed open.
+    //
+    // Shown and not dropped, in the dock's own grammar for a thing it can
+    // name but not act on: disabled, dimmed, the reason in the title. A
+    // machine with one CLI then reads as a machine with one CLI, rather than
+    // as one where the other agent does not exist at all.
+    const html = renderAgentSignInPage({
+      ...base,
+      agents: [
+        { agent: "claude", name: "Claude Code", available: true, signedIn: false },
+        { agent: "codex", name: "Codex", available: false, signedIn: false },
+      ],
+    });
+    expect(html).toContain("Codex");
+    expect(html).toContain('data-available="false"');
+    expect(html).toContain('title="Codex — not installed on this machine"');
+    // Disabled at the source: the button is unpressable, and the script's own
+    // selectors exclude it, so nothing wires it to a click and no poll ever
+    // starts watching a row that can never turn over.
+    expect(html).toMatch(/data-agent="codex"[^>]*disabled/);
+    expect(html).toContain('.agent-signin:not([disabled])');
+    // The one that IS installed is still offered, unchanged.
+    expect(html).toMatch(/data-agent="claude"(?![^>]*disabled)/);
+  });
+
+  it("says so plainly when this machine has no coding-agent CLI at all", () => {
+    // Reachable at last. `agentAuthStates` always answers with every declared
+    // agent, so before `available` existed this state could only be produced
+    // by a caller that handed the page an empty list — which production never
+    // does. A page of rows nobody can press is worse than saying so once.
+    const html = renderAgentSignInPage({
+      ...base,
+      agents: [
+        { agent: "claude", name: "Claude Code", available: false, signedIn: false },
+        { agent: "codex", name: "Codex", available: false, signedIn: false },
+      ],
+    });
+    expect(html).toContain("No coding-agent CLI was found on this machine");
+    expect(html).not.toContain('class="agents"');
+    // And the way past it is still there: a researcher is never stuck here.
+    expect(html).toContain(base.labUrl);
+  });
+
+  it("lets a researcher move on without signing anything in", () => {
+    // Somebody who wants only Claude must not be held up by Codex.
+    const html = renderAgentSignInPage({ ...base, agents: [] });
+    expect(html).toContain(base.labUrl);
+  });
+
+  it("names the machine the way the researcher named it, escaped exactly once", () => {
+    // `renderPairingPage` escapes the description it is handed, so escaping
+    // it here as well showed `Ana's Mac` as `Ana&#39;s Mac` on the last
+    // screen of onboarding — a hostname with an apostrophe in it being the
+    // ordinary macOS default, not an odd case.
+    const html = renderAgentSignInPage({ ...base, machineName: "Ana's <Mac>", agents: [] });
+    expect(html).toContain("Ana&#39;s &lt;Mac&gt;");
+    expect(html).not.toContain("Ana&amp;#39;s");
+  });
+
+  it("escapes an account the researcher did not choose the shape of", () => {
+    const html = renderAgentSignInPage({
+      ...base,
+      agents: [
+        { agent: "claude", name: "Claude Code", available: true, signedIn: true, account: "<script>x</script>" },
+      ],
+    });
+    expect(html).not.toContain("<script>x</script>");
   });
 });

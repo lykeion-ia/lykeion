@@ -11,8 +11,14 @@
  * What IS here is the behaviour clipping introduced: an edge with more beyond
  * it reads as soft rather than as the end of the list, and a tab activated
  * from outside the clip is brought back inside it.
+ *
+ * And one thing about the landing that is not arithmetic and so can be
+ * asserted without performing any: WHAT is allowed to size the strip's tracks.
+ * See the last block in this file.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -230,5 +236,52 @@ describe("the tabs themselves", () => {
     expect(
       screen.queryByRole("button", { name: /^Close / }),
     ).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The band sits on the conversation's column only while the two tracks beside
+ * it are equal, and a track sized from its own content is a track whose width
+ * the page's data decides. So the question worth asking of the stylesheet is
+ * not how wide anything ends up — jsdom computes none of it — but which of the
+ * three tracks is allowed to be sized by something unbounded.
+ */
+describe("the strip the band rides in", () => {
+  const css = readFileSync(
+    join(import.meta.dirname, "..", "..", "screens", "task.css"),
+    "utf8",
+  );
+
+  /** The three `minmax()`es of `.crumb-strip--banded`, in track order. */
+  const tracks = () => {
+    const rule = css.match(/\.crumb-strip--banded\s*\{([\s\S]*?)\}/)?.[1] ?? "";
+    const decl = rule.match(/grid-template-columns:([^;]+);/)?.[1] ?? "";
+    return decl.match(/minmax\((?:[^()]|\([^()]*\))*\)/g) ?? [];
+  };
+
+  it("gives the band a track of its own, the conversation's measure wide", () => {
+    const [, band] = tracks();
+
+    expect(tracks()).toHaveLength(3);
+    expect(band).toContain("var(--conv-measure)");
+  });
+
+  it("floors the trail's track on a stated width, never on the Study's name", () => {
+    const [trail] = tracks();
+
+    // A Study's title is the user's to write and can be any length. Sized from
+    // its content, the trail's track claims whatever the title needs and the
+    // band is pushed off the column it names — the Study's name running into
+    // the Task's. Under a stated floor the name truncates instead.
+    expect(trail).not.toContain("min-content");
+  });
+
+  it("still lets the actions keep their width", () => {
+    const [, , actions] = tracks();
+
+    // The other side is safe on its content: what rides there is a CLI's brand
+    // name and a pane toggle — the app's own words, not the user's — so
+    // `min-content` there is a bound, not an opening.
+    expect(actions).toContain("min-content");
   });
 });

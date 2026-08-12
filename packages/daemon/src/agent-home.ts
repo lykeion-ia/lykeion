@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { CATALOGUE, lykeionHomeFor } from "./agent-registry";
 import { canonicalPath, NO_AGENT_HOME, type AgentHome } from "./sandbox";
 
 /**
@@ -39,6 +40,35 @@ export function workspaceKey(workspace: string): string {
 }
 
 /**
+ * The working directory an agent will believe it was started in.
+ *
+ * A process asks the kernel where it is and is answered with a physical path,
+ * every link already followed — so an agent opened in a directory reached
+ * through one keys its per-directory state on the place the link points at,
+ * never on the name Lykeion opened it by. `workspaceKey` is the agent's own
+ * convention; which directory it is applied to is this machine's, and stating
+ * it here is what keeps the two ends of that name together.
+ *
+ * Without it a run whose workspace is named `/tmp/…` and resolved
+ * `/private/tmp/…` is granted a scratch directory and a Task record under one
+ * name while the agent creates the other, and every shell it tries to run
+ * fails at the `mkdir` before running anything — which reaches a researcher
+ * as an agent talking about `EPERM`, not as a boundary saying no.
+ *
+ * Falls back to the name as given when it will not resolve: a directory that
+ * is not there is not one an agent can be started in either, so there is
+ * nothing yet to place — while a caller asking what an agent would reach in a
+ * directory this machine does not have still gets an answer rather than a throw.
+ */
+function physicalWorkspace(workspace: string): string {
+  try {
+    return canonicalPath(workspace);
+  } catch {
+    return workspace;
+  }
+}
+
+/**
  * The shape of the scratch file an agent's shell writes its working directory
  * into after every command, then removes. The name carries a fresh random part
  * each time, so there is nothing to grant but the shape.
@@ -72,54 +102,84 @@ function shellScratchRoot(): string {
   return `/tmp/claude-${process.getuid?.() ?? 0}`;
 }
 
+/**
+ * The installations this machine knows about, ours and the researcher's.
+ *
+ * Ours is what an agent runs against. Theirs is named here for one reason: so
+ * it can be denied. A home directory's hidden entries are readable by default
+ * — that is how a program reads its own configuration at all — and a run that
+ * could read `~/.claude` reads a credentials file holding live OAuth tokens
+ * for a dozen services with nothing to do with Lykeion. Naming it is what
+ * makes `foreignHomes` deny it.
+ */
 function homesFor(workspace: string): Record<string, AgentHome> {
-  const home = homedir();
-  const claude = join(home, ".claude");
-  const codex = join(home, ".codex");
-  const key = workspaceKey(workspace);
-  return {
-    claude: {
+  const key = workspaceKey(physicalWorkspace(workspace));
+  const homes: Record<string, AgentHome> = {};
+  for (const entry of CATALOGUE) {
+    if (entry.isolation === undefined) continue;
+    const own = lykeionHomeFor(entry.id);
+    homes[entry.id] = {
       state: [
-        claude,
-        join(home, "Library", "Caches", "claude-cli-nodejs"),
+        own,
         // What its shell creates before it runs anything at all.
         join(shellScratchRoot(), key),
         // Its record of this Task, kept beside every other Task's, which is
         // why the directory holding them is denied and this one entry is not.
-        join(claude, "projects", key),
+        join(own, "projects", key),
       ],
-      // This machine's own credential service. What it holds is reached
-      // through the operating system, which decides per item and asks the
-      // researcher about anything not the program's own — the same decision it
-      // makes when this program runs outside any boundary of ours.
-      credentials: [join(home, "Library", "Keychains")],
-      // Each of these decides what runs the next time the researcher starts
-      // this program themselves, with no boundary around it. Readable, so the
-      // agent still starts configured; never writable.
-      sealed: [
-        join(claude, "settings.json"),
-        join(claude, "settings.local.json"),
-        join(claude, "hooks"),
-        join(claude, "agents"),
-        join(claude, "commands"),
-        join(claude, "plugins"),
-      ],
-      // The researcher's own work with this program, most of it nothing to do
-      // with Lykeion. A run needs to write its own record, not to read the
-      // account of every conversation they have ever had.
-      private: [join(claude, "projects"), join(claude, "history.jsonl"), join(claude, "todos")],
+      // Ordinarily a file inside the home above, which it must be able to
+      // rewrite when the token it holds is refreshed — nothing separate to
+      // declare there. `credentialsOutsideHome` is the declared exception:
+      // an agent whose sign-in lives somewhere `homeEnv` does not reach
+      // (Claude Code's macOS keychain entry, at the time of writing) names
+      // it there rather than this file asking which agent it is.
+      credentials: [...(entry.isolation.credentialsOutsideHome ?? [])],
+      // What Lykeion wrote is what governs this run, and a write here would
+      // outlive it. Rewritten from the declaration every daemon start anyway;
+      // sealing it means a run cannot make that rewrite the only thing
+      // standing between a session and its own contamination.
+      sealed: (entry.isolation.seeds?.(entry.isolation.skillsOff, own) ?? []).map((seed) =>
+        join(own, seed.name),
+      ),
+      // Every other Task's record. A run writes its own and reads no other.
+      private: [join(own, "projects")],
       patterns: shellScratchPattern(),
-    },
-    codex: {
-      // Its credential is a file inside the state directory below, which the
-      // agent must be able to rewrite when the token it holds is refreshed.
-      state: [codex],
-      credentials: [],
-      sealed: [join(codex, "config.toml")],
-      private: [],
-      patterns: [],
-    },
-  };
+    };
+  }
+  return homes;
+}
+
+/**
+ * The researcher's own installations. Named only to be denied.
+ *
+ * Not only the two agents this machine runs. `~/.claude` and `~/.codex` were
+ * the first two found reachable, but the blanket read grant every declared
+ * agent gets over a home directory's hidden entries (see
+ * `renderSeatbeltProfile`'s comment on `hidden`) reaches every hidden
+ * top-level entry, not only those two — and a conformance run surfaced a
+ * live example: `codex-acp`, asked to list its skills, named several that
+ * belong to none of its own bundle but to `~/.agents/skills`, a directory
+ * this list did not yet carry.
+ *
+ * `~/.agents` and `~/.gsd` are both a shared, cross-tool skills catalogue —
+ * the same shape `~/.claude/skills` is, just not scoped to one CLI's config
+ * directory, so nothing above already denies it. `~/.gsd` was found holding
+ * a second copy of some of the same skill names, under a `.migrated-to-agents`
+ * marker recording that its own catalogue moved to `~/.agents` and left
+ * residue behind — denying only one would still leave the other reachable.
+ * `~/.mcp-auth` is `mcp-remote`'s own OAuth cache for whatever remote MCP
+ * servers the researcher has authenticated to outside any agent Lykeion
+ * runs — the same shape as `.credentials.json` moved out from under any one
+ * CLI's config directory: live third-party tokens, not any agent's own.
+ */
+function researcherHomes(): string[] {
+  return [
+    join(homedir(), ".claude"),
+    join(homedir(), ".codex"),
+    join(homedir(), ".agents"),
+    join(homedir(), ".gsd"),
+    join(homedir(), ".mcp-auth"),
+  ];
 }
 
 /**
@@ -158,7 +218,7 @@ export function foreignHomes(agent: string, workspace: string): string[] {
   const homes = homesFor(workspace);
   const mine = homes[agent] ?? NO_AGENT_HOME;
   const own = new Set([...mine.state, ...mine.credentials]);
-  const foreign = new Set<string>();
+  const foreign = new Set<string>(researcherHomes());
   for (const [id, home] of Object.entries(homes)) {
     if (id === agent) continue;
     for (const path of [...home.state, ...home.credentials]) if (!own.has(path)) foreign.add(path);
@@ -174,5 +234,10 @@ export function foreignHomes(agent: string, workspace: string): string[] {
  */
 export function allAgentHomes(workspace: string): string[] {
   const homes = homesFor(workspace);
-  return [...new Set(Object.values(homes).flatMap((home) => [...home.state, ...home.credentials]))];
+  return [
+    ...new Set([
+      ...researcherHomes(),
+      ...Object.values(homes).flatMap((home) => [...home.state, ...home.credentials]),
+    ]),
+  ];
 }

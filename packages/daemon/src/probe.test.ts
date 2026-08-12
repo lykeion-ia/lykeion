@@ -1,8 +1,9 @@
 import { afterEach, expect, it } from "vitest";
 import { existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { cliFingerprint, isRunnable, probeAgentClis, type ProbedCli } from "./probe";
+import { cliFingerprint, probeAgentClis, signedOutReasonFor, type ProbedCli } from "./probe";
+import type { AgentAuth } from "./agent-auth";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -44,6 +45,25 @@ function pathRunning(commands: Record<string, string>): string {
  *  than assert against a canned "it would have worked". */
 function acpHandshakeScript(): string {
   return 'read -r line\nprintf \'{"jsonrpc":"2.0","id":1,"result":{}}\\n\'';
+}
+
+/** An `authStates` override that reports each given agent id as signed in.
+ *  Real `claude` and `codex` CLIs are commonly installed on a developer's own
+ *  `PATH`, and `agentAuthStates`'s default asks whatever that resolves to —
+ *  not the fixture a test built under its own throwaway `path` — so a probe
+ *  test whose subject is adapter resolution or the ACP handshake, not
+ *  sign-in, supplies this rather than depending on whether the machine
+ *  running the suite happens to be signed in to the real thing. */
+function signedIn(...agentIds: string[]): () => Promise<AgentAuth[]> {
+  return async () => agentIds.map((agent) => ({ agent, name: agent, available: true, signedIn: true }));
+}
+
+/** The complement of `signedIn`: an `authStates` override that reports one
+ *  agent as signed out, for the test that proves rung 6 itself — deleting
+ *  the check in `probeAdapter` would make this test fail, where every other
+ *  use of `signedIn` above would keep passing regardless. */
+function signedOut(agentId: string): () => Promise<AgentAuth[]> {
+  return async () => [{ agent: agentId, name: agentId, available: true, signedIn: false }];
 }
 
 it(
@@ -163,12 +183,37 @@ it(
   async () => {
     const path = pathRunning({
       claude: 'echo "2.1.220"',
-      "claude-code-acp": acpHandshakeScript(),
+      "claude-agent-acp": acpHandshakeScript(),
     });
-    const claude = (await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
+    const claude = (
+      await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedIn("claude") })
+    ).find((c) => c.id === "claude")!;
     expect(claude.available).toBe(true);
     expect(claude.sessionReady).toBe(true);
     expect("sessionReadyReason" in claude).toBe(false);
+  },
+  60_000,
+);
+
+it(
+  "holds an agent back at rung 6 when its adapter would handshake but it is not signed in",
+  async () => {
+    // Same fixture as "reports an agent as session-ready when its adapter
+    // handshakes" — a claude and an adapter that would answer `initialize`
+    // successfully — with only `authStates` flipped. Without the rung 6
+    // check in `probeAdapter`, this would resolve exactly like that test:
+    // sessionReady true, no reason. What is under test is that the check
+    // stops the handshake from ever being attempted.
+    const path = pathRunning({
+      claude: 'echo "2.1.220"',
+      "claude-agent-acp": acpHandshakeScript(),
+    });
+    const claude = (
+      await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedOut("claude") })
+    ).find((c) => c.id === "claude")!;
+    expect(claude.available).toBe(true);
+    expect(claude.sessionReady).toBe(false);
+    expect(claude.sessionReadyReason).toBe(signedOutReasonFor("claude"));
   },
   60_000,
 );
@@ -183,6 +228,7 @@ it("uses the maintained Claude adapter when it is the only bridge on PATH", asyn
     dataDir: stateDir(),
     path,
     timeoutMs: 30_000,
+    authStates: signedIn("claude"),
     onAdapterResolved: (agentId, command) => {
       if (agentId === "claude") resolved.push(command);
     },
@@ -191,23 +237,37 @@ it("uses the maintained Claude adapter when it is the only bridge on PATH", asyn
   expect(resolved).toEqual([join(path, "claude-agent-acp")]);
 });
 
-it("prefers the maintained Claude adapter when both bridges are on PATH", async () => {
+it("never launches a bridge this daemon does not declare, even sitting beside one it does", async () => {
+  // The deprecated bridge is on PATH and fails loudly if it is ever started,
+  // so this is not "the right one was preferred" — it is "the other one was
+  // not run at all", which is what dropping it from `adapters` has to mean.
   const path = pathRunning({
     claude: 'echo "2.1.220"',
     "claude-agent-acp": acpHandshakeScript(),
     "claude-code-acp": "echo deprecated-bridge-was-launched >&2\nexit 1",
   });
-  const claude = (await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
+  const claude = (
+    await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedIn("claude") })
+  ).find((c) => c.id === "claude")!;
   expect(claude.sessionReady).toBe(true);
+  expect(claude.sessionReadyReason ?? "").not.toContain("deprecated-bridge-was-launched");
 });
 
-it("falls back to the compatibility Claude adapter when it is the only bridge on PATH", async () => {
+it("holds claude back when the only bridge on PATH is one this daemon dropped", async () => {
+  // There is no compatibility fallback any more. A machine carrying only
+  // `claude-code-acp` is a machine that cannot run this agent properly, and
+  // the honest report is not-ready with a reason — not a session opened
+  // through a bridge that cannot carry a plan.
   const path = pathRunning({
     claude: 'echo "2.1.220"',
     "claude-code-acp": acpHandshakeScript(),
   });
-  const claude = (await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000 })).find((c) => c.id === "claude")!;
-  expect(claude.sessionReady).toBe(true);
+  const claude = (
+    await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedIn("claude") })
+  ).find((c) => c.id === "claude")!;
+  expect(claude.available).toBe(true);
+  expect(claude.sessionReady).toBe(false);
+  expect(claude.sessionReadyReason).toMatch(/adapter/i);
 });
 
 /** An adapter that handshakes, then advertises a mode named `witnessed` only
@@ -236,9 +296,9 @@ it("opens its throwaway claude session with the same isolation a real one carrie
       'case "$line" in *\'"settingSources":[]\'*\'"strictMcpConfig":true\'*) true ;; *) false ;; esac',
     ),
   });
-  const claude = (await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000 })).find(
-    (c) => c.id === "claude",
-  )!;
+  const claude = (
+    await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedIn("claude") })
+  ).find((c) => c.id === "claude")!;
   expect(claude.sessionReady).toBe(true);
   const mode = claude.options?.find((option) => option.id === "mode");
   expect(mode?.currentValue).toBe("witnessed");
@@ -247,11 +307,17 @@ it("opens its throwaway claude session with the same isolation a real one carrie
 it("spawns its throwaway codex session with the registryless base config a real one gets", async () => {
   const path = pathRunning({
     codex: 'echo "0.146.0"',
-    "codex-acp": witnessingAdapterScript('[ "$CODEX_CONFIG" = \'{"mcp_servers":{}}\' ]'),
+    // The exact directory, not merely a non-empty one: a probe that spawned
+    // its adapter with the researcher's own CODEX_HOME still passes
+    // `[ -n "$CODEX_HOME" ]`, which is the one failure this witness exists
+    // to catch.
+    "codex-acp": witnessingAdapterScript(
+      `[ "$CODEX_HOME" = ${JSON.stringify(join(homedir(), ".lykeion", "agents", "codex"))} ]`,
+    ),
   });
-  const codex = (await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000 })).find(
-    (c) => c.id === "codex",
-  )!;
+  const codex = (
+    await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedIn("codex") })
+  ).find((c) => c.id === "codex")!;
   expect(codex.sessionReady).toBe(true);
   const mode = codex.options?.find((option) => option.id === "mode");
   expect(mode?.currentValue).toBe("witnessed");
@@ -269,9 +335,11 @@ it("says the CLI is there but the adapter is not, rather than calling it absent"
 it("carries what initialize refused with, so a version floor is named", async () => {
   const path = pathRunning({
     claude: 'echo "1.0.0"',
-    "claude-code-acp": "echo 'needs claude >= 2.0.0' >&2\nexit 1",
+    "claude-agent-acp": "echo 'needs claude >= 2.0.0' >&2\nexit 1",
   });
-  const claude = (await probeAgentClis({ dataDir: stateDir(), path })).find((c) => c.id === "claude")!;
+  const claude = (
+    await probeAgentClis({ dataDir: stateDir(), path, authStates: signedIn("claude") })
+  ).find((c) => c.id === "claude")!;
   expect(claude.sessionReady).toBe(false);
   expect(claude.sessionReadyReason).toContain("needs claude >= 2.0.0");
 });
@@ -314,23 +382,6 @@ it("gives up on a command that never answers, and still calls it installed", asy
   expect(claude.version).toBe("");
 }, 10_000);
 
-it("isRunnable refuses a file without the executable bit", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "lykeion-probe-"));
-  dirs.push(dir);
-  const file = join(dir, "claude");
-  writeFileSync(file, "not executable");
-  expect(await isRunnable(file)).toBe(false);
-});
-
-it("isRunnable accepts a file with the executable bit set", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "lykeion-probe-"));
-  dirs.push(dir);
-  const file = join(dir, "claude");
-  writeFileSync(file, "#!/bin/sh\necho hi\n");
-  chmodSync(file, 0o755);
-  expect(await isRunnable(file)).toBe(true);
-});
-
 it("cliFingerprint does not depend on the order clis arrive in", () => {
   const a: ProbedCli[] = [
     { id: "codex", name: "Codex", command: "codex", version: "1.0.0", available: true, sessionReady: false },
@@ -372,6 +423,28 @@ it("cliFingerprint differs when sessionReady flips, with the id, version and ava
     { id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true, sessionReady: false },
   ];
   const after: ProbedCli[] = [{ ...before[0]!, sessionReady: true }];
+  expect(cliFingerprint(before)).not.toBe(cliFingerprint(after));
+});
+
+it("cliFingerprint differs when sessionReadyReason changes with sessionReady staying false", () => {
+  // Rung 6's own case: install an ACP adapter for an agent that is not yet
+  // signed in, and sessionReady stays false straight through that step —
+  // id, version, available and sessionReady are all unchanged. The reason
+  // moving from "no adapter" to "not signed in" is the only fact that says
+  // anything happened, and it is exactly the fact a researcher needs the
+  // dock to catch up on.
+  const before: ProbedCli[] = [
+    {
+      id: "claude",
+      name: "Claude Code",
+      command: "claude",
+      version: "1.0.0",
+      available: true,
+      sessionReady: false,
+      sessionReadyReason: "no ACP adapter is known for claude yet",
+    },
+  ];
+  const after: ProbedCli[] = [{ ...before[0]!, sessionReadyReason: "not signed in" }];
   expect(cliFingerprint(before)).not.toBe(cliFingerprint(after));
 });
 
@@ -460,7 +533,7 @@ it(
     const clis = await probeAgentClis({
     dataDir: stateDir(),
       path: pathRunning({
-        "claude-code-acp": [
+        "claude-agent-acp": [
           "read -r line",
           `printf '{"jsonrpc":"2.0","id":1,"result":{}}\\n'`,
           "read -r line",
@@ -469,6 +542,7 @@ it(
         ].join("\n"),
       }),
       timeoutMs: 30_000,
+      authStates: signedIn("claude"),
     });
     const claude = clis.find((c) => c.id === "claude")!;
     expect(claude.sessionReady).toBe(true);
@@ -494,7 +568,7 @@ it(
     dataDir: stateDir(),
       path: pathRunning({
         // Answers the handshake and refuses to open a session.
-        "claude-code-acp": [
+        "claude-agent-acp": [
           "read -r line",
           `printf '{"jsonrpc":"2.0","id":1,"result":{}}\\n'`,
           "read -r line",
@@ -503,6 +577,7 @@ it(
         ].join("\n"),
       }),
       timeoutMs: 30_000,
+      authStates: signedIn("claude"),
     });
     const claude = clis.find((c) => c.id === "claude")!;
     // The handshake still earned `sessionReady`; what it offers is absent
@@ -551,6 +626,19 @@ it(
   },
   60_000,
 );
+
+it("names the agent rather than a command a researcher has to copy", () => {
+  // The daemon runs the flow; the researcher presses a button on the pairing
+  // page. This string is what the dock shows to whoever skipped that.
+  const reason = signedOutReasonFor("claude");
+  expect(reason).toContain("Claude Code");
+  expect(reason).toContain("not signed in");
+  expect(reason).not.toContain("CLAUDE_CONFIG_DIR");
+});
+
+it("says nothing about signing in to an agent nobody has declared", () => {
+  expect(signedOutReasonFor("gemini")).toBeUndefined();
+});
 
 it("runs a command in the directory its boundary was rendered for, not the one the daemon was started in", async () => {
   // A command whose "version" is wherever it was run. The profile allows the

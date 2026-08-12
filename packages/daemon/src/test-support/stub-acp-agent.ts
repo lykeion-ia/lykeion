@@ -10,8 +10,23 @@
  * (the last one plays again for any call past the end of the list).
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+
+/**
+ * Writes a marker file so that it never exists half-written. `writeFileSync`
+ * creates and truncates before it writes, so a reader waiting on
+ * `existsSync` can win that window and parse an empty file — which is what
+ * the readers of these markers all do. Writing beside the marker and
+ * renaming makes appearing and being complete the same event, so
+ * `existsSync` stays the honest signal every caller already treats it as.
+ * Both paths sit in the one directory a confined run may write to.
+ */
+function publish(path: string, contents: string): void {
+  const beside = `${path}.partial`;
+  writeFileSync(beside, contents);
+  renameSync(beside, path);
+}
 
 type Directive =
   | { emit: "agent_message_chunk"; text: string }
@@ -568,12 +583,12 @@ createInterface({ input: process.stdin }).on("close", stopToolServers).on("line"
     // is opened once, so this is written rather than appended: what is wanted
     // is the object, not a log of them.
     const params = process.env.LYKEION_STUB_SESSION_NEW_PARAMS;
-    if (params) writeFileSync(params, JSON.stringify(msg.params ?? null));
+    if (params) publish(params, JSON.stringify(msg.params ?? null));
     // The environment this agent was actually started with, for tests about
     // what a spawn adds to it — read from in here because the spawn's own
     // caller only knows what it intended to pass.
     const spawnedWith = process.env.LYKEION_STUB_ENV_MARKER;
-    if (spawnedWith) writeFileSync(spawnedWith, JSON.stringify(process.env));
+    if (spawnedWith) publish(spawnedWith, JSON.stringify(process.env));
     const reply = () =>
       send({ jsonrpc: "2.0", id: msg.id, result: { sessionId, ...advertised } });
     const delayMs = Number(process.env.LYKEION_STUB_SESSION_NEW_DELAY_MS ?? "0");

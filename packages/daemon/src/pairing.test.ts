@@ -1,11 +1,13 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect, type Socket } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { spawn } from "node:child_process";
 import { PairingRefused, startPairing, type PairingSession } from "./pairing";
-import { readState } from "./state";
+import { readState, type PairedState } from "./state";
+import type { AgentAuth } from "./agent-auth";
 
 let clock = 1_700_000_000;
 
@@ -26,6 +28,19 @@ function freshDir(): string {
   return dir;
 }
 
+/** A PATH holding a runnable stand-in for each named command, so whether
+ *  `/agents/signin` starts anything is decided by a fixture rather than by
+ *  what the machine running this suite happens to have installed. */
+function pathHolding(...commands: string[]): string {
+  const dir = freshDir();
+  for (const command of commands) {
+    const file = join(dir, command);
+    writeFileSync(file, "#!/bin/sh\nexit 0\n");
+    chmodSync(file, 0o755);
+  }
+  return dir;
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Polls until `predicate` holds, or gives up loudly. For the one thing
@@ -40,7 +55,25 @@ async function waitFor(predicate: () => boolean, label = "condition"): Promise<v
 }
 
 async function pairing(
-  options: { lab?: string; ttlSeconds?: number; onRequestExpired?: (link: string) => void } = {},
+  options: {
+    lab?: string;
+    ttlSeconds?: number;
+    onRequestExpired?: (link: string) => void;
+    // `"real"` opts back into `startPairing`'s own default — leaving
+    // `authStates` out of the call to it entirely — rather than one more
+    // stub function, so the actual production code path
+    // (`agentAuthStates({ dataDir, signal })` in `pairing.ts`) is reachable
+    // from this file at all. Plain `options.authStates ?? stub` could never
+    // produce that: any function a caller supplies, stub or real, still
+    // reaches `startPairing` as a defined `authStates`, and `startPairing`'s
+    // own `??` only ever falls through when the option is left out.
+    authStates?: (() => Promise<AgentAuth[]>) | "real";
+    signInSpawn?: typeof spawn;
+    signInPath?: string;
+    /** Opens the session the way a daemon that was already paired when it
+     *  started opens one: serving the sign-in step and nothing else. */
+    alreadyPaired?: PairedState;
+  } = {},
 ): Promise<PairingSession> {
   const session = await startPairing({
     port: 0,
@@ -49,6 +82,18 @@ async function pairing(
     ttlSeconds: options.ttlSeconds,
     onRequestExpired: options.onRequestExpired,
     now: () => clock,
+    alreadyPaired: options.alreadyPaired,
+    // `/paired` asks this too now, by default against whatever this
+    // machine's real PATH resolves `claude`/`codex` to, the same real,
+    // confined subprocess call `agent-auth.test.ts` exercises on its own.
+    // Every test in this file is asserting on the pairing protocol itself —
+    // state, nonce, expiry — not on agent auth, and some race a request's
+    // own clock closely enough that spending a real multi-hundred-
+    // millisecond call inside `/paired` throws that race off. Stubbed empty
+    // by default; nothing here asserts on the agents `/paired` reports.
+    authStates: options.authStates === "real" ? undefined : (options.authStates ?? (async () => [])),
+    signInSpawn: options.signInSpawn,
+    signInPath: options.signInPath,
   });
   sessions.push(session);
   // A test that never touches `paired` (most of them only care about one
@@ -628,7 +673,14 @@ it("commits the first completed connect and conflicts an overlapping slower one"
   expect(fastExchanges).toBe(1);
   expect(slowExchanges).toBe(0);
   await sleep(350);
-  expect(announced).toHaveLength(1);
+  // The fast connect's own touchDeadline armed this session's expiry timer
+  // for 700ms from its own commit, well inside the ~800ms this test's own
+  // sleeps add up to by here — so an unfixed expiry timer, indifferent to
+  // whether this exact request went on to pair, fires once in this window
+  // regardless. `/paired` succeeding, above, clears that same timer now
+  // (see `finishPaired`): a session that has paired has no request left to
+  // expire, so nothing fires here at all.
+  expect(announced).toHaveLength(0);
 });
 
 it("does not refresh the request deadline when lab reachability fails", async () => {
@@ -801,13 +853,16 @@ it("says on the page which lab the machine now belongs to, and links back to it"
   const body = await res.text();
   expect(res.status).toBe(200);
   expect(body).toContain("Lykeion");
-  expect(body).toContain("This machine is ready");
+  // Pairing no longer ends on a dead end — it ends on the step that signs
+  // this machine's agents in.
+  expect(body).toContain("Sign in your agents");
   expect(body).toContain("ana-macbook");
   expect(body).toContain("Ana&#39;s Lab");
   // The name the lab gave for itself, pointing at the address this machine
   // actually reached it on — the round trip that started in a browser tab
-  // and went through a terminal ends back where it began.
-  expect(body).toContain("Access Ana&#39;s Lab");
+  // and went through a terminal ends back where it began, for whoever skips
+  // signing anything in here.
+  expect(body).toContain("Skip — access Ana&#39;s Lab");
   expect(body).toContain(`href="${lab.base}"`);
 });
 
@@ -825,6 +880,427 @@ it("names the lab by its address on that page when the lab has no name of its ow
   const body = await res.text();
   expect(body).toContain("ana-macbook");
   expect(body).toContain(lab.base);
+});
+
+it(
+  "stops running its own request clock once it has paired, however long it stays open",
+  async () => {
+    // The regression this guards: /connect arms a timer (touchDeadline) that
+    // nothing had ever cleared once a session outlives a successful pairing.
+    // Before Task 8, closing the session the instant `paired` resolved
+    // cleared this same timer as a side effect of `close()`; now that a
+    // paired session is kept open on purpose — the sign-in page `/paired`
+    // renders goes on polling and posting to it — nothing did, and the
+    // timer fired every `ttlSeconds` on a machine that already had a token,
+    // announcing a bogus expiry and minting a fresh, WORKING pairing link
+    // each time. Forever.
+    let verifier = "";
+    const lab = await stubLab({ expectVerifier: (v) => v === verifier });
+    const announced: string[] = [];
+    const session = await pairing({
+      lab: lab.base,
+      ttlSeconds: 0.2,
+      onRequestExpired: (link) => announced.push(link),
+    });
+    verifier = session.verifier;
+    const res = await fetch(`${session.base}/paired?code=abc&state=${session.state}`);
+    expect(res.status).toBe(200);
+    // Several multiples of the ttl a re-armed timer would have refired on —
+    // an unfixed regression announces at least three or four links in this
+    // window, not a near miss either way.
+    await sleep(900);
+    expect(announced).toHaveLength(0);
+  },
+  5000,
+);
+
+/** What a daemon that was already paired when it started reads off disk. */
+const ALREADY_PAIRED: PairedState = {
+  lab: "http://127.0.0.1:1421",
+  token: "t",
+  runtimeId: "r_1",
+  machineName: "ana-macbook",
+  labName: "Kellogg Lab",
+};
+
+it("serves the sign-in step again to a daemon that was already paired", async () => {
+  // D-5: the step is skippable, "and reachable again later by re-opening the
+  // daemon's local address". Before this, the loopback server was created
+  // only inside `if (!machine)`, so a researcher who skipped signing in had
+  // no way back short of deleting this machine's pairing and starting over —
+  // while the dock went on telling them to open a page that did not exist.
+  const session = await pairing({
+    alreadyPaired: ALREADY_PAIRED,
+    authStates: async () => [
+      { agent: "claude", name: "Claude Code", available: true, signedIn: false },
+    ],
+  });
+  const admitted = await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" });
+  expect(admitted.status).toBe(200);
+  const html = await admitted.text();
+  expect(html).toContain("Sign in your agents");
+  expect(html).toContain('data-agent="claude"');
+  // Not the form that names a lab: this machine already has one.
+  expect(html).not.toContain('id="connect"');
+});
+
+it("refuses the sign-in page to a browser this session never admitted", async () => {
+  const session = await pairing({ alreadyPaired: ALREADY_PAIRED });
+  expect((await fetch(`${session.base}/`, { redirect: "manual" })).status).toBe(403);
+  // And a spent link stays spent — one link, one browser, however long this
+  // daemon has been running.
+  await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" });
+  expect(
+    (await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" })).status,
+  ).toBe(403);
+});
+
+it("routes neither /connect nor /paired for a daemon that is already paired", async () => {
+  // The whole of what a paired daemon may offer is the sign-in step. Naming
+  // a different lab, or spending a second code, are things this link must not
+  // be able to ask for — so those two routes do not exist on it at all,
+  // rather than existing and refusing.
+  const session = await pairing({ alreadyPaired: ALREADY_PAIRED });
+  const cookie = await admit(session);
+  const connect = await fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie, origin: session.base },
+    body: JSON.stringify({ lab: "http://127.0.0.1:1", name: "somewhere-else" }),
+    redirect: "manual",
+  });
+  expect(connect.status).toBe(404);
+  const paired = await fetch(`${session.base}/paired?code=abc&state=${session.state}`, {
+    headers: { cookie },
+  });
+  expect(paired.status).toBe(404);
+  // Nothing was re-homed by either attempt.
+  expect(readState(session.dataDir)).toBeUndefined();
+});
+
+it("still gates the sign-in routes of an already-paired daemon on admission and origin", async () => {
+  const session = await pairing({
+    alreadyPaired: ALREADY_PAIRED,
+    authStates: async () => [],
+  });
+  expect((await fetch(`${session.base}/agents`)).status).toBe(403);
+  const cookie = await admit(session);
+  expect((await fetch(`${session.base}/agents`, { headers: { cookie } })).status).toBe(200);
+  expect(
+    (await fetch(`${session.base}/agents`, { headers: { cookie, origin: "http://evil.example" } }))
+      .status,
+  ).toBe(403);
+  const signin = await fetch(`${session.base}/agents/signin`, {
+    method: "POST",
+    headers: { cookie, "sec-fetch-site": "cross-site" },
+    body: JSON.stringify({ agent: "claude" }),
+  });
+  expect(signin.status).toBe(403);
+});
+
+it("never mints a live pairing link on its own clock, however often it is asked for a fresh one", async () => {
+  // `status` now rotates the nonce for a paired daemon too, and rotation is
+  // what used to re-arm the request timer whose callback mints a fresh,
+  // WORKING pairing link and announces it. On a machine that already has a
+  // token that must never happen — not once, and not on the hundredth ask.
+  const announced: string[] = [];
+  const session = await pairing({
+    alreadyPaired: ALREADY_PAIRED,
+    ttlSeconds: 0.05,
+    onRequestExpired: (link) => announced.push(link),
+  });
+  for (let i = 0; i < 5; i += 1) session.rotateNonce();
+  await sleep(500);
+  expect(announced).toHaveLength(0);
+});
+
+it("keeps minting nothing on its own clock after pairing during its own run", async () => {
+  // The same guarantee for the other way a session ends up paired. The test
+  // above this one covers a session that never had a request; this covers one
+  // that had a real request, spent it, and is then asked for fresh links by
+  // `status` for as long as the daemon runs.
+  let verifier = "";
+  const lab = await stubLab({ expectVerifier: (v) => v === verifier });
+  const announced: string[] = [];
+  const session = await pairing({
+    lab: lab.base,
+    ttlSeconds: 0.2,
+    onRequestExpired: (link) => announced.push(link),
+  });
+  verifier = session.verifier;
+  expect((await fetch(`${session.base}/paired?code=abc&state=${session.state}`)).status).toBe(200);
+  for (let i = 0; i < 5; i += 1) session.rotateNonce();
+  await sleep(900);
+  expect(announced).toHaveLength(0);
+  // And what that fresh link now opens is the sign-in step, not the form.
+  const admitted = await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" });
+  expect(await admitted.text()).toContain("Sign in your agents");
+}, 5000);
+
+it("lets a link minted after this session paired actually use the page it opens", async () => {
+  // The gap the two cases above cannot see. A session that pairs during its
+  // own run freezes `pairedCookie`, and `signInAuthorized` used to accept
+  // only that — so the fresh link `status` now mints for a paired daemon
+  // admitted a browser at `/`, served it the sign-in page, and then refused
+  // that page's own first `/agents` poll and every `/agents/signin` it could
+  // send. Bricked before its own script ran a single request, which is the
+  // exact failure `pairedCookie` was introduced to prevent, arriving from the
+  // other side. A restarted daemon never sees it: `pairedCookie` is undefined
+  // there.
+  let verifier = "";
+  const lab = await stubLab({ expectVerifier: (v) => v === verifier });
+  const session = await pairing({
+    lab: lab.base,
+    authStates: async () => [
+      { agent: "claude", name: "Claude Code", available: true, signedIn: false },
+    ],
+    signInSpawn: (() => ({ on: () => {}, unref: () => {} })) as unknown as typeof spawn,
+    signInPath: pathHolding("claude"),
+  });
+  verifier = session.verifier;
+  // The tab that carried pairing through, and the cookie it still holds.
+  const paired = await admit(session);
+  expect(
+    (await fetch(`${session.base}/paired?code=abc&state=${session.state}`, { headers: { cookie: paired } }))
+      .status,
+  ).toBe(200);
+
+  // Months later: `lykeion-daemon status` mints a fresh admission link, and a
+  // second browser opens it.
+  const link = session.rotateNonce();
+  const opened = await fetch(link, { redirect: "manual" });
+  expect(opened.status).toBe(200);
+  expect(await opened.text()).toContain("Sign in your agents");
+  const reopened = opened.headers.get("set-cookie")!.split(";")[0]!;
+  expect(reopened).not.toBe(paired);
+
+  // The page that browser was just handed can do the two things it exists to
+  // do, rather than 403ing on both.
+  expect((await fetch(`${session.base}/agents`, { headers: { cookie: reopened } })).status).toBe(200);
+  const signin = await fetch(`${session.base}/agents/signin`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: reopened },
+    body: JSON.stringify({ agent: "claude" }),
+  });
+  expect(signin.status).toBe(202);
+
+  // And the tab that carried pairing through still works, which is the whole
+  // reason `pairedCookie` exists.
+  expect((await fetch(`${session.base}/agents`, { headers: { cookie: paired } })).status).toBe(200);
+  // A cookie this session never issued is still refused by both.
+  expect(
+    (await fetch(`${session.base}/agents`, { headers: { cookie: "lykeion_pair=invented" } })).status,
+  ).toBe(403);
+});
+
+it("refuses /agents to a request that was never admitted", async () => {
+  const session = await pairing();
+  const res = await fetch(`${session.base}/agents`);
+  expect(res.status).toBe(403);
+});
+
+it("answers /agents with what authStates reports, once admitted", async () => {
+  const agents: AgentAuth[] = [
+    { agent: "claude", name: "Claude Code", available: true, signedIn: false },
+    { agent: "codex", name: "Codex", available: true, signedIn: true, account: "r@lab.org" },
+  ];
+  const session = await pairing({ authStates: async () => agents });
+  const cookie = await admit(session);
+  const res = await fetch(`${session.base}/agents`, { headers: { cookie } });
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ agents });
+});
+
+it("answers /agents with the real, uninjected agentAuthStates when nothing overrides it", async () => {
+  // The one test in this file that reaches pairing.ts's actual production
+  // default (agentAuthStates({ dataDir, signal })) rather than a stub —
+  // every other test opts out of it for the timing reason explained on
+  // `pairing()`'s own `authStates` option above.
+  const session = await pairing({ authStates: "real" });
+  const cookie = await admit(session);
+  const res = await fetch(`${session.base}/agents`, { headers: { cookie } });
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as { agents: unknown[] };
+  expect(Array.isArray(body.agents)).toBe(true);
+  for (const agent of body.agents) {
+    expect(agent).toMatchObject({
+      agent: expect.any(String),
+      // Carried over the wire, not only computed: the page's own poll reads
+      // this answer, and a row it cannot tell "not installed" from "signed
+      // out" for is a row it offers a dead button on.
+      available: expect.any(Boolean),
+      signedIn: expect.any(Boolean),
+    });
+  }
+});
+
+it("refuses /agents/signin to a request that was never admitted", async () => {
+  const session = await pairing();
+  const res = await fetch(`${session.base}/agents/signin`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ agent: "claude" }),
+  });
+  expect(res.status).toBe(403);
+});
+
+it("starts a sign-in once admitted, without ever spawning a real login flow", async () => {
+  // Injected the same way agent-auth.test.ts itself keeps startSignIn from
+  // touching a real CLI: this only proves the route reaches startSignIn
+  // and reports what it says, never that a real browser opens.
+  const spawnFn = vi.fn(() => ({ on: vi.fn(), unref: vi.fn() }));
+  const session = await pairing({
+    signInSpawn: spawnFn as unknown as typeof spawn,
+    signInPath: pathHolding("claude"),
+  });
+  const cookie = await admit(session);
+  const res = await fetch(`${session.base}/agents/signin`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ agent: "claude" }),
+  });
+  expect(res.status).toBe(202);
+  expect(await res.json()).toEqual({ started: true });
+  expect(spawnFn).toHaveBeenCalled();
+});
+
+it("refuses to sign in a declared agent whose CLI this machine does not have", async () => {
+  // The page will not offer a button for it, but the route is what actually
+  // has to hold: nothing spawned, and a reason a caller can read, rather than
+  // a 202 followed by silence.
+  const spawnFn = vi.fn();
+  const session = await pairing({
+    signInSpawn: spawnFn as unknown as typeof spawn,
+    signInPath: pathHolding("claude"),
+  });
+  const cookie = await admit(session);
+  const res = await fetch(`${session.base}/agents/signin`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ agent: "codex" }),
+  });
+  expect(res.status).toBe(400);
+  expect((await res.json()) as { reason?: string }).toMatchObject({
+    started: false,
+    reason: expect.stringContaining("not installed on this machine"),
+  });
+  expect(spawnFn).not.toHaveBeenCalled();
+});
+
+it("refuses to sign in an agent nobody has declared, once admitted", async () => {
+  const session = await pairing();
+  const cookie = await admit(session);
+  const res = await fetch(`${session.base}/agents/signin`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ agent: "not-a-real-agent" }),
+  });
+  expect(res.status).toBe(400);
+  const body = (await res.json()) as { started: boolean; reason?: string };
+  expect(body.started).toBe(false);
+  expect(body.reason).toBeTruthy();
+});
+
+it("keeps /agents and /agents/signin working for the tab that paired, even if its nonce rotated first", async () => {
+  // The exact scenario the review reproduced live: `rotateNonce` (what
+  // `status` calls) can fire in the window between a tab being admitted
+  // and the lab's callback reaching `/paired` — `rotateNonce`'s own
+  // comment already says a tab that has gone on to the lab's approval
+  // screen still finishes regardless, and it does: `/paired` proves
+  // itself by `state`, not by cookie. What broke was everything the
+  // sign-in page that response renders does next: /agents and
+  // /agents/signin both checked the admitted tab's cookie against the
+  // now-rotated nonce instead of the one it actually carries, so the very
+  // page the daemon just served came up permanently 403'd.
+  let verifier = "";
+  const lab = await stubLab({ expectVerifier: (v) => v === verifier });
+  const session = await pairing({ lab: lab.base });
+  const cookie = await admit(session);
+  verifier = session.verifier;
+  session.rotateNonce();
+  // Carries the cookie explicitly: a real browser resends it automatically
+  // on this exact top-level navigation (`SameSite=Lax` allows a cookie set
+  // on this origin to survive a top-level GET arriving back at it, even
+  // after a cross-origin hop through the lab in between) — `fetch` here has
+  // no cookie jar of its own, so this is standing in for that.
+  const paired = await fetch(`${session.base}/paired?code=abc&state=${session.state}`, {
+    headers: { cookie },
+  });
+  expect(paired.status).toBe(200);
+  const agentsRes = await fetch(`${session.base}/agents`, { headers: { cookie } });
+  expect(agentsRes.status).toBe(200);
+  const signinRes = await fetch(`${session.base}/agents/signin`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ agent: "not-a-real-agent" }),
+  });
+  // 400, not 403: admitted fine, refused only for naming an undeclared
+  // agent — proves the cookie was accepted, not merely that the route
+  // answered at all.
+  expect(signinRes.status).toBe(400);
+});
+
+it("does not freeze an unvalidated, request-supplied cookie into the accepted secret", async () => {
+  // Cookies are not port-scoped: on loopback, any other origin on this
+  // same host can set `lykeion_pair` to a value of its own choosing.
+  // Driving `/paired` with such a value must not make it *become* this
+  // session's accepted secret going forward — that would hand an
+  // attacker-chosen cookie the same standing the genuinely admitted one
+  // has, while the real cookie is locked out.
+  let verifier = "";
+  const lab = await stubLab({ expectVerifier: (v) => v === verifier });
+  const session = await pairing({ lab: lab.base });
+  verifier = session.verifier;
+  const forged = "attacker-chosen-value";
+  const paired = await fetch(`${session.base}/paired?code=abc&state=${session.state}`, {
+    headers: { cookie: `lykeion_pair=${forged}` },
+  });
+  expect(paired.status).toBe(200);
+  const res = await fetch(`${session.base}/agents`, { headers: { cookie: `lykeion_pair=${forged}` } });
+  expect(res.status).toBe(403);
+});
+
+it("rejects cross-origin and cross-site calls to /agents and /agents/signin even with a valid cookie", async () => {
+  const session = await pairing();
+  const cookie = await admit(session);
+
+  const crossOriginAgents = await fetch(`${session.base}/agents`, {
+    headers: { cookie, origin: "http://127.0.0.1:65535" },
+  });
+  expect(crossOriginAgents.status).toBe(403);
+
+  const crossSiteAgents = await fetch(`${session.base}/agents`, {
+    headers: { cookie, "sec-fetch-site": "cross-site" },
+  });
+  expect(crossSiteAgents.status).toBe(403);
+
+  const crossOriginSignin = await fetch(`${session.base}/agents/signin`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie, origin: "http://127.0.0.1:65535" },
+    body: JSON.stringify({ agent: "claude" }),
+  });
+  expect(crossOriginSignin.status).toBe(403);
+});
+
+it("refuses /connect once this session has paired", async () => {
+  // The previous Critical's exact shape: reachable when a machine pairs
+  // with `--lab` already given, so no `/connect` ever committed a
+  // `state`. Without this, a post-pair `/connect` would still re-arm the
+  // expiry timer `/paired` just stopped and redirect to whatever lab a
+  // caller names — reopening Critical 1 in full.
+  let verifier = "";
+  const lab = await stubLab({ expectVerifier: (v) => v === verifier });
+  const session = await pairing({ lab: lab.base });
+  const cookie = await admit(session);
+  verifier = session.verifier;
+  const paired = await fetch(`${session.base}/paired?code=abc&state=${session.state}`);
+  expect(paired.status).toBe(200);
+  const res = await fetch(`${session.base}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ lab: "http://127.0.0.1:1", name: "attacker-named" }),
+  });
+  expect(res.status).toBe(409);
+  expect(await res.json()).toEqual({ error: "this machine has already paired" });
 });
 
 it("renders a safe recovery page when the lab exchange fails", async () => {

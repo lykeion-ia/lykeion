@@ -67,23 +67,47 @@
 
    The middle track is non-flexible, so the sizing algorithm maximises it into
    the free space up to `--conv-measure` while the side tracks rest on their
-   `min-content` floors; the two `1fr` tracks then split what is left EQUALLY,
-   which centres the band on the strip. `.conv-column` is centred on the same
-   axis — the strip's 20px padding and the stream's 18px + scrollbar-gutter
-   inset are both symmetric, so the two boxes share the pane's centre line — so
-   wherever the column is at its measure, the band lands exactly on it.
+   floors; the two `1fr` tracks then split what is left EQUALLY, which centres
+   the band on the strip. `.conv-column` is centred on the same axis — the
+   strip's 20px padding and the stream's 18px + scrollbar-gutter inset are both
+   symmetric, so the two boxes share the pane's centre line — so wherever the
+   column is at its measure, the band lands exactly on it.
 
-   And where the pane is too narrow for that, the inspector open or the window
-   small, the band is the track that yields first: it is the only one whose
-   floor is 0. The trail keeps its width, the actions keep theirs, and the row
-   reads as it did before the band existed. No breakpoint and no threshold to
-   maintain — the degrade is what the algorithm already does. */
+   Equally, though, only while neither side track outgrows its share, and the
+   two sides are not alike in what can make them. The actions are the app's own
+   words — a CLI's brand name, a pane toggle — so `min-content` there is a
+   bound. A Study's title is the user's, of no length in particular, and a track
+   floored on it is a track the data sizes: past about half the row the trail
+   stopped truncating and started pushing, and the tabs came to rest well right
+   of the column they name, the Study's name running into the Task's. Hence the
+   stated floor below. The name yields; the band does not move.
+
+   And where the pane is too narrow for the measure, the inspector open or the
+   window small, the band is the track that yields first: it is the only one
+   whose floor is 0. The actions keep their width, the trail keeps its floor,
+   and the row reads as it did before the band existed. No breakpoint and no
+   threshold to maintain — the degrade is what the algorithm already does. */
 .crumb-strip--banded {
   display: grid;
   grid-template-columns:
-    minmax(min-content, 1fr)
+    minmax(var(--crumb-trail-floor), 1fr)
     minmax(0, var(--conv-measure))
     minmax(min-content, 1fr);
+  /* All the trail is owed when the row runs short: the way back up, and enough
+     of the Study's name to know which one you are in. In `ch` for the same
+     reason `--conv-measure` is — it is a length of text, and it is read at the
+     strip's own size. Above the floor the trail takes its equal share and the
+     name truncates into it, which is why a long title now ends where the
+     conversation begins instead of pushing past it. */
+  --crumb-trail-floor: 24ch;
+}
+
+/* The trail stops short of its track's edge. The tabs begin ON the column, so
+   a name truncated flush against them would read as one run of text that
+   happened to change colour — the gutter is what says the Study's name ended
+   and the Task's began. */
+.crumb-strip--banded > nav {
+  padding-inline-end: 16px;
 }
 
 /* The open-Task tabs, clipped to the band's track. A Study holds any number of

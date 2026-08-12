@@ -43,8 +43,16 @@ export function CliDock({
   const tiles = useRef(new Map<string, HTMLElement>());
   const rank = (cli: AgentCli) =>
     cli.sessionReady ? 2 : cli.available ? 1 : 0;
+  // An agent whose CLI is not on this machine is not this researcher's
+  // concern. The catalogue lists thirteen so phases 2 and 3 have a roadmap; a
+  // dock rendering all thirteen would be a wall of tiles nobody can act on,
+  // and the one that does need a minute of their time would be lost in it.
+  // Filter before the rank contest so only usable entries compete for a
+  // representative. An agent is usable if either the CLI is on PATH (available)
+  // or the adapter can run (sessionReady).
   const representatives = new Map<string, AgentCli>();
   for (const cli of clis) {
+    if (!cli.available && !cli.sessionReady) continue;
     const current = representatives.get(cli.id);
     if (!current || rank(cli) > rank(current)) representatives.set(cli.id, cli);
   }
@@ -77,24 +85,25 @@ export function CliDock({
     });
   };
 
-  // CLI detection always returns all known agents (each with a readiness
-  // flag), so "nothing runnable" arrives as all-unready, not as an empty
-  // array — show a hint instead of a wall of dimmed tiles.
-  if (!visibleClis.some((c) => c.sessionReady)) {
+  // Show the empty state only when there is truly nothing to show: no installed
+  // agents at all. An installed agent that cannot yet run a session (e.g. not
+  // signed in) still gets a tile carrying its reason — this is the fallback
+  // sign-in surface for whoever skipped the pairing page.
+  if (visibleClis.length === 0) {
     return (
       <div className="cli-dock cli-dock--empty" role="status">
-        No agent CLIs detected — install Claude Code, Copilot, Cursor, …
+        No agent CLIs detected — install Claude Code or Codex
       </div>
     );
   }
 
   const selectedCliId = selectedId?.slice(selectedId.indexOf(":") + 1);
   const selected =
-    visibleClis.find((c) => cliIdentity(c) === selectedId) ??
-    visibleClis.find((c) => c.id === selectedCliId) ??
+    visibleClis.find((c) => cliIdentity(c) === selectedId && c.sessionReady) ??
+    visibleClis.find((c) => c.id === selectedCliId && c.sessionReady) ??
     visibleClis.find((c) => c.sessionReady) ??
-    visibleClis[0];
-  const selectedIdentity = cliIdentity(selected);
+    null;
+  const selectedIdentity = selected ? cliIdentity(selected) : null;
 
   return (
     // The row holds one tile per CLI kind. It can still outgrow a narrow

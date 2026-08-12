@@ -1,6 +1,5 @@
-import { access, constants } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import type { AgentCli, AgentOption } from "@lykeion/api";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +8,11 @@ import { confinementFor } from "./agent-home";
 import { confine, noBackendReason, policyFor, sandboxBackendFor } from "./sandbox";
 import { readAdvertised } from "./agent-options";
 import { adapterEnvFor, sessionMetaFor } from "./session";
+import { CATALOGUE, entryFor, isolationFor } from "./agent-registry";
+import { agentAuthStates, type AgentAuth } from "./agent-auth";
+import { resolveOnPath } from "./command-path";
+
+export { CATALOGUE } from "./agent-registry";
 
 /**
  * What a probe of this machine can say about a catalogue entry, before it is
@@ -17,40 +21,6 @@ import { adapterEnvFor, sessionMetaFor } from "./session";
  * opinion on that.
  */
 export type ProbedCli = Omit<AgentCli, "runtimeId">;
-
-/**
- * The coding-agent CLIs the daemon knows how to look for, in the order they
- * are reported. `command` is the bare executable name searched for on PATH —
- * never a path, and never passed through a shell.
- */
-export const CATALOGUE: ReadonlyArray<{ id: string; name: string; command: string }> = [
-  { id: "claude", name: "Claude Code", command: "claude" },
-  { id: "codex", name: "Codex", command: "codex" },
-  { id: "gemini", name: "Gemini", command: "gemini" },
-  { id: "copilot", name: "Copilot", command: "copilot" },
-  { id: "cursor", name: "Cursor", command: "cursor" },
-  { id: "opencode", name: "opencode", command: "opencode" },
-  { id: "kimi", name: "Kimi", command: "kimi" },
-  { id: "kiro", name: "Kiro", command: "kiro" },
-  { id: "qoder", name: "Qoder", command: "qoder" },
-  { id: "codebuddy", name: "CodeBuddy", command: "codebuddy" },
-  { id: "hermes", name: "Hermes", command: "hermes" },
-  { id: "openclaw", name: "OpenClaw", command: "openclaw" },
-  { id: "pi", name: "Pi", command: "pi" },
-];
-
-/**
- * ACP adapter candidates for each catalogue entry, in preference order.
- * Each is a separate program from the CLI itself, resolved on `PATH` the
- * same way, never through a shell. An id with no entry has no known bridge
- * to speak ACP through yet, whatever the CLI itself can do on its own.
- */
-const ADAPTER_COMMANDS: Readonly<Record<string, readonly string[]>> = {
-  claude: ["claude-agent-acp", "claude-code-acp"],
-  codex: ["codex-acp"],
-};
-
-const WINDOWS_EXTENSIONS = [".exe", ".cmd", ".bat"];
 
 /**
  * How long a command is given to answer `--version`. Ten seconds is far more
@@ -90,39 +60,18 @@ export interface ProbeOptions {
    *  confined — and it can only deny this machine's own token if it is told
    *  where that is. */
   dataDir: string;
-}
-
-/**
- * Whether `candidate` is a file this machine can run as a command. POSIX
- * marks that with the executable bit; Windows has none, so a file simply
- * existing under one of the conventional executable extensions counts.
- */
-export async function isRunnable(candidate: string): Promise<boolean> {
-  try {
-    await access(candidate, process.platform === "win32" ? constants.F_OK : constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Searches `pathValue` the way a shell's own command lookup would, but
- * without ever invoking a shell: split on the platform separator, and for
- * each directory, the first candidate that exists and is runnable wins.
- */
-async function resolveOnPath(command: string, pathValue: string): Promise<string | undefined> {
-  const dirs = pathValue.split(delimiter).filter((dir) => dir.length > 0);
-  for (const dir of dirs) {
-    const candidates =
-      process.platform === "win32"
-        ? WINDOWS_EXTENSIONS.map((ext) => join(dir, command + ext))
-        : [join(dir, command)];
-    for (const candidate of candidates) {
-      if (await isRunnable(candidate)) return candidate;
-    }
-  }
-  return undefined;
+  /** Who each declared agent is signed in as, on this machine. Defaults to
+   *  asking every agent's own CLI (`agentAuthStates`, which confines that CLI
+   *  the way this file's own `readVersion` confines a `--version` call — see
+   *  `agent-auth.ts`), called at most once per cycle rather than once per
+   *  catalogue entry that needs it — every `probeAdapter` call below reads
+   *  the same in-flight answer instead of re-asking a question this cycle
+   *  already asked — and not called at all in a cycle where no entry's
+   *  adapter ever resolves. Injectable for the same reason `path` is — a
+   *  probe under test must not shell out to whatever the process's real
+   *  `PATH` happens to resolve `claude`/`codex` to, which is a different
+   *  program than the fixture the test built. */
+  authStates?: () => Promise<AgentAuth[]>;
 }
 
 /**
@@ -287,6 +236,22 @@ function raced<T>(promise: Promise<T>, timeoutMs: number, signal: AbortSignal | 
   });
 }
 
+/**
+ * What a researcher is told about an agent that is installed, bridged, and
+ * not signed in.
+ *
+ * No command in it. The daemon runs the sign-in itself, from the pairing page
+ * where this is meant to be met; this string is the fallback surface, for
+ * whoever skipped that step or whose token lapsed months later. An
+ * instruction here would be a second way to do the same thing, and the two
+ * would drift.
+ */
+export function signedOutReasonFor(agentId: string): string | undefined {
+  const entry = entryFor(agentId);
+  if (entry?.isolation === undefined) return undefined;
+  return `${entry.name} is not signed in on this machine — open Lykeion's setup page to sign in`;
+}
+
 /** The `initialize` handshake ACP opens with, the same shape `session.ts`
  *  sends when it opens a real session — a probe asking the same question a
  *  session start would, so `sessionReady` never claims more than a session
@@ -313,6 +278,7 @@ async function probeAdapter(
   onResolved: ((agentId: string, command: string) => void) | undefined,
   platform: string,
   dataDir: string,
+  authStates: () => Promise<AgentAuth[]>,
 ): Promise<
   | { sessionReady: true; options?: AgentOption[] }
   | { sessionReady: false; sessionReadyReason: string }
@@ -324,7 +290,7 @@ async function probeAdapter(
   if (sandboxBackendFor(platform) === undefined)
     return { sessionReady: false, sessionReadyReason: noBackendReason(platform) };
 
-  const adapterCommands = ADAPTER_COMMANDS[agentId];
+  const adapterCommands = isolationFor(agentId)?.adapters;
   if (adapterCommands === undefined)
     return { sessionReady: false, sessionReadyReason: `no ACP adapter is known for ${agentId} yet` };
 
@@ -340,6 +306,22 @@ async function probeAdapter(
     return {
       sessionReady: false,
       sessionReadyReason: `none of ${adapterCommands.join(", ")} is installed — install an ACP adapter to run ${agentId} sessions`,
+    };
+
+  // Rung 6. Asked before anything is spawned: an adapter started against an
+  // installation with no sign-in opens a session that answers every turn by
+  // reporting itself signed out, which reaches a researcher as an agent that
+  // is broken rather than one that needs a minute of their time. Only
+  // reached once some catalogue entry's own adapter has actually resolved —
+  // a cycle where nothing resolves never asks a CLI this at all — and
+  // `authStates` memoizes its own first call, so two entries that both reach
+  // this share one round trip through every declared agent's CLI rather than
+  // each starting a fresh one.
+  const authState = (await authStates()).find((state) => state.agent === agentId);
+  if (authState !== undefined && !authState.signedIn)
+    return {
+      sessionReady: false,
+      sessionReadyReason: signedOutReasonFor(agentId) ?? "not signed in",
     };
 
   // Confined exactly as a real session is. A probe that opens a session
@@ -371,7 +353,7 @@ async function probeAdapter(
     try {
       // A throwaway session is still a session the owner's registries could
       // leak into, so it carries the same `_meta` a real one does.
-      const meta = sessionMetaFor(agentId);
+      const meta = await sessionMetaFor(agentId);
       const created = await raced(
         connection.request("session/new", {
           cwd: workspace,
@@ -419,10 +401,11 @@ async function probeOne(
   onResolved: ((agentId: string, command: string) => void) | undefined,
   platform: string,
   dataDir: string,
+  authStates: () => Promise<AgentAuth[]>,
 ): Promise<ProbedCli> {
   const [cli, adapter] = await Promise.all([
     probeCliVersion(entry.command, pathValue, timeoutMs, signal, platform, dataDir, entry.id),
-    probeAdapter(entry.id, pathValue, timeoutMs, signal, onResolved, platform, dataDir),
+    probeAdapter(entry.id, pathValue, timeoutMs, signal, onResolved, platform, dataDir, authStates),
   ]);
   return { id: entry.id, name: entry.name, command: entry.command, ...cli, ...adapter };
 }
@@ -435,6 +418,23 @@ async function probeOne(
 export async function probeAgentClis(options: ProbeOptions): Promise<ProbedCli[]> {
   const pathValue = options.path ?? process.env.PATH ?? "";
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const platform = options.platform ?? process.platform;
+  // `agentAuthStates` confines and rate-bounds this itself by default — see
+  // `agent-auth.ts` — so this only has to hand it the same clock and PATH the
+  // rest of this cycle is already using.
+  const defaultAuthStates = (): Promise<AgentAuth[]> =>
+    agentAuthStates({ path: pathValue, timeoutMs, signal: options.signal, platform, dataDir: options.dataDir });
+  // Not called here. A cycle where no catalogue entry's adapter ever resolves
+  // must not pay for this at all — the researcher's own agent CLI is real,
+  // and one that hangs and ignores its signal (see `probe.test.ts`'s
+  // catalogue-command-that-ignores-cancellation case) would otherwise hold
+  // this cycle's promise, and this process's exit, open behind a call
+  // nothing downstream even needed. `probeAdapter` below calls this itself,
+  // lazily, only an entry that reaches the rung actually asks — and the
+  // memoization is what keeps two such entries in the same cycle from each
+  // starting their own round trip through every declared agent's CLI.
+  let auth: Promise<AgentAuth[]> | undefined;
+  const authStates = (): Promise<AgentAuth[]> => (auth ??= (options.authStates ?? defaultAuthStates)());
   return Promise.all(
     CATALOGUE.map((entry) =>
       probeOne(
@@ -443,8 +443,9 @@ export async function probeAgentClis(options: ProbeOptions): Promise<ProbedCli[]
         timeoutMs,
         options.signal,
         options.onAdapterResolved,
-        options.platform ?? process.platform,
+        platform,
         options.dataDir,
+        authStates,
       ),
     ),
   );
@@ -469,12 +470,20 @@ export async function probeAgentClis(options: ProbeOptions): Promise<ProbedCli[]
  * the composer offered a bare *Default* against an agent that had a whole
  * catalogue to give. Nothing else could correct it: a real session reads
  * what the agent advertises, but keeps it to itself.
+ *
+ * `sessionReadyReason` belongs here for the same kind of reason, and rung 6
+ * is exactly the case that would otherwise go unseen: install an ACP
+ * adapter for an agent that is not yet signed in, and `sessionReady` stays
+ * false across that step while the reason moves from "no ACP adapter is
+ * installed" to "not signed in". Every other field this hashes is unchanged,
+ * so without the reason here that transition sends no report, and the dock
+ * goes on telling a researcher to install an adapter they already have.
  */
 export function cliFingerprint(clis: ProbedCli[]): string {
   return JSON.stringify(
     [...clis]
       .sort((a, b) => a.id.localeCompare(b.id))
-      .map((cli) => [cli.id, cli.version, cli.available, cli.sessionReady, cli.options]),
+      .map((cli) => [cli.id, cli.version, cli.available, cli.sessionReady, cli.sessionReadyReason, cli.options]),
   );
 }
 

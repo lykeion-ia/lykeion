@@ -248,14 +248,26 @@ async function signInAsOwner(lab: TestServer): Promise<SignedInOwner> {
  * the same name `probe.ts`'s catalogue already carries. Answering
  * `--version` is what makes the daemon's report say this machine has
  * `claude` installed at all; a real session never launches this binary
- * directly, since `claude-code-acp` — `writeAdapterStub`, below — is what
+ * directly, since the ACP adapter — `writeAdapterStub`, below — is what
  * both the probe's handshake and a real run actually speak to.
+ *
+ * It answers `auth status --json` as well, because a probe asks that before
+ * it offers a session at all: a CLI reporting itself signed out is an agent
+ * that would answer every turn by saying so, which the daemon reports as
+ * not-session-ready rather than launching. A stub that printed its version
+ * to every question answered this one with `2.1.220`, which is not JSON, so
+ * every case here waited out its whole budget for a `sessionReady` that was
+ * never coming.
  */
 function writeClaudeStub(binDir: string): void {
   mkdirSync(binDir, { recursive: true });
   writeFileSync(
     join(binDir, "claude"),
     `#!/usr/bin/env node
+if (process.argv[2] === "auth") {
+  process.stdout.write(JSON.stringify({ loggedIn: true, email: "e2e@lab.test" }) + "\\n");
+  process.exit(0);
+}
 process.stdout.write("2.1.220\\n");
 process.exit(0);
 `,
@@ -264,11 +276,11 @@ process.exit(0);
 }
 
 /**
- * Claude adapters this daemon's probe handshakes to decide `sessionReady`
- * and its run subsystem actually launches a session through. Both supported
- * names point at the same fixture so a globally installed preferred adapter
- * cannot outrank the compatibility stub on PATH and turn this hermetic test
- * into a call to the researcher's real toolchain.
+ * The Claude adapter this daemon's probe handshakes to decide `sessionReady`
+ * and its run subsystem actually launches a session through. Written under
+ * the one name the catalogue declares, so a machine carrying the researcher's
+ * real adapters cannot turn this hermetic test into a call to their own
+ * toolchain.
  */
 function writeAdapterStub(binDir: string): void {
   mkdirSync(binDir, { recursive: true });
@@ -284,8 +296,7 @@ const { spawnSync } = require("node:child_process");
 const result = spawnSync(${JSON.stringify(process.execPath)}, ["--experimental-strip-types", ${JSON.stringify(agent)}], { stdio: "inherit" });
 process.exit(result.status === null ? 1 : result.status);
 `;
-  for (const command of ["claude-agent-acp", "claude-code-acp"])
-    writeFileSync(join(binDir, command), script, { mode: 0o755 });
+  writeFileSync(join(binDir, "claude-agent-acp"), script, { mode: 0o755 });
 }
 
 interface DaemonHandle {

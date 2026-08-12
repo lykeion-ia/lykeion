@@ -27,13 +27,14 @@ afterEach(() => {
 });
 
 describe("CliDock", () => {
-  it("shows the empty hint when no CLI can run a session", () => {
+  it("shows the empty hint when no CLIs are available on the machine", () => {
     render(
       <CliDock
         clis={[
           cli({
             id: "claude",
             name: "Claude Code",
+            available: false,
             sessionReady: false,
             sessionReadyReason: "no ACP adapter is known for claude yet",
           }),
@@ -239,5 +240,101 @@ describe("CliDock", () => {
     expect(
       screen.getByRole("button", { name: "GitHub Copilot CLI" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows nothing at all for an agent the researcher has not installed", () => {
+    // The catalogue lists thirteen so phases 2 and 3 have a roadmap. Eleven
+    // are not on this machine, and a tile nobody can act on only makes the
+    // one they can act on harder to find.
+    render(
+      <CliDock
+        clis={[
+          cli({ id: "claude", name: "Claude Code" }),
+          cli({ id: "gemini", name: "Gemini", available: false, sessionReady: false }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTitle(/Gemini/)).toBeNull();
+  });
+
+  it("shows an installed agent that only needs signing in, and says so", () => {
+    render(
+      <CliDock
+        clis={[
+          cli({ id: "claude", name: "Claude Code" }),
+          cli({
+            id: "codex",
+            name: "Codex",
+            sessionReady: false,
+            sessionReadyReason: "Codex is not signed in on this machine — open Lykeion's setup page to sign in",
+          }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByTitle(/Codex — Codex is not signed in/)).toBeTruthy();
+  });
+
+  it("shows a lone installed-but-unsigned agent with its reason, not the empty state", () => {
+    // This is the single most common onboarding case: the CLI is installed but
+    // not signed in, and the dock is the fallback sign-in surface for whoever
+    // skipped the pairing page or whose token lapsed months later.
+    render(
+      <CliDock
+        clis={[
+          cli({
+            id: "codex",
+            name: "Codex",
+            available: true,
+            sessionReady: false,
+            sessionReadyReason: "Codex is not signed in on this machine — open Lykeion's setup page to sign in",
+          }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    // The agent's button should appear with its reason in the title.
+    expect(screen.getByTitle(/Codex — Codex is not signed in/)).toBeTruthy();
+    // The empty state should not appear.
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("does not hide an agent ready across paired machines because filtering happens before rank", () => {
+    // `available` and `sessionReady` are probed as two independent questions.
+    // `{ available: false, sessionReady: true }` is reachable: the ACP adapter
+    // is installed but the CLI binary is not on PATH. Machine B scores rank 2
+    // (sessionReady) vs machine A's rank 1 (available), so B wins the
+    // representative slot. Filtering before rank keeps both machines in
+    // the contest, so the session-ready one is chosen.
+    render(
+      <CliDock
+        clis={[
+          cli({
+            id: "claude",
+            name: "Claude Code",
+            runtimeId: "rt_a",
+            available: true,
+            sessionReady: false,
+          }),
+          cli({
+            id: "claude",
+            name: "Claude Code",
+            runtimeId: "rt_b",
+            available: false,
+            sessionReady: true,
+          }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        machineNames={{ rt_a: "laptop", rt_b: "workstation" }}
+      />,
+    );
+    // The session-ready machine's tile should appear, even though its CLI
+    // binary is not on PATH.
+    expect(document.querySelector(".cli-dock-machine")).toHaveTextContent("workstation");
   });
 });

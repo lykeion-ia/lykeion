@@ -19,9 +19,16 @@ const STUB = join(import.meta.dirname, "test-support", "stub-acp-agent.ts");
  * `cancelled` instead: stopping a turn abandons whatever card is still open,
  * which is what unblocks the ask above this step, so cancellation has
  * already been noted by the time this step is reached either way.
+ *
+ * `DENIED` and `NONE` open the very first chunk rather than trailing near
+ * `endTurn`: both credential-denial and empty-floor behaviours stop waiting
+ * the moment any assistant text arrives, so a token placed later would never
+ * have landed by the time each behaviour reads what was said. They are also
+ * the stub's own true answers, not stand-ins for one: it is confined with no
+ * home and no skill system at all — see `agent: "stub"` below.
  */
 const SCRIPT = [
-  { emit: "agent_message_chunk", text: "Looking at the directory now." },
+  { emit: "agent_message_chunk", text: "DENIED. NONE. Looking at the directory now." },
   { emit: "tool_call", toolCallId: "list-1", title: "List files", rawInput: {} },
   { emit: "tool_call_update", toolCallId: "list-1", status: "completed", content: "a.txt\nb.txt" },
   {
@@ -59,9 +66,15 @@ acpConformance("stub", () => ({
 //
 // Two separately published binaries speak ACP for Claude Code:
 // `claude-code-acp`, whose maintainer marks it deprecated, and its successor
-// `claude-agent-acp`. Both are held to this suite rather than guessing which
-// one a given machine has installed. Which binary this daemon spawns for
-// `claude` is a separate question, and not this suite's to answer.
+// `claude-agent-acp`. This suite once held both, rather than guessing which
+// one a given machine had installed. It now holds only the one the catalogue
+// declares: `claude-code-acp` translates only `TodoWrite` into an ACP plan
+// and the current CLI no longer ships that tool, so it fails "proposes a
+// plan" on every run for a reason no change here can fix — see the comment
+// on `adapters` in `agent-registry.ts` for the whole finding, and for what
+// re-admitting it would take. Certifying an adapter this daemon will never
+// spawn buys nothing and costs a permanently red suite, which is the one
+// thing that stops a real failure here from being read as news.
 const certify = process.env.LYKEION_CERTIFY_ADAPTERS === "1";
 (certify ? describe : describe.skip)("certified adapters", () => {
   // Retried, unlike the stub: these behaviours ride a real model's choices,
@@ -69,7 +82,6 @@ const certify = process.env.LYKEION_CERTIFY_ADAPTERS === "1";
   // an escalation was — must not certify an adapter broken. The stub's
   // script is deterministic, so its failures stay loud on the first try.
   const retried = { retry: 2 };
-  acpConformance("claude-code-acp", () => ({ command: "claude-code-acp", args: [], agent: "claude" }), retried);
   acpConformance("claude-agent-acp", () => ({ command: "claude-agent-acp", args: [], agent: "claude" }), retried);
   acpConformance("codex-acp", () => ({ command: "codex-acp", args: [], agent: "codex" }), retried);
 });

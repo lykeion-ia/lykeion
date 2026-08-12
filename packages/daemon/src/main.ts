@@ -6,8 +6,9 @@ import { join } from "node:path";
 import { runBridge } from "./bridge";
 import { DAEMON_VERSION, readDaemonConfig, USAGE, type DaemonConfig } from "./config";
 import { labLabel, readState, revokedStatePath, setAsidePairing, type PairedState } from "./state";
-import { beginPairing, PairingRefused, type PairingSession } from "./pairing";
+import { beginPairing, beginSignIn, PairingRefused, type PairingSession } from "./pairing";
 import { cliFingerprint, platformTag, probeAgentClis } from "./probe";
+import { installAgentHomes } from "./agent-install";
 import { heartbeat, report, workspacesGone } from "./lab";
 import { createRetryLoop, type RetryLoop } from "./retry";
 import { startKernelHost, type KernelHost } from "./kernel-host";
@@ -363,16 +364,33 @@ async function runServe(config: DaemonConfig): Promise<void> {
   controlServer = await startControlServer({
     token,
     handlers: {
-      status: () => ({
-        running: true,
-        pid: process.pid,
-        ...describe(config, machine),
-        // Asking an unpaired daemon how it is doing is how a person who
-        // lost the link gets another one, so every ask mints one — and
-        // retires the last, which is what keeps a link that was printed
-        // into a log or a scrollback from staying good.
-        ...(pairingSession ? { pairingLink: pairingSession.rotateNonce() } : {}),
-      }),
+      status: () => {
+        // Asking a daemon how it is doing is how a person who lost the link
+        // gets another one, so every ask mints one — and retires the last,
+        // which is what keeps a link that was printed into a log or a
+        // scrollback from staying good.
+        //
+        // Minted whether or not this machine is paired, because the page
+        // behind it is not the same page in the two cases and both are
+        // needed. Unpaired, it opens the form that names a lab. Paired, it
+        // opens the sign-in step and nothing else — the loopback server for a
+        // paired daemon routes neither `/connect` nor `/paired` (see
+        // `alreadyPaired`), so this link cannot re-home this machine or spend
+        // a second code. It is named apart from `pairingLink` for that
+        // reason: a caller that could not tell the two apart would offer one
+        // where the other belongs.
+        //
+        // Withholding it while paired is what this used to do, and it left
+        // the researcher `probe.ts` sends to "Lykeion's setup page" with no
+        // such page anywhere on this machine.
+        const link = pairingSession?.rotateNonce();
+        return {
+          running: true,
+          pid: process.pid,
+          ...describe(config, machine),
+          ...(link === undefined ? {} : machine ? { signInLink: link } : { pairingLink: link }),
+        };
+      },
       stop: () => {
         void shutdown();
       },
@@ -424,11 +442,18 @@ async function runServe(config: DaemonConfig): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    // Undefined here means a stop landed in the moment between the lab
-    // answering and this line, and shutting down has already closed it.
-    const session = pairingSession;
-    pairingSession = undefined;
-    if (session) await session.close();
+    // `pairingSession` is deliberately left open here, not closed — this
+    // used to be the moment pairing was entirely done, but the page
+    // `/paired` just answered is not a dead end any more (see `pairing.ts`'s
+    // `renderAgentSignInPage`): it goes on polling `/agents` and posting to
+    // `/agents/signin` on this exact loopback server while a researcher
+    // signs each agent in. Closing the session the instant `paired` resolves
+    // — what this line used to do — would race that page's own first
+    // request and always win: its `setInterval` does not even fire for two
+    // seconds, let alone whatever it takes a person to read the page and
+    // press a button. `shutdown()` is what closes it now, on the same terms
+    // as everything else this process opened — see the `pairingSession`
+    // handling there, unchanged by this.
   }
 
   // A stop that arrived while pairing was still open has already let go of
@@ -440,6 +465,40 @@ async function runServe(config: DaemonConfig): Promise<void> {
   // can be handed this machine's identity from inside a callback.
   const identity = machine;
   out(`Paired as "${identity.machineName}" with ${labLabel(identity)}`);
+
+  // Seeded before anything asks an agent about its home: a run and the first
+  // probe cycle below both reach into it, and an installation that is not
+  // there yet is indistinguishable from one this machine cannot use.
+  for (const result of installAgentHomes()) if (!result.ready) console.error(result.reason);
+
+  // The sign-in step, kept reachable for a daemon that was already paired
+  // when it started. A machine that pairs during this run already has one of
+  // these — the session `beginPairing` opened, deliberately left standing for
+  // the page `/paired` rendered — and it goes on serving `/` as the sign-in
+  // page from here. This is the other half: every later start of the same
+  // machine. Without it, D-5's "reachable again later by re-opening the
+  // daemon's local address" is false the moment the first pairing finishes,
+  // and the dock's own instruction names a page that does not exist.
+  //
+  // A port this machine cannot bind is a page this machine cannot offer, and
+  // nothing more: said once and stepped past, rather than taken as a reason
+  // for a paired daemon not to run at all. Everything below is what this
+  // process is actually for.
+  if (pairingSession === undefined) {
+    try {
+      pairingSession = await beginSignIn(config, identity);
+    } catch (err) {
+      // Named as a port only when one was actually named. `config.port`
+      // defaults to 0, which means "whatever is free" rather than port zero,
+      // and printing it reads as a nonsense number to whoever is trying to
+      // work out what is holding the address.
+      const where = config.port === 0 ? "on its loopback port" : `on port ${config.port}`;
+      console.error(
+        `this machine's sign-in page could not be opened ${where}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   runSubsystem = startRuns({
     lab: identity.lab,

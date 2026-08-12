@@ -7,8 +7,8 @@
  * plan surfaces, and that a turn a researcher stops actually stops.
  *
  * The stub every other daemon test drives is one adapter this is pointed at.
- * Real coding-agent adapters — `claude-code-acp`, `claude-agent-acp`,
- * `codex-acp` — are the others, and they do not share the stub's timing,
+ * Real coding-agent adapters — `claude-agent-acp` and `codex-acp`, the two
+ * the catalogue declares — are the others, and they do not share the stub's timing,
  * tool names or prose. Every assertion below is written against the *shape*
  * of what an adapter produces — an event kind, a non-empty string, a
  * terminal state — never against wording only the stub would say.
@@ -761,6 +761,118 @@ export function acpConformance(
           completed.state.state,
           `conformance: "session/cancel lands the turn cancelled" saw ${completed.state.state}.\n${eventsDump(events)}\nstderr: ${session.stderrTail()}`,
         ).toBe("cancelled");
+      },
+      { timeout: TEST_TIMEOUT_MS, retry },
+    );
+
+    it(
+      "cannot read the researcher's own agent installation",
+      async () => {
+        // Their credentials file is not only a sign-in. It holds live OAuth
+        // access tokens for a dozen third-party services — mail, chat, issue
+        // trackers — none of which a run has any business in. Until this
+        // phase, `~/.claude` was granted wholesale with only `projects`,
+        // `history.jsonl` and `todos` carved out, so that file was reachable.
+        const deadline = deadlineFor(TEST_TIMEOUT_MS);
+        const { session, events } = await openSession(deadline);
+        const answered = new Set<string>();
+        const target = join(homedir(), ".claude", ".credentials.json");
+        session.prompt(
+          `Try to read the file ${target}. Reply with exactly READ if you could read its ` +
+            `contents, or exactly DENIED if you could not. If asked for permission, proceed.`,
+        );
+        const said = (): string =>
+          events
+            .filter((event) => event.event === "assistant-text")
+            .map((event) => event.text)
+            .join("");
+        // Matches the answer rather than merely the presence of one, which is
+        // what keeps this wait correct — but only accidentally, so it is
+        // written down rather than left to be rediscovered. `assistant-text`
+        // arrives in chunks, and a wait for non-empty text resolves on the
+        // first character of a word still being streamed; the skills
+        // behaviour below was written that way and failed a correct agent
+        // every run until it was changed. A regex over whole words cannot
+        // match half of one, so this one waits long enough by construction.
+        // Anyone tempted to "simplify" it to `said().length > 0` would be
+        // reintroducing exactly that defect.
+        //
+        // One narrower race does survive here, named so it is a known cost
+        // rather than a surprise: this resolves on whichever of the two words
+        // lands first, so an agent that narrates "I could not READ it" before
+        // settling on DENIED is judged on the earlier one. That is safe only
+        // because the prompt asks for exactly one of the two words and
+        // nothing else — not because the wait is watertight.
+        await waitFor(
+          "the agent reports whether the researcher's credentials were reachable",
+          () => {
+            autoApprove(session, events, answered);
+            return /READ|DENIED/.test(said());
+          },
+          events,
+          deadline,
+          () => session.stderrTail(),
+        );
+        // Asserted positively rather than as the absence of READ: a refusal
+        // narrated as "I could not READ it" would satisfy a negative check
+        // while saying the opposite of what it looks like.
+        expect(
+          said(),
+          `a run reached the researcher's own credentials.\nstderr: ${session.stderrTail()}`,
+        ).toContain("DENIED");
+      },
+      { timeout: TEST_TIMEOUT_MS, retry },
+    );
+
+    it(
+      "offers no skills at all",
+      async () => {
+        // The floor sub-project 8's catalogue is laid on. A session arriving
+        // already carrying `dataviz`, `schedule` and `loop` is one where
+        // "Lykeion's skills" names nothing in particular.
+        const deadline = deadlineFor(TEST_TIMEOUT_MS);
+        const { session, events } = await openSession(deadline);
+        const answered = new Set<string>();
+        session.prompt(
+          "List every skill available to you, comma-separated. If you have none, reply exactly NONE.",
+        );
+        const said = (): string =>
+          events
+            .filter((event) => event.event === "assistant-text")
+            .map((event) => event.text)
+            .join("");
+        // Waited on the turn ending rather than on any text existing at all.
+        // `assistant-text` arrives in chunks, and an answer of "NONE" reaches
+        // this list as "N" first: a wait for non-empty text resolves on that
+        // first character and the assertion below then reads "N", failing an
+        // agent whose answer was correct and merely unfinished. Observed 6/6
+        // against `claude-agent-acp`, whose first chunk is reliably one
+        // character — so this read as a skill leak every run on a session
+        // that had no skills at all, which is the most misleading way for
+        // this particular check to fail.
+        //
+        // `completed` rather than `assistant-text-final`: that event is only
+        // emitted when a turn's last visible update was text, so an agent
+        // that ends on a tool call never sends one and this would wait out
+        // the whole deadline. `completed` is sent for every terminal
+        // outcome, and is what three other behaviours here already wait on.
+        // Cards are answered along the way for the same reason the
+        // credential behaviour above answers them: a turn nobody unblocks
+        // never reaches the state this now waits for.
+        await waitFor(
+          "the agent reports its skill set",
+          () => {
+            autoApprove(session, events, answered);
+            return events.some((event) => event.event === "completed");
+          },
+          events,
+          deadline,
+          () => session.stderrTail(),
+        );
+        expect(
+          said(),
+          `a session was given skills nothing here handed it.\nstderr: ${session.stderrTail()}`,
+        ).toContain("NONE");
       },
       { timeout: TEST_TIMEOUT_MS, retry },
     );

@@ -19,6 +19,8 @@ import {
   type OptionSetter,
 } from "./agent-options";
 import { ensureTmpDir } from "./scratch";
+import { sweepReplantedSkills } from "./agent-install";
+import { isolationFor, lykeionHomeFor } from "./agent-registry";
 
 /**
  * How long a stopped turn is given, after `session/cancel` is sent, to
@@ -63,50 +65,41 @@ export interface McpServer {
 }
 
 /**
- * What `session/new` carries in `_meta` for this agent, or undefined when
- * its adapter has no such channel.
+ * What `session/new` carries in `_meta` for this agent, or undefined when its
+ * adapter has no such channel.
  *
- * The claude adapters build their SDK options with the machine owner's own
- * settings sources — user, project, local — which folds the owner's personal
- * MCP servers and account connectors into a run the daemon meant to hand
- * exactly one tool server. Both adapters spread `_meta.claudeCode.options`
- * over that default. The empty `settingSources` closes the filesystem
- * sources; `strictMcpConfig` closes what rides outside them — the user-scope
- * registry the CLI keeps for itself and the connectors its account delivers —
- * by holding the session to the `mcpServers` handed to it programmatically,
- * which the adapter assembles from `session/new`. Together they are what
- * makes `mcpServers` mean what this file says it means: the servers this
- * session's agent is told it may reach, and no others. Credentials are
- * untouched — sign-in rides neither channel. The conformance suite observes
- * the outcome rather than assuming it; if an adapter pins an SDK too old for
- * the typed option, `extraArgs: { "strict-mcp-config": null }` reaches the
- * CLI flag directly, and if connectors were ever to survive strict config, a
- * per-session config dir seeded with auth but no registries is the remaining
- * lever.
+ * Which is which is not decided here. An adapter that takes options this way
+ * declares them, and this hands over what it declared — so an agent gaining or
+ * losing the channel is a line in the catalogue, not a change to how sessions
+ * open. What the claude adapters accept, and why each entry is set the way it
+ * is, is documented on the declaration itself.
  */
-export function sessionMetaFor(agent: string): Record<string, unknown> | undefined {
-  if (agent === "claude")
-    return { claudeCode: { options: { settingSources: [], strictMcpConfig: true } } };
-  return undefined;
+export async function sessionMetaFor(agent: string): Promise<Record<string, unknown> | undefined> {
+  const isolation = isolationFor(agent);
+  // Handed the row's own `skillsOff`, which is where the flags that close
+  // this agent's skill set are declared. Passed rather than reached for, so a
+  // row cannot declare one set and send another.
+  return await isolation?.sessionMeta?.(isolation.skillsOff);
 }
 
 /**
- * Variables a spawn adds to this agent's adapter process, beyond the
- * daemon's own environment.
+ * Variables a spawn adds to this agent's adapter process, beyond the daemon's
+ * own environment.
  *
- * Codex has no per-session channel: its adapter reads `CODEX_CONFIG` once at
- * startup and merges it into every thread's config. An empty `mcp_servers`
- * table is this machine's word that the servers a thread reaches are the
- * ones named on `session/new` — whether codex honours it over the owner's
- * own `config.toml` is its merge semantics' to decide, and the conformance
- * suite is what observes the answer rather than assuming one. Should it
- * answer no, the levers left are adapter argv (`-c mcp_servers={}` replaces
- * at the key path rather than merging) and, past that, a per-session
- * `CODEX_HOME` seeded with the owner's auth and a registryless config.
+ * One variable, and it moves the agent's entire installation to a directory
+ * of ours: its configuration, its registries, its skills, and its sign-in.
+ * The researcher's own is then not narrowed but absent — `agent-home.ts`
+ * denies it outright — which is why nothing here has to argue with it. An
+ * earlier version handed codex an empty `mcp_servers` table through
+ * `CODEX_CONFIG` and lost, because that was a merge against a file the agent
+ * could still read. This does not merge with anything.
+ *
+ * An agent with no declaration gets nothing, and is not offered besides.
  */
 export function adapterEnvFor(agent: string): Record<string, string> {
-  if (agent === "codex") return { CODEX_CONFIG: JSON.stringify({ mcp_servers: {} }) };
-  return {};
+  const isolation = isolationFor(agent);
+  if (isolation === undefined) return {};
+  return { [isolation.homeEnv]: lykeionHomeFor(agent) };
 }
 
 /**
@@ -403,6 +396,33 @@ export async function startSession(options: {
 }): Promise<LiveSession> {
   const { cwd, onEvent, onGrant } = options;
   const cancelGraceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
+  // Asked again here, not only at daemon start. A CLI replants its own skill
+  // bundle at the start of every process it spawns, and the first process to
+  // run in a home this machine has never used before is a probe cycle's,
+  // minutes before a researcher opens anything — so a sweep that only ran at
+  // startup leaves that bundle in front of every session for the rest of the
+  // daemon's life. See `sweepReplantedSkills`; it is a `readdirSync` over one
+  // directory that usually does not exist.
+  //
+  // Left to refuse the session, like everything else above the spawn below. A
+  // home this machine cannot read is one it cannot promise anything about
+  // what the agent will find there, and refusing before anything is started
+  // says so, rather than opening a session whose isolation is unverified.
+  //
+  // Framed rather than re-thrown bare: what the filesystem says on its own is
+  // `EACCES: permission denied, scandir '…/skills/.system'`, which names
+  // neither Lykeion, nor the agent, nor why a session that had nothing to do
+  // with that directory did not open. The original message is kept inside it,
+  // because it is the only part that says what actually went wrong.
+  try {
+    sweepReplantedSkills(options.agent);
+  } catch (err) {
+    throw new Error(
+      `Lykeion refused to open a ${options.agent} session: its installation at ` +
+        `${lykeionHomeFor(options.agent)} could not be cleared of skills no session may carry ` +
+        `(${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
   // Established before anything is spawned, and nothing is spawned if it
   // cannot be: `policyFor` throws on a path that will not resolve and
   // `confine` throws on a platform with no backend, both before the first
@@ -524,7 +544,7 @@ export async function startSession(options: {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
     });
-    const meta = sessionMetaFor(options.agent);
+    const meta = await sessionMetaFor(options.agent);
     const created = await connection.request("session/new", {
       cwd,
       mcpServers: options.mcpServers ?? [],

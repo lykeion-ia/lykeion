@@ -19,7 +19,7 @@ body::before{content:"";position:fixed;z-index:-1;inset:-12rem -10rem auto auto;
 body[data-tone="success"] .status-mark{border-color:#25452c;background:#17271b;box-shadow:inset 0 0 0 1rem color-mix(in srgb,var(--success) 10%,transparent)}body[data-tone="warning"] .status-mark{border-color:#584825;background:#292316}body[data-tone="refusal"] .status-mark{border-color:#713c4a;background:#291b21;box-shadow:inset 0 0 0 1rem color-mix(in srgb,var(--accent) 8%,transparent)}body[data-tone="error"] .status-mark{border-color:#5a3028;background:#291a18}
 .machine-summary{display:grid;gap:.5rem;margin:1.5rem 0 0;padding:.5rem;border:1px solid var(--line);border-radius:.75rem;background:var(--surface)}.machine-summary>div{display:grid;grid-template-columns:minmax(0,8rem) minmax(0,1fr);gap:1rem;padding:.5rem}.machine-summary>div+div{border-top:1px solid var(--line)}.machine-summary dt{color:var(--muted);font:650 .68rem/1.2 ui-monospace,"SF Mono",monospace;letter-spacing:.08em;text-transform:uppercase}.machine-summary dd{margin:0;color:var(--ink);overflow-wrap:anywhere}
 .lab-link{display:inline-block;margin:1.5rem 0 0;border-radius:.55rem;background:var(--ink);color:var(--canvas);padding:.75rem 1rem;font-weight:650;text-decoration:none;overflow-wrap:anywhere}.recovery{margin:1.5rem 0 0;padding:.9rem 1rem;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:.65rem;background:var(--surface);color:var(--muted);font-size:.86rem;line-height:1.6}.recovery code{padding:.15rem .35rem;border:1px solid var(--line);border-radius:.3rem;background:var(--surface-2);color:var(--ink);font:inherit;white-space:normal;overflow-wrap:anywhere}.technical-detail{max-width:100%;margin:1.5rem 0 0;padding:1rem;border:1px solid var(--line);border-radius:.65rem;background:var(--surface);color:var(--muted);font:.78rem/1.55 ui-monospace,"SF Mono",monospace;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto}
-input,button{font:inherit}input{width:100%;border:1px solid var(--line);border-radius:.55rem;background:var(--surface-2);color:var(--ink);padding:.75rem .8rem}button{border:0;border-radius:.55rem;background:var(--ink);color:var(--canvas);padding:.75rem 1rem;font-weight:650}button:disabled{cursor:wait;opacity:.55}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+input,button{font:inherit}input{width:100%;border:1px solid var(--line);border-radius:.55rem;background:var(--surface-2);color:var(--ink);padding:.75rem .8rem}button{border:0;border-radius:.55rem;background:var(--ink);color:var(--canvas);padding:.75rem 1rem;font-weight:650}button:disabled{cursor:wait;opacity:.55}.agent[data-available="false"]{opacity:.55}.agent[data-available="false"] .agent-signin{cursor:not-allowed}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 @keyframes arrive{from{opacity:0;transform:translateY(.4rem) scale(.96)}to{opacity:1;transform:none}}
 @media (max-width: 420px){.page{padding:1.25rem}.panel{padding:2.5rem 0}h1{font-size:2.25rem}.machine-summary>div{grid-template-columns:1fr;gap:.25rem}}
 @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation: none !important;scroll-behavior:auto!important}}
@@ -141,6 +141,165 @@ export function renderSuccessPage(input: {
       // the lab has no name of its own.
       `<a class="lab-link" href="${escapeHtml(input.labUrl)}">Access ${escapeHtml(input.labLabel)}</a>`,
     footer: "The daemon will continue running in the background.",
+  });
+}
+
+/**
+ * The step pairing now ends on: which agents this machine has, who each is
+ * signed in as, and a control that signs in the ones that are not.
+ *
+ * Here rather than in the lab because a sign-in is machine-scoped — it lands
+ * in `~/.lykeion/agents/<id>` on this machine — and this page is the only
+ * surface in the product whose subject is this machine. The browser the
+ * sign-in opens then opens where the credential must land, which a lab screen
+ * read from a second machine could not arrange.
+ *
+ * Skippable throughout. A researcher who wants one agent is not held up by
+ * the other, and every agent here can also be signed in later from the dock.
+ */
+/** Why an agent this page shows cannot be signed in. Reads as the answer to
+ *  "why is this greyed out", which is the only question a dimmed row raises. */
+const NOT_INSTALLED = "not installed on this machine";
+
+export function renderAgentSignInPage(input: {
+  machineName: string;
+  labLabel: string;
+  labUrl: string;
+  agents: ReadonlyArray<{
+    agent: string;
+    name: string;
+    available: boolean;
+    signedIn: boolean;
+    account?: string;
+  }>;
+}): string {
+  const rows = input.agents
+    .map((agent) => {
+      // Asked before `signedIn`, which folds "not installed" into "signed
+      // out" by design (see `AgentAuth.available`). An agent whose CLI is not
+      // here is shown and not offered: pressing Sign in for it used to spawn
+      // an ENOENT nothing surfaced, answer 202, and leave the row saying
+      // "Continue in your browser…" for as long as the tab stayed open.
+      //
+      // Shown rather than dropped, and disabled with the reason in its title
+      // — the same grammar the dock uses for a tile it can name but not act
+      // on. A machine with one CLI installed then reads as a machine with one
+      // CLI installed, rather than as one where the other agent does not
+      // exist.
+      const status = !agent.available
+        ? `<button type="button" class="agent-signin" data-agent="${escapeHtml(agent.agent)}" disabled title="${escapeHtml(agent.name)} — ${NOT_INSTALLED}">Sign in</button>`
+        : agent.signedIn
+          ? `<span class="agent-state agent-state--on">${escapeHtml(agent.account ?? "signed in")}</span>`
+          : `<button type="button" class="agent-signin" data-agent="${escapeHtml(agent.agent)}">Sign in</button>`;
+      return `<li class="agent" data-available="${agent.available}" data-signed-in="${agent.signedIn}"><span class="agent-name">${escapeHtml(agent.name)}</span>${status}</li>`;
+    })
+    .join("");
+  // A page of rows nobody can press is worse than saying so. This is the
+  // state that used to be unreachable in production — `agentAuthStates`
+  // always answers with every declared agent — and it is now what a machine
+  // with neither CLI installed actually gets.
+  const list = input.agents.some((agent) => agent.available)
+    ? `<ul class="agents">${rows}</ul>`
+    : `<p class="description">No coding-agent CLI was found on this machine. Install Claude Code or Codex, then reopen this page.</p>`;
+  // `:not([disabled])` in both selectors below, so a row this page rendered
+  // as unpressable is neither wired to a click nor watched by the poll — the
+  // poll exists to turn a row over once a sign-in this page started
+  // finishes, and no sign-in was ever started for these.
+  const script = `<script>
+    document.querySelectorAll(".agent-signin:not([disabled])").forEach((button) => {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        button.textContent = "Continue in your browser…";
+        try {
+          const res = await fetch("/agents/signin", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ agent: button.dataset.agent }) });
+          if (!res.ok) {
+            // A stale page (see the poll below) cannot be fixed by pressing
+            // the button again; anything else — this daemon momentarily
+            // busy, a transient network hiccup — can, so only the stale
+            // case is left disabled.
+            button.disabled = res.status === 403;
+            button.textContent = res.status === 403 ? "Could not confirm — use the link below" : "Sign in";
+          }
+        } catch {
+          button.disabled = false;
+          button.textContent = "Sign in";
+        }
+      });
+    });
+    // The sign-in finishes in another tab, so nothing here is told when it
+    // does. Polling is what turns a row over — but only for an agent this
+    // page itself offered a button for: pendingButtons is keyed off exactly
+    // those, and a machine where one agent was already signed in before
+    // this page ever loaded never puts it in this map, so there is nothing
+    // watching it to read a poll's answer as new forever.
+    //
+    // Turned over by rewriting the row in place from the JSON a poll
+    // already fetched, not by reloading the page. A reload would re-issue
+    // this exact GET /paired?code=…&state=…, and the lab has already spent
+    // that code — a second exchange fails outright (see finishPaired /
+    // exchangeCode), on exactly the event this poll exists to detect. That
+    // used to be exactly what happened here.
+    const pendingButtons = new Map(
+      Array.from(document.querySelectorAll(".agent-signin:not([disabled])")).map((button) => [button.dataset.agent, button]),
+    );
+    function turnRowOver(agent) {
+      const button = pendingButtons.get(agent.agent);
+      if (!button) return;
+      const row = button.closest("li");
+      const state = document.createElement("span");
+      state.className = "agent-state agent-state--on";
+      state.textContent = agent.account ?? "signed in";
+      button.replaceWith(state);
+      if (row) row.dataset.signedIn = "true";
+      pendingButtons.delete(agent.agent);
+    }
+    if (pendingButtons.size > 0) {
+      // A self-rescheduling timeout, not setInterval: /agents costs a real,
+      // confined subprocess call per agent, slower than the two seconds
+      // between ticks would allow for if the next one were already queued
+      // regardless of whether this one had answered. Rescheduling only
+      // once this fetch has settled is what keeps that from ever
+      // overlapping itself.
+      const poll = async () => {
+        try {
+          const res = await fetch("/agents");
+          if (res.status === 403) {
+            // This page's own admission has gone stale. Reloading would
+            // only re-submit the code above, and there is nothing else
+            // this page can do from here to confirm sign-in status — say
+            // so, once, and stop asking rather than retry silently forever.
+            pendingButtons.forEach((button) => {
+              button.disabled = true;
+              button.textContent = "Could not confirm — use the link below";
+            });
+            return;
+          }
+          if (res.ok) {
+            const { agents } = await res.json();
+            agents.filter((a) => pendingButtons.has(a.agent) && a.signedIn).forEach(turnRowOver);
+          }
+        } catch {
+          // A rejected fetch — the daemon restarting, this tab's own
+          // connection going with it — is caught rather than left to
+          // become an unhandled rejection; there is nothing to do but ask
+          // again.
+        }
+        if (pendingButtons.size > 0) setTimeout(poll, 2000);
+      };
+      setTimeout(poll, 2000);
+    }
+  </script>`;
+  return renderPairingPage({
+    title: "Sign in your agents",
+    tone: "neutral",
+    eyebrow: "One last step",
+    heading: "Sign in your agents",
+    // Not escaped here: `renderPairingPage` escapes the whole description it
+    // is handed, and escaping first turned `Ana's Mac` into `Ana&#39;s Mac`
+    // on the last screen of onboarding.
+    description: `Lykeion runs each agent from an installation of its own on ${input.machineName}, separate from your personal one. Sign in once here and it stays signed in.`,
+    contentHtml: `${list}${script}<a class="lab-link" href="${escapeHtml(input.labUrl)}">Skip — access ${escapeHtml(input.labLabel)}</a>`,
+    footer: "This page is served locally by the Lykeion daemon on this machine.",
   });
 }
 

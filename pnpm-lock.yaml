@@ -28,6 +28,9 @@ importers:
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
+      jsdom:
+        specifier: ^26.0.0
+        version: 26.1.0
       typescript:
         specifier: ~5.8.3
         version: 5.8.3

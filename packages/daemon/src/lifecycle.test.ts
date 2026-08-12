@@ -350,6 +350,52 @@ it(
 );
 
 it(
+  "keeps the sign-in step reachable on a machine that was already paired when it started",
+  async () => {
+    // D-5: the step is skippable, "and reachable again later by re-opening
+    // the daemon's local address". The loopback server used to be created
+    // only inside `if (!machine)`, so on every later start of a paired
+    // daemon there was no such address — while `signedOutReasonFor` went on
+    // telling the researcher to open Lykeion's setup page to sign in.
+    const dir = freshDir();
+    const lab = await silentLab();
+    pairWith(dir, lab.base);
+
+    const daemon = serve(dir);
+    await waitFor("the daemon to claim the directory", () => readControlFile(dir) !== undefined);
+
+    const status = JSON.parse((await run(["status", "--data-dir", dir])).stdout) as Record<
+      string,
+      string
+    >;
+    // Named apart from `pairingLink`, and never offered alongside it: this
+    // machine has a token, and nothing here may read as an offer to pair it
+    // somewhere else.
+    expect(status.pairingLink, daemon.output()).toBeUndefined();
+    expect(status.signInLink, daemon.output()).toContain("nonce=");
+    // Nor announced on the terminal the way a pairing link is. Nobody is
+    // watching a paired daemon start; whoever wants this asks for it.
+    expect(daemon.output()).not.toContain("Pair this machine ->");
+
+    const page = await fetch(status.signInLink!, { redirect: "manual" });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("Sign in your agents");
+
+    // And pairing itself is not back with it. `/connect` is the route that
+    // would re-home this machine to another lab.
+    const origin = new URL(status.signInLink!).origin;
+    const connect = await fetch(`${origin}/connect`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      redirect: "manual",
+    });
+    expect(connect.status).toBe(404);
+  },
+  60_000,
+);
+
+it(
   "hands a fresh link to every ask, and the one before it stops working",
   async () => {
     const dir = freshDir();

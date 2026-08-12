@@ -1,9 +1,17 @@
 import { afterEach, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecutionLogEntry, RunEvent } from "@lykeion/api";
-import { startSession, type LiveSession, type McpServer, type StandingGrant } from "./session";
+import {
+  startSession,
+  type LiveSession,
+  type McpServer,
+  type StandingGrant,
+  adapterEnvFor,
+  sessionMetaFor,
+} from "./session";
 import { canonicalPath } from "./sandbox";
 
 const STUB = join(import.meta.dirname, "test-support", "stub-acp-agent.ts");
@@ -26,7 +34,15 @@ function grantedDir(): string {
 async function session(
   script: unknown[],
   grants: StandingGrant[] = [],
-  options: { cancelGraceMs?: number; mcpServers?: McpServer[]; agent?: string } = {},
+  options: {
+    cancelGraceMs?: number;
+    mcpServers?: McpServer[];
+    agent?: string;
+    /** Added to the environment the daemon itself would hand the spawn, so a
+     *  test can prove what happens when the researcher's own home variable is
+     *  already set in the process this daemon is running as. */
+    env?: Record<string, string>;
+  } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "lykeion-sess-"));
   dirs.push(cwd);
@@ -55,6 +71,7 @@ async function session(
       LYKEION_STUB_SCRIPT: JSON.stringify(script),
       LYKEION_STUB_SESSION_NEW_PARAMS: opening,
       LYKEION_STUB_ENV_MARKER: spawnedWith,
+      ...(options.env ?? {}),
     },
     ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
     ...(options.cancelGraceMs !== undefined ? { cancelGraceMs: options.cancelGraceMs } : {}),
@@ -112,13 +129,6 @@ it("empties a claude session's settings sources and holds it to strict MCP confi
   expect(newSessionParams()).toMatchObject({
     _meta: { claudeCode: { options: { settingSources: [], strictMcpConfig: true } } },
   });
-});
-
-it("hands a codex adapter a base config that names no servers of the machine owner's", async () => {
-  const { newSessionParams, adapterEnv } = await session([], [], { agent: "codex" });
-  expect(JSON.parse(adapterEnv().CODEX_CONFIG ?? "null")).toEqual({ mcp_servers: {} });
-  // The claude channel is claude's own; a codex session carries no meta.
-  expect(newSessionParams()._meta).toBeUndefined();
 });
 
 it("adds no per-agent config for an agent it knows no channel for", async () => {
@@ -1412,4 +1422,110 @@ it("gives a run a temporary directory inside the one directory it may write", as
   expect(existsSync(told)).toBe(true);
   // The machine's shared temporary directory is not what a run is handed.
   expect(told).not.toBe(tmpdir());
+});
+
+it("clears a bundle a CLI replanted since the daemon started, before it opens the session", async () => {
+  // The sweep runs from `installAgentHomes` once per daemon start, which
+  // cannot reach a home the CLI plants into afterwards — the ordinary case on
+  // a machine that has never run Lykeion, where the first process in that
+  // home is a probe cycle's, minutes before anybody opens anything. Asking
+  // again here is what keeps "a session reports zero skills" true for every
+  // session in a daemon's life rather than only the first.
+  //
+  // Against the real home root, because that is the wiring under test — the
+  // one this stub agent would use. Removed again whichever way this goes.
+  const stubHome = join(homedir(), ".lykeion", "agents", "stub");
+  const planted = join(stubHome, "skills", ".system");
+  mkdirSync(planted, { recursive: true });
+  writeFileSync(join(planted, "skill-creator.md"), "planted since the daemon started");
+  try {
+    await session([]);
+    expect(existsSync(join(planted, "skill-creator.md"))).toBe(false);
+  } finally {
+    rmSync(stubHome, { recursive: true, force: true });
+  }
+});
+
+it("says whose installation it could not clear when it refuses a session over one", async () => {
+  // Refusing is the right answer — a home this machine cannot read is one it
+  // cannot promise anything about — but the filesystem's own words for it are
+  // `ENOTDIR: not a directory, scandir '…'`, which name neither Lykeion nor
+  // the agent nor why a session that had nothing to do with that directory
+  // did not open. A file where the bundle directory belongs is the portable
+  // way to make the read fail; a directory nobody may enter is the real one.
+  const stubHome = join(homedir(), ".lykeion", "agents", "stub");
+  mkdirSync(join(stubHome, "skills"), { recursive: true });
+  writeFileSync(join(stubHome, "skills", ".system"), "not a directory");
+  try {
+    await expect(session([])).rejects.toThrow(/Lykeion refused to open a stub session/);
+    await expect(session([])).rejects.toThrow(stubHome);
+    // And the reason the filesystem gave is still in there, since it is the
+    // only part that says what actually went wrong.
+    await expect(session([])).rejects.toThrow(/ENOTDIR|not a directory/);
+  } finally {
+    rmSync(stubHome, { recursive: true, force: true });
+  }
+});
+
+it("points each agent at an installation of ours rather than the researcher's", () => {
+  expect(adapterEnvFor("claude")).toEqual({
+    CLAUDE_CONFIG_DIR: join(homedir(), ".lykeion", "agents", "claude"),
+  });
+  expect(adapterEnvFor("codex")).toEqual({
+    CODEX_HOME: join(homedir(), ".lykeion", "agents", "codex"),
+  });
+});
+
+/**
+ * The two above are assertions about a pure function. These are the same
+ * claim read back out of the process that was actually spawned — the only
+ * place the guarantee is really made, since `adapterEnvFor` returning the
+ * right pair proves nothing about whether the spawn let it win.
+ *
+ * Poisoned deliberately: the daemon's own environment names the researcher's
+ * installation, which is exactly what a researcher who exports
+ * `CLAUDE_CONFIG_DIR` in their shell profile and then starts the daemon from
+ * that shell hands this. `startSession` spreads the per-agent environment
+ * last, so ours is what the adapter sees; a reordering of that spread passes
+ * every pure-function test in this file and fails here.
+ */
+it("hands a claude adapter our home even when the daemon's own environment names the researcher's", async () => {
+  const { adapterEnv } = await session([], [], {
+    agent: "claude",
+    env: { CLAUDE_CONFIG_DIR: join(homedir(), ".claude") },
+  });
+  expect(adapterEnv().CLAUDE_CONFIG_DIR).toBe(join(homedir(), ".lykeion", "agents", "claude"));
+});
+
+it("hands a codex adapter our home even when the daemon's own environment names the researcher's", async () => {
+  const { adapterEnv } = await session([], [], {
+    agent: "codex",
+    env: { CODEX_HOME: join(homedir(), ".codex") },
+  });
+  expect(adapterEnv().CODEX_HOME).toBe(join(homedir(), ".lykeion", "agents", "codex"));
+});
+
+it("no longer argues with codex's own configuration over MCP servers", () => {
+  // There is no researcher's config.toml in reach to out-merge: the whole of
+  // what codex is told about tool servers is the file Lykeion wrote.
+  expect(adapterEnvFor("codex")).not.toHaveProperty("CODEX_CONFIG");
+});
+
+it("adds nothing to the environment of an agent nobody has declared", () => {
+  expect(adapterEnvFor("gemini")).toEqual({});
+});
+
+it("tells claude to offer no skills at all", async () => {
+  const meta = (await sessionMetaFor("claude")) as { claudeCode: { options: Record<string, unknown> } };
+  expect(meta.claudeCode.options.extraArgs).toEqual({ "disable-slash-commands": null });
+  // Defence in depth, not the mechanism: the researcher's settings are out of
+  // reach entirely now, but a session that stops closing them is one
+  // regression away from reading them again.
+  expect(meta.claudeCode.options.settingSources).toEqual([]);
+  expect(meta.claudeCode.options.strictMcpConfig).toBe(true);
+});
+
+it("carries no session meta for an agent that has no such channel", async () => {
+  expect(await sessionMetaFor("codex")).toBeUndefined();
+  expect(await sessionMetaFor("gemini")).toBeUndefined();
 });
