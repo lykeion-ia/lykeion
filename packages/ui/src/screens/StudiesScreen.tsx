@@ -11,6 +11,7 @@ import { PrimaryButton } from "../components/ui/PrimaryButton";
 import { ScreenHeader } from "../components/ui/ScreenHeader";
 import { PlusIcon } from "../components/icons";
 import { closeTaskTabsForStudy } from "../lib/task-tabs";
+import { closeNotebookTabsForStudy } from "../lib/notebook-tabs";
 import { createStudyFromInput } from "../lib/study-meta";
 import {
   applyStudyFilters,
@@ -105,6 +106,7 @@ export function StudiesScreen() {
     setActionError(null);
     await api.deleteStudy(studyId);
     closeTaskTabsForStudy(studyId);
+    closeNotebookTabsForStudy(studyId);
     setPendingDelete(null);
     invalidate();
   };

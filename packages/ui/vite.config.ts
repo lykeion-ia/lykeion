@@ -13,6 +13,13 @@ export default defineConfig({
     proxy: {
       "/rpc": "http://127.0.0.1:1421",
       "/auth": "http://127.0.0.1:1421",
+      // The daemon's three routes: it trades a pairing code for a token,
+      // heartbeats, and asks what it may run. A daemon pointed at the dev
+      // server rather than at the workspace server reaches them through here,
+      // and without this entry the SPA fallback answers the exchange with
+      // `index.html` — which the daemon reports as a 404 from the lab, on a
+      // pairing the lab in fact approved.
+      "/daemon": "http://127.0.0.1:1421",
       // The change channel streams, so it must not be buffered into one
       // response before the browser sees any of it.
       "/events": { target: "http://127.0.0.1:1421", ws: false, changeOrigin: false },

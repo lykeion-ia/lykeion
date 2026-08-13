@@ -14,6 +14,7 @@ import {
   buildNotebookContexts,
   contextLabel,
   kernelFor,
+  languageLabel,
   languagesOf,
 } from "./notebook-model";
 import "./notebook.css";
@@ -28,12 +29,15 @@ const POLL_MS = 1500;
  *
  * The two axes are not the same kind of thing and are not rendered as though
  * they were. A context is a separate notebook — its own namespace, its own
- * cells — so choosing one changes what is on screen. A language is a second
- * kernel *inside* the selected context, so choosing one changes which kernel
- * the strip describes and the REPL runs in, and leaves the ledger alone: the
- * order the work happened in is the one thing a record of it has to keep, and
- * splitting the list by language would be the surface deciding a researcher
- * no longer wants to know what ran between two of their own cells.
+ * cells — so choosing one changes which notebook you are in. A language is a
+ * second kernel *inside* the selected context, so choosing one is a lens on the
+ * notebook you are already in: it narrows the ledger to that language's cells
+ * and points the status line at that kernel.
+ *
+ * Which is why the lens defaults to `All` rather than to a language. The order
+ * the work happened in is the one thing a record of it has to keep, so the
+ * interleaved list is what the panel opens on; narrowing to one language is
+ * something the researcher asks for, and one click returns the rest.
  */
 interface NotebookPanelProps {
   taskId: string;
@@ -185,7 +189,15 @@ function NotebookPanelForTask({
   // researcher picks one, and the row still has to mark the language whose
   // kernel the strip below it is describing.
   const shownLang = activeLang ?? selectedKernel?.language ?? languages[0] ?? null;
-  const cellsToShow = selectedContext?.cells ?? [];
+  // The ledger through the language lens. `activeLang` is null for `All`, which
+  // is the resting state — NOT `shownLang`, which always names a language once
+  // a kernel exists and would open the panel on half its own record.
+  const cellsToShow = useMemo(() => {
+    const all = selectedContext?.cells ?? [];
+    return activeLang === null
+      ? all
+      : all.filter((cell) => cell.language === activeLang);
+  }, [selectedContext, activeLang]);
 
   const runSetup = useCallback(async () => {
     setSetupBusy(true);
@@ -263,7 +275,9 @@ function NotebookPanelForTask({
         activeContext={activeName}
         onContextChange={setActiveName}
         languages={languages}
-        activeLanguage={shownLang}
+        // The raw pick, not `shownLang`: the chips mark what the researcher
+        // chose, and `All` is a choice `shownLang` cannot express.
+        activeLanguage={activeLang}
         onLanguageChange={setActiveLang}
         sessionLabel={sessionLabel}
       />
@@ -279,6 +293,11 @@ function NotebookPanelForTask({
         autoOpenCellId={null}
         contextLabel={selectedContext ? contextLabel(selectedContext.name) : null}
         writable={selectedKernel !== undefined}
+        {...(activeLang !== null
+          ? {
+              emptyNote: `No ${languageLabel(activeLang)} cells in this context. Choose All to see the rest.`,
+            }
+          : {})}
       />
 
       {needsSetup && (

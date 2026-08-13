@@ -17,7 +17,6 @@ import { useStickToBottom } from "../hooks/useStickToBottom";
 import { useTaskRun } from "../hooks/useTaskRun";
 import type { ManagedRun } from "../hooks/useRun";
 import { StatusIcon } from "../components/StatusIcon";
-import { CloseIcon, CollapseIcon, ExpandIcon } from "../components/icons";
 import { Composer } from "../components/tasks/Composer";
 import { PermissionCard } from "../components/tasks/PermissionCard";
 import { QuestionCard } from "../components/tasks/QuestionCard";
@@ -32,6 +31,11 @@ import {
   type ArtifactGroup,
 } from "../components/tasks/ArtifactsPanel";
 import { NotebookPanel } from "../components/tasks/NotebookPanel";
+import {
+  RightPaneTabs,
+  tabAfterClose,
+  type RightPaneTab,
+} from "../components/tasks/RightPaneTabs";
 import { ArtifactPane } from "../components/tasks/ArtifactPane";
 import { ModelSwitcher } from "../components/tasks/ModelSwitcher";
 import {
@@ -51,6 +55,11 @@ import {
   taskTabsFor,
   useTaskTabs,
 } from "../lib/task-tabs";
+import {
+  closeNotebookTab,
+  openNotebookTab,
+  useNotebookTabs,
+} from "../lib/notebook-tabs";
 import "./screens.css";
 import "./task.css";
 
@@ -270,6 +279,7 @@ export function TaskScreen({
   // re-rendering the whole screen from a new Study read.
   const [tasks, setTasks] = useState<Task[]>([]);
   const openTabs = useTaskTabs(studyId);
+  const openNotebooks = useNotebookTabs(studyId);
 
   const refreshTasks = useCallback(() => {
     if (studyId === undefined) {
@@ -414,7 +424,30 @@ export function TaskScreen({
   const [rightPaneTab, setRightPaneTab] = useState<
     "files" | "artifact" | "notebook"
   >("files");
+  /**
+   * Whether `Files` is one of the open tabs — the same shape as the artifact's
+   * `openArtifactPath !== null`, because it is now the same kind of thing: a
+   * surface opened into the pane, not the pane itself.
+   *
+   * It used to be neither state nor tab, just always there, and the pane's
+   * answer to every question — where it opened, what a Task change reset it to,
+   * where a closed notebook left it. That made it the one tab that could not be
+   * put away, in a strip whose whole rule is that what was opened can be closed.
+   */
+  const [filesOpen, setFilesOpen] = useState(false);
   const [openArtifactPath, setOpenArtifactPath] = useState<string | null>(null);
+  /**
+   * The Task a notebook tab is navigating to, held across that one move.
+   *
+   * Selecting another Task's notebook goes to that Task, and what it asked for
+   * was the NOTEBOOK — but arriving anywhere else must not open one (see the
+   * reset below). One is a request, the other is a side effect, and the route
+   * change looks identical from the arriving side; this is what tells them
+   * apart. A ref rather than state: it is consumed by the effect that runs on
+   * arrival and never read during a render.
+   */
+  const notebookOnArrival = useRef<string | null>(null);
+
   const showInPane = useCallback(
     (tab: "files" | "artifact" | "notebook") => {
       setRightPaneTab(tab);
@@ -429,7 +462,12 @@ export function TaskScreen({
     },
     [showInPane],
   );
-  const openFiles = useCallback(() => showInPane("files"), [showInPane]);
+  // The one way `Files` gets onto the strip: the sidebar's Files row, and the
+  // breadcrumb's toggle, which opens the inspector by opening something into it.
+  const openFiles = useCallback(() => {
+    setFilesOpen(true);
+    showInPane("files");
+  }, [showInPane]);
 
   // Which agent this Task is talking to, and the model the next turn runs on.
   //
@@ -536,10 +574,29 @@ export function TaskScreen({
   // under a mounted surface is the moment a send files it, and everything
   // reset here — the parked send above all — is exactly what that send is
   // waiting on.
+  //
+  // The inspector closes, and that is the point: opening a Task is a request to
+  // read the CONVERSATION. A pane that carried itself along — still open, still
+  // on whatever the last Task was showing — is the surface deciding what the
+  // next Task is about, and the reader never asked. So the inspector is
+  // something opened deliberately, every time.
+  //
+  // The one exception is the move that asked for it: a notebook tab navigating
+  // here says so through `notebookOnArrival`, and arrives with the pane open on
+  // the notebook, because that IS what was clicked. The artifact is dropped
+  // unconditionally — a path from the Task's own conversation, which left
+  // standing drew a tab for another Task's file and read it against this Study.
   useEffect(() => {
     setLocalStatus(null);
     setStatusError(null);
-    setPaneMode("closed");
+    setOpenArtifactPath(null);
+    setFilesOpen(false);
+    const asked = notebookOnArrival.current === taskId;
+    notebookOnArrival.current = null;
+    setPaneMode((mode) =>
+      asked ? (mode === "closed" ? "split" : mode) : "closed",
+    );
+    setRightPaneTab(asked ? "notebook" : "files");
     setFiling(null);
     setPendingSend(null);
   }, [taskId]);
@@ -767,6 +824,15 @@ export function TaskScreen({
     }
   };
 
+  /**
+   * Take a Task's notebook off the inspector's strip, for a Task that has gone
+   * — deleted, or moved to another Study. Distinct from closing a conversation
+   * tab, which leaves the notebook alone: a chat you are finished reading is
+   * not a ledger you are finished consulting, and keeping the two strips
+   * independent is the point of the notebook one.
+   */
+  const dropNotebookTab = (id: string) => closeNotebookTab(id);
+
   // Delete a Task: it and its transcript go together, its tab is dropped, and
   // — if it was the one on screen — the surface moves to another open Task (or
   // back to the Study).
@@ -780,6 +846,7 @@ export function TaskScreen({
     const remaining = taskTabsFor(studyId).filter((t) => t.taskId !== id);
     await api.deleteTask(id);
     closeTaskTab(id);
+    dropNotebookTab(id);
     refreshTasks();
     invalidate();
     if (id === taskId) {
@@ -850,6 +917,7 @@ export function TaskScreen({
       // Best-effort: the refresh below reconciles with the core either way.
     }
     closeTaskTab(id);
+    dropNotebookTab(id);
     refreshTasks();
     invalidate();
     if (id === taskId) {
@@ -882,6 +950,148 @@ export function TaskScreen({
     label: t.title,
     closable: openTabs.length > 1,
   }));
+
+  /**
+   * What to call a Task whose notebook is on the inspector's strip.
+   *
+   * Read from the Study's own list rather than stored on the tab, so a rename
+   * lands on the notebook strip without a second store to keep in step. The
+   * open conversation tabs are the fallback for the moment before that list has
+   * loaded, since they already carry a title for every Task the researcher has
+   * opened.
+   */
+  const notebookTitle = (id: string): string =>
+    tasks.find((t) => t.id === id)?.title ??
+    openTabs.find((t) => t.taskId === id)?.title ??
+    NEW_TASK_TITLE;
+
+  /**
+   * The inspector's tabs. `Files` is this Task's, and there while it is open; an
+   * artifact is this Task's, and there while one is open; the notebooks are the
+   * Study's, and accumulate.
+   *
+   * EVERY notebook is called `Notebook`. What the tab names is the kind of
+   * surface it opens, and they are all the same kind — a Task's title in that
+   * row named the notebook after something that is not on the strip at all, and
+   * read as a second copy of the conversation tabs sitting in the pane.
+   *
+   * They are the notebooks that were OPENED, in the order they were opened, and
+   * this Task's is on the strip only once it is among them. It used to be drawn
+   * unconditionally and first, which cost more than it gave: arriving anywhere
+   * put a notebook nobody had opened at the head of the row and moved the one
+   * being read down a place, so a strip of identically-labelled tabs reordered
+   * itself under the reader — indistinguishable, from the outside, from having
+   * lost the tab. The composer's button and a run strip's pill are the way in,
+   * and they were always the way in; the tab was never it.
+   *
+   * So every one of them closes, with no exceptions at all — a tab is something
+   * opened, and what is opened can be put away (see `closeRightPaneTab` for the
+   * cases that also move the panel). `Files` used to be the exception, on the
+   * grounds that it WAS the pane rather than something opened into it; it is a
+   * surface among the others now, reached from the sidebar's Files row or from
+   * the breadcrumb's toggle, and it holds the head of the strip so that
+   * reopening it never shuffles the row the reader is working in.
+   *
+   * Selecting another Task's notebook GOES there — a notebook is the record of
+   * what one conversation ran, so it is read beside that conversation and never
+   * pulled over on top of another. Each names its Task in `title` and in the
+   * accessible name of its close, which is the only thing telling two of them
+   * apart.
+   */
+  const rightPaneTabs: RightPaneTab[] = [
+    ...(filesOpen ? [{ id: "files", label: "Files", closable: true }] : []),
+    ...(openArtifactPath
+      ? [
+          {
+            id: "artifact",
+            label: openArtifactPath.split("/").pop() ?? openArtifactPath,
+            title: openArtifactPath,
+            closable: true,
+          },
+        ]
+      : []),
+    ...openNotebooks.map((n) => ({
+      id: `notebook:${n.taskId}`,
+      label: "Notebook",
+      title: `Notebook — ${notebookTitle(n.taskId)}`,
+      closable: true,
+      // Says which notebook, because the label no longer can — and says
+      // "notebook", because the conversation's strip carries a close for the
+      // same Task by the same name and the two do different things.
+      closeLabel: `Close notebook ${notebookTitle(n.taskId)}`,
+    })),
+  ];
+
+  const activeRightPaneTab =
+    rightPaneTab === "notebook" ? `notebook:${taskId}` : rightPaneTab;
+
+  // The tabs this screen can show without going anywhere — which is every tab
+  // but another Task's notebook, since reaching one of those means arriving at
+  // that Task. They are where a closed tab may hand the pane; see
+  // `closeRightPaneTab`.
+  const showableRightPaneTabs = rightPaneTabs.filter(
+    (t) => !t.id.startsWith("notebook:") || t.id === `notebook:${taskId}`,
+  );
+
+  /**
+   * Open a notebook, and put it on the strip.
+   *
+   * The one place a notebook is ever opened — the composer's button and a run
+   * strip's pill both arrive here — which is why it is also the one place that
+   * registers a tab. Registering from an effect watching the pane instead looked
+   * tidier and was wrong: on a Task-to-Task move there is a render where the new
+   * Task is in place and the tab has not been reset yet, so a Task merely walked
+   * past collected a notebook tab it had never shown.
+   *
+   * Another Task's means going to that Task, so the conversation and the ledger
+   * arrive together and the screen never pairs one Task's record with another's
+   * transcript. `notebookOnArrival` marks that move as a request FOR the
+   * notebook — the reset on arrival sends the pane back to Files for every other
+   * way of getting there.
+   */
+  const showNotebookFor = (id: string) => {
+    if (studyId !== undefined) openNotebookTab({ studyId, taskId: id });
+    showInPane("notebook");
+    if (id === taskId) return;
+    notebookOnArrival.current = id;
+    navigate(routeToTask(id));
+  };
+
+  const selectRightPaneTab = (id: string) => {
+    if (id === "files") openFiles();
+    else if (id === "artifact") setRightPaneTab("artifact");
+    else if (id.startsWith("notebook:"))
+      showNotebookFor(id.slice("notebook:".length));
+  };
+
+  /**
+   * Take a tab off the strip.
+   *
+   * Closing one the pane is not showing costs the screen nothing — another
+   * Task's notebook is a way back the reader is finished with, not a surface
+   * they are reading.
+   *
+   * Closing the one the pane IS showing has to take the panel with it, or the
+   * pane goes on drawing something nothing in the strip still names. It hands
+   * the panel to the neighbour (`tabAfterClose`), and when the strip is left
+   * empty it closes the inspector: the pane is its tabs, and there is no home
+   * tab to fall back to any more.
+   *
+   * What it never does is navigate. Another Task's notebook is on the strip but
+   * is not a place the pane may fall to — arriving at that Task is a thing the
+   * reader ASKS for by selecting it, never something a close does to them.
+   */
+  const closeRightPaneTab = (id: string) => {
+    if (id === "files") setFilesOpen(false);
+    else if (id === "artifact") setOpenArtifactPath(null);
+    else if (id.startsWith("notebook:"))
+      closeNotebookTab(id.slice("notebook:".length));
+    else return;
+    if (id !== activeRightPaneTab) return;
+    const next = tabAfterClose(showableRightPaneTabs, id);
+    if (next === null) setPaneMode("closed");
+    else setRightPaneTab(next === "files" || next === "artifact" ? next : "notebook");
+  };
 
   // The composer's `@`/`#`/`/` sources, built from what REALLY exists here: the
   // artifacts this chat has produced (deduped, newest turn first), the Study's
@@ -1014,8 +1224,11 @@ export function TaskScreen({
   // an unfiled Task has nothing to open it on. Left undefined rather than
   // shown against an empty workspace, which drops the composer's Notebook
   // button, the run strip's pill and the breadcrumb's toggle together.
+  //
+  // Both callers — the composer's button and a run strip's pill — mean THIS
+  // Task's notebook, so this unpins whatever was being read from another one.
   const openNotebook =
-    study === undefined ? undefined : () => showInPane("notebook");
+    study === undefined ? undefined : () => showNotebookFor(task.id);
 
   const liveTurns = runState.runs.map((run) => ({
     runId: run.runId,
@@ -1155,10 +1368,11 @@ export function TaskScreen({
             // edge. That is this bar only while the conversation is alone; the
             // moment the inspector is on screen it owns that edge and carries
             // the control itself, beside the tabs it acts on.
+            // Opening the inspector means opening something INTO it, now that
+            // it has no home surface of its own to land on: this is the Files
+            // tab's other way in, beside the sidebar's row.
             onToggleRightPane={
-              study === undefined || rightPaneOpen
-                ? undefined
-                : () => setPaneMode("split")
+              study === undefined || rightPaneOpen ? undefined : openFiles
             }
             divider={false}
           />
@@ -1217,84 +1431,35 @@ export function TaskScreen({
             which are the only ones with a Study workspace to inspect. */}
         {rightPaneOpen && study !== undefined && (
           <div className="task-rightpane">
-            <div
-              className="rightpane-tabs"
-              role="tablist"
-              aria-label="Right pane"
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={rightPaneTab === "files"}
-                className={`rightpane-tab${rightPaneTab === "files" ? " is-active" : ""}`}
-                onClick={openFiles}
-              >
-                Files
-              </button>
-              {openArtifactPath && (
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={rightPaneTab === "artifact"}
-                  className={`rightpane-tab${rightPaneTab === "artifact" ? " is-active" : ""}`}
-                  onClick={() => setRightPaneTab("artifact")}
-                  title={openArtifactPath}
-                >
-                  {openArtifactPath.split("/").pop()}
-                </button>
-              )}
-              <button
-                type="button"
-                role="tab"
-                aria-selected={rightPaneTab === "notebook"}
-                className={`rightpane-tab${rightPaneTab === "notebook" ? " is-active" : ""}`}
-                onClick={() => setRightPaneTab("notebook")}
-              >
-                Notebook
-              </button>
-              <span className="rightpane-tabs-gap" />
-              {/* Widen to the whole screen and back. The conversation is not
-                  drawn while this is focused, so the header stops being split
-                  and reads as the one bar it then is. */}
-              <button
-                type="button"
-                className="art-icon-btn"
-                aria-pressed={paneMode === "focus"}
-                title={paneMode === "focus" ? "Show conversation" : "Expand panel"}
-                aria-label={
-                  paneMode === "focus" ? "Show conversation" : "Expand panel"
-                }
-                onClick={() =>
-                  setPaneMode((mode) => (mode === "focus" ? "split" : "focus"))
-                }
-              >
-                {paneMode === "focus" ? <CollapseIcon /> : <ExpandIcon />}
-              </button>
-              <button
-                type="button"
-                className="art-icon-btn rightpane-close"
-                title="Close panel"
-                aria-label="Close panel"
-                onClick={() => setPaneMode("closed")}
-              >
-                <CloseIcon />
-              </button>
-            </div>
+            <RightPaneTabs
+              tabs={rightPaneTabs}
+              activeId={activeRightPaneTab}
+              onSelect={selectRightPaneTab}
+              onCloseTab={closeRightPaneTab}
+              paneMode={paneMode === "focus" ? "focus" : "split"}
+              onToggleFocus={() =>
+                setPaneMode((mode) => (mode === "focus" ? "split" : "focus"))
+              }
+              onClosePane={() => setPaneMode("closed")}
+            />
             {rightPaneTab === "files" ? (
               <ArtifactsPanel
                 groups={artifactGroups}
                 onOpenArtifact={openArtifact}
               />
             ) : rightPaneTab === "artifact" && openArtifactPath ? (
+              // Its own close is the tab's close by another name — the same
+              // path, so the panel lands where the strip says it should rather
+              // than on a Files tab that may not be open.
               <ArtifactPane
                 studyId={study.id}
                 path={openArtifactPath}
-                onClose={() => {
-                  setOpenArtifactPath(null);
-                  setRightPaneTab("files");
-                }}
+                onClose={() => closeRightPaneTab("artifact")}
               />
             ) : rightPaneTab === "notebook" ? (
+              // Keyed on the Task inside `NotebookPanel`, so arriving at
+              // another Task resets the panel outright rather than rendering
+              // one Task's cells while the next one's reads are still landing.
               <NotebookPanel
                 taskId={task.id}
                 sessionLabel={task.title}

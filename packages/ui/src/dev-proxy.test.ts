@@ -37,6 +37,23 @@ const CLIENT_PATHS = [
   { prefix: "/runs", why: "one run's own event stream — the live turn" },
 ];
 
+/**
+ * Paths reached through this server by something that is not the page.
+ *
+ * A daemon is told a lab address and calls it directly, and in `dev:lab` the
+ * address a developer has to hand is the dev server's. So the proxy carries
+ * routes no browser ever opens, and "the client does not ask for it" is not
+ * grounds to take one out.
+ *
+ * This is how the entry came to be missing in the first place: every rule for
+ * what belonged here was written about the page. Pairing then failed with `the
+ * lab answered pairing with status 404` — the SPA fallback answering the token
+ * exchange with `index.html` — on a pairing the lab had in fact approved.
+ */
+const DAEMON_PATHS = [
+  { prefix: "/daemon", why: "pairing, heartbeats and what a machine may run" },
+];
+
 function proxyKeys(): string[] {
   const server = (config as { server?: { proxy?: Record<string, unknown> } }).server;
   return Object.keys(server?.proxy ?? {});
@@ -49,10 +66,19 @@ it.each(CLIENT_PATHS)(
   },
 );
 
-it("sends nothing to the lab that the client does not ask it for", () => {
+it.each(DAEMON_PATHS)(
+  "forwards $prefix to the lab server, for $why",
+  ({ prefix }) => {
+    expect(proxyKeys()).toContain(prefix);
+  },
+);
+
+it("sends nothing to the lab that nothing on this machine asks it for", () => {
   // The other direction: a stale entry forwards a path the page now serves
   // itself, which fails as mysteriously as a missing one and reads as a
   // routing bug rather than as a leftover.
-  const known = new Set(CLIENT_PATHS.map((p) => p.prefix));
+  const known = new Set(
+    [...CLIENT_PATHS, ...DAEMON_PATHS].map((p) => p.prefix),
+  );
   expect(proxyKeys().filter((key) => !known.has(key))).toEqual([]);
 });

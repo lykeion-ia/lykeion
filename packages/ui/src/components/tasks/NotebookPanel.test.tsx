@@ -538,12 +538,13 @@ it("keeps rendering the Task when one output carries a shape this build does not
   expect(screen.getByText(/still here/)).toBeInTheDocument();
 });
 
-it("keeps both languages' cells in the order they ran, and scopes only the kernel", async () => {
+it("opens on both languages in the order they ran, and narrows on request", async () => {
   // A context that writes Python and R owns two kernels, and the ledger is a
-  // record of one session's work: choosing a language picks which kernel the
-  // status bar describes, and must NOT hide what the other one did in
-  // between. The order the work happened in is the one thing a record of it
-  // has to keep.
+  // record of one session's work — so the order the work happened in is what
+  // the panel OPENS on, and `All` is the resting state. A language is a lens
+  // the researcher asks for: it narrows the ledger to that language's cells
+  // and points the status bar at that language's kernel. `All` puts the rest
+  // back, which is what keeps the narrowing from losing the record.
   const user = userEvent.setup();
   const py = kernel({ name: "main", language: "python", state: "idle" });
   const r = kernel({ name: "main", language: "r", state: "idle" });
@@ -565,22 +566,26 @@ it("keeps both languages' cells in the order they ran, and scopes only the kerne
   const ledger = () =>
     [...container.querySelectorAll(".nbp-cell .nbp-cell-lang")].map((el) => el.textContent);
 
+  // Nothing chosen: the whole record, interleaved.
   await waitFor(() => expect(ledger()).toEqual(["python", "r"]));
 
   await user.click(screen.getByRole("radio", { name: "R" }));
 
-  // Both still on screen, in the same order.
-  expect(ledger()).toEqual(["python", "r"]);
+  await waitFor(() => expect(ledger()).toEqual(["r"]));
   // The kernel underneath is the one that was chosen.
   await waitFor(() =>
     expect(screen.getByTestId("notebook-status")).toHaveTextContent(/^R/),
   );
+
+  // And back. One click returns everything the lens was hiding.
+  await user.click(screen.getByRole("radio", { name: "All" }));
+  await waitFor(() => expect(ledger()).toEqual(["python", "r"]));
 });
 
-it("keeps a language whose kernel has gone, and says nothing holds it", async () => {
+it("keeps a language whose kernel has gone reachable, and says nothing holds it", async () => {
   // The chips come from the union of live kernels and the languages this
   // context's cells were run in. Built from live kernels alone, an R kernel
-  // that expired would take its own cells off the ledger above them.
+  // that expired would leave its own cells with no chip to ask for them by.
   const user = userEvent.setup();
   const api: LykeionApi = {
     ...createInMemoryApi(),
@@ -596,10 +601,14 @@ it("keeps a language whose kernel has gone, and says nothing holds it", async ()
 
   await user.click(await screen.findByRole("radio", { name: "R" }));
 
-  // The R cell is still in the ledger, though nothing holds an R namespace.
-  expect(
-    [...container.querySelectorAll(".nbp-cell .nbp-cell-lang")].map((el) => el.textContent),
-  ).toEqual(["python", "r"]);
+  // The R cell is still there to read, though nothing holds an R namespace.
+  await waitFor(() =>
+    expect(
+      [...container.querySelectorAll(".nbp-cell .nbp-cell-lang")].map(
+        (el) => el.textContent,
+      ),
+    ).toEqual(["r"]),
+  );
   const status = screen.getByTestId("notebook-status");
   expect(status).toHaveTextContent(/^R/);
   expect(status).toHaveTextContent(/view only — nothing is holding that namespace now/);
@@ -686,4 +695,35 @@ it("names the researcher who ran a cell rather than their member id", async () =
 
   await waitFor(() => expect(screen.getByText(/repl · Ana Ruiz/)).toBeInTheDocument());
   expect(screen.queryByText(/u_ana/)).not.toBeInTheDocument();
+});
+
+it("says which lens is empty rather than asking for cells that already exist", async () => {
+  // A context with Python cells and an R kernel that has run none. Under the R
+  // lens the ledger is empty, but the notebook is not — telling the researcher
+  // to ask the agent to run something would be answering a question they did
+  // not ask, and hiding the fact that All still has cells under it.
+  const user = userEvent.setup();
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    taskNotebook: async () => [
+      cell({ name: "main", source: "import numpy as np", language: "python" }),
+    ],
+    listRunningKernels: async () => [
+      kernel({ name: "main", language: "python", state: "idle" }),
+      kernel({ name: "main", language: "r", state: "idle" }),
+    ],
+  };
+  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+
+  await user.click(await screen.findByRole("radio", { name: "R" }));
+
+  await waitFor(() =>
+    expect(screen.getByText(/No R cells in this context/)).toBeInTheDocument(),
+  );
+  expect(screen.queryByText(/Ask the agent to run code/)).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("radio", { name: "All" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("notebook-cells").querySelectorAll(".nbp-cell")).toHaveLength(1),
+  );
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useTabBand } from "../../hooks/useTabBand";
 import { cn } from "../../lib/utils";
 
 export interface TaskTab {
@@ -6,9 +6,6 @@ export interface TaskTab {
   label: string;
   closable?: boolean;
 }
-
-/** Which edges still have tabs past the clip, and so are drawn soft. */
-type Overflow = "none" | "start" | "end" | "both";
 
 /**
  * The open-Task tabs, as a band clipped to the conversation's own column.
@@ -20,11 +17,10 @@ type Overflow = "none" | "start" | "end" | "both";
  * what puts it on that column, and the comment there is where the geometry is
  * argued.
  *
- * Two things follow from clipping, and they are this component's whole job:
- * an edge with more beyond it is faded, so the clip reads as "there is more"
- * rather than as the end of the list; and activating a Task whose tab is off
- * the clip scrolls that tab back into view, or the sidebar could select a tab
- * the strip never shows.
+ * The clipping itself — the faded edge, and scrolling an off-clip tab back into
+ * view when it is activated — is `useTabBand`, which the inspector's own tab
+ * strip shares. What is left here is the load the band carries: a tab per open
+ * Task, named after the conversation, closable down to the last one.
  */
 export function TaskTabStrip({
   tabs,
@@ -37,60 +33,12 @@ export function TaskTabStrip({
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
 }) {
-  const scroller = useRef<HTMLDivElement | null>(null);
-  const [overflow, setOverflow] = useState<Overflow>("none");
-
-  const readOverflow = useCallback(() => {
-    const el = scroller.current;
-    if (!el) return;
-    // A pixel of slack at each end: a fractional content width would otherwise
-    // fade an edge that has nothing whatsoever beyond it.
-    const before = el.scrollLeft > 1;
-    const after = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
-    setOverflow(before ? (after ? "both" : "start") : after ? "end" : "none");
-  }, []);
-
-  useEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-    readOverflow();
-    el.addEventListener("scroll", readOverflow, { passive: true });
-    const observer = new ResizeObserver(readOverflow);
-    observer.observe(el);
-    return () => {
-      el.removeEventListener("scroll", readOverflow);
-      observer.disconnect();
-    };
-  }, [readOverflow]);
-
-  // Opening or closing a Task changes what fits without resizing anything, so
-  // the observer above never fires for it.
-  useEffect(() => {
-    readOverflow();
-  }, [readOverflow, tabs]);
-
-  // Bring the active tab back inside the clip — by the shortest move, so a tab
-  // already on screen is left exactly where the reader last saw it. Layout
-  // effect, or the tab is painted off-clip for a frame first.
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-    const tab = Array.from(el.children).find(
-      (child): child is HTMLElement =>
-        child instanceof HTMLElement && child.dataset.tabId === activeId,
-    );
-    if (!tab) return;
-    const start = tab.offsetLeft;
-    const end = start + tab.offsetWidth;
-    if (start < el.scrollLeft) el.scrollLeft = start;
-    else if (end > el.scrollLeft + el.clientWidth)
-      el.scrollLeft = end - el.clientWidth;
-  }, [activeId, tabs]);
+  const { ref, overflow } = useTabBand(activeId, tabs);
 
   return (
     <div
-      ref={scroller}
-      className="crumb-band"
+      ref={ref}
+      className="tab-band crumb-band"
       data-overflow={overflow}
       data-testid="task-tab-band"
     >

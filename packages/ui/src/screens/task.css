@@ -110,11 +110,12 @@
   padding-inline-end: 16px;
 }
 
-/* The open-Task tabs, clipped to the band's track. A Study holds any number of
-   Tasks and every open one is a tab, so the row has to be able to run past its
-   own width — and it stops at the column's right edge rather than shoving the
-   Task's actions along in front of it. */
-.crumb-band {
+/* A row of tabs that runs past its own width and scrolls rather than squeezing.
+   Shared by the breadcrumb's open-Task tabs and the inspector's open-Notebook
+   tabs — the two agree on this and on nothing else, so what they share is this
+   class and the `useTabBand` hook, never a component. The hook sets
+   `data-overflow`; everything below is what that attribute means. */
+.tab-band {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -126,24 +127,17 @@
      view measures against. Unpositioned, the nearest positioned ancestor is
      the document and every offset is out by the width of the app's Rail. */
   position: relative;
-  /* A tab is drawn as ink, not as a box — no fill, no border — so the only
-     thing the eye can align is the LABEL. Its button pads the text by
-     `--crumb-tab-pad`, so the band starts that much left of its track and the
-     first tab's first letter lands on the column's edge. The track's right
-     edge is untouched, which is where the tabs are asked to stop. */
-  --crumb-tab-pad: 10px;
-  margin-inline-start: calc(-1 * var(--crumb-tab-pad));
   /* The app's scrollbar is styled and so takes real height: ten pixels of it
-     under a 28px row draws a second rule right beside the crumb. The fade
+     under a 28px row draws a second rule right beside the tabs. The fade
      below is what says "there is more", and it costs no space. */
   scrollbar-width: none;
 }
 
-.crumb-band::-webkit-scrollbar {
+.tab-band::-webkit-scrollbar {
   display: none;
 }
 
-.crumb-band > * {
+.tab-band > * {
   flex-shrink: 0;
 }
 
@@ -151,12 +145,12 @@
    clamped tool output speaks (`.step-io`). A mask rather than a gradient
    overlay, so it holds on whatever the strip is painted over. The attribute is
    set from the scroll position, so an edge with nothing beyond it stays hard. */
-.crumb-band[data-overflow="start"] {
+.tab-band[data-overflow="start"] {
   -webkit-mask-image: linear-gradient(to right, transparent, #000 24px);
   mask-image: linear-gradient(to right, transparent, #000 24px);
 }
 
-.crumb-band[data-overflow="end"] {
+.tab-band[data-overflow="end"] {
   -webkit-mask-image: linear-gradient(
     to right,
     #000 calc(100% - 24px),
@@ -165,7 +159,7 @@
   mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
 }
 
-.crumb-band[data-overflow="both"] {
+.tab-band[data-overflow="both"] {
   -webkit-mask-image: linear-gradient(
     to right,
     transparent,
@@ -180,6 +174,17 @@
     #000 calc(100% - 24px),
     transparent
   );
+}
+
+/* The open-Task tabs, clipped to the band's track and pulled onto the column
+   they name. A tab is drawn as ink, not as a box — no fill, no border — so the
+   only thing the eye can align is the LABEL. Its button pads the text by
+   `--crumb-tab-pad`, so the band starts that much left of its track and the
+   first tab's first letter lands on the column's edge. The track's right edge
+   is untouched, which is where the tabs are asked to stop. */
+.crumb-band {
+  --crumb-tab-pad: 10px;
+  margin-inline-start: calc(-1 * var(--crumb-tab-pad));
 }
 
 .task-main-body {
@@ -3872,17 +3877,49 @@ pre.code-block-pre {
   font-size: inherit;
 }
 
-/* ============================================================
-   Right-pane tab strip (Files | Notebook) + the Notebook panel
-   ============================================================ */
+/* =====================================================================
+   Right-pane tab strip (Files | artifact | the open Notebooks) + panel
+   ===================================================================== */
 
-.rightpane-tabs {
+/* Two regions, not one row: the tabs scroll, the pane's controls do not. The
+   header owns the padding and the rule under it, so the band inside it is free
+   to be nothing but a clip — and the controls keep their place at the far right
+   whatever the tabs do, which is the edge of the screen whenever the pane is
+   open. */
+.rightpane-header {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--hairline);
   flex: 0 0 auto;
+}
+
+/* Geometry only — `.tab-band` carries the scrolling and the faded edges. */
+.rightpane-tabs {
+  flex: 1 1 auto;
+}
+
+.rightpane-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* Capped for the same reason the breadcrumb's tabs are: a notebook opened from
+   another Task is named after that Task, and a Task is named after the message
+   that started it, which can run to a paragraph. One line, ellipsised, with the
+   full name in the `title`. */
+.rightpane-tabwrap {
+  display: inline-flex;
+  align-items: center;
+  max-width: 240px;
+  border-radius: 7px;
+}
+
+.rightpane-tabwrap:has(.rightpane-tab.is-active) {
+  background: var(--surface-2);
 }
 
 .rightpane-tab {
@@ -3895,26 +3932,44 @@ pre.code-block-pre {
   color: var(--ink-subtle);
   padding: 4px 10px;
   border-radius: 7px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* Hover is ink only. The fill above means one thing — this is the notebook the
+   pane is showing — and hover painting the same fill made it mean two: click a
+   notebook tab and the pointer is left resting on the tab you came from, so the
+   strip drew two identical boxes and neither one said which notebook you were
+   reading. The pointer leaves eventually; the ambiguity was on screen for as
+   long as it did not, which is exactly while the reader is looking. */
 .rightpane-tab:hover {
-  background: var(--surface-2);
   color: var(--ink);
 }
 
 .rightpane-tab.is-active {
-  background: var(--surface-2);
   color: var(--ink);
   font-weight: 550;
 }
 
-/* The pane's own controls — widen, close — sit together at the far right of
-   its header, which is the edge of the screen whenever the pane is open. The
-   spacer is what puts them there, so close no longer escapes the tabs on a
-   margin of its own; that would have left the widen button stranded beside
-   them. */
-.rightpane-tabs-gap {
-  flex: 1 1 auto;
+.rightpane-tabclose {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 5px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  color: var(--ink-tertiary);
+}
+
+.rightpane-tabclose:hover {
+  color: var(--ink);
 }
 
 .rightpane-close {

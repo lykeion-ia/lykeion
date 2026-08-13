@@ -257,18 +257,39 @@
   content: "▾";
 }
 
+/* What a cell produced, on the same material as the source that produced it —
+   `.code-block`'s surface, one frame around the whole group. A cell is one
+   record with two halves, and drawing the first as a panel and the second as
+   loose text under it read as a finished thing followed by an afterthought.
+   Not indented under the disclosure any more, either: the frame lines up with
+   the source block above it, so the pair reads as one column.
+
+   The `--surface-1` inset is darker than the panel's own `--sidebar` ground,
+   which is what makes it a frame here without a heavier border.
+
+   Capped, because an output is as long as the process that wrote it: the
+   ledger scrolls through cells, and one runaway stdout should not be the whole
+   of the scroll. Same bound as a tool step's output (`.tool-output-pre`). */
 .nbp-outputs {
-  padding: 2px 0 4px 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-1);
+  max-height: 320px;
+  overflow-y: auto;
 }
 
+/* Sized to match `.code-block-pre`: the source and its output are read
+   together, and a rung between them made the output look like a caption. */
 .nbp-out {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: var(--type-micro);
-  line-height: 1.45;
+  font-size: var(--type-sub);
+  line-height: 1.5;
+  color: var(--ink-subtle);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-x: auto;

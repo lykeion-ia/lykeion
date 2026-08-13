@@ -36,6 +36,7 @@ export function NotebookLedger({
   autoOpenCellId,
   contextLabel,
   writable,
+  emptyNote,
 }: {
   cells: NotebookCell[];
   loading: boolean;
@@ -43,6 +44,11 @@ export function NotebookLedger({
   autoOpenCellId: string | null;
   contextLabel: string | null;
   writable: boolean;
+  /** What an empty ledger means, where the caller knows better than the
+   *  default does — a language lens with nothing under it has cells, just not
+   *  these, and telling the researcher to ask the agent to run some would be
+   *  answering a question they did not ask. */
+  emptyNote?: string;
 }): React.JSX.Element {
   return (
     <>
@@ -56,8 +62,13 @@ export function NotebookLedger({
           <p className="nbp-loading">Loading notebook…</p>
         ) : cells.length === 0 ? (
           <p className="nbp-empty">
-            No cells yet. Ask the agent to run code, or wait for this context&apos;s
-            kernel to start one — each context keeps its own namespace.
+            {emptyNote ?? (
+              <>
+                No cells yet. Ask the agent to run code, or wait for this
+                context&apos;s kernel to start one — each context keeps its own
+                namespace.
+              </>
+            )}
           </p>
         ) : (
           cells.map((cell) => (

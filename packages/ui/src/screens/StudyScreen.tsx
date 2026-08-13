@@ -42,6 +42,10 @@ import {
   closeTaskTabsForStudy,
   renameTaskTab,
 } from "../lib/task-tabs";
+import {
+  closeNotebookTab,
+  closeNotebookTabsForStudy,
+} from "../lib/notebook-tabs";
 import { formatAgo } from "../lib/task-meta";
 import "./screens.css";
 import "./task.css";
@@ -213,6 +217,7 @@ export function StudyScreen({ studyId }: { studyId: string }) {
   const deleteStudy = async () => {
     await api.deleteStudy(studyId);
     closeTaskTabsForStudy(studyId);
+    closeNotebookTabsForStudy(studyId);
     setConfirmDelete(false);
     invalidate();
     navigate({ name: "studies" });
@@ -244,6 +249,7 @@ export function StudyScreen({ studyId }: { studyId: string }) {
   const moveTask = async (taskId: string, destination: string) => {
     await patchTask(taskId, { studyId: destination });
     closeTaskTab(taskId);
+    closeNotebookTab(taskId);
   };
 
   // Deleting a Task is final — the core tombstones it — and nothing here can
@@ -255,6 +261,7 @@ export function StudyScreen({ studyId }: { studyId: string }) {
     setActionError(null);
     await api.deleteTask(taskId);
     closeTaskTab(taskId);
+    closeNotebookTab(taskId);
     invalidate();
   };
 

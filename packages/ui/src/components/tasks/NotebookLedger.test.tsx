@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import type { ComponentProps } from "react";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
@@ -135,4 +137,45 @@ it("shows loading, refresh warnings, and the selected context terminal row", asy
     "Main agent — writable · 4 cells",
   );
   await waitFor(() => expect(document.querySelectorAll(".shiki")).toHaveLength(4));
+});
+
+/**
+ * A cell is one record with two halves, and the output half is drawn on the
+ * same material as the source that produced it. Asserted against the stylesheet
+ * rather than a computed style, the way the crumb band's geometry is
+ * (`TaskTabStrip.test.tsx`): jsdom resolves neither `color-mix()` nor the
+ * cascade that puts these tokens in reach.
+ */
+const notebookCss = readFileSync(
+  join(import.meta.dirname, "notebook.css"),
+  "utf8",
+);
+
+function rule(selector: string): string {
+  const match = notebookCss.match(
+    new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`),
+  );
+  expect(match, `no ${selector} rule in notebook.css`).not.toBeNull();
+  return match![1];
+}
+
+it("draws a cell's outputs as a code surface, not as loose text under one", () => {
+  const outputs = rule(".nbp-outputs");
+
+  // A frame, on the inset ground `.code-block` uses — darker than the panel's
+  // own `--sidebar`, which is what makes it read as a panel here.
+  expect(outputs).toMatch(/border:\s*1px solid var\(--hairline\)/);
+  expect(outputs).toMatch(/background:\s*var\(--surface-1\)/);
+  expect(outputs).toMatch(/border-radius:\s*8px/);
+  // An output is as long as the process that wrote it; one runaway stdout is
+  // not allowed to become the whole of the ledger's scroll.
+  expect(outputs).toMatch(/max-height:\s*320px/);
+  expect(outputs).toMatch(/overflow-y:\s*auto/);
+  // No longer indented under the disclosure: the frame lines up with the
+  // source block above it.
+  expect(outputs).not.toMatch(/padding:[^;]*12px/);
+
+  // Sized to match `.code-block-pre`, so the two halves read together. A rung,
+  // never a pixel count — `tokens.test.ts` polices that across the package.
+  expect(rule(".nbp-out")).toMatch(/font-size:\s*var\(--type-sub\)/);
 });
