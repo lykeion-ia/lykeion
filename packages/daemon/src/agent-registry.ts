@@ -2,6 +2,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { resolveOnPath } from "./command-path";
 
+/** A literal path as one regex atom. Stated here rather than imported from
+ *  `sandbox.ts` so the catalogue keeps depending on nothing but itself — a
+ *  home directory holding a `+` or a `(` is unusual and not impossible, and a
+ *  pattern that escapes nothing would silently match somewhere else. */
+function escapeForRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** What an agent's own CLI says about who it is signed in as. */
 export interface AuthState {
   signedIn: boolean;
@@ -149,8 +157,20 @@ export interface Isolation {
   homeEnv: string;
   /**
    * Where this agent's sign-in actually lives, when `homeEnv` does not reach
-   * it. Read-only, for the reason `AgentHome.credentials` already is: a run
-   * proves who it is, and never edits the record of who it is.
+   * it. Read-only — what a run may *rewrite* is declared separately, in
+   * `credentialPatterns`, and deliberately kept narrower than what it may
+   * read.
+   *
+   * This used to say "a run proves who it is, and never edits the record of
+   * who it is", and that sentence was false for OAuth in a way that took a
+   * live outage to notice. An access token is short-lived; refreshing it
+   * ROTATES the credential, and the new one has to be written back or the old
+   * one is spent for nothing. A read-only credential store therefore does not
+   * mean "a run cannot damage my sign-in" — it means the first refresh
+   * succeeds at the server, fails to persist, and leaves a spent refresh
+   * token behind. The next use of it is a reuse the server is right to treat
+   * as theft, and the grant is revoked. Observed on 2026-08-13, reproduced
+   * under `sandbox-exec` in both directions.
    *
    * Absent by default, because the ordinary case needs nothing here — a CLI
    * that keeps its OAuth token inside the directory `homeEnv` redirects is
@@ -165,6 +185,27 @@ export interface Isolation {
    * fix for anything actually missing.
    */
   credentialsOutsideHome?: readonly string[];
+  /**
+   * What this CLI must be able to REWRITE outside `homeEnv`'s reach, as
+   * anchored regexes rather than paths.
+   *
+   * Regexes because the shape a credential store actually needs cannot be
+   * said with `subpath`. macOS's login keychain is a SQLite database, so a
+   * write touches `login.keychain-db` and whichever of `-wal`, `-shm` and
+   * `-journal` exist at the time, and those are created beside it — which
+   * needs the directory's own entry to be writable too. A `subpath` grant
+   * over the directory would say all of that and also hand over
+   * `metadata.keychain-db` and every other keychain in there.
+   *
+   * Measured, not assumed. With the two patterns the claude row declares, a
+   * confined run can rewrite the login keychain and cannot write
+   * `metadata.keychain-db`, cannot create a file in that directory, and
+   * cannot unlink a neighbour — all four checked under `sandbox-exec`.
+   *
+   * Strictly narrower than `credentialsOutsideHome`: a row may read a store
+   * without being able to rewrite any of it, and most should.
+   */
+  credentialPatterns?: readonly string[];
   /**
    * Where this CLI's own installation lives, when it is neither
    * `~/.<command>` nor `~/.config/<command>`.
@@ -346,6 +387,15 @@ export const CATALOGUE: ReadonlyArray<CatalogueEntry> = [
       // keychain rather than to CLAUDE_CONFIG_DIR — see Isolation's own
       // doc on `credentialsOutsideHome` for why only this entry needs it.
       credentialsOutsideHome: [join(homedir(), "Library", "Keychains")],
+      // And the one file in there it must be able to rewrite, because
+      // refreshing an OAuth token rotates it — see `credentialPatterns`.
+      // The directory's own entry is granted because the keychain is SQLite
+      // and its `-wal`/`-shm` siblings are created beside the database; the
+      // second pattern is unanchored at its end for the same reason.
+      credentialPatterns: [
+        `^${escapeForRegex(join(homedir(), "Library", "Keychains"))}$`,
+        `^${escapeForRegex(join(homedir(), "Library", "Keychains", "login.keychain-db"))}`,
+      ],
       auth: {
         // `--json` is this command's default; asked for by name anyway, so a
         // release that changes the default does not silently change what is

@@ -1,18 +1,16 @@
 /**
  * The breadcrumb's tab band.
  *
- * What is NOT here: that the band lands on `.conv-column`. That is one CSS
- * grid track against one centred column, both sized from a single
- * `--conv-measure` declared on `.task-main` — and jsdom performs no layout, so
- * a test asserting it would be asserting its own arithmetic. The single
- * declaration is the guard; hoisting it out of `.conversation` is what this
- * band cost, and it is why there is now nothing left to drift.
+ * What is NOT here: how far from the crumb trail the band comes to rest. That
+ * is three CSS grid tracks measured against a row of unknown width — and jsdom
+ * performs no layout, so a test asserting it would be asserting its own
+ * arithmetic.
  *
  * What IS here is the behaviour clipping introduced: an edge with more beyond
  * it reads as soft rather than as the end of the list, and a tab activated
  * from outside the clip is brought back inside it.
  *
- * And one thing about the landing that is not arithmetic and so can be
+ * And one thing about the placement that is not arithmetic and so can be
  * asserted without performing any: WHAT is allowed to size the strip's tracks.
  * See the last block in this file.
  */
@@ -241,10 +239,13 @@ describe("the tabs themselves", () => {
 
 /**
  * The band sits on the conversation's column only while the two tracks beside
- * it are equal, and a track sized from its own content is a track whose width
- * the page's data decides. So the question worth asking of the stylesheet is
- * not how wide anything ends up — jsdom computes none of it — but which of the
- * three tracks is allowed to be sized by something unbounded.
+ * it are equal, and it can only fall back to sitting beside the trail if the
+ * trail's track is floored on the trail's own width. Both readings are of the
+ * same three track sizings, and a track sized from its own content is a track
+ * whose width the page's data decides. So the question worth asking of the
+ * stylesheet is not how wide anything ends up — jsdom computes none of it — but
+ * what each of the three tracks is allowed to be sized by, and where the thing
+ * that bounds the one open to the user's own words has been put.
  */
 describe("the strip the band rides in", () => {
   const css = readFileSync(
@@ -252,10 +253,17 @@ describe("the strip the band rides in", () => {
     "utf8",
   );
 
+  const ruleFor = (selector: string) =>
+    css.match(
+      new RegExp(`${selector.replace(/[.>*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([\\s\\S]*?)\\}`),
+    )?.[1] ?? "";
+
+  const strip = ruleFor(".crumb-strip--banded");
+  const trailBox = ruleFor(".crumb-strip--banded > nav");
+
   /** The three `minmax()`es of `.crumb-strip--banded`, in track order. */
   const tracks = () => {
-    const rule = css.match(/\.crumb-strip--banded\s*\{([\s\S]*?)\}/)?.[1] ?? "";
-    const decl = rule.match(/grid-template-columns:([^;]+);/)?.[1] ?? "";
+    const decl = strip.match(/grid-template-columns:([^;]+);/)?.[1] ?? "";
     return decl.match(/minmax\((?:[^()]|\([^()]*\))*\)/g) ?? [];
   };
 
@@ -266,14 +274,28 @@ describe("the strip the band rides in", () => {
     expect(band).toContain("var(--conv-measure)");
   });
 
-  it("floors the trail's track on a stated width, never on the Study's name", () => {
+  it("floors the trail's track on the trail's own width", () => {
     const [trail] = tracks();
 
-    // A Study's title is the user's to write and can be any length. Sized from
-    // its content, the trail's track claims whatever the title needs and the
-    // band is pushed off the column it names — the Study's name running into
-    // the Task's. Under a stated floor the name truncates instead.
-    expect(trail).not.toContain("min-content");
+    // This is what closes the gap once the row is too narrow to hold the
+    // measure — the inspector open, or the window pulled in. There the band
+    // takes every spare pixel and still falls short of the column, so whatever
+    // the trail's track is floored on is dead space between `Studies › {Study}`
+    // and the first tab. Floored on the name itself there is none: the tabs
+    // follow straight on. A stated floor left a gap the width of the floor.
+    expect(trail).toBe("minmax(min-content, 1fr)");
+  });
+
+  it("bounds that floor on the nav, never on the Study's name", () => {
+    // `min-content` above is an opening: a Study's title is the user's to write
+    // and can be any length, and a floor sized on it is a floor the data sets —
+    // past the trail's equal share it stops being slack and becomes a demand,
+    // prising the `1fr` tracks apart and shifting the band off the column.
+    //
+    // A box's min-content contribution is clamped by its own max-width, so the
+    // cap has to be on the nav: capping the element is what caps the track.
+    expect(trailBox).toContain("max-width: var(--crumb-trail-cap)");
+    expect(strip).toMatch(/--crumb-trail-cap:\s*\d+ch;/);
   });
 
   it("still lets the actions keep their width", () => {

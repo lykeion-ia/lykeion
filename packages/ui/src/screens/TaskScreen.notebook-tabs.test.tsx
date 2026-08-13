@@ -110,12 +110,19 @@ async function goToTask(
   await user.click(await rail.findByRole("button", { name: title }));
 }
 
-/** Open the inspector. It closes on every Task change, so this is how any test
- *  that has navigated gets the strip back. */
+/**
+ * Make sure the inspector is up, on Files.
+ *
+ * Idempotent, because the pane now rides along through a Task change: a test
+ * that has navigated usually finds it already open, and the toggle that would
+ * open it is not rendered at all while it is.
+ */
 async function openPane(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(
-    await screen.findByRole("button", { name: "Toggle files panel" }),
-  );
+  if (!screen.queryByTestId("artifacts-panel")) {
+    await user.click(
+      await screen.findByRole("button", { name: "Toggle files panel" }),
+    );
+  }
   await screen.findByTestId("artifacts-panel");
 }
 
@@ -162,10 +169,40 @@ it("takes the conversation along when another Task's notebook is opened", async 
   expect(screen.getByTestId("notebook-panel")).toBeInTheDocument();
 });
 
-it("does not carry the inspector into a Task you opened", async () => {
-  // Opening a Task is a request to read the CONVERSATION. A pane that came
-  // along — still open, still on whatever the last Task was showing — is the
-  // surface deciding what this Task is about, and the reader never asked.
+it("keeps Files on the strip when a notebook tab moves the screen", async () => {
+  // Selecting another Task's notebook is the one arrival that keeps the pane
+  // open, because that notebook IS what was clicked. The rest of the strip has
+  // to survive the move with it: `Files` was opened deliberately and nothing
+  // closed it, so losing it on the way is the pane discarding a tab the reader
+  // is still using — and the notebooks beside it stay, which is what makes the
+  // one that goes look arbitrary.
+  const user = userEvent.setup();
+  render(<App api={apiWithNotebooks()} />);
+
+  await openNotebook(user);
+  await goToTask(user, TASK_B.title);
+  await openPane(user);
+  await waitFor(() => expect(notebookTab(TASK_A.title)).toBeInTheDocument());
+  expect(screen.getByRole("tab", { name: "Files" })).toBeInTheDocument();
+
+  await user.click(notebookTab(TASK_A.title)!);
+
+  // Landed on A, on the notebook that was asked for — with Files still beside
+  // it, holding the head of the strip exactly as it was left.
+  await waitFor(() => expect(window.location.hash).toContain(TASK_A.id));
+  await waitFor(() => expect(shownNotebook()).toBe(TASK_A.title));
+  expect(screen.getByRole("tab", { name: "Files" })).toBeInTheDocument();
+});
+
+it("carries the inspector into a Task you opened, landing it on Files", async () => {
+  // The inspector is a place to work in, not a property of one conversation:
+  // having opened it, the reader keeps it while they move between Tasks rather
+  // than opening it again on each one.
+  //
+  // What cannot come along is what it was SHOWING. A notebook is the record of
+  // one Task's run, so it does not follow the reader to another; Files is the
+  // one surface that means the same thing wherever it lands, and so it is what
+  // the pane arrives on.
   const user = userEvent.setup();
   render(<App api={apiWithNotebooks()} />);
 
@@ -174,15 +211,78 @@ it("does not carry the inspector into a Task you opened", async () => {
 
   await goToTask(user, TASK_B.title);
 
-  // The conversation, and nothing else.
-  await waitFor(() => expect(screen.getByTestId("conversation")).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId("artifacts-panel")).toBeInTheDocument(),
+  );
+  expect(screen.getByRole("tab", { name: "Files" })).toBeInTheDocument();
   expect(screen.queryByTestId("notebook-panel")).toBeNull();
-  expect(screen.queryByTestId("artifacts-panel")).toBeNull();
 
-  // Opened deliberately, it comes back on Files rather than on the notebook the
-  // last Task was showing.
+  // A's notebook is still on the strip — it was opened, and the Study's
+  // notebooks outlive the move — it is simply not what the pane is showing.
+  expect(notebookTab(TASK_A.title)).toBeInTheDocument();
+});
+
+it("keeps the inspector open when the breadcrumb moves the screen", async () => {
+  // The crumb strip and the sidebar are two ways of saying the same thing, and
+  // the pane answers to both alike.
+  const user = userEvent.setup();
+  render(<App api={apiWithNotebooks()} />);
+
+  // Visit B so it has a crumb of its own, then come back and open the pane.
+  await screen.findByTestId("context-rail");
+  await goToTask(user, TASK_B.title);
+  await goToTask(user, TASK_A.title);
   await openPane(user);
-  expect(screen.queryByTestId("notebook-panel")).toBeNull();
+
+  await user.click(
+    await within(screen.getByTestId("task-tab-band")).findByRole("button", {
+      name: TASK_B.title,
+    }),
+  );
+
+  await waitFor(() => expect(window.location.hash).toContain(TASK_B.id));
+  expect(currentConversation()).toBe(TASK_B.title);
+  expect(screen.getByTestId("artifacts-panel")).toBeInTheDocument();
+});
+
+it("leaves a closed inspector closed when the Task changes", async () => {
+  // Carrying the pane means keeping what the reader had, in both directions: a
+  // pane they never opened does not arrive open just because they moved.
+  const user = userEvent.setup();
+  render(<App api={apiWithNotebooks()} />);
+
+  await screen.findByTestId("conversation");
+  expect(screen.queryByTestId("rightpane-tab-band")).toBeNull();
+
+  await goToTask(user, TASK_B.title);
+
+  await waitFor(() => expect(window.location.hash).toContain(TASK_B.id));
+  expect(screen.queryByTestId("rightpane-tab-band")).toBeNull();
+  expect(screen.queryByTestId("artifacts-panel")).toBeNull();
+});
+
+it("brings Files back when the pane is carried over with it closed", async () => {
+  // A pane that stays open needs a surface to stay open ON. The notebook it was
+  // reading belongs to the Task being left, so a strip whose Files had been
+  // closed would arrive naming nothing at all. Files comes back rather than the
+  // pane going dark — the alternative is an empty column.
+  const user = userEvent.setup();
+  render(<App api={apiWithNotebooks()} />);
+
+  await openPane(user);
+  await openNotebook(user);
+  await user.click(screen.getByRole("button", { name: "Close Files" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("tab", { name: "Files" })).toBeNull(),
+  );
+  expect(screen.getByTestId("notebook-panel")).toBeInTheDocument();
+
+  await goToTask(user, TASK_B.title);
+
+  await waitFor(() =>
+    expect(screen.getByRole("tab", { name: "Files" })).toBeInTheDocument(),
+  );
+  expect(screen.getByTestId("artifacts-panel")).toBeInTheDocument();
 });
 
 it("gives a Task no notebook tab until its notebook is opened", async () => {

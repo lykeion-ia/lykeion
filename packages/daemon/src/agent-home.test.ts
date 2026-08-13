@@ -308,3 +308,82 @@ it("names every installation to a policy that belongs to no agent", () => {
   expect(all).toContain(claude);
   expect(all).toContain(join(home, ".codex"));
 });
+
+/**
+ * The bug this pair of tests exists to stop coming back.
+ *
+ * Claude Code keeps its OAuth credential in the macOS login keychain, and
+ * `credentialsOutsideHome` granted that store READ and nothing else — on the
+ * belief, written into the declaration's own comment, that "a run proves who
+ * it is, and never edits the record of who it is". Refreshing an OAuth token
+ * rotates it, so that belief was false: the refresh succeeded at the server,
+ * the new token could not be written back, and the next use of the spent one
+ * was read as reuse and the grant revoked. A researcher saw
+ * `401 OAuth access token has been revoked` on every turn while
+ * `claude auth status` cheerfully answered `loggedIn: true`.
+ *
+ * What makes it worth two tests rather than one is that the obvious
+ * experiment does not catch it. A turn run immediately after signing in
+ * works — the access token is still valid. The failure arrives hours later,
+ * at the first refresh.
+ */
+it("lets the one row with a rotating credential rewrite it, not merely read it", () => {
+  const home = agentHomeFor("claude", WORKSPACE);
+  const keychains = join(homedir(), "Library", "Keychains");
+  // Read stays where it was.
+  expect(home.credentials).toContain(keychains);
+  // And the narrow write that a rotation actually needs: the database, its
+  // SQLite siblings, and the directory entry they are created beside.
+  expect(home.patterns.some((p) => new RegExp(p).test(join(keychains, "login.keychain-db")))).toBe(true);
+  expect(home.patterns.some((p) => new RegExp(p).test(join(keychains, "login.keychain-db-wal")))).toBe(true);
+  expect(home.patterns.some((p) => new RegExp(p).test(keychains))).toBe(true);
+});
+
+it("does not widen that write to the neighbours in the same directory", () => {
+  const home = agentHomeFor("claude", WORKSPACE);
+  const keychains = join(homedir(), "Library", "Keychains");
+  // Every other keychain in there belongs to somebody else's secrets.
+  for (const neighbour of ["metadata.keychain-db", "System.keychain", "anything-else"])
+    expect(
+      home.patterns.some((p) => new RegExp(p).test(join(keychains, neighbour))),
+      `${neighbour} must not be writable`,
+    ).toBe(false);
+});
+
+it("gives a row that declared no rotating credential no write outside its home", () => {
+  // Codex keeps `auth.json` inside the directory `homeEnv` redirects, so it
+  // needs none of this. A row gaining these patterns by accident is a
+  // widening nobody asked for.
+  const home = agentHomeFor("codex", WORKSPACE);
+  const keychains = join(homedir(), "Library", "Keychains");
+  expect(home.patterns.some((p) => new RegExp(p).test(join(keychains, "login.keychain-db")))).toBe(false);
+});
+
+it("renders that write as a rule the kernel will actually take", () => {
+  // Not just declared — rendered. `patterns` is emitted as
+  // `(allow file-read* file-write* (regex …))`, and a malformed regex makes
+  // sandbox-exec reject the WHOLE profile rather than the one rule, which
+  // does not look like a bad rule when it happens: it looks like an agent
+  // that is no longer installed.
+  const workspace = mkdtempSync(join(tmpdir(), "lykeion-kc-"));
+  const dataDir = mkdtempSync(join(tmpdir(), "lykeion-kc-data-"));
+  try {
+    const profile = renderSeatbeltProfile(
+      policyFor({ workspace, grants: [], dataDir, ...confinementFor("claude", workspace) }),
+    ).split("\n");
+    const rule = profile.find(
+      (line) =>
+        line.startsWith("(allow file-read* file-write* (regex") && line.includes("Keychains"),
+    );
+    expect(rule, "no writable keychain rule was rendered").toBeDefined();
+    // And it is not defeated by a deny that comes after it.
+    const allowAt = profile.indexOf(rule!);
+    const denyAfter = profile.findIndex(
+      (line, i) => i > allowAt && line.startsWith("(deny ") && line.includes("Keychains"),
+    );
+    expect(denyAfter, "a later deny takes the keychain write back").toBe(-1);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

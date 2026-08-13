@@ -143,7 +143,12 @@ function homesFor(workspace: string): Record<string, AgentHome> {
       ),
       // Every other Task's record. A run writes its own and reads no other.
       private: [join(own, "projects")],
-      patterns: shellScratchPattern(),
+      // Rendered read AND write, which is what a rotating credential needs:
+      // the row's own `credentialPatterns` join the shell's scratch shape
+      // here rather than beside `credentials`, because `credentials` is
+      // rendered read-only on purpose and must stay that way — a row may
+      // read a store it may not rewrite, and most should.
+      patterns: [...shellScratchPattern(), ...(entry.isolation.credentialPatterns ?? [])],
     };
   }
   return homes;

@@ -575,27 +575,35 @@ export function TaskScreen({
   // reset here — the parked send above all — is exactly what that send is
   // waiting on.
   //
-  // The inspector closes, and that is the point: opening a Task is a request to
-  // read the CONVERSATION. A pane that carried itself along — still open, still
-  // on whatever the last Task was showing — is the surface deciding what the
-  // next Task is about, and the reader never asked. So the inspector is
-  // something opened deliberately, every time.
+  // The inspector is NOT among them. It is a place to work in rather than a
+  // property of one conversation, so it survives the move in the state the
+  // reader left it: open stays open, closed stays closed. Closing it on every
+  // arrival meant reopening it on every arrival — a toll charged for moving
+  // between two Tasks of one Study, which is the ordinary way of working here.
   //
-  // The one exception is the move that asked for it: a notebook tab navigating
-  // here says so through `notebookOnArrival`, and arrives with the pane open on
-  // the notebook, because that IS what was clicked. The artifact is dropped
-  // unconditionally — a path from the Task's own conversation, which left
-  // standing drew a tab for another Task's file and read it against this Study.
+  // What does not survive is what the pane was SHOWING. A notebook is the
+  // record of one Task's run and does not follow the reader to another; the
+  // artifact is a path out of the Task's own conversation, which left standing
+  // drew a tab for another Task's file and read it against this Study. So the
+  // pane lands on `Files` — the one surface that means the same thing wherever
+  // it opens, being no Task's file in particular — and `Files` is reopened here
+  // if the reader had closed it, because a pane that stays open needs something
+  // to be open ON, and a strip with nothing on it names nothing.
+  //
+  // The exception is the move that asked for a notebook: a notebook tab
+  // navigating here says so through `notebookOnArrival`, and arrives on the
+  // notebook because that IS what was clicked — opening the pane if it was
+  // shut, and leaving `Files` exactly as it found it.
   useEffect(() => {
     setLocalStatus(null);
     setStatusError(null);
     setOpenArtifactPath(null);
-    setFilesOpen(false);
     const asked = notebookOnArrival.current === taskId;
     notebookOnArrival.current = null;
-    setPaneMode((mode) =>
-      asked ? (mode === "closed" ? "split" : mode) : "closed",
-    );
+    // `rightPaneOpen` is the pane as it stood on the Task being left: this runs
+    // on arrival, before anything here has touched it.
+    setFilesOpen((open) => (asked ? open : open || rightPaneOpen));
+    setPaneMode((mode) => (asked && mode === "closed" ? "split" : mode));
     setRightPaneTab(asked ? "notebook" : "files");
     setFiling(null);
     setPendingSend(null);
