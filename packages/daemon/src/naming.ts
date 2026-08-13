@@ -73,6 +73,10 @@ export interface NamingRequest {
    *  script a stub agent. Production passes none and this process's own
    *  environment is used. */
   env?: NodeJS.ProcessEnv;
+  /** Variables handed to the adapter deliberately, unlike `env` above, which
+   *  is only a source the allowlist is drawn from. A test wiring its stub
+   *  reaches it through here; production names nothing. */
+  extraEnv?: Record<string, string>;
 }
 
 /**
@@ -145,6 +149,7 @@ export async function summarizeTask(request: NamingRequest): Promise<string | nu
         // and nowhere to record it — a naming session outlives nothing.
       },
       env: request.env ?? process.env,
+      ...(request.extraEnv === undefined ? {} : { extraEnv: request.extraEnv }),
       signal: bound.signal,
     });
   } catch {

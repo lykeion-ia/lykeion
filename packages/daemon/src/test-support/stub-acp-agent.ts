@@ -117,6 +117,15 @@ type Directive =
    *  state a test needs to exercise a grace period actually running out. */
   | { sleep: number }
   | { endTurn: "end_turn" | "cancelled" | "refusal" }
+  /** Ends the turn as an ERROR rather than a stop reason: `session/prompt` is
+   *  answered with a JSON-RPC error carrying this message, which is how a real
+   *  adapter reports a turn that could not be run at all — a refused API call,
+   *  a revoked sign-in. Distinct from every `endTurn` above, all of which are
+   *  turns that RAN and finished, and distinct from `exit`, which takes the
+   *  whole adapter down. Nothing is streamed: a message that only ever travels
+   *  this way is the one a client may read as a statement about the agent
+   *  itself rather than as something the model said. */
+  | { failTurn: string }
   | { exit: number };
 
 const parsedScript = JSON.parse(process.env.LYKEION_STUB_SCRIPT ?? "[]") as Directive[] | Directive[][];
@@ -470,7 +479,11 @@ function promptTextOf(params: unknown): string {
   return blocks.map((block) => block.text ?? "").join("");
 }
 
-async function play(script: Directive[], asked = ""): Promise<string> {
+/** How a turn ended: with a stop reason, which `session/prompt` answers as a
+ *  result, or with an error, which it answers as a JSON-RPC error. */
+type Ending = { stopReason: string } | { error: string };
+
+async function play(script: Directive[], asked = ""): Promise<Ending> {
   // Reset per prompt: `cancelled` marks this turn as stopped, not this
   // process, so a script driving more than one prompt through one stub must
   // not have its second turn find a `wait` step already cancelled by
@@ -480,6 +493,7 @@ async function play(script: Directive[], asked = ""): Promise<string> {
   let stopReason = "end_turn";
   for (const step of script) {
     if ("exit" in step) process.exit(step.exit);
+    if ("failTurn" in step) return { error: step.failTurn };
     if ("endTurn" in step) {
       stopReason = step.endTurn;
       break;
@@ -545,7 +559,7 @@ async function play(script: Directive[], asked = ""): Promise<string> {
     if (step.emit === "plan") update.entries = step.entries;
     send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } });
   }
-  return stopReason;
+  return { stopReason };
 }
 
 // The client's end going is this agent's end going too, and a tool server it
@@ -601,8 +615,12 @@ createInterface({ input: process.stdin }).on("close", stopToolServers).on("line"
     if (marker) appendFileSync(marker, `${process.pid}\n`);
     const script = scripts[Math.min(promptCount, scripts.length - 1)];
     promptCount += 1;
-    void play(script, promptTextOf(msg.params)).then((stopReason) =>
-      send({ jsonrpc: "2.0", id: msg.id, result: { stopReason } }),
+    void play(script, promptTextOf(msg.params)).then((ending) =>
+      send(
+        "error" in ending
+          ? { jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: ending.error } }
+          : { jsonrpc: "2.0", id: msg.id, result: { stopReason: ending.stopReason } },
+      ),
     );
     return;
   }

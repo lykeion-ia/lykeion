@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CATALOGUE, entryFor, isolationFor, lykeionHomeFor, type CommandOutput } from "./agent-registry";
 import { confinementFor } from "./agent-home";
+import { confinedEnv } from "./confined-env";
 import { confine, noBackendReason, policyFor, sandboxBackendFor } from "./sandbox";
 import { resolveOnPath } from "./command-path";
 
@@ -97,11 +98,6 @@ export interface AuthCheckOptions {
    *  seam is honest about being a seam; a contrived input pretends to be a
    *  scenario. */
   confineFn?: typeof confine;
-  /** Variables to clear from the environment before running, whatever this
-   *  process inherited. The redirect proof needs it: a CLI that reads its
-   *  sign-in out of an ambient variable answers the same from any home, and
-   *  a question asked in that environment is not asking anything. */
-  unsetEnv?: readonly string[];
 }
 
 /**
@@ -146,19 +142,6 @@ export interface AuthCheckOptions {
  * What was confined here is *whether an unconfined status check ever
  * happens at all* — not a guarantee that every such check can be cut short.
  */
-/** `env` with `names` removed rather than blanked. A CLI that reads an
- *  ambient credential usually treats the empty string as "set", so emptying
- *  one would leave the very behaviour the caller asked to be rid of. */
-function withoutAmbient(
-  env: Record<string, string | undefined>,
-  names: readonly string[] | undefined,
-): Record<string, string | undefined> {
-  if (names === undefined || names.length === 0) return env;
-  const stripped = { ...env };
-  for (const name of names) delete stripped[name];
-  return stripped;
-}
-
 export function confinedRunCommand(options: AuthCheckOptions): RunCommand {
   const pathValue = options.path ?? process.env.PATH ?? "";
   const timeoutMs = options.timeoutMs ?? STATUS_TIMEOUT_MS;
@@ -197,7 +180,7 @@ export function confinedRunCommand(options: AuthCheckOptions): RunCommand {
             timeout: timeoutMs,
             signal: options.signal,
             cwd: workspace,
-            env: withoutAmbient({ ...process.env, ...env }, options.unsetEnv),
+            env: confinedEnv(agent, env),
           },
           (error, stdout, stderr) => {
             rmSync(workspace, { recursive: true, force: true });
@@ -338,6 +321,19 @@ export async function startSignIn(
     const child = spawnFn(entry.command, [...isolation.auth.login.args], {
       detached: true,
       stdio: "ignore",
+      // The one spawn in this daemon that is NOT built by `confinedEnv`, and
+      // deliberately so. The allowlist says what a *confined run* may
+      // inherit; a sign-in is not one. It is the single path whose whole
+      // purpose is to create a credential rather than to use one, and it
+      // hands the researcher to their browser — a flow the allowlist has
+      // never been proven to carry, holding no `BROWSER`, no `DISPLAY` and
+      // no `XDG_*`. Survivable on macOS, where this opens through `open`;
+      // untested anywhere else. So the ambient environment stands here until
+      // somebody establishes what an interactive sign-in actually needs,
+      // which is a question about desktop sessions rather than about
+      // isolation. An ambient credential reaching this process is the cost,
+      // and it is a real one: a CLI that reads a token from the environment
+      // could report a sign-in that never happened.
       env: { ...process.env, ...env },
     });
     // A command this machine cannot spawn at all — a CLI declared here but

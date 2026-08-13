@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { CATALOGUE, lykeionHomeFor } from "./agent-registry";
 import { canonicalPath, NO_AGENT_HOME, type AgentHome } from "./sandbox";
 
@@ -155,27 +155,72 @@ function homesFor(workspace: string): Record<string, AgentHome> {
 }
 
 /**
- * The researcher's own installations. Named only to be denied.
+ * The researcher's own installations. Named so a folder grant cannot open them.
  *
- * Not only the two agents this machine runs. `~/.claude` and `~/.codex` were
- * the first two found reachable, but the blanket read grant every declared
- * agent gets over a home directory's hidden entries (see
- * `renderSeatbeltProfile`'s comment on `hidden`) reaches every hidden
- * top-level entry, not only those two — and a conformance run surfaced a
- * live example: `codex-acp`, asked to list its skills, named several that
- * belong to none of its own bundle but to `~/.agents/skills`, a directory
- * this list did not yet carry.
+ * What this list is FOR changed, and the change is worth stating because it
+ * moves how bad a gap in it is. It used to be the only thing standing between
+ * a run and these directories: every declared agent was granted a blanket read
+ * over the home directory's hidden entries, and a path missing from here was
+ * reachable. That grant is gone. A path missing from here is now a missing
+ * deny rather than an open door — and what a deny bounds is a GRANT.
  *
- * Nor only the agents this machine can run. The list is derived from the
- * whole catalogue rather than from the entries carrying an `isolation`,
- * because being undeclared is what makes a CLI dangerous here, not what
- * makes it safe: Lykeion not knowing how to confine Gemini does nothing
- * about the researcher's own Gemini sitting in `~/.gemini` with its OAuth
- * credentials and its MCP tokens, reachable through the same blanket read.
- * An entry earns its denial by being a CLI, and gains its declaration
- * later — or never.
+ * That is not a smaller job. A researcher hands over a folder because of the
+ * data in it, and a folder that also holds their credentials is the ordinary
+ * case rather than the unusual one: a grant over a home directory, or over a
+ * project that keeps a dotfile. A grant is a floor on what a run may reach and
+ * never a ceiling on what it may not, so these are what stop one widening into
+ * the other.
+ *
+ * Derived from the whole catalogue rather than from the entries carrying an
+ * `isolation`, because being undeclared is what makes a CLI dangerous here,
+ * not what makes it safe: Lykeion not knowing how to confine Gemini does
+ * nothing about the researcher's own Gemini sitting in `~/.gemini` with its
+ * OAuth credentials and its MCP tokens. An entry earns its denial by being a
+ * CLI, and gains its declaration later — or never.
+ *
+ * Wider than the two conventions it used to know, and deliberately wider than
+ * necessary. A wrong guess leaves a credential directory reachable from a
+ * grant; a needless deny costs a directory nothing was going to read anyway.
+ * A conformance run already found one of these the hard way — `codex-acp`,
+ * asked to list its skills, named several belonging to no bundle of its own
+ * but to `~/.agents/skills`, which this list did not yet carry.
  */
 function researcherHomes(): string[] {
+  const home = homedir();
+  /**
+   * An XDG base directory, or the default the spec gives when it is unset.
+   *
+   * A relative value is ignored rather than honoured, which the specification
+   * itself requires — and which matters more here than it would elsewhere: a
+   * deny is written by resolving a path, so an empty or relative
+   * `XDG_DATA_HOME` would not produce a bad grant, it would produce a deny
+   * pointing at whatever the daemon's working directory happens to be, while
+   * the directory it was meant to name stayed reachable.
+   */
+  const xdg = (variable: string, ...fallback: string[]): string => {
+    const declared = process.env[variable];
+    return declared !== undefined && isAbsolute(declared) ? declared : join(home, ...fallback);
+  };
+  const configHome = xdg("XDG_CONFIG_HOME", ".config");
+  const dataHome = xdg("XDG_DATA_HOME", ".local", "share");
+  const stateHome = xdg("XDG_STATE_HOME", ".local", "state");
+  /**
+   * Commands whose catalogue row is gone and whose installation is still here.
+   *
+   * A row is what derives the four denies below, so deleting one silently
+   * deletes them with it — and a CLI is removed from the catalogue for being
+   * sunset, which is a statement about the vendor rather than about the
+   * researcher's disk. Google stopped serving Gemini CLI on 2026-06-18;
+   * `~/.gemini` on this machine still holds `oauth_creds.json` and
+   * `mcp-oauth-tokens.json`, and will until somebody deletes it by hand.
+   *
+   * Run through the same derivation as a live row rather than listed as one
+   * path, for the reason the widening above exists: which convention a given
+   * CLI followed is not something this has to be right about, and a needless
+   * deny costs a directory nothing was going to read anyway.
+   */
+  const retired = ["gemini"];
+  const commands = [...CATALOGUE.map((entry) => entry.command), ...retired];
   return [
     // Every CLI the catalogue names, declared or not. A CLI Lykeion cannot
     // yet run is not a CLI whose installation is safe to read: the danger is
@@ -191,19 +236,26 @@ function researcherHomes(): string[] {
     // `.openclaw`, five for five. A CLI keeping its configuration somewhere
     // else is not covered by this and needs its own path recorded; that
     // belongs on the catalogue row rather than here, and is phase 2's.
-    ...CATALOGUE.map((entry) => join(homedir(), `.${entry.command}`)),
-    // Both conventions, for every entry, rather than one per row. Which of
-    // the two a given CLI follows is exactly the fact this list must not have
-    // to be right about in advance: a wrong guess leaves a credential
-    // directory readable, and a needless deny costs a directory nothing was
-    // going to read anyway. The asymmetry is the whole argument.
-    ...CATALOGUE.map((entry) => join(homedir(), ".config", entry.command)),
-    // Anywhere else a row says its own CLI keeps things. `~/.<command>` was
-    // five for five on the installations this machine had, and then a sixth
-    // broke it in the instructive direction — an editor build whose
-    // `~/.<command>` holds only its plugins, with the sign-in somewhere the
-    // rule never looks. A row that knows better says so here.
-    ...CATALOGUE.flatMap((entry) => entry.isolation?.researcherHome ?? []),
+    ...commands.map((command) => join(home, `.${command}`)),
+    // Every convention, for every entry, rather than one per row. Which one a
+    // given CLI follows is exactly the fact this list must not have to be
+    // right about in advance: a wrong guess leaves a credential directory
+    // reachable from a folder grant, and a needless deny costs a directory
+    // nothing was going to read anyway. The asymmetry is the whole argument,
+    // and it is why this got wider rather than more precise.
+    //
+    // `~/.<command>` was five for five on the installations this machine had,
+    // and then a sixth broke it in the instructive direction — an editor
+    // build whose `~/.<command>` holds only its plugins, with the sign-in
+    // somewhere the rule never looked. `Isolation.researcherHome` used to be
+    // the per-row escape hatch for that; the XDG set below covers the same
+    // ground generically, so the field is gone and no row has to know.
+    ...commands.map((command) => join(configHome, command)),
+    // Where an installer that follows XDG puts the installation itself.
+    // `~/.local/share/claude/versions/<v>` is a real example on this machine
+    // — the one whose grandparent `programLocation` resolves through.
+    ...commands.map((command) => join(dataHome, command)),
+    ...commands.map((command) => join(stateHome, command)),
     // The stores that belong to no single CLI, so no row derives them.
     // `~/.agents` and `~/.gsd` are both a shared, cross-tool skills catalogue
     // — the same shape `~/.claude/skills` is, just not scoped to one CLI's
@@ -214,9 +266,9 @@ function researcherHomes(): string[] {
     // OAuth cache for whatever remote MCP servers the researcher has
     // authenticated to outside any agent Lykeion runs — live third-party
     // tokens, not any agent's own.
-    join(homedir(), ".agents"),
-    join(homedir(), ".gsd"),
-    join(homedir(), ".mcp-auth"),
+    join(home, ".agents"),
+    join(home, ".gsd"),
+    join(home, ".mcp-auth"),
   ];
 }
 

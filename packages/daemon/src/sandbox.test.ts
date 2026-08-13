@@ -124,6 +124,31 @@ it("puts a deny after an allow on its own ancestor, so the deny is what matches"
   expect(profile).toContain('(deny file-read* file-write* (subpath "/data/work/.ssh"))');
 });
 
+it("denies a sibling the vendor spelled with a dot, not only the directory", () => {
+  const home = fresh();
+  const denied = join(home, ".claude");
+  const profile = renderSeatbeltProfile(policy({ denied: [denied] }));
+  // The directory itself, as before.
+  expect(profile).toContain(`(deny file-read* file-write* (subpath "${denied}"))`);
+  // And every sibling sharing its name with a dot after it. `subpath` stops
+  // at the component boundary, so `~/.claude.json` is a different path
+  // entirely and was reachable until this rule existed.
+  expect(profile).toContain(
+    `(deny file-read* file-write* (regex "^${denied.replace(/[.*+?^${}()|[\]\\]/g, "\\\\$&")}\\\\."))`,
+  );
+});
+
+it("denies the dot-siblings of every other Task's record too", () => {
+  const own = join(fresh(), "agents", "claude");
+  const projects = join(own, "projects");
+  const profile = renderSeatbeltProfile(
+    policy({ home: { ...NO_AGENT_HOME, private: [projects] } }),
+  );
+  expect(profile).toContain(
+    `(deny file-read* file-write* (regex "^${projects.replace(/[.*+?^${}()|[\]\\]/g, "\\\\$&")}\\\\."))`,
+  );
+});
+
 it("orders allows shallow to deep", () => {
   const profile = renderSeatbeltProfile(
     policy({
@@ -318,21 +343,14 @@ it("reopens nothing that was never denied, so an ordinary home renders no traili
 it("leaves an agent that declared no home reaching nothing of its own", () => {
   const profile = renderSeatbeltProfile(policy());
   expect(profile).not.toContain("Keychains");
-  // Not the researcher's own configuration either. That rule is what lets a
-  // program read the settings it runs by, and a run owning no installation
-  // has none to read — only the tokens and the histories kept beside them.
+  // Nor anything else of the researcher's. This used to be the negative half
+  // of a contrast — a policy declaring a home got a blanket read over the
+  // home directory's hidden entries and one declaring none did not. That
+  // allow is gone for every policy alike, so what is left here is the plainer
+  // claim it always also made: a run owning no installation has no rule
+  // written against the researcher's home at all.
   expect(profile).not.toMatch(/\(allow file-read\* \(regex/);
   expect(profile).not.toContain(canonicalPath(homedir()));
-});
-
-it("gives an agent that declared a home the configuration it runs by", () => {
-  const profile = renderSeatbeltProfile(
-    policy({
-      home: { state: ["/home/.agent"], credentials: [], sealed: [], private: [], patterns: [] },
-    }),
-  );
-  expect(profile).toMatch(/\(allow file-read\* \(regex "\^/);
-  expect(profile).toContain(canonicalPath(homedir()));
 });
 
 it("does not deny the machine's credential service unconditionally, since a deny would outlive the allow", () => {
@@ -359,4 +377,44 @@ it("tells two boundaries apart by what they may read", () => {
   const one = boundaryOf(policy({ readable: ["/work/envs/python"] }));
   const two = boundaryOf(policy({ readable: ["/work/envs/crispr"] }));
   expect(one).not.toBe(two);
+});
+
+/**
+ * The blanket read this task deletes.
+ *
+ * Any agent declaring an installation used to be granted read over EVERY
+ * hidden top-level entry in the researcher's home — on the reasoning that an
+ * agent must read its own configuration to run at all, and configuration is
+ * what hidden entries hold. Both halves are true and the conclusion was far
+ * too wide: what else lives there is the researcher's package-index tokens,
+ * their shell history, their cloud credentials, and every other agent's
+ * installation. The denies below it named some of those; a rule is only as
+ * good as the list of exceptions somebody remembered to write.
+ *
+ * It is deletable because `programLocation` already grants what an agent
+ * genuinely needs to run: the binary, its directory and its grandparent —
+ * and a real install resolves through that grandparent to the whole of its
+ * own installation. Verified before the deletion was proposed: with no
+ * blanket allow at all, `CLAUDE_CONFIG_DIR=<fresh> claude auth status` ran
+ * correctly under `sandbox-exec` and answered `{"loggedIn": false, …}`.
+ */
+it("grants no blanket read over the home directory's hidden entries", () => {
+  const profile = renderSeatbeltProfile(
+    policy({
+      home: {
+        ...NO_AGENT_HOME,
+        state: [join(homedir(), ".lykeion", "agents", "claude")],
+      },
+    }),
+  );
+
+  // Read-only regex allows, which is the shape the blanket rule had. The
+  // read-AND-write regex rules are a different prefix and a different thing —
+  // the shell's scratch file and a rotating credential — so they are not
+  // caught by this and should not be.
+  const blanketReads = profile
+    .split("\n")
+    .filter((line) => line.startsWith("(allow file-read* (regex") && line.includes(canonicalPath(homedir())));
+
+  expect(blanketReads).toEqual([]);
 });

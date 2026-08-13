@@ -10,6 +10,7 @@ import type {
 import { isToolKind } from "@lykeion/api";
 import { connectAcp, type AcpConnection } from "./acp";
 import { confinementFor } from "./agent-home";
+import { confinedEnv } from "./confined-env";
 import { daemonProgramPaths, KERNEL_SERVER_NAME } from "./kernels";
 import { boundaryOf, confine, covers, policyFor, type SandboxGrant } from "./sandbox";
 import {
@@ -21,6 +22,7 @@ import {
 import { ensureTmpDir } from "./scratch";
 import { sweepReplantedSkills } from "./agent-install";
 import { isolationFor, lykeionHomeFor } from "./agent-registry";
+import { recordDemotion } from "./agent-demotions";
 
 /**
  * How long a stopped turn is given, after `session/cancel` is sent, to
@@ -380,6 +382,18 @@ export async function startSession(options: {
   onEvent: (event: RunEvent) => void;
   onGrant: (grant: StandingGrant) => void;
   env?: NodeJS.ProcessEnv;
+  /** Variables to put in front of the adapter deliberately, as opposed to
+   *  `env` above, which is only ever a source to draw the allowlist from.
+   *
+   *  The distinction is the whole of `confined-env.ts`: what arrives because
+   *  a named line of Lykeion put it there, against what happened to be in the
+   *  environment this daemon was started from. `env` is the second kind and
+   *  is filtered; this is the first kind and is not. Nothing in production
+   *  sets it yet — it exists because the test harness wires its stub adapter
+   *  through three variables of its own, and those are as deliberate as
+   *  `TMPDIR`. Filtering them alongside the researcher's shell would have
+   *  been the allowlist working correctly on the wrong input. */
+  extraEnv?: Record<string, string>;
   /** Cancels ACP initialization and reaps the subprocess before this promise
    *  settles. Once initialization succeeds, lifecycle ownership transfers to
    *  the returned LiveSession and callers close it normally. */
@@ -450,7 +464,11 @@ export async function startSession(options: {
   const scratch = ensureTmpDir(cwd);
   const connection: AcpConnection = await connectAcp(confined.command, confined.args, {
     cwd,
-    env: { ...(options.env ?? process.env), TMPDIR: scratch, ...adapterEnvFor(options.agent) },
+    env: confinedEnv(
+      options.agent,
+      { TMPDIR: scratch, ...(options.extraEnv ?? {}) },
+      options.env ?? process.env,
+    ),
   });
   let aborting: Promise<void> | undefined;
   const abortInitialization = () => {
@@ -1032,6 +1050,34 @@ export async function startSession(options: {
     if (forEpoch !== epoch || settled) return;
     settled = true;
     clearGrace();
+    // Only here, and only for `failed`. A turn that ENDED in error is the one
+    // observation that can tell a working sign-in from a revoked one, because
+    // rung 7's question — "who are you signed in as" — is answered identically
+    // by both: the account metadata outlives the grant behind it.
+    //
+    // Placed inside `finish` rather than at the call site that passes
+    // "failed", and after the guard above rather than before it. The guard is
+    // what makes one failed turn record exactly ONE demotion: a stale epoch's
+    // late settlement, or a grace timeout racing a real one, would otherwise
+    // each record their own. Being the single choke point is the rest of it —
+    // any failure path added later inherits this rather than having to
+    // remember it.
+    //
+    // The `session/update` streaming path cannot reach this: it never calls
+    // `finish`, and an agent writing prose about OAuth is not an agent whose
+    // OAuth failed. But `reason` is not scoped to THIS turn either: it is
+    // `connection.stderrTail()` (below) or the adapter's JSON-RPC error, and
+    // `stderrTail()` accumulates for the connection's whole lifetime with no
+    // per-turn reset (`acp.ts`'s `stderr` buffer is never cleared between
+    // turns). So an adapter that wrote an auth-shaped line to stderr during
+    // an EARLIER turn that succeeded can still have that line in the tail
+    // when a later, unrelated turn fails — a false positive that takes a
+    // working agent off the page for `DEMOTION_HOLD_SECONDS`. Narrowing the
+    // tail to the current turn would close this; nothing here does that.
+    if (state === "failed" && reason !== undefined) {
+      const failed = isolationFor(options.agent)?.auth.failed;
+      if (failed?.(reason) === true) recordDemotion(options.agent, reason);
+    }
     abandonCards();
     for (const entry of steps.values()) {
       emitStep(

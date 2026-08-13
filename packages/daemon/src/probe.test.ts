@@ -15,10 +15,14 @@ import { consentKey } from "./adapter-consent";
 import { isolationFor } from "./agent-registry";
 import type { AgentAuth } from "./agent-auth";
 import { forgetRedirectProofs } from "./redirect";
+import { DEMOTION_HOLD_SECONDS, forgetDemotions, recordDemotion } from "./agent-demotions";
 
 const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  // Demotions are process-wide, so one recorded here would go on holding an
+  // agent back through every later test in this file.
+  forgetDemotions();
   // Rung 5 caches its answer per CLI build, and nearly every fixture here
   // calls itself the same version — so without this, a test asserting that a
   // redirect FAILS would inherit the previous test's "proven" and pass for a
@@ -176,17 +180,17 @@ it("never calls a command missing on the strength of what it would not say", asy
     path: pathRunning({
       claude: "exit 0",
       codex: 'printf ""',
-      gemini: 'printf "   \\n\\n"',
+      cursor: 'printf "   \\n\\n"',
       copilot: "exit 3",
     }),
     timeoutMs: 30_000,
   });
-  const found = clis.filter((cli) => ["claude", "codex", "gemini", "copilot"].includes(cli.id));
+  const found = clis.filter((cli) => ["claude", "codex", "cursor", "copilot"].includes(cli.id));
   expect(found.map((cli) => [cli.id, cli.available, cli.version])).toEqual([
     ["claude", true, ""],
     ["codex", true, ""],
-    ["gemini", true, ""],
     ["copilot", true, ""],
+    ["cursor", true, ""],
   ]);
   // And nothing else on the catalogue was invented into existence by a PATH
   // holding only those four.
@@ -194,7 +198,7 @@ it("never calls a command missing on the strength of what it would not say", asy
     "claude",
     "codex",
     "copilot",
-    "gemini",
+    "cursor",
   ]);
 }, 60_000);
 
@@ -207,7 +211,7 @@ it("reports a command that is not installed, without inventing a version", async
 
 it("reports every catalogue entry, installed or not", async () => {
   const clis = await probeAgentClis({ dataDir: stateDir(), path: pathWith({ claude: "1.2.3" }) });
-  expect(clis).toHaveLength(13);
+  expect(clis).toHaveLength(12);
 });
 
 it(
@@ -246,6 +250,54 @@ it(
     expect(claude.available).toBe(true);
     expect(claude.sessionReady).toBe(false);
     expect(claude.sessionReadyReason).toBe(signedOutReasonFor("claude"));
+  },
+  60_000,
+);
+
+it(
+  "holds an agent back for a cycle when its last turn said its sign-in is gone",
+  async () => {
+    // The CLI here says it IS signed in — the same fixture as the
+    // session-ready test above, with the same `authStates` override. What
+    // holds it back is a turn that failed, which is the only evidence that
+    // the account rung 7 reads still has a working grant behind it. Supplying
+    // `authStates` is deliberate: a demotion is a fact about this machine's
+    // observed failures, not about which provider answered the auth
+    // question, so filtering only the default path would let this through.
+    recordDemotion("claude", "401 OAuth access token has been revoked");
+    const path = pathRunning({
+      claude: claudeAnswering(),
+      "claude-agent-acp": acpHandshakeScript(),
+    });
+    const claude = (
+      await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedIn("claude") })
+    ).find((c) => c.id === "claude")!;
+    expect(claude.available).toBe(true);
+    expect(claude.sessionReady).toBe(false);
+    expect(claude.sessionReadyReason).toBe(signedOutReasonFor("claude"));
+  },
+  60_000,
+);
+
+it(
+  "offers an agent again once its demotion is older than a probe cycle",
+  async () => {
+    // The next cycle asks the CLI again. A researcher who signed back in is
+    // offered the agent without restarting anything, which is the whole
+    // reason this is a window rather than a latch.
+    recordDemotion(
+      "claude",
+      "401 OAuth access token has been revoked",
+      () => Math.floor(Date.now() / 1000) - DEMOTION_HOLD_SECONDS - 1,
+    );
+    const path = pathRunning({
+      claude: claudeAnswering(),
+      "claude-agent-acp": acpHandshakeScript(),
+    });
+    const claude = (
+      await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedIn("claude") })
+    ).find((c) => c.id === "claude")!;
+    expect(claude.sessionReady).toBe(true);
   },
   60_000,
 );
@@ -619,22 +671,24 @@ it("carries what initialize refused with, so a version floor is named", async ()
 });
 
 it("has no adapter to try for a catalogue entry that speaks no ACP yet, and says whose gap that is", async () => {
-  // `gemini` carries no adapter mapping at all — unlike `claude`, there is no
-  // second binary to look for, so this settles without spawning anything.
+  // `copilot` carries no adapter mapping at all — unlike `claude`, there is
+  // no second binary to look for, so this settles without spawning anything.
   //
   // What it says matters as much as that it stops. The reason used to name an
-  // ACP adapter, which reads as an errand; the missing thing is this daemon's
-  // own declaration row, and no amount of installing supplies one. For this
-  // entry the errand was not merely useless but impossible — its vendor
-  // switched the product off in June 2026, so anyone who went looking would
-  // have found nothing to install.
-  const gemini = (await probeAgentClis({ dataDir: stateDir(), path: pathWith({ gemini: "1.0.0" }) })).find(
-    (c) => c.id === "gemini",
+  // ACP adapter, which reads as an errand a researcher could run; the missing
+  // thing is this daemon's own declaration row, and no amount of installing
+  // supplies one.
+  //
+  // This used to be asked of `gemini`, whose row is now deleted rather than
+  // undeclared — its vendor switched the product off in June 2026, and a row
+  // waiting to be filled in is a different thing from one that can never be.
+  const copilot = (await probeAgentClis({ dataDir: stateDir(), path: pathWith({ copilot: "1.0.0" }) })).find(
+    (c) => c.id === "copilot",
   )!;
-  expect(gemini.available).toBe(true);
-  expect(gemini.sessionReady).toBe(false);
-  expect(gemini.sessionReadyReason).toContain("Gemini");
-  expect(gemini.sessionReadyReason).not.toMatch(/install/i);
+  expect(copilot.available).toBe(true);
+  expect(copilot.sessionReady).toBe(false);
+  expect(copilot.sessionReadyReason).toContain("Copilot");
+  expect(copilot.sessionReadyReason).not.toMatch(/install/i);
 });
 
 it("does not treat a non-executable file as a command", async () => {
@@ -925,7 +979,7 @@ it("names the agent rather than a command a researcher has to copy", () => {
 });
 
 it("says nothing about signing in to an agent nobody has declared", () => {
-  expect(signedOutReasonFor("gemini")).toBeUndefined();
+  expect(signedOutReasonFor("copilot")).toBeUndefined();
 });
 
 it("runs a command in the directory its boundary was rendered for, not the one the daemon was started in", async () => {

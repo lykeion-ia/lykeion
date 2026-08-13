@@ -72,6 +72,11 @@ type AdapterFactory = () => {
   command: string;
   args: string[];
   env?: NodeJS.ProcessEnv;
+  /** Variables handed to the adapter on purpose, unlike `env` above, which
+   *  is only a source the allowlist is drawn from. A stub configured through
+   *  variables of its own reaches them through here; a real adapter names
+   *  none, because a real adapter is configured by its own installation. */
+  extraEnv?: Record<string, string>;
   /** Which agent this adapter speaks for, so a conformance session is
    *  confined exactly as a real one is — its own credentials and state
    *  included, without which the adapter answers every prompt by saying it
@@ -336,7 +341,7 @@ export function acpConformance(
       deadline: number,
       opts?: { cwd?: string; mcpServers?: McpServer[] },
     ): Promise<{ session: LiveSession; events: RunEvent[] }> {
-      const { command, args, env, agent } = adapter();
+      const { command, args, env, extraEnv, agent } = adapter();
       const events: RunEvent[] = [];
       const starting = startSession({
         adapter: { command, args },
@@ -348,6 +353,7 @@ export function acpConformance(
         onEvent: (event) => events.push(event),
         onGrant: () => {},
         env,
+        ...(extraEnv === undefined ? {} : { extraEnv }),
         ...(opts?.mcpServers === undefined ? {} : { mcpServers: opts.mcpServers }),
       });
       // Tracked against the eventual settlement of `starting` itself, not
@@ -370,11 +376,12 @@ export function acpConformance(
       "completes initialize",
       async () => {
         const deadline = deadlineFor(TEST_TIMEOUT_MS);
-        const { command, args, env, agent } = adapter();
+        const { command, args, env, extraEnv, agent } = adapter();
         const cwd = workspace();
         const connection = await connectAcp(...confinedFor(agent, cwd, command, args), {
           cwd,
           env,
+          ...(extraEnv === undefined ? {} : { extraEnv }),
         });
         try {
           const result = await withTimeout(
@@ -396,11 +403,12 @@ export function acpConformance(
       "returns a session from session/new",
       async () => {
         const deadline = deadlineFor(TEST_TIMEOUT_MS);
-        const { command, args, env, agent } = adapter();
+        const { command, args, env, extraEnv, agent } = adapter();
         const cwd = workspace();
         const connection = await connectAcp(...confinedFor(agent, cwd, command, args), {
           cwd,
           env,
+          ...(extraEnv === undefined ? {} : { extraEnv }),
         });
         try {
           await withTimeout(

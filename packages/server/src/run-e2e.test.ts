@@ -298,7 +298,7 @@ process.exit(0);
  * real adapters cannot turn this hermetic test into a call to their own
  * toolchain.
  */
-function writeAdapterStub(binDir: string): void {
+function writeAdapterStub(binDir: string, stubEnv: Record<string, string> = {}): void {
   mkdirSync(binDir, { recursive: true });
   // The agent it drives is copied in beside it rather than reached for
   // where this repository keeps it. A run is confined, and what it may read
@@ -307,9 +307,22 @@ function writeAdapterStub(binDir: string): void {
   // does, and would only be testing the boundary's absence.
   const agent = join(binDir, "stub-acp-agent.ts");
   copyFileSync(stubAgent, agent);
+  // The stub's own configuration is baked into the wrapper rather than
+  // exported into the daemon that spawns it.
+  //
+  // It used to travel as an environment variable set on the daemon process
+  // and inherited all the way down. A confined run's environment is an
+  // allowlist now, so nothing reaches an adapter by inheritance — which is
+  // the feature working, and it took this suite's stub with it. Carried by
+  // the adapter itself, it needs no inheritance to survive: this is also
+  // closer to what a real adapter does, since a real one is configured by
+  // its own installation rather than by whatever started it.
   const script = `#!/usr/bin/env node
 const { spawnSync } = require("node:child_process");
-const result = spawnSync(${JSON.stringify(process.execPath)}, ["--experimental-strip-types", ${JSON.stringify(agent)}], { stdio: "inherit" });
+const result = spawnSync(${JSON.stringify(process.execPath)}, ["--experimental-strip-types", ${JSON.stringify(agent)}], {
+  stdio: "inherit",
+  env: { ...process.env, ...${JSON.stringify(stubEnv)} },
+});
 process.exit(result.status === null ? 1 : result.status);
 `;
   writeFileSync(join(binDir, "claude-agent-acp"), script, { mode: 0o755 });
@@ -351,7 +364,13 @@ async function pairAndServe(
   const dataDir = freshDir();
   const binDir = freshDir();
   writeClaudeStub(binDir);
-  writeAdapterStub(binDir);
+  // Whatever configures the stub adapter goes to the adapter; anything else
+  // is genuinely the daemon's own environment and still goes there.
+  const forDaemon: Record<string, string> = {};
+  const forAdapter: Record<string, string> = {};
+  for (const [name, value] of Object.entries(options.env ?? {}))
+    (name.startsWith("LYKEION_STUB_") ? forAdapter : forDaemon)[name] = value;
+  writeAdapterStub(binDir, forAdapter);
 
   const name = "e2e-daemon";
   let output = "";
@@ -372,7 +391,7 @@ async function pairAndServe(
       env: {
         ...process.env,
         PATH: [binDir, dirname(process.execPath), ...(options.path ?? [])].join(delimiter),
-        ...(options.env ?? {}),
+        ...forDaemon,
       },
     },
   );

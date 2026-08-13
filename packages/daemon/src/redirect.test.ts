@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { readdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { forgetRedirectProofs, provesRedirect } from "./redirect";
+import { forgetRedirectProofs, gatesOffering, provesRedirect } from "./redirect";
 import { entryFor } from "./agent-registry";
 
 afterEach(() => forgetRedirectProofs());
@@ -17,7 +17,8 @@ it("proves the redirect when a scratch home reads as signed out", async () => {
     return { stdout: '{"loggedIn":false}', stderr: "" };
   };
   const proof = await provesRedirect(entryFor("claude")!, "claude@1", run);
-  expect(proof.proven).toBe(true);
+  expect(proof.state).toBe("redirect-works");
+  expect(gatesOffering(proof)).toBe(false);
 
   // Pointed at a home that is neither the researcher's nor ours. Ours may
   // legitimately be signed in, and asking against it would prove nothing.
@@ -34,7 +35,8 @@ it("refuses the declaration when a scratch home still reads as signed in", async
   // would otherwise be completely silent.
   const run = async () => ({ stdout: '{"loggedIn":true,"email":"r@lab.org"}', stderr: "" });
   const proof = await provesRedirect(entryFor("claude")!, "claude@1", run);
-  expect(proof.proven).toBe(false);
+  expect(proof.state).toBe("redirect-broken");
+  expect(gatesOffering(proof)).toBe(true);
   expect(proof.reason).toContain("CLAUDE_CONFIG_DIR");
 });
 
@@ -73,8 +75,8 @@ it("caches a refusal too, so a wrong declaration is not re-asked every cycle", a
     calls += 1;
     return { stdout: '{"loggedIn":true}', stderr: "" };
   };
-  expect((await provesRedirect(entryFor("claude")!, "claude@1", run)).proven).toBe(false);
-  expect((await provesRedirect(entryFor("claude")!, "claude@1", run)).proven).toBe(false);
+  expect((await provesRedirect(entryFor("claude")!, "claude@1", run)).state).toBe("redirect-broken");
+  expect((await provesRedirect(entryFor("claude")!, "claude@1", run)).state).toBe("redirect-broken");
   expect(calls).toBe(1);
 });
 
@@ -86,7 +88,10 @@ it("treats a CLI that could not answer as unproven rather than disproven", async
     throw new Error("spawn ENOENT");
   };
   const proof = await provesRedirect(entryFor("claude")!, "claude@1", run);
-  expect(proof.proven).toBe(false);
+  expect(proof.state).toBe("nothing-shown");
+  // Silence is the one refusal that does NOT hold the row back. See
+  // `gatesOffering` for what that trades away.
+  expect(gatesOffering(proof)).toBe(false);
   expect(proof.reason).toMatch(/did not answer/);
 });
 
@@ -98,15 +103,42 @@ it("refuses to certify an isolation on output nobody could read", async () => {
   // having observed nothing whatsoever about where the CLI keeps its sign-in.
   const run = async () => ({ stdout: "error: unknown flag --json\nUsage: claude auth ...", stderr: "" });
   const proof = await provesRedirect(entryFor("claude")!, "claude@1", run);
-  expect(proof.proven).toBe(false);
+  expect(proof.state).toBe("not-understood");
+  expect(gatesOffering(proof)).toBe(true);
   expect(proof.reason).toMatch(/could not read/);
+});
+
+it("separates an answer nobody understood from a redirect that is broken", async () => {
+  // Both hold the row back, and they mean opposite things. One says this
+  // agent can reach the researcher's own installation; the other admits
+  // nothing was shown either way. The pairing page prints `reason` verbatim,
+  // so a researcher deciding whether to worry is reading exactly this string
+  // — and two different problems wearing one sentence is how a real isolation
+  // failure gets mistaken for a flaky CLI.
+  const unreadable = await provesRedirect(
+    entryFor("claude")!,
+    "claude@unreadable",
+    async () => ({ stdout: "usage: claude [options]", stderr: "" }),
+  );
+  const broken = await provesRedirect(entryFor("claude")!, "claude@broken", async () => ({
+    stdout: '{"loggedIn":true}',
+    stderr: "",
+  }));
+
+  expect(unreadable.state).toBe("not-understood");
+  expect(broken.state).toBe("redirect-broken");
+  // Alike in consequence...
+  expect(gatesOffering(unreadable)).toBe(true);
+  expect(gatesOffering(broken)).toBe(true);
+  // ...and not in what they tell the researcher.
+  expect(unreadable.reason).not.toBe(broken.reason);
 });
 
 it("still proves the redirect on an answer the row genuinely understands", async () => {
   // The complement: a recognised "not signed in" is what proof looks like,
   // so the check above cannot have been bought by rejecting everything.
   const run = async () => ({ stdout: '{"loggedIn":false,"authMethod":"none"}', stderr: "" });
-  expect((await provesRedirect(entryFor("claude")!, "claude@1", run)).proven).toBe(true);
+  expect((await provesRedirect(entryFor("claude")!, "claude@1", run)).state).toBe("redirect-works");
 });
 
 it("reads codex's own refusal as an answer, not as noise", async () => {
@@ -114,7 +146,7 @@ it("reads codex's own refusal as an answer, not as noise", async () => {
   // recognised answer and must prove the redirect, or this rung would refuse
   // every CLI that does not speak JSON.
   const run = async () => ({ stdout: "", stderr: "Not logged in" });
-  expect((await provesRedirect(entryFor("codex")!, "codex@1", run)).proven).toBe(true);
+  expect((await provesRedirect(entryFor("codex")!, "codex@1", run)).state).toBe("redirect-works");
 });
 
 it("does not remember silence, so one bad moment cannot stand an install down", async () => {
@@ -128,8 +160,8 @@ it("does not remember silence, so one bad moment cannot stand an install down", 
     if (calls === 1) throw new Error("spawn ENOENT");
     return { stdout: '{"loggedIn":false}', stderr: "" };
   };
-  expect((await provesRedirect(entryFor("claude")!, "claude@1", flaky)).proven).toBe(false);
-  expect((await provesRedirect(entryFor("claude")!, "claude@1", flaky)).proven).toBe(true);
+  expect((await provesRedirect(entryFor("claude")!, "claude@1", flaky)).state).toBe("nothing-shown");
+  expect((await provesRedirect(entryFor("claude")!, "claude@1", flaky)).state).toBe("redirect-works");
   expect(calls).toBe(2);
 });
 
@@ -138,9 +170,10 @@ it("refuses an entry that declares no isolation at all, and says which entry", a
   // just as happily with the guard deleted, because an undeclared entry would
   // fall through to the same catch-all `proven: false` for a different
   // reason entirely.
-  const proof = await provesRedirect(entryFor("gemini")!, "gemini@1", async () => ({ stdout: "", stderr: "" }));
-  expect(proof.proven).toBe(false);
-  expect(proof.reason).toContain("Gemini");
+  const proof = await provesRedirect(entryFor("copilot")!, "copilot@1", async () => ({ stdout: "", stderr: "" }));
+  expect(proof.state).toBe("not-understood");
+  expect(gatesOffering(proof)).toBe(true);
+  expect(proof.reason).toContain("Copilot");
   expect(proof.reason).toMatch(/declares no isolation/);
 });
 

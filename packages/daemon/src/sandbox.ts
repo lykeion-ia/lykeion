@@ -251,7 +251,6 @@ const DEVICE_WRITE = ["/dev/null", "/dev/dtracehelper", "/dev/tty"];
  * hand them over without ever being asked.
  */
 export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] = []): string {
-  const home = homedir();
   const lines: string[] = ["(version 1)", "(deny default)", ""];
 
   lines.push("; the baseline, without which nothing starts");
@@ -286,20 +285,25 @@ export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] =
   // for anything the researcher happens to keep beneath it. A run's own
   // scratch belongs inside its workspace, which is already granted.
   //
-  // An agent reads its own configuration to run at all, and configuration
-  // is what a home directory's hidden entries hold — the researcher's data
-  // files are not hidden. Read only: a write here would let an agent leave
-  // something behind that runs outside this boundary the next time the
-  // researcher opens a shell. The credential stores among them are denied
-  // below, which is why the order matters.
+  // Nothing grants the home directory's hidden entries either, and that is
+  // the whole of this task. A rule here used to open every one of them to any
+  // agent declaring an installation, reasoning that an agent must read its own
+  // configuration to run and that configuration is what hidden entries hold.
+  // Both halves are true; the conclusion was far too wide. What else lives
+  // there is the researcher's package-index tokens, their shell history, their
+  // cloud credentials and every other agent's installation — and the denies
+  // beneath it were a list of exceptions, which is only ever as complete as
+  // the last time somebody thought about it.
   //
-  // Rendered only for a policy that declares an installation, because that is
-  // the whole of what it is for. A run owning none authenticates from nothing
-  // and has no configuration of its own to find here; what it would find
-  // instead is the researcher's package-index tokens, their shell history and
-  // every other store the denies below do not name.
-  const hidden = declaresAnInstallation(policy.home) ? canonicalPrefix(home) : undefined;
-  if (hidden) lines.push(`(allow file-read* (regex ${literal(`^${escapeRegex(hidden)}/\\.`)}))`);
+  // What an agent actually needs to run, it already has: `programLocation`
+  // grants the binary, its directory and its grandparent, and a real install
+  // resolves through that grandparent to the whole of its own installation.
+  // Checked before this was proposed rather than after — with no blanket
+  // allow at all, `CLAUDE_CONFIG_DIR=<fresh> claude auth status` ran correctly
+  // under `sandbox-exec` and answered `{"loggedIn": false, …}`. An agent that
+  // turns out to need something specific names it on its row, which is a
+  // grant somebody had to write down.
+  //
   // The program this machine is about to run has to be readable to be that
   // program: the adapter itself, whatever its argument array names, and the
   // directories a command is looked up in. This machine built that argument
@@ -348,8 +352,7 @@ export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] =
   lines.push(
     `(deny file-read* file-write* (regex ${literal(`/\\.(${CREDENTIAL_STORE_NAMES.join("|")})(/|$)`)}))`,
   );
-  for (const path of shallowToDeep(policy.denied, (p) => p))
-    lines.push(`(deny file-read* file-write* (subpath ${literal(path)}))`);
+  for (const path of shallowToDeep(policy.denied, (p) => p)) lines.push(...denyBoth(path));
   // Writing only. An agent reads its own configuration to start at all; what
   // it may not do is edit the file that decides what runs the next time this
   // program starts outside any boundary of ours.
@@ -358,8 +361,7 @@ export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] =
   // Neither reading nor writing. The researcher's own account of everything
   // else they have done with this program sits inside the same directory the
   // program needs, and a run has no business in any of it.
-  for (const path of shallowToDeep(policy.home.private, (p) => p))
-    lines.push(`(deny file-read* file-write* (subpath ${literal(path)}))`);
+  for (const path of shallowToDeep(policy.home.private, (p) => p)) lines.push(...denyBoth(path));
 
   // Last, and only what is both the agent's own and beneath something denied
   // above: this Task's record, inside the directory holding every Task's. The
@@ -379,6 +381,27 @@ export function renderSeatbeltProfile(policy: SandboxPolicy, program: string[] =
   return `${lines.join("\n")}\n`;
 }
 
+/**
+ * The two rules one denied path actually needs.
+ *
+ * `subpath` matches a directory and everything beneath it, and stops at the
+ * component boundary — so a deny naming `~/.claude` says nothing at all about
+ * `~/.claude.json`, which is where Claude Code keeps the researcher's MCP
+ * server definitions and their whole project history. Verified reachable
+ * under `sandbox-exec` with the directory deny in force.
+ *
+ * The second rule closes exactly that: anchored at the start, ending in a
+ * literal dot, so it covers `<path>.json`, `<path>.json.backup` and anything
+ * else a vendor spells as a sibling — and does not touch `<path>` itself
+ * (the subpath above owns that) or an unrelated neighbour like `<path>x`.
+ */
+function denyBoth(path: string): string[] {
+  return [
+    `(deny file-read* file-write* (subpath ${literal(path)}))`,
+    `(deny file-read* file-write* (regex ${literal(`^${escapeRegex(path)}\\.`)}))`,
+  ];
+}
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -390,11 +413,6 @@ function escapeRegex(value: string): string {
  * spelled out here, so a part of an installation that is added later is a
  * part this question already covers instead of one it quietly ignores.
  */
-function declaresAnInstallation(home: AgentHome): boolean {
-  const parts = Object.keys(NO_AGENT_HOME) as (keyof AgentHome)[];
-  return parts.some((part) => home[part].length > 0);
-}
-
 /**
  * A place too broad to be one thing's own, whatever derived it. The root of
  * the disk, a top-level directory and a home directory are each somebody's

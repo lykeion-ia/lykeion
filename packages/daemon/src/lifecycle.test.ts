@@ -704,7 +704,7 @@ it(
 it(
   "is not held back by a catalogue command that ignores being cancelled",
   async () => {
-    // The probe runs thirteen local commands and gives each three seconds.
+    // The probe runs twelve local commands and gives each three seconds.
     // One of them refusing the signal that cancels it must not become the
     // thing a stop waits on — and must not keep the process alive past its
     // own shutdown, which is the state in which a daemon holds a claim

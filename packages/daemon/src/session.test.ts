@@ -13,6 +13,7 @@ import {
   sessionMetaFor,
 } from "./session";
 import { canonicalPath } from "./sandbox";
+import { demotionsFor, forgetDemotions } from "./agent-demotions";
 
 const STUB = join(import.meta.dirname, "test-support", "stub-acp-agent.ts");
 const live: LiveSession[] = [];
@@ -21,6 +22,9 @@ const dirs: string[] = [];
 afterEach(async () => {
   for (const s of live.splice(0)) await s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  // Demotions are process-wide and outlive the session that recorded one, so
+  // a turn failed in one test would otherwise be evidence in the next.
+  forgetDemotions();
 });
 
 /** A folder the researcher granted. A real directory, because the boundary
@@ -66,12 +70,18 @@ async function session(
     grants,
     onEvent: (e) => events.push(e),
     onGrant: (g) => granted.push(g),
-    env: {
-      ...process.env,
+    // The source to draw the allowlist from, poisoned by whatever a test
+    // wants the daemon's own shell to look like. Everything here is subject
+    // to filtering, which is the point: a test that names
+    // `CLAUDE_CONFIG_DIR` here is standing in for a researcher who exported
+    // one, and it must not reach the adapter.
+    env: { ...process.env, ...(options.env ?? {}) },
+    // The stub's own wiring, which is not ambient and must survive. Lykeion
+    // puts these here by name for the same reason it puts `TMPDIR` there.
+    extraEnv: {
       LYKEION_STUB_SCRIPT: JSON.stringify(script),
       LYKEION_STUB_SESSION_NEW_PARAMS: opening,
       LYKEION_STUB_ENV_MARKER: spawnedWith,
-      ...(options.env ?? {}),
     },
     ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
     ...(options.cancelGraceMs !== undefined ? { cancelGraceMs: options.cancelGraceMs } : {}),
@@ -780,6 +790,74 @@ it("settles a card still open when the turn ends, instead of leaving it a ghost"
   await closing;
 });
 
+it("demotes an agent whose turn failed in its own words about auth", async () => {
+  // Rung 7 asks a CLI who it is signed in as, and a CLI whose grant has been
+  // revoked answers that happily — the account outlives the grant. A turn
+  // that ENDED in error is the one observation that tells the two apart.
+  const { s, events } = await session(
+    [{ failTurn: "Failed to authenticate. API Error: 401 OAuth access token has been revoked." }],
+    [],
+    { agent: "claude" },
+  );
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(events.at(-1)).toMatchObject({ event: "completed", state: { state: "failed" } });
+  const demotions = demotionsFor("claude");
+  expect(demotions).toHaveLength(1);
+  expect(demotions[0]?.reason).toContain("OAuth access token has been revoked");
+});
+
+it("does not demote an agent whose turn merely talked about tokens", async () => {
+  // The streamed text below matches claude's own `failed` predicate word for
+  // word. That is the point: what keeps this from demoting is where the
+  // predicate is applied, not whether the sentence happens to match.
+  const { s, events } = await session(
+    [
+      {
+        emit: "agent_message_chunk",
+        text: "Your OAuth access token has been revoked — here is how to fix it.",
+      },
+    ],
+    [],
+    { agent: "claude" },
+  );
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(events.at(-1)).toEqual({ event: "completed", state: { state: "completed" } });
+  expect(demotionsFor("claude")).toEqual([]);
+});
+
+it("leaves an agent alone when its turn failed for a reason that is not its sign-in", async () => {
+  const { s, events } = await session([{ failTurn: "the model is overloaded, try again" }], [], {
+    agent: "claude",
+  });
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(events.at(-1)).toMatchObject({ event: "completed", state: { state: "failed" } });
+  expect(demotionsFor("claude")).toEqual([]);
+});
+
+it("demotes nothing for an agent id the catalogue has no row for", async () => {
+  // "stub" is not a catalogue row, and of the twelve that are, only "claude"
+  // and "codex" declare an `isolation` — both with a `failed` closure. So
+  // `isolationFor` answers `undefined` here. This exercises the
+  // `isolationFor(...)?.` half of the guard (an unrecognised id returns
+  // `undefined`, and the `?.` chain is what keeps this from demoting rather
+  // than throwing), not the `failed?.` half. No catalogue row declares
+  // isolation without a `failed` closure, so that branch has no fixture —
+  // adding a fake row to production data to reach it would be worse than
+  // leaving it untested.
+  const { s, events } = await session(
+    [{ failTurn: "Failed to authenticate. API Error: 401 OAuth access token has been revoked." }],
+    [],
+    { agent: "stub" },
+  );
+  s.prompt("go");
+  await until(() => settled(events));
+  expect(events.at(-1)).toMatchObject({ event: "completed", state: { state: "failed" } });
+  expect(demotionsFor("stub")).toEqual([]);
+});
+
 it("stops a turn and lands it cancelled, not failed", async () => {
   const { s, events } = await session([
     { emit: "agent_message_chunk", text: "working" },
@@ -1271,8 +1349,8 @@ async function advertisingSession(
     grants: [],
     onEvent: (e) => events.push(e),
     onGrant: () => {},
-    env: {
-      ...process.env,
+    env: { ...process.env },
+    extraEnv: {
       LYKEION_STUB_SCRIPT: JSON.stringify([]),
       LYKEION_STUB_ADVERTISES: JSON.stringify(advertises),
       LYKEION_STUB_SET_MARKER: setMarker,
@@ -1356,8 +1434,8 @@ it("confines the adapter itself, so an unconfined spawn is not something a calle
     onGrant: () => {},
     // The stub writes this marker the moment a prompt arrives. Inside the
     // boundary it cannot: the path is this machine's own state directory.
-    env: {
-      ...process.env,
+    env: { ...process.env },
+    extraEnv: {
       LYKEION_STUB_SCRIPT: JSON.stringify([]),
       LYKEION_STUB_PROMPT_MARKER: outside,
     },
@@ -1384,7 +1462,8 @@ it("refuses to open a session at all where this platform cannot be confined", as
       platform: "linux",
       onEvent: () => {},
       onGrant: () => {},
-      env: { ...process.env, LYKEION_STUB_SCRIPT: JSON.stringify([]), LYKEION_STUB_SESSION_NEW_MARKER: spawned },
+      env: { ...process.env },
+      extraEnv: { LYKEION_STUB_SCRIPT: JSON.stringify([]), LYKEION_STUB_SESSION_NEW_MARKER: spawned },
     }),
   ).rejects.toThrow(/linux/);
   expect(existsSync(spawned)).toBe(false);
@@ -1512,7 +1591,7 @@ it("no longer argues with codex's own configuration over MCP servers", () => {
 });
 
 it("adds nothing to the environment of an agent nobody has declared", () => {
-  expect(adapterEnvFor("gemini")).toEqual({});
+  expect(adapterEnvFor("copilot")).toEqual({});
 });
 
 it("tells claude to offer no skills at all", async () => {
@@ -1527,5 +1606,5 @@ it("tells claude to offer no skills at all", async () => {
 
 it("carries no session meta for an agent that has no such channel", async () => {
   expect(await sessionMetaFor("codex")).toBeUndefined();
-  expect(await sessionMetaFor("gemini")).toBeUndefined();
+  expect(await sessionMetaFor("copilot")).toBeUndefined();
 });

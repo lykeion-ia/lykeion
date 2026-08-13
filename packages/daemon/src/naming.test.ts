@@ -36,7 +36,8 @@ function summarize(
     cwd,
     dataDir,
     ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
-    env: { ...process.env, LYKEION_STUB_SCRIPT: JSON.stringify(script) },
+    env: { ...process.env },
+    extraEnv: { LYKEION_STUB_SCRIPT: JSON.stringify(script) },
   });
 }
 

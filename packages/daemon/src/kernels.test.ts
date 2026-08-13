@@ -237,7 +237,7 @@ onDarwin("the boundary a kernel is started inside", () => {
     expect(existsSync(join(experiments, "written.csv"))).toBe(false);
   });
 
-  it("reads nothing a researcher keeps in their own home, where an agent still reads its configuration", async () => {
+  it("reads nothing a researcher keeps in their own home, and neither does an agent", async () => {
     const { workspace, dataDir, environment } = scene();
     // A real hidden entry in the real home directory, of the shape nothing
     // below the allows denies by name: an agent's own configuration lives
@@ -256,10 +256,21 @@ onDarwin("the boundary a kernel is started inside", () => {
       expect(cell.stdout).not.toContain("A RESEARCHERS OWN TOKEN");
       expect(cell.code).not.toBe(0);
 
-      // The same file, under a boundary drawn for something that does own an
-      // installation. A rule an agent stopped getting would be a program that
-      // starts and reports itself signed out, so the direction that has to
-      // keep working is asked of the kernel too.
+      // The same file, under a boundary drawn for something that DOES own an
+      // installation — the case that used to differ.
+      //
+      // An agent declaring a home was once granted a blanket read over every
+      // hidden entry in this directory, so it could find its own
+      // configuration. This test asserted that asymmetry on purpose: a kernel
+      // reached nothing here, an agent reached everything. The grant is gone,
+      // because "an agent needs its own configuration" never justified handing
+      // it the researcher's npm token, their shell history, and every other
+      // agent's installation besides. What an agent genuinely needs it still
+      // has, from `programLocation` and from its own declared home; what it
+      // has lost is everything nobody wrote down.
+      //
+      // So the two boundaries now agree, and this half is kept rather than
+      // deleted because the agreement is the claim worth guarding.
       const agent = policyFor({
         workspace,
         grants: [],
@@ -271,8 +282,8 @@ onDarwin("the boundary a kernel is started inside", () => {
         args: ["-c", `cat ${configuration}`],
       });
       const turn = await ran([confined.command, ...confined.args]);
-      expect(turn.stdout).toContain("A RESEARCHERS OWN TOKEN");
-      expect(turn.code).toBe(0);
+      expect(turn.stdout).not.toContain("A RESEARCHERS OWN TOKEN");
+      expect(turn.code).not.toBe(0);
     } finally {
       rmSync(configuration, { force: true });
     }

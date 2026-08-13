@@ -28,9 +28,12 @@ it("keeps every catalogued agent, declared or not", () => {
   const ids = CATALOGUE.map((entry) => entry.id);
   expect(ids).toContain("claude");
   expect(ids).toContain("codex");
-  // The eleven stay as rows so phases 2 and 3 have a roadmap to fill in.
-  expect(ids).toContain("gemini");
-  expect(ids).toHaveLength(13);
+  // The ten stay as rows so phases 2 and 3 have a roadmap to fill in.
+  expect(ids).toContain("copilot");
+  // And Gemini is not among them: a row is inert while it waits to be filled
+  // in, and sunset is not waiting. Deleted rather than left standing.
+  expect(ids).not.toContain("gemini");
+  expect(ids).toHaveLength(12);
 });
 
 it("declares isolation for exactly the agents Lykeion can confine today", () => {
@@ -44,7 +47,7 @@ it("names the variable that redirects each declared agent's home", () => {
 });
 
 it("reaches no isolation for an agent nobody has declared", () => {
-  expect(isolationFor("gemini")).toBeUndefined();
+  expect(isolationFor("copilot")).toBeUndefined();
   expect(isolationFor("nothing-of-the-sort")).toBeUndefined();
   expect(entryFor("nothing-of-the-sort")).toBeUndefined();
 });
@@ -117,6 +120,41 @@ it("reads codex's answer wherever it actually printed it, without mistaking a re
     signedIn: false,
     recognised: false,
   });
+});
+
+it("recognises a revoked grant from the words a turn actually failed with", () => {
+  const claude = CATALOGUE.find((e) => e.id === "claude")!;
+  expect(claude.isolation!.auth.failed!(
+    "Failed to authenticate. API Error: 401 OAuth access token has been revoked.",
+  )).toBe(true);
+});
+
+it("does not read prose about tokens as its own failure", () => {
+  const claude = CATALOGUE.find((e) => e.id === "claude")!;
+  // What an agent might legitimately write while working on this very file.
+  expect(claude.isolation!.auth.failed!(
+    "The daemon should handle the case where an access token has expired.",
+  )).toBe(false);
+});
+
+it("recognises codex's own 'not logged in' phrasing as a failure", () => {
+  const codex = CATALOGUE.find((e) => e.id === "codex")!;
+  // "not logged in" is codex's own observed phrasing — see the row's `read`
+  // closure, which already anchors on the same sentence from `login
+  // status`. The 401 half of this predicate is unverified against any real
+  // codex output (see the row's own comment), so it is deliberately not
+  // exercised here — a test built on invented turn-failure text would prove
+  // nothing but its own fabrication.
+  expect(codex.isolation!.auth.failed!(
+    "Error: not logged in. Run `codex login` to authenticate.",
+  )).toBe(true);
+});
+
+it("does not read a mention of being logged in as a failure", () => {
+  const codex = CATALOGUE.find((e) => e.id === "codex")!;
+  expect(codex.isolation!.auth.failed!(
+    "The user is now logged in and ready to continue.",
+  )).toBe(false);
 });
 
 it("declares what rides an agent's own per-session channel, for an agent that has one", async () => {
@@ -221,4 +259,67 @@ it("omits the SDK option rather than sending it unresolved, when claude is not o
   process.env.PATH = dir;
   const meta = await claudeSessionMeta();
   expect(meta.claudeCode.options).not.toHaveProperty("pathToClaudeCodeExecutable");
+});
+
+/**
+ * Task 8 of the isolation plan, as re-scoped after the plan's own version was
+ * struck.
+ *
+ * The plan said to comment out the claude row's `credentialsOutsideHome`, run
+ * one confined turn, and delete the grant if the turn authenticated. That
+ * experiment passes while the bug is present. An access token is still valid
+ * moments after signing in, so the turn works; the damage lands hours later at
+ * the first refresh, when the rotated token cannot be written back, the spent
+ * one is replayed, and the server revokes the grant. Running it would have
+ * deleted the fix that ended a live outage and reported success.
+ *
+ * So the decision is pinned instead of re-litigated, and pinned where the
+ * declaration lives. `agent-home.test.ts` already covers what this renders to;
+ * these cover what a row is allowed to say — which is what the eleven rows
+ * still to be written will be checked against.
+ */
+it("keeps the one rotating credential both readable and rewritable", () => {
+  const claude = isolationFor("claude")!;
+  // Read, because a run has to prove who it is.
+  expect(claude.credentialsOutsideHome ?? []).not.toHaveLength(0);
+  // And write, because refreshing an OAuth token ROTATES it. Read-only here
+  // was the bug: the refresh succeeds at the server, fails to persist, and
+  // the next use of the spent token is read as theft.
+  expect(claude.credentialPatterns ?? []).not.toHaveLength(0);
+});
+
+it("never lets a row declare a rewritable credential outside what it may read", () => {
+  // The invariant the next eleven rows inherit. `credentialPatterns` is a
+  // regex rather than a path, which is what makes it expressive enough for a
+  // SQLite store and its sidecars — and also what would let a row point a
+  // WRITE somewhere it was never granted a read. Strictly narrower than the
+  // read is the rule; this is where a row that breaks it fails.
+  for (const entry of CATALOGUE) {
+    const isolation = entry.isolation;
+    if (isolation?.credentialPatterns === undefined) continue;
+
+    const readable = isolation.credentialsOutsideHome ?? [];
+    expect(readable, `${entry.id}: declares a credential write with no matching read`).not.toHaveLength(0);
+
+    for (const pattern of isolation.credentialPatterns) {
+      // Unanchored, it matches mid-path — `Keychains` alone would match
+      // anything with that word anywhere in it, on any disk.
+      expect(pattern.startsWith("^"), `${entry.id}: ${pattern} is not anchored at the start`).toBe(true);
+
+      // What the pattern can match, read back out of the pattern itself: the
+      // literal prefix with its anchors dropped and its regex escaping
+      // removed. Every path it admits begins with this, so if this sits
+      // inside something the row may read, nothing it matches can fall
+      // outside.
+      //
+      // The end anchor is dropped BEFORE unescaping, because afterwards a
+      // literal `\$` and a real anchor are the same character.
+      const body = pattern.slice(1).replace(/(?<!\\)\$$/, "");
+      const literalPrefix = body.replace(/\\(.)/g, "$1");
+      expect(
+        readable.some((root) => literalPrefix === root || literalPrefix.startsWith(`${root}${sep}`)),
+        `${entry.id}: ${pattern} can match outside ${JSON.stringify(readable)}`,
+      ).toBe(true);
+    }
+  }
 });

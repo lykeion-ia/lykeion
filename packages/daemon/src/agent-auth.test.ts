@@ -144,7 +144,7 @@ it("does not leave a workspace behind when the platform has no sandbox backend t
   expect(after.filter((name) => !before.has(name))).toEqual([]);
 });
 
-it("clears the variables a row says answer for it, so a question about a home is about that home", async () => {
+it("gives a confined question none of this shell's variables, whether or not a row named them", async () => {
   // Observed on a real install: `CLAUDE_CODE_OAUTH_TOKEN` set to anything at
   // all makes `claude auth status` report a signed-in account against a
   // config directory created empty a moment earlier, and it is not validated
@@ -153,31 +153,41 @@ it("clears the variables a row says answer for it, so a question about a home is
   // could act on, because the redirect is fine and the override is in their
   // shell.
   //
-  // Removed rather than blanked: a CLI reading an ambient credential
-  // generally treats the empty string as set, which would leave the exact
-  // behaviour being cleared.
+  // This used to assert the two halves of a denylist: a variable a row named
+  // went, and a variable no row named stayed. The second half is now the bug
+  // rather than the control. `LYKEION_FAKE_AMBIENT` is named by no row and by
+  // no allowlist, and that is the whole reason it must not arrive — a
+  // credential nobody has thought of yet is dropped for the same reason a
+  // known one is. Removed rather than blanked, still: a CLI reading an
+  // ambient credential generally treats the empty string as set.
   process.env.LYKEION_FAKE_AMBIENT = "set-to-something";
   try {
     const path = pathRunning({ claude: 'printf "%s" "${LYKEION_FAKE_AMBIENT:-absent}"' });
     // Asserted from inside the child, which is the only place it matters.
-    const cleared = await confinedRunCommand({
-      dataDir: freshDir("lykeion-state-"),
-      path,
-      workspacePrefix: "lykeion-auth-ambient-",
-      unsetEnv: ["LYKEION_FAKE_AMBIENT"],
-    })("claude", [], {});
-    expect(cleared.stdout).toBe("absent");
-    // And still inherited when no row asked for it to go, so this cannot be
-    // passing because the variable never reached a child in the first place.
-    const inherited = await confinedRunCommand({
+    const answer = await confinedRunCommand({
       dataDir: freshDir("lykeion-state-"),
       path,
       workspacePrefix: "lykeion-auth-ambient-",
     })("claude", [], {});
-    expect(inherited.stdout).toBe("set-to-something");
+    expect(answer.stdout).toBe("absent");
   } finally {
     delete process.env.LYKEION_FAKE_AMBIENT;
   }
+}, 30_000);
+
+it("still carries the variables a confined question cannot run without", async () => {
+  // The control the old denylist test got from its second half, kept: this is
+  // what stops the assertion above passing because nothing reaches the child
+  // at all. `PATH` is on the allowlist, so it arrives; and a child that can
+  // read it is a child that could have read the ambient variable too.
+  const path = pathRunning({ claude: 'printf "%s" "${PATH:-absent}"' });
+  const answer = await confinedRunCommand({
+    dataDir: freshDir("lykeion-state-"),
+    path,
+    workspacePrefix: "lykeion-auth-allowed-",
+  })("claude", [], {});
+  expect(answer.stdout).not.toBe("absent");
+  expect(answer.stdout.length).toBeGreaterThan(0);
 }, 30_000);
 
 it("does not leave a workspace behind when confining the command throws", async () => {
@@ -308,7 +318,7 @@ it("refuses to start a sign-in for a declared CLI this machine does not have", a
 
 it("refuses to start a sign-in for an agent nobody has declared", async () => {
   const spawnFn = vi.fn();
-  const outcome = await startSignIn("gemini", spawnFn as never);
+  const outcome = await startSignIn("copilot", spawnFn as never);
   expect(outcome.started).toBe(false);
   expect(outcome.reason).toBeTruthy();
   expect(spawnFn).not.toHaveBeenCalled();

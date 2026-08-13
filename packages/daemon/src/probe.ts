@@ -7,12 +7,14 @@ import { connectAcp } from "./acp";
 import { confinementFor } from "./agent-home";
 import { confine, noBackendReason, policyFor, sandboxBackendFor } from "./sandbox";
 import { readAdvertised } from "./agent-options";
-import { adapterEnvFor, sessionMetaFor } from "./session";
+import { sessionMetaFor } from "./session";
+import { confinedEnv } from "./confined-env";
 import { CATALOGUE, entryFor, isolationFor, type AdapterLaunch } from "./agent-registry";
 import { agentAuthStates, confinedRunCommand, type AgentAuth } from "./agent-auth";
-import { provesRedirect } from "./redirect";
+import { gatesOffering, provesRedirect } from "./redirect";
 import { acceptedAdapters, consentKey } from "./adapter-consent";
 import { resolveOnPath } from "./command-path";
+import { isDemoted } from "./agent-demotions";
 
 export { CATALOGUE } from "./agent-registry";
 
@@ -431,15 +433,16 @@ async function probeAdapter(
         platform,
         path: pathValue,
         timeoutMs,
-        // Cleared for this question only. A CLI that reads its sign-in out of
-        // an ambient variable answers the same from every home, so asking it
-        // about a scratch home with one of those set is not asking anything —
-        // and the answer would be read as a broken redirect, which is both
-        // wrong and something the researcher cannot act on.
-        unsetEnv: isolationFor(agentId)?.ambientAuthEnv,
+        // Nothing to clear here any more. `confinedRunCommand` builds this
+        // child's environment from the allowlist rather than from whatever
+        // this daemon inherited, so a CLI that reads its sign-in out of an
+        // ambient variable no longer answers the same from every home — the
+        // variable is not there to read. The rung-5/rung-7 asymmetry this
+        // field existed to patch went with it: both questions are now asked
+        // in the same environment.
       }),
     );
-    if (!proof.proven)
+    if (gatesOffering(proof))
       return { sessionReady: false, sessionReadyReason: proof.reason ?? "isolation unverified" };
   }
 
@@ -490,7 +493,7 @@ async function probeAdapter(
   );
   const connection = await connectAcp(confined.command, confined.args, {
     cwd: workspace,
-    env: { ...process.env, ...adapterEnvFor(agentId) },
+    env: confinedEnv(agentId),
   });
   // A throwaway session, opened and closed on every path. Options are
   // advertised on `session/new` rather than on `initialize`, and a Task
@@ -622,7 +625,28 @@ export async function probeAgentClis(options: ProbeOptions): Promise<ProbedCli[]
   // memoization is what keeps two such entries in the same cycle from each
   // starting their own round trip through every declared agent's CLI.
   let auth: Promise<AgentAuth[]> | undefined;
-  const authStates = (): Promise<AgentAuth[]> => (auth ??= (options.authStates ?? defaultAuthStates)());
+  // Demotions are applied HERE rather than inside `defaultAuthStates`, and the
+  // distinction is not cosmetic. A demotion is a fact about this machine's own
+  // observed turn failures, not about which provider supplied the auth
+  // answers, and this is the boundary where an answer becomes THIS cycle's
+  // answer. Filtering only the default path would leave anything supplying
+  // `options.authStates` — every test in `probe.test.ts` today, and whatever
+  // reason a caller has for overriding it tomorrow — offering an agent whose
+  // sign-in this daemon has already watched fail.
+  //
+  // A CLI answers rung 7 out of its own account metadata, which survives the
+  // grant behind it being revoked. A turn that failed is the only evidence to
+  // the contrary, so it wins until `DEMOTION_HOLD_SECONDS` elapses — set to
+  // twice `main.ts`'s probe interval (which is itself derived from this
+  // constant, see `agent-demotions.ts`), so a demotion recorded anywhere in a
+  // cycle is guaranteed to still be read by the next one, not merely likely
+  // to be. Once the window closes, the next cycle asks the CLI again, so a
+  // researcher who signs back in is offered the agent without restarting
+  // anything.
+  const authStates = (): Promise<AgentAuth[]> =>
+    (auth ??= (options.authStates ?? defaultAuthStates)().then((states) =>
+      states.map((state) => (isDemoted(state.agent) ? { ...state, signedIn: false } : state)),
+    ));
   return Promise.all(
     CATALOGUE.map((entry) =>
       probeOne(

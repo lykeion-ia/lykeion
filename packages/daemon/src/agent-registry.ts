@@ -76,6 +76,19 @@ export interface AuthDeclaration {
      *  injected fake (see `agent-auth.test.ts`'s integration test). */
     read: (output: CommandOutput) => AuthState;
   };
+  /**
+   * Whether an error message is this CLI's way of saying its sign-in no
+   * longer works.
+   *
+   * Applied ONLY to a turn that ended in error — never to streamed assistant
+   * text. An agent discussing an expired token, quoting a log or writing
+   * about OAuth would otherwise demote itself, and matching against model
+   * output makes that certain rather than unlikely.
+   *
+   * Optional: a row that cannot tell its auth failures from its other
+   * failures says nothing, and is never demoted by this route.
+   */
+  failed?: (message: string) => boolean;
   login: { args: readonly string[] };
 }
 
@@ -207,19 +220,6 @@ export interface Isolation {
    */
   credentialPatterns?: readonly string[];
   /**
-   * Where this CLI's own installation lives, when it is neither
-   * `~/.<command>` nor `~/.config/<command>`.
-   *
-   * Named so it can be DENIED — the same and only reason `researcherHomes`
-   * names anything at all. The observed case is a CLI shipping as an editor
-   * build: `~/.<command>` exists and holds its plugins, while its sign-in
-   * sits in an application-support profile outside the hidden entries
-   * entirely. A derivation that finds the plugin directory reports success
-   * and protects nothing, which is worse than one that finds nothing —
-   * nobody goes looking for a hole they have been told is closed.
-   */
-  researcherHome?: readonly string[];
-  /**
    * Variables that authenticate this CLI no matter which home it was pointed
    * at, so the redirect proof has to clear them before it asks.
    *
@@ -336,11 +336,18 @@ function codexConfig(features: Record<string, boolean>): string {
  * The coding-agent CLIs the daemon knows how to look for, in the order they
  * are reported.
  *
- * All thirteen stay listed. The eleven without an `isolation` are the roadmap
+ * All twelve stay listed. The ten without an `isolation` are the roadmap
  * phases 2 and 3 work through: phase 2 establishes where each keeps its
  * configuration and how to redirect it, phase 3 gives each a bridge to speak
  * ACP through. Until both land, an entry is inert rather than deleted, so
  * re-admitting one is filling in a row.
+ *
+ * Inert is not the same as sunset, which is why there were thirteen. Google
+ * stopped serving Gemini CLI on 2026-06-18: it spawns, prints
+ * `IneligibleTierError`, and never speaks ACP, so no amount of filling in a
+ * row reaches an agent that can run. Its row is gone; the denies it derived
+ * are not, because the researcher's own `~/.gemini` is still on this machine
+ * with its OAuth credentials in it — see `researcherHomes`'s retired list.
  */
 export const CATALOGUE: ReadonlyArray<CatalogueEntry> = [
   {
@@ -429,6 +436,14 @@ export const CATALOGUE: ReadonlyArray<CatalogueEntry> = [
           },
         },
         login: { args: ["auth", "login", "--claudeai"] },
+        // Observed live: "401 OAuth access token has been revoked" — see this
+        // file's own doc on `credentialsOutsideHome` for how that came about.
+        // "access" is matched optionally rather than dropped, so a release
+        // that shortens the sentence is still caught.
+        failed: (message) =>
+          /oauth (?:access )?token has been revoked|401 .*(unauthorized|authenticate)/i.test(
+            message,
+          ),
       },
       // Observed: this empties the skill set outright, including skills
       // arriving by --plugin-dir. That is why Lykeion's own catalogue can
@@ -513,6 +528,18 @@ export const CATALOGUE: ReadonlyArray<CatalogueEntry> = [
           },
         },
         login: { args: ["login"] },
+        // "not logged in" is this CLI's own observed phrasing, not a guess —
+        // the `read` closure above already anchors on the same sentence from
+        // `login status`. The "401 ... unauthorized/authenticate" half is
+        // not: no codex turn has yet been observed failing with a 401, so
+        // that half is written against the shape claude's live failure took
+        // rather than against anything codex has actually said. It is also
+        // order-dependent — a message shaped "Unauthorized (401)" would slip
+        // past it — which is a real gap left open on purpose rather than
+        // closed on a guess. Confirmed only once a real codex turn's 401
+        // failure text is captured verbatim; until then this half stays
+        // unverified, and should not be widened further without one.
+        failed: (message) => /401 .*(unauthorized|authenticate)|not logged in/i.test(message),
       },
       skillsOff: { features: CODEX_FEATURES },
       // Rendered from this row's own declaration above, so the file written
@@ -523,7 +550,14 @@ export const CATALOGUE: ReadonlyArray<CatalogueEntry> = [
       ],
     },
   },
-  { id: "gemini", name: "Gemini", command: "gemini" },
+  // Researched 2026-08-13, left bare. `copilot` resolves on PATH here, and
+  // the thing it resolves to is a VS Code extension shim: asked anything at
+  // all it answers "Install GitHub Copilot CLI? ['y/N']" and then "Cannot
+  // find GitHub Copilot CLI". Question 1 — what command does it install on
+  // PATH — therefore has no answer on this machine, and every question after
+  // it is about a program that is not here. The ACP registry does list a
+  // `copilot --acp` adapter, so this row is reachable on a machine with the
+  // real CLI installed; it was not reachable on the one that looked.
   { id: "copilot", name: "Copilot", command: "copilot" },
   { id: "cursor", name: "Cursor", command: "cursor" },
   { id: "opencode", name: "opencode", command: "opencode" },
@@ -532,6 +566,30 @@ export const CATALOGUE: ReadonlyArray<CatalogueEntry> = [
   { id: "qoder", name: "Qoder", command: "qoder" },
   { id: "codebuddy", name: "CodeBuddy", command: "codebuddy" },
   { id: "hermes", name: "Hermes", command: "hermes" },
+  // Researched 2026-08-13 against a real install (2026.2.21-2), left bare —
+  // and this one is bare for a reason worth reading before anyone tries
+  // again.
+  //
+  // It does speak ACP: `openclaw acp` is documented as "Run an ACP bridge
+  // backed by the Gateway". The Gateway is the problem. That subcommand is a
+  // proxy — it takes `--url`, `--token` and `--password` and connects to a
+  // separate, long-running OpenClaw process that holds the agent, its
+  // workspaces and its auth. Confining the bridge would confine a WebSocket
+  // client. The turn would run in the Gateway, outside any boundary this
+  // daemon rendered, against the researcher's own state.
+  //
+  // That breaks the premise every rung above 4 rests on: that redirecting a
+  // configuration home moves the agent. Here it moves the proxy. A row
+  // declared anyway would climb the whole ladder green and isolate nothing,
+  // which is the exact failure rung 5 was built to catch and would not catch,
+  // because the redirect genuinely would work — on the wrong process.
+  //
+  // Question 3 has no answer either: `openclaw agents` offers add, delete,
+  // list and set-identity, and nothing that reports who is signed in.
+  //
+  // Confining this needs a design for agents that run as a daemon rather than
+  // as a child, which is not what this sub-project built. All-or-nothing, so
+  // the row stays a row.
   { id: "openclaw", name: "OpenClaw", command: "openclaw" },
   { id: "pi", name: "Pi", command: "pi" },
 ];

@@ -189,7 +189,7 @@ it("seals what Lykeion wrote against the agent rewriting it", () => {
 });
 
 it("declares nothing for an agent nobody has declared", () => {
-  expect(agentHomeFor("gemini", WORKSPACE).state).toEqual([]);
+  expect(agentHomeFor("copilot", WORKSPACE).state).toEqual([]);
 });
 
 /** Every installation of the researcher's own this machine has been found to
@@ -229,27 +229,67 @@ const RESEARCHER_HOMES = [
   ".config/hermes",
   ".config/openclaw",
   ".config/pi",
+  // Where an installer following XDG puts the installation itself, and where
+  // it keeps state. `~/.local/share/claude/versions/<v>` is a real one on
+  // this machine. `Isolation.researcherHome` used to be the per-row escape
+  // hatch for a CLI these two conventions missed; covering the whole XDG set
+  // generically is what let that field go.
+  ".local/share/claude",
+  ".local/share/codex",
+  ".local/share/gemini",
+  ".local/share/copilot",
+  ".local/share/cursor",
+  ".local/share/opencode",
+  ".local/share/kimi",
+  ".local/share/kiro",
+  ".local/share/qoder",
+  ".local/share/codebuddy",
+  ".local/share/hermes",
+  ".local/share/openclaw",
+  ".local/share/pi",
+  ".local/state/claude",
+  ".local/state/codex",
+  ".local/state/gemini",
+  ".local/state/copilot",
+  ".local/state/cursor",
+  ".local/state/opencode",
+  ".local/state/kimi",
+  ".local/state/kiro",
+  ".local/state/qoder",
+  ".local/state/codebuddy",
+  ".local/state/hermes",
+  ".local/state/openclaw",
+  ".local/state/pi",
   // The cross-tool stores, which belong to no entry and so derive from none.
   ".agents",
   ".gsd",
   ".mcp-auth",
 ];
 
-it("denies whatever a row says its own CLI keeps things in", () => {
-  // No row declares `researcherHome` yet, so this asserts nothing today —
-  // deliberately. The rows plan writes eleven declarations, and the first one
-  // that needs this field is the first chance to get it wrong; a test already
-  // standing there is what turns that from a silent hole into a red suite.
-  // The fixture above is hand-written for exactly that reason, so this cannot
-  // agree with the code by sharing its source.
-  for (const entry of CATALOGUE) {
-    for (const declared of entry.isolation?.researcherHome ?? []) {
-      expect(RESEARCHER_HOMES.map((name) => join(homedir(), name))).toContain(declared);
-    }
-  }
+it("denies the XDG locations a CLI may keep its installation in", () => {
+  // `~/.<command>` and `~/.config/<command>` were the two conventions this
+  // list knew. Neither reaches an installer that follows XDG properly, and
+  // one is sitting on this machine: `~/.local/share/claude/versions/<v>` is
+  // where Claude Code actually lives. A CLI keeping its state under
+  // `~/.local/state/<command>` is the same story a directory along.
+  const homes = foreignHomes("claude", WORKSPACE);
+  for (const path of [
+    join(home, ".local", "share", "codex"),
+    join(home, ".local", "state", "codex"),
+    join(home, ".config", "codex"),
+  ])
+    expect(homes).toContain(path);
 });
 
-it("renders every researcher home as a deny the kernel reads after the allow that would open it", () => {
+it("still denies the stores that belong to no single CLI", () => {
+  // Derived from no row, so a widening that rebuilt the per-entry lists and
+  // forgot these would leave three live credential stores reachable.
+  const homes = foreignHomes("claude", WORKSPACE);
+  for (const path of [".agents", ".gsd", ".mcp-auth"].map((n) => join(home, n)))
+    expect(homes).toContain(path);
+});
+
+it("renders every researcher home as a deny that nothing later re-opens", () => {
   // The one test that crosses the whole chain this branch exists to
   // establish: a row in `agent-registry`, through `confinementFor` and
   // `policyFor`, to the rule a kernel is actually handed. The two ends were
@@ -259,12 +299,16 @@ it("renders every researcher home as a deny the kernel reads after the allow tha
   // observed leak (`~/.agents`, `~/.gsd`, `~/.mcp-auth`) passed the entire
   // unit suite.
   //
-  // Position, not mere presence. Seatbelt is last-match-wins, and every
-  // declared agent is granted a blanket read over this home directory's
-  // hidden entries so it can find its own configuration at all — see
-  // `renderSeatbeltProfile`'s `hidden`. A deny rendered before that allow is
-  // a deny the kernel never applies, which is a profile that looks right and
-  // hands over `~/.claude/.credentials.json` anyway.
+  // Position, not mere presence. Seatbelt is last-match-wins, so a deny is
+  // only worth what survives the rules after it.
+  //
+  // This used to assert the deny came AFTER the blanket read over the home
+  // directory's hidden entries. That allow is gone, so there is no longer an
+  // earlier rule for these denies to have to beat — but the property still
+  // needs asserting from the other end, because the profile does not stop at
+  // the denies: a `state` entry beneath a `private` one is deliberately
+  // re-allowed afterwards. So what matters now is that nothing rendered after
+  // a researcher home's deny opens it again.
   const workspace = mkdtempSync(join(tmpdir(), "lykeion-agent-home-profile-"));
   const dataDir = mkdtempSync(join(tmpdir(), "lykeion-agent-home-state-"));
   try {
@@ -278,21 +322,19 @@ it("renders every researcher home as a deny the kernel reads after the allow tha
       const profile = renderSeatbeltProfile(
         policyFor({ workspace, grants: [], dataDir, ...confinementFor(entry.id, workspace) }),
       ).split("\n");
-      // The blanket read over hidden entries, which is the allow every one
-      // of the denies below has to survive.
-      const hiddenAllow = profile.findIndex((line) =>
-        line.startsWith("(allow file-read* (regex"),
-      );
-      expect(hiddenAllow, `${entry.id}: no hidden-config allow rendered`).toBeGreaterThan(-1);
       for (const name of RESEARCHER_HOMES) {
         const denied = join(physicalHome, name);
         const deny = profile.findIndex(
           (line) => line.startsWith("(deny ") && line.includes(`(subpath "${denied}")`),
         );
         expect(deny, `${entry.id}: ${denied} is not denied`).toBeGreaterThan(-1);
-        expect(deny, `${entry.id}: ${denied} is denied before it is allowed`).toBeGreaterThan(
-          hiddenAllow,
+        // Nothing after it hands the same place back. An allow naming this
+        // path later would win outright, and the profile would read as
+        // correct while `~/.claude/.credentials.json` stayed reachable.
+        const reopened = profile.findIndex(
+          (line, i) => i > deny && line.startsWith("(allow ") && line.includes(denied),
         );
+        expect(reopened, `${entry.id}: ${denied} is re-opened after being denied`).toBe(-1);
       }
     }
   } finally {
@@ -386,4 +428,27 @@ it("renders that write as a rule the kernel will actually take", () => {
     rmSync(workspace, { recursive: true, force: true });
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+it("still denies the researcher's own gemini installation after the row is gone", () => {
+  // The trap in deleting a catalogue row: the row is what DERIVES these
+  // denies, so removing it removes them silently. A CLI leaves the catalogue
+  // because its vendor stopped serving it, which is a fact about the vendor —
+  // the researcher's own copy, and the OAuth credentials and MCP tokens in it,
+  // are still sitting on this disk either way. Google switched Gemini CLI off
+  // on 2026-06-18; `~/.gemini` is still here.
+  expect(CATALOGUE.some((entry) => entry.id === "gemini")).toBe(false);
+
+  // All four spellings, not just the dotfile. The row derived four and a
+  // hand-restored `~/.gemini` would have quietly dropped three — see
+  // `researcherHomes`'s retired list, which runs them through the same
+  // derivation a live row gets.
+  const homes = foreignHomes("claude", WORKSPACE);
+  for (const path of [
+    join(home, ".gemini"),
+    join(home, ".config", "gemini"),
+    join(home, ".local", "share", "gemini"),
+    join(home, ".local", "state", "gemini"),
+  ])
+    expect(homes, `${path} lost its deny when the row went`).toContain(path);
 });

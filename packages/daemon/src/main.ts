@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { DEMOTION_HOLD_SECONDS } from "./agent-demotions";
 import { runBridge } from "./bridge";
 import { DAEMON_VERSION, readDaemonConfig, USAGE, type DaemonConfig } from "./config";
 import { labLabel, readState, revokedStatePath, setAsidePairing, type PairedState } from "./state";
@@ -39,8 +40,18 @@ import {
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
 /** How often this machine looks again for what it can run. A report is sent
- *  again only when that comes back different from what was last sent. */
-const PROBE_INTERVAL_MS = 5 * 60 * 1000;
+ *  again only when that comes back different from what was last sent.
+ *
+ *  DERIVED from `DEMOTION_HOLD_SECONDS`, not chosen independently: the actual
+ *  gap between two probe cycles is this interval plus however long the
+ *  PREVIOUS cycle's own work took, because `scheduleProbe` below arms the
+ *  next timer inside the completed cycle's `.then()` rather than on a fixed
+ *  clock. A demotion's hold has to outlast that real gap, so it is defined as
+ *  twice this interval — and deriving the interval from the hold, rather
+ *  than the other way around, is what keeps the two from being edited out of
+ *  step with each other. This still comes out to the 5 minutes it has always
+ *  been. */
+const PROBE_INTERVAL_MS = (DEMOTION_HOLD_SECONDS / 2) * 1000;
 
 /** How often this machine asks the lab which of the working directories it
  *  holds belong to a Study or a Task that is gone. */

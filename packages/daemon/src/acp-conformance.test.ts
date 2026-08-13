@@ -52,7 +52,8 @@ const SCRIPT = [
 acpConformance("stub", () => ({
   command: process.execPath,
   args: ["--experimental-strip-types", STUB],
-  env: { ...process.env, LYKEION_STUB_SCRIPT: JSON.stringify(SCRIPT) },
+  env: { ...process.env },
+  extraEnv: { LYKEION_STUB_SCRIPT: JSON.stringify(SCRIPT) },
   // The stub authenticates against nothing and keeps no state of its own, so
   // it is confined with no home at all — which is also what keeps this suite
   // from quietly running with a real agent's credentials in reach.

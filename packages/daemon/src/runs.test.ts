@@ -101,6 +101,26 @@ function markerIn(dataDir: string, name: string): string {
   return join(taskDir, name);
 }
 
+/**
+ * What the stub adapter is configured with, handed over on purpose.
+ *
+ * A run's environment is an allowlist now, so nothing a test exports reaches
+ * the adapter by inheritance any more — which is the feature working. Every
+ * `startRuns` here that actually spawns an adapter passes this; the two that
+ * hand back no adapter at all have nothing to configure.
+ *
+ * A thunk rather than a snapshot: these are set at various points relative to
+ * the call, and a value read once at construction would be empty for most of
+ * them.
+ */
+const stubEnv = (): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] =>
+        entry[0].startsWith("LYKEION_STUB_") && entry[1] !== undefined,
+    ),
+  );
+
 function subsystem(
   base: string,
   dataDir: string,
@@ -118,6 +138,7 @@ function subsystem(
     }),
     ...(kernelHost === undefined ? {} : { kernelHost }),
     ...(kernelReachMs === undefined ? {} : { kernelReachMs }),
+    extraEnv: stubEnv,
   });
   running.push(r);
   return r;
@@ -2036,6 +2057,7 @@ it("retires a session whose stop was unacknowledged and keeps a later turn healt
     dataDir: data,
     cancelGraceMs: 20,
     adapterFor: () => ({ command: process.execPath, args: ["--experimental-strip-types", STUB] }),
+    extraEnv: stubEnv,
   });
   running.push(r);
   await until(() => lab.commandConnected(), "the command stream");
@@ -2230,6 +2252,7 @@ it("refuses a run on a platform it cannot confine, naming the platform, and spaw
     dataDir: data,
     platform: "linux",
     adapterFor: () => ({ command: process.execPath, args: ["--experimental-strip-types", STUB] }),
+    extraEnv: stubEnv,
   });
   running.push(r);
   await until(

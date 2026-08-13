@@ -20,6 +20,7 @@ import { namingDir, summarizeTask } from "./naming";
 import { createRetryLoop } from "./retry";
 import { ensureTaskDir } from "./workspace";
 import { confinementFor } from "./agent-home";
+import { confinedEnv } from "./confined-env";
 import type { KernelHost } from "./kernel-host";
 import {
   daemonProgramPaths,
@@ -162,6 +163,21 @@ export function startRuns(options: {
    *  this. */
   kernelReachMs?: number;
   cancelGraceMs?: number;
+  /** Variables put in front of every adapter this subsystem starts, on
+   *  purpose rather than by inheritance — `startSession`'s `extraEnv`,
+   *  reached from out here.
+   *
+   *  Production passes none: a confined run is given the allowlist and its
+   *  own home, and nothing else. This exists because the stub adapter the
+   *  tests drive is configured entirely through variables of its own, and
+   *  once a run's environment became an allowlist there was no longer any
+   *  ambient channel for a test to reach it through — which is the feature
+   *  working, not a gap in it. A seam is honest about being a seam.
+   *
+   *  Asked once per session opened rather than read once here, because a test
+   *  that arranges its stub after starting the subsystem would otherwise hand
+   *  over an empty object and watch its adapter do nothing. */
+  extraEnv?: () => Record<string, string>;
 }): RunSubsystem {
   // Two signals rather than one: aborting the command stream the instant
   // `stop` is called must not also cut off a batch of events that is only
@@ -944,7 +960,8 @@ export function startRuns(options: {
               });
             inFlightFlushes.add(sent);
           },
-          env: process.env,
+          env: confinedEnv(undefined),
+          ...(options.extraEnv === undefined ? {} : { extraEnv: options.extraEnv() }),
           ...(model === undefined ? {} : { model }),
           signal: initialization.signal,
           ...(options.cancelGraceMs !== undefined ? { cancelGraceMs: options.cancelGraceMs } : {}),
@@ -1255,6 +1272,10 @@ export function startRuns(options: {
       cwd: namingDir(options.workDir),
       dataDir: options.dataDir,
       ...(options.platform === undefined ? {} : { platform: options.platform }),
+      // The naming session opens its own adapter, so it needs the same
+      // deliberate variables a run's does — an allowlist filters this one
+      // exactly as hard.
+      ...(options.extraEnv === undefined ? {} : { extraEnv: options.extraEnv() }),
     })
       .then(answer, () => answer(null))
       .finally(() => {
