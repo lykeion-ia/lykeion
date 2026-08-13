@@ -213,11 +213,41 @@ const RESEARCHER_HOMES = [
   ".hermes",
   ".openclaw",
   ".pi",
+  // The XDG spelling of each of the above. A CLI following that convention
+  // keeps nothing in `~/.<command>` at all, so the dotfile list alone would
+  // deny a directory it does not use and leave the one it does.
+  ".config/claude",
+  ".config/codex",
+  ".config/gemini",
+  ".config/copilot",
+  ".config/cursor",
+  ".config/opencode",
+  ".config/kimi",
+  ".config/kiro",
+  ".config/qoder",
+  ".config/codebuddy",
+  ".config/hermes",
+  ".config/openclaw",
+  ".config/pi",
   // The cross-tool stores, which belong to no entry and so derive from none.
   ".agents",
   ".gsd",
   ".mcp-auth",
 ];
+
+it("denies whatever a row says its own CLI keeps things in", () => {
+  // No row declares `researcherHome` yet, so this asserts nothing today —
+  // deliberately. The rows plan writes eleven declarations, and the first one
+  // that needs this field is the first chance to get it wrong; a test already
+  // standing there is what turns that from a silent hole into a red suite.
+  // The fixture above is hand-written for exactly that reason, so this cannot
+  // agree with the code by sharing its source.
+  for (const entry of CATALOGUE) {
+    for (const declared of entry.isolation?.researcherHome ?? []) {
+      expect(RESEARCHER_HOMES.map((name) => join(homedir(), name))).toContain(declared);
+    }
+  }
+});
 
 it("renders every researcher home as a deny the kernel reads after the allow that would open it", () => {
   // The one test that crosses the whole chain this branch exists to

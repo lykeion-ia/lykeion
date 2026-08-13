@@ -454,6 +454,10 @@ export async function acquireControl(dir: string, file: ControlFile): Promise<vo
 export interface ControlHandlers {
   status(): Record<string, unknown>;
   stop(): void;
+  /** Records, or withdraws, the researcher's agreement to run one
+   *  community-published adapter as one agent. The pairing page is what
+   *  presents the question; this is how the answer gets back. */
+  setAdapterConsent(agent: string, command: string, accepted: boolean): void;
 }
 
 export interface ControlServer {
@@ -512,7 +516,8 @@ export async function startControlServer(options: {
       if (!presented || !secretsMatch(presented, options.token))
         return sendJson(res, 401, { error: "that call did not carry this daemon's control token" });
 
-      const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      const path = url.pathname;
       if (req.method !== "POST") return sendJson(res, 405, { error: "control calls are POST" });
 
       // Answers for the daemon's existence and changes nothing. `status`
@@ -523,6 +528,22 @@ export async function startControlServer(options: {
       if (path === "/ping") return sendJson(res, 200, { ok: true, pid: process.pid });
 
       if (path === "/status") return sendJson(res, 200, options.handlers.status());
+
+      if (path === "/adapters/accept" || path === "/adapters/revoke") {
+        // On the query string rather than in a body, because nothing this
+        // server answers reads one — the client beside it sends
+        // `content-length: 0` — and adding body parsing for two short strings
+        // would be a second way of saying the same thing.
+        const agent = url.searchParams.get("agent") ?? "";
+        const command = url.searchParams.get("command") ?? "";
+        // Both halves or neither. A key written from half a request is one no
+        // probe will ever look up, which reaches the researcher as a button
+        // that did nothing.
+        if (!agent || !command)
+          return sendJson(res, 400, { error: "agent and command are both required" });
+        options.handlers.setAdapterConsent(agent, command, path.endsWith("accept"));
+        return sendJson(res, 200, { ok: true });
+      }
 
       if (path === "/stop") {
         // Answered in full before anything is torn down. What `stop` does

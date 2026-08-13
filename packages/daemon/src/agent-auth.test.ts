@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { chmodSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentAuthStates, startSignIn } from "./agent-auth";
+import { agentAuthStates, confinedRunCommand, startSignIn } from "./agent-auth";
 import { CATALOGUE, lykeionHomeFor, type AuthState, type CatalogueEntry } from "./agent-registry";
 
 // `run` overrides bypass `confinedRunCommand` entirely, so `dataDir` below is
@@ -26,6 +26,19 @@ function freshDir(prefix: string): string {
 /** A PATH holding an entry for each named command, so `available` answers
  *  from a fixture rather than from whatever the machine running this suite
  *  happens to have installed. */
+/** A PATH holding commands that run a body of their own, for the cases where
+ *  what the command sees — its environment, its working directory — is the
+ *  thing under test rather than what it says. */
+function pathRunning(commands: Record<string, string>): string {
+  const dir = freshDir("lykeion-auth-path-");
+  for (const [name, body] of Object.entries(commands)) {
+    const file = join(dir, name);
+    writeFileSync(file, `#!/bin/sh\n${body}\n`);
+    chmodSync(file, 0o755);
+  }
+  return dir;
+}
+
 function pathHolding(...commands: string[]): string {
   const dir = freshDir("lykeion-auth-path-");
   for (const command of commands) {
@@ -111,19 +124,80 @@ it(
 
 it("does not leave a workspace behind when the platform has no sandbox backend to confine it with", async () => {
   // A platform with no backend is exactly the case `confine()` itself
-  // throws on — checked here before `mkdtempSync`, the same way
-  // `probeCliVersion` checks before ever calling `readVersion`, so the
-  // workspace is never created rather than created and then abandoned.
+  // throws on — checked before `mkdtempSync`, the same way `probeCliVersion`
+  // checks before ever calling `readVersion`, so the workspace is never
+  // created rather than created and then abandoned.
   //
-  // `dataDir` is created first, and outside the prefix being watched
-  // (`lykeion-auth-`, the exact prefix `confinedRunCommand`'s own workspace
-  // uses): created after the snapshot, its own directory would otherwise
-  // read as a leak that has nothing to do with the one under test.
+  // The prefix is this test's own rather than the shared one. The runner has
+  // many test files in flight against a single temp directory, and the probe
+  // now asks a CLI its sign-in through this very function — so watching the
+  // default prefix meant failing on workspaces belonging to whoever else was
+  // asking at that moment. A real assertion about a real invariant, failing
+  // for a reason with nothing to do with it, which is the kind of red people
+  // learn to re-run instead of read.
   const dataDir = freshDir("lykeion-state-");
-  const before = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("lykeion-auth-")));
-  const states = await agentAuthStates({ dataDir, platform: "linux" });
+  const prefix = "lykeion-auth-nobackend-";
+  const before = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith(prefix)));
+  const states = await agentAuthStates({ dataDir, platform: "linux", workspacePrefix: prefix });
   expect(states.every((state) => state.signedIn === false)).toBe(true);
-  const after = readdirSync(tmpdir()).filter((name) => name.startsWith("lykeion-auth-"));
+  const after = readdirSync(tmpdir()).filter((name) => name.startsWith(prefix));
+  expect(after.filter((name) => !before.has(name))).toEqual([]);
+});
+
+it("clears the variables a row says answer for it, so a question about a home is about that home", async () => {
+  // Observed on a real install: `CLAUDE_CODE_OAUTH_TOKEN` set to anything at
+  // all makes `claude auth status` report a signed-in account against a
+  // config directory created empty a moment earlier, and it is not validated
+  // first. A researcher who exports one would otherwise have every agent
+  // refused with "your redirect is not working" — wrong, and nothing they
+  // could act on, because the redirect is fine and the override is in their
+  // shell.
+  //
+  // Removed rather than blanked: a CLI reading an ambient credential
+  // generally treats the empty string as set, which would leave the exact
+  // behaviour being cleared.
+  process.env.LYKEION_FAKE_AMBIENT = "set-to-something";
+  try {
+    const path = pathRunning({ claude: 'printf "%s" "${LYKEION_FAKE_AMBIENT:-absent}"' });
+    // Asserted from inside the child, which is the only place it matters.
+    const cleared = await confinedRunCommand({
+      dataDir: freshDir("lykeion-state-"),
+      path,
+      workspacePrefix: "lykeion-auth-ambient-",
+      unsetEnv: ["LYKEION_FAKE_AMBIENT"],
+    })("claude", [], {});
+    expect(cleared.stdout).toBe("absent");
+    // And still inherited when no row asked for it to go, so this cannot be
+    // passing because the variable never reached a child in the first place.
+    const inherited = await confinedRunCommand({
+      dataDir: freshDir("lykeion-state-"),
+      path,
+      workspacePrefix: "lykeion-auth-ambient-",
+    })("claude", [], {});
+    expect(inherited.stdout).toBe("set-to-something");
+  } finally {
+    delete process.env.LYKEION_FAKE_AMBIENT;
+  }
+}, 30_000);
+
+it("does not leave a workspace behind when confining the command throws", async () => {
+  // The other way out of those lines. The no-backend case is guarded before
+  // the directory exists; this is everything after it — a policy that will
+  // not render, a spawn that fails synchronously — where the removal sits
+  // inside a callback that is then never reached.
+  const dataDir = freshDir("lykeion-state-");
+  const prefix = "lykeion-auth-confinethrows-";
+  const before = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith(prefix)));
+  const run = confinedRunCommand({
+    dataDir,
+    path: pathHolding("claude"),
+    workspacePrefix: prefix,
+    confineFn: () => {
+      throw new Error("this boundary will not render");
+    },
+  });
+  await expect(run("claude", ["auth", "status"], {})).rejects.toThrow("will not render");
+  const after = readdirSync(tmpdir()).filter((name) => name.startsWith(prefix));
   expect(after.filter((name) => !before.has(name))).toEqual([]);
 });
 

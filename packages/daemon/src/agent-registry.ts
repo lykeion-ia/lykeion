@@ -7,6 +7,24 @@ export interface AuthState {
   signedIn: boolean;
   /** Whatever the CLI names the account by, when it names one at all. */
   account?: string;
+  /**
+   * Whether this reader actually understood what it was handed.
+   *
+   * Absent means yes, so every existing reader stays correct by saying
+   * nothing. `false` means the output matched none of the shapes this CLI is
+   * known to answer with — which is a different fact from "not signed in",
+   * and the two are only safe to fold together where the question is "may
+   * this agent be offered". Folded, they read alike: a status command given
+   * the wrong arguments prints a usage error, matches no "logged in", and
+   * reports a confidently signed-out agent.
+   *
+   * `redirect.ts` is where the difference bites. It proves a declared
+   * `homeEnv` by requiring a scratch home to read as signed out — so an
+   * unrecognised answer would certify an isolation nobody observed, which is
+   * precisely the failure that rung exists to prevent. An answer nobody
+   * understood is not an answer.
+   */
+  recognised?: boolean;
 }
 
 /**
@@ -73,6 +91,48 @@ export interface SkillsOff {
 }
 
 /**
+ * Who stands behind an adapter, which decides whether the researcher is asked
+ * before it runs.
+ *
+ * This matters because of where an adapter runs rather than what it does. It
+ * is spawned inside the boundary with read and write on the Lykeion-owned
+ * agent home — which holds the credential the researcher signed in with for
+ * that agent — and the profile renders `(allow network-outbound)`
+ * unrestricted, because the agent has to reach its vendor's API. A hostile
+ * adapter therefore has both the credential and a way to send it somewhere.
+ * That has been true of every adapter shipped so far; what changes as the
+ * catalogue fills in is how many people it is true of.
+ */
+export type AdapterProvenance =
+  /** The CLI's own ACP mode — the same program, under a flag. */
+  | "vendor"
+  /** Published under the `agentclientprotocol` organisation. */
+  | "protocol"
+  /** Anyone else: an individual, or a company that is neither this CLI's
+   *  vendor nor the ACP project. A catch-all on purpose — a publisher nobody
+   *  has classified yet should need the researcher's acceptance, not inherit
+   *  someone else's trust. */
+  | "community";
+
+/**
+ * How one adapter is started.
+ *
+ * A name alone cannot express an adapter that IS the CLI under a flag, which
+ * is what a CLI shipping its own ACP mode looks like. `{ command, args }` is
+ * already the shape every consumer downstream takes — `runs.ts`, `session.ts`,
+ * `sandbox.ts`, `naming.ts` — so this is the declaration catching up with the
+ * rest of the daemon rather than a new idea.
+ */
+export interface AdapterLaunch {
+  /** The bare executable searched for on PATH — never a path, never a shell.
+   *  The same rule `CatalogueEntry.command` carries, said again because
+   *  `args` is where a path starts looking reasonable. */
+  command: string;
+  args: readonly string[];
+  provenance: AdapterProvenance;
+}
+
+/**
  * What it takes to run one agent without the researcher's own installation
  * in the picture.
  *
@@ -83,7 +143,7 @@ export interface SkillsOff {
  * offered, rather than offered with a caveat.
  */
 export interface Isolation {
-  adapters: readonly string[];
+  adapters: readonly AdapterLaunch[];
   /** The variable that moves this CLI's entire configuration to a directory
    *  of ours. Observed rather than assumed — see the spec's evidence. */
   homeEnv: string;
@@ -105,6 +165,38 @@ export interface Isolation {
    * fix for anything actually missing.
    */
   credentialsOutsideHome?: readonly string[];
+  /**
+   * Where this CLI's own installation lives, when it is neither
+   * `~/.<command>` nor `~/.config/<command>`.
+   *
+   * Named so it can be DENIED — the same and only reason `researcherHomes`
+   * names anything at all. The observed case is a CLI shipping as an editor
+   * build: `~/.<command>` exists and holds its plugins, while its sign-in
+   * sits in an application-support profile outside the hidden entries
+   * entirely. A derivation that finds the plugin directory reports success
+   * and protects nothing, which is worse than one that finds nothing —
+   * nobody goes looking for a hole they have been told is closed.
+   */
+  researcherHome?: readonly string[];
+  /**
+   * Variables that authenticate this CLI no matter which home it was pointed
+   * at, so the redirect proof has to clear them before it asks.
+   *
+   * Observed, not assumed. `CLAUDE_CODE_OAUTH_TOKEN=<anything at all>` makes
+   * `claude auth status` answer `{"loggedIn":true,"authMethod":"oauth_token"}`
+   * against a config directory created empty a moment earlier, and
+   * `ANTHROPIC_API_KEY` does the same with `authMethod:"api_key"`. Neither is
+   * validated first — the answer reports that the variable is set, not that
+   * the credential behind it works.
+   *
+   * Left alone, a researcher who exports either one would have every agent
+   * refused with "your redirect is not working", which is both wrong and
+   * unactionable: the redirect is fine, and the thing overriding it is in
+   * their shell. Codex shows this is per-CLI rather than universal —
+   * `OPENAI_API_KEY` does not move `codex login status` at all — so it
+   * belongs on the row that observed it.
+   */
+  ambientAuthEnv?: readonly string[];
   auth: AuthDeclaration;
   /** What closes the set this CLI ships inside its own binary, which no
    *  redirected home can reach. Handed to `sessionMeta` and `seeds` below,
@@ -241,8 +333,12 @@ export const CATALOGUE: ReadonlyArray<CatalogueEntry> = [
       // Task tools, verified by that behaviour passing rather than by a
       // version number — and re-adding it here is the whole change, since
       // nothing else in this daemon names an adapter.
-      adapters: ["claude-agent-acp"],
+      adapters: [{ command: "claude-agent-acp", args: [], provenance: "protocol" }],
       homeEnv: "CLAUDE_CONFIG_DIR",
+      // Both observed to report a signed-in account against a home created
+      // empty a moment earlier, and neither is checked before answering —
+      // see `ambientAuthEnv`'s own doc.
+      ambientAuthEnv: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
       // Observed against a real, signed-in install, confined: with this
       // absent, `claude auth status --json` inside the boundary answers
       // `{"loggedIn":false}` even for an account that is genuinely signed
@@ -263,13 +359,22 @@ export const CATALOGUE: ReadonlyArray<CatalogueEntry> = [
           read: ({ stdout }) => {
             try {
               const parsed = JSON.parse(stdout) as { loggedIn?: boolean; email?: string };
+              // JSON that parses but carries no `loggedIn` is not this
+              // command's answer — it is some other JSON this CLI happened to
+              // print, and reading it as "signed out" would be inventing one.
+              if (typeof parsed.loggedIn !== "boolean") return { signedIn: false, recognised: false };
               const account = typeof parsed.email === "string" ? parsed.email : undefined;
               return {
-                signedIn: parsed.loggedIn === true,
+                signedIn: parsed.loggedIn,
+                recognised: true,
                 ...(account === undefined ? {} : { account }),
               };
             } catch {
-              return { signedIn: false };
+              // Not JSON at all: a usage error from wrong arguments, a crash,
+              // an empty stream. Signed out is what the pairing page should
+              // do with it, but it is not something anybody understood, and
+              // the redirect proof must not read it as one.
+              return { signedIn: false, recognised: false };
             }
           },
         },
@@ -331,7 +436,7 @@ export const CATALOGUE: ReadonlyArray<CatalogueEntry> = [
     name: "Codex",
     command: "codex",
     isolation: {
-      adapters: ["codex-acp"],
+      adapters: [{ command: "codex-acp", args: [], provenance: "protocol" }],
       homeEnv: "CODEX_HOME",
       auth: {
         status: {
@@ -344,9 +449,18 @@ export const CATALOGUE: ReadonlyArray<CatalogueEntry> = [
           // to the start of a line on each: "Not logged in" contains
           // "logged in", and a substring test would read a refusal as an
           // approval — the one mistake this predicate must never make.
-          read: ({ stdout, stderr }) => ({
-            signedIn: /^\s*logged in/im.test(stdout) || /^\s*logged in/im.test(stderr),
-          }),
+          //
+          // Recognised means one of the two sentences this command is known
+          // to answer with actually appeared. Anything else — a usage error
+          // from wrong arguments, a crash, silence — is signed out for the
+          // pairing page's purposes and NOT an answer for the redirect
+          // proof's, which must not certify an isolation on the strength of
+          // output nobody parsed.
+          read: ({ stdout, stderr }) => {
+            const said = (pattern: RegExp) => pattern.test(stdout) || pattern.test(stderr);
+            const signedIn = said(/^\s*logged in/im);
+            return { signedIn, recognised: signedIn || said(/^\s*not logged in/im) };
+          },
         },
         login: { args: ["login"] },
       },

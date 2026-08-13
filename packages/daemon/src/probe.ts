@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { AgentCli, AgentOption } from "@lykeion/api";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,8 +8,10 @@ import { confinementFor } from "./agent-home";
 import { confine, noBackendReason, policyFor, sandboxBackendFor } from "./sandbox";
 import { readAdvertised } from "./agent-options";
 import { adapterEnvFor, sessionMetaFor } from "./session";
-import { CATALOGUE, entryFor, isolationFor } from "./agent-registry";
-import { agentAuthStates, type AgentAuth } from "./agent-auth";
+import { CATALOGUE, entryFor, isolationFor, type AdapterLaunch } from "./agent-registry";
+import { agentAuthStates, confinedRunCommand, type AgentAuth } from "./agent-auth";
+import { provesRedirect } from "./redirect";
+import { acceptedAdapters, consentKey } from "./adapter-consent";
 import { resolveOnPath } from "./command-path";
 
 export { CATALOGUE } from "./agent-registry";
@@ -49,9 +51,10 @@ export interface ProbeOptions {
    *  budget to answer, and that is time a daemon which has been asked to stop
    *  would otherwise spend waiting on programs it no longer cares about. */
   signal?: AbortSignal;
-  /** Receives the exact executable whose successful handshake made an agent
-   *  ready, so session launch can use the same resolved adapter. */
-  onAdapterResolved?: (agentId: string, command: string) => void;
+  /** Receives the exact launch spec whose successful handshake made an agent
+   *  ready — resolved path and declared arguments together — so session launch
+   *  starts that program rather than one reassembled from its name. */
+  onAdapterResolved?: (agentId: string, launch: AdapterLaunch) => void;
   /** The platform whose sandbox backend would confine a session here.
    *  Production passes none and this machine's own platform is used. */
   platform?: string;
@@ -194,6 +197,13 @@ async function probeCliVersion(
   };
 }
 
+/** The budget ran out, as its own type rather than as a message to match on.
+ *  A caller has to tell "the adapter is alive and has said nothing" apart
+ *  from "the adapter died", because those are different things to tell a
+ *  researcher — and a rejection that only differs by its wording is one a
+ *  later edit to that wording silently reclassifies. */
+class ProbeTimeout extends Error {}
+
 /** Whatever `promise` settles to, unless `timeoutMs` passes or `signal`
  *  fires first. A probe's own clock, not the adapter's: an `initialize` a
  *  real adapter never answers must not hold the probe cycle open the way it
@@ -207,7 +217,7 @@ function raced<T>(promise: Promise<T>, timeoutMs: number, signal: AbortSignal | 
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      rejectPromise(new Error(`did not answer within ${timeoutMs}ms`));
+      rejectPromise(new ProbeTimeout(`did not answer within ${timeoutMs}ms`));
     }, timeoutMs);
     timer.unref?.();
     const onAbort = () => {
@@ -262,6 +272,75 @@ const INITIALIZE_PARAMS = {
 };
 
 /**
+ * The first declared adapter this machine actually has, as the spec it will be
+ * started with: the path it resolved to, and the arguments its row declared.
+ *
+ * Built once, here, so that the spec the boundary is rendered against, the spec
+ * that handshakes, and the spec a later run is launched with are one object
+ * rather than three separate agreements about what the adapter was called.
+ */
+export async function resolveLaunch(
+  declared: readonly AdapterLaunch[],
+  pathValue: string,
+): Promise<AdapterLaunch | undefined> {
+  for (const candidate of declared) {
+    const found = await resolveOnPath(candidate.command, pathValue);
+    if (found !== undefined) return { ...candidate, command: found, args: [...candidate.args] };
+  }
+  return undefined;
+}
+
+/**
+ * What to tell a researcher whose declared agent has no adapter on this
+ * machine.
+ *
+ * Two sentences, because there are two situations. An adapter that is a
+ * separate program is something to go and install. An adapter that IS the CLI
+ * under a flag is not — naming a bridge there describes a program nobody
+ * publishes, and sends someone looking for it.
+ *
+ * Decided from what the row states, never from which agent it is: a row whose
+ * adapter command is its own command is a CLI that speaks ACP itself, and that
+ * is a fact about the declaration rather than about the name on it.
+ */
+export function adapterMissingReason(
+  entry: { id: string; name: string; command: string },
+  declared: readonly AdapterLaunch[],
+): string {
+  if (declared.some((launch) => launch.command === entry.command))
+    return `install ${entry.name} to run ${entry.name} sessions`;
+  return `none of ${declared.map((a) => a.command).join(", ")} is installed — install an ACP adapter to run ${entry.name} sessions`;
+}
+
+/**
+ * Why this adapter may not be started yet, or nothing if it may.
+ *
+ * A `community` adapter is one nobody official stands behind, and where it
+ * runs is what makes that matter: inside the boundary, with read and write on
+ * this agent's own home — which holds the credential it signed in with — and
+ * with `(allow network-outbound)` unrestricted, because the agent has to
+ * reach its vendor. So the sentence names both of those, rather than saying
+ * "third-party" and leaving the researcher to agree to something nobody
+ * described to them.
+ *
+ * `declared` is the command the ROW names, never the path it resolved to: a
+ * researcher accepts a program, and where it happens to sit on this machine
+ * is an installation detail that changes without the program changing.
+ *
+ * Takes the accepted set rather than reading it, so the decision is a
+ * function of its inputs and needs no directory to test.
+ */
+export function consentGap(
+  entry: { id: string; name: string },
+  declared: AdapterLaunch,
+  accepted: ReadonlySet<string>,
+): string | undefined {
+  if (declared.provenance !== "community") return undefined;
+  if (accepted.has(consentKey(entry.id, declared.command))) return undefined;
+  return `${declared.command} is published by neither ${entry.name}'s vendor nor the ACP project, and runs with ${entry.name}'s sign-in and network access — accept it once to run ${entry.name} sessions`;
+}
+
+/**
  * Whether `agentId` can actually be run: its adapter resolved on `PATH` and
  * answered `initialize` inside the probe's own budget. An id with no adapter
  * mapping is settled without spawning anything — there is nothing to look
@@ -275,10 +354,20 @@ async function probeAdapter(
   pathValue: string,
   timeoutMs: number,
   signal: AbortSignal | undefined,
-  onResolved: ((agentId: string, command: string) => void) | undefined,
+  onResolved: ((agentId: string, launch: AdapterLaunch) => void) | undefined,
   platform: string,
   dataDir: string,
   authStates: () => Promise<AgentAuth[]>,
+  /** This CLI's own build, for rung 5's cache key. A redirect proof cannot
+   *  change without the program changing, and an upgrade IS the program
+   *  changing — so the key carries what was upgraded.
+   *
+   *  Taken as the PROMISE rather than the value, and awaited only at the rung
+   *  that needs it. `probeOne` deliberately asks its two questions at once so
+   *  an entry with both to check costs the slower rather than the sum;
+   *  awaiting a version here to build a key would quietly turn that back into
+   *  a sum, on every entry, forever. */
+  cliVersion: Promise<{ available: boolean; version: string }>,
 ): Promise<
   | { sessionReady: true; options?: AgentOption[] }
   | { sessionReady: false; sessionReadyReason: string }
@@ -290,25 +379,89 @@ async function probeAdapter(
   if (sandboxBackendFor(platform) === undefined)
     return { sessionReady: false, sessionReadyReason: noBackendReason(platform) };
 
+  const entry = entryFor(agentId);
   const adapterCommands = isolationFor(agentId)?.adapters;
   if (adapterCommands === undefined)
-    return { sessionReady: false, sessionReadyReason: `no ACP adapter is known for ${agentId} yet` };
-
-  let resolved: string | undefined;
-  for (const candidate of adapterCommands) {
-    const found = await resolveOnPath(candidate, pathValue);
-    if (found !== undefined) {
-      resolved = found;
-      break;
-    }
-  }
-  if (resolved === undefined)
     return {
       sessionReady: false,
-      sessionReadyReason: `none of ${adapterCommands.join(", ")} is installed — install an ACP adapter to run ${agentId} sessions`,
+      // Nothing here for the researcher to do. What is missing is this
+      // daemon's own declaration row, and no amount of installing supplies
+      // one — an earlier wording sent them off to find an ACP adapter, which
+      // for at least one catalogue entry meant hunting a product whose vendor
+      // had already switched it off.
+      sessionReadyReason: `Lykeion cannot run ${entry?.name ?? agentId} yet`,
     };
 
-  // Rung 6. Asked before anything is spawned: an adapter started against an
+  const launch = await resolveLaunch(adapterCommands, pathValue);
+  if (launch === undefined)
+    return {
+      sessionReady: false,
+      sessionReadyReason:
+        entry === undefined
+          ? `no adapter for ${agentId} is installed`
+          : adapterMissingReason(entry, adapterCommands),
+    };
+
+  // Rung 5. The row SAYS `homeEnv` moves this CLI's configuration somewhere
+  // we own; this is where that stops being a claim. A declaration that is
+  // wrong here fails silently in the worst possible way — every run reads the
+  // researcher's own installation while every other rung stays green — so it
+  // is demonstrated before an adapter is ever started.
+  //
+  // Placed after the adapter resolves so a machine without one never pays for
+  // it, and before rung 7 spawns anything, so a row whose isolation is
+  // unproven starts no adapter at all. Confined exactly as the sign-in check
+  // confines the same command: this runs the researcher's own CLI, and a
+  // probe is not a reason to drop the boundary.
+  if (entry !== undefined) {
+    const { available, version } = await cliVersion;
+    // A machine with the bridge installed but not the CLI it bridges to is an
+    // ordinary mistake, and it is not an isolation failure. Asking a command
+    // that is not there produces the same "did not answer" as a wedged one,
+    // which would send that researcher looking for a problem with their
+    // configuration instead of at the thing they have not installed. Rung 7's
+    // own auth check already refuses to conflate these two; so does this.
+    if (!available)
+      return { sessionReady: false, sessionReadyReason: `${entry.name} is not installed on this machine` };
+    const proof = await provesRedirect(
+      entry,
+      `${entry.command}@${version}`,
+      confinedRunCommand({
+        dataDir,
+        platform,
+        path: pathValue,
+        timeoutMs,
+        // Cleared for this question only. A CLI that reads its sign-in out of
+        // an ambient variable answers the same from every home, so asking it
+        // about a scratch home with one of those set is not asking anything —
+        // and the answer would be read as a broken redirect, which is both
+        // wrong and something the researcher cannot act on.
+        unsetEnv: isolationFor(agentId)?.ambientAuthEnv,
+      }),
+    );
+    if (!proof.proven)
+      return { sessionReady: false, sessionReadyReason: proof.reason ?? "isolation unverified" };
+  }
+
+  // Rung 6. A community adapter is not started until the researcher has said
+  // it may, once, for this agent. Reported as an ACTION rather than an error:
+  // the sentence is what the page turns into a prompt, and an agent waiting on
+  // a person is not the same thing as one that cannot run.
+  //
+  // Keyed by the DECLARED command rather than `launch.command`, which is the
+  // absolute path this machine happened to resolve — an acceptance recorded
+  // against a path would silently lapse the next time the adapter moved.
+  if (entry !== undefined) {
+    // Matched on the file name rather than on how the path ends: a declared
+    // `agy-acp` is a suffix of a resolved `/opt/bin/my-agy-acp`, and the two
+    // are different programs whose acceptances must not be confused.
+    const declaredAdapter =
+      adapterCommands.find((a) => basename(launch.command) === a.command) ?? launch;
+    const gap = consentGap(entry, declaredAdapter, acceptedAdapters(dataDir));
+    if (gap !== undefined) return { sessionReady: false, sessionReadyReason: gap };
+  }
+
+  // Rung 7. Asked before anything is spawned: an adapter started against an
   // installation with no sign-in opens a session that answers every turn by
   // reporting itself signed out, which reaches a researcher as an agent that
   // is broken rather than one that needs a minute of their time. Only
@@ -333,7 +486,7 @@ async function probeAdapter(
   const confined = confine(
     platform,
     policyFor({ workspace, grants: [], dataDir, ...confinementFor(agentId, workspace) }),
-    { command: resolved, args: [] },
+    { command: launch.command, args: [...launch.args] },
   );
   const connection = await connectAcp(confined.command, confined.args, {
     cwd: workspace,
@@ -348,7 +501,7 @@ async function probeAdapter(
   let sessionId: string | undefined;
   try {
     await raced(connection.request("initialize", INITIALIZE_PARAMS), timeoutMs, signal);
-    onResolved?.(agentId, resolved);
+    onResolved?.(agentId, launch);
     let options: AgentOption[] | undefined;
     try {
       // A throwaway session is still a session the owner's registries could
@@ -377,8 +530,30 @@ async function probeAdapter(
     }
     return { sessionReady: true, ...(options === undefined ? {} : { options }) };
   } catch (err) {
+    // An adapter fails in one of two ways, and they need different sentences.
+    //
+    // It can EXIT — a crash, a non-zero code, an ENOENT — or it can spawn and
+    // then never speak: the process is alive, the handshake never lands, and
+    // it stays that way forever. The second was observed rather than
+    // imagined: a CLI's own ACP mode printed an entitlement refusal to stderr
+    // and then held the connection open, so no exit code ever described it
+    // and the budget above is the only thing that ends the wait.
+    //
+    // What it wrote on its way to saying nothing is worth more than anything
+    // this file could compose, because it is the vendor's own account of why.
     const tail = connection.stderrTail().trim();
-    return { sessionReady: false, sessionReadyReason: tail || (err instanceof Error ? err.message : String(err)) };
+    if (tail) return { sessionReady: false, sessionReadyReason: tail };
+
+    // Silent, so there is nothing to quote. Only the budget running out earns
+    // the sentence about the handshake — an adapter that EXITED has its own
+    // error, and describing that as "started but never finished" would be a
+    // plain lie about what happened.
+    if (err instanceof ProbeTimeout)
+      return {
+        sessionReady: false,
+        sessionReadyReason: `${launch.command} started but never completed the ACP handshake within ${timeoutMs}ms`,
+      };
+    return { sessionReady: false, sessionReadyReason: err instanceof Error ? err.message : String(err) };
   } finally {
     // Closed on every path, including the failing ones: a probe that leaks a
     // session leaks one every cycle, forever.
@@ -398,14 +573,27 @@ async function probeOne(
   pathValue: string,
   timeoutMs: number,
   signal: AbortSignal | undefined,
-  onResolved: ((agentId: string, command: string) => void) | undefined,
+  onResolved: ((agentId: string, launch: AdapterLaunch) => void) | undefined,
   platform: string,
   dataDir: string,
   authStates: () => Promise<AgentAuth[]>,
 ): Promise<ProbedCli> {
+  // Started, not awaited. Rung 5 needs the build to key its proof on, and
+  // handing it the promise is what keeps these two questions concurrent —
+  // awaiting the version here to pass a string would make every entry cost
+  // the sum of both rather than the slower of them.
+  const cliVersion = probeCliVersion(
+    entry.command,
+    pathValue,
+    timeoutMs,
+    signal,
+    platform,
+    dataDir,
+    entry.id,
+  );
   const [cli, adapter] = await Promise.all([
-    probeCliVersion(entry.command, pathValue, timeoutMs, signal, platform, dataDir, entry.id),
-    probeAdapter(entry.id, pathValue, timeoutMs, signal, onResolved, platform, dataDir, authStates),
+    cliVersion,
+    probeAdapter(entry.id, pathValue, timeoutMs, signal, onResolved, platform, dataDir, authStates, cliVersion),
   ]);
   return { id: entry.id, name: entry.name, command: entry.command, ...cli, ...adapter };
 }

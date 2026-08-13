@@ -58,7 +58,7 @@ function deadPid(): Promise<number> {
 async function portNobodyIsOn(): Promise<number> {
   const server = await startControlServer({
     token: TOKEN,
-    handlers: { status: () => ({}), stop: () => {} },
+    handlers: { status: () => ({}), stop: () => {}, setAdapterConsent: () => {} },
   });
   const { port } = server;
   await server.close();
@@ -71,6 +71,7 @@ async function control(handlers: Partial<ControlHandlers> = {}): Promise<Control
     handlers: {
       status: () => ({ running: true, version: "0.1.0" }),
       stop: () => {},
+      setAdapterConsent: () => {},
       ...handlers,
     },
   });
@@ -311,6 +312,32 @@ it("answers status to a call carrying the token", async () => {
   const answer = await callControl(file, "/status");
   expect(answer.status).toBe(200);
   expect(answer.body).toEqual({ running: true, paired: false });
+});
+
+it("carries an adapter acceptance, and a withdrawal, through to the handler", async () => {
+  // The pairing page asks the question; this is the only way the answer gets
+  // back to the daemon that has to act on it.
+  const calls: Array<[string, string, boolean]> = [];
+  const file = await control({
+    setAdapterConsent: (agent, command, accepted) => calls.push([agent, command, accepted]),
+  });
+  expect((await callControl(file, "/adapters/accept?agent=claude&command=claude-agent-acp")).status).toBe(200);
+  expect((await callControl(file, "/adapters/revoke?agent=claude&command=claude-agent-acp")).status).toBe(200);
+  expect(calls).toEqual([
+    ["claude", "claude-agent-acp", true],
+    ["claude", "claude-agent-acp", false],
+  ]);
+});
+
+it("refuses a consent call that names only half of what it needs", async () => {
+  // A key written from half a request is one no probe will ever look up, so
+  // the button would appear to work and change nothing at all.
+  const calls: unknown[] = [];
+  const file = await control({ setAdapterConsent: (...args) => calls.push(args) });
+  expect((await callControl(file, "/adapters/accept?agent=claude")).status).toBe(400);
+  expect((await callControl(file, "/adapters/accept?command=claude-agent-acp")).status).toBe(400);
+  expect((await callControl(file, "/adapters/accept")).status).toBe(400);
+  expect(calls).toEqual([]);
 });
 
 it("refuses a control call carrying no token at all", async () => {

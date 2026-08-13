@@ -258,6 +258,16 @@ async function signInAsOwner(lab: TestServer): Promise<SignedInOwner> {
  * to every question answered this one with `2.1.220`, which is not JSON, so
  * every case here waited out its whole budget for a `sessionReady` that was
  * never coming.
+ *
+ * And it answers that question ABOUT THE HOME IT WAS POINTED AT, which is
+ * the whole of what the daemon's redirect proof measures. The proof points a
+ * CLI at a directory created empty a moment earlier and requires it to report
+ * nobody signed in there; a stub that answered "signed in" whatever
+ * `CLAUDE_CONFIG_DIR` said was behaving exactly like the broken installation
+ * that proof exists to catch, and was refused for precisely the right
+ * reason. Honouring the variable is what makes this a stand-in for a CLI
+ * that behaves — and it is why these cases exercise that rung rather than
+ * skirting it.
  */
 function writeClaudeStub(binDir: string): void {
   mkdirSync(binDir, { recursive: true });
@@ -265,7 +275,13 @@ function writeClaudeStub(binDir: string): void {
     join(binDir, "claude"),
     `#!/usr/bin/env node
 if (process.argv[2] === "auth") {
-  process.stdout.write(JSON.stringify({ loggedIn: true, email: "e2e@lab.test" }) + "\\n");
+  // A credential lives in the home Lykeion owns and nowhere else, so the
+  // answer follows the directory rather than ignoring it.
+  const home = process.env.CLAUDE_CONFIG_DIR ?? "";
+  const signedIn = home.includes(".lykeion");
+  process.stdout.write(
+    JSON.stringify(signedIn ? { loggedIn: true, email: "e2e@lab.test" } : { loggedIn: false }) + "\\n",
+  );
   process.exit(0);
 }
 process.stdout.write("2.1.220\\n");

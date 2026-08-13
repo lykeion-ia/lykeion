@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { CATALOGUE, entryFor, isolationFor, lykeionHomeFor } from "./agent-registry";
 
 // Only the PATH-resolution tests below touch this — restored after each so a
@@ -60,15 +60,33 @@ it("reads claude's own answer about who is signed in", () => {
   const read = isolationFor("claude")!.auth.status.read;
   expect(read({ stdout: '{"loggedIn":true,"email":"r@lab.org"}', stderr: "" })).toEqual({
     signedIn: true,
+    recognised: true,
     account: "r@lab.org",
   });
-  expect(read({ stdout: '{"loggedIn":false,"authMethod":"none"}', stderr: "" })).toEqual({ signedIn: false });
-  // A CLI that answered with something else is signed out, not a crash.
-  expect(read({ stdout: "command not found", stderr: "" })).toEqual({ signedIn: false });
+  expect(read({ stdout: '{"loggedIn":false,"authMethod":"none"}', stderr: "" })).toEqual({
+    signedIn: false,
+    recognised: true,
+  });
+  // A CLI that answered with something else is signed out, not a crash — and
+  // is marked as not understood, which is a different fact. The pairing page
+  // folds the two together; the redirect proof must not, or a row with the
+  // wrong status arguments would certify an isolation nobody observed.
+  expect(read({ stdout: "command not found", stderr: "" })).toEqual({
+    signedIn: false,
+    recognised: false,
+  });
+  // JSON that parses but is not this command's answer is not an answer.
+  expect(read({ stdout: '{"something":"else"}', stderr: "" })).toEqual({
+    signedIn: false,
+    recognised: false,
+  });
   // stdout is the whole of what this reads — `--json` writes there, and
   // stderr is not this closure's to read (see `agent-registry.ts`'s own
   // doc on why, and the codex test below for the CLI that needs it).
-  expect(read({ stdout: "", stderr: '{"loggedIn":true,"email":"r@lab.org"}' })).toEqual({ signedIn: false });
+  expect(read({ stdout: "", stderr: '{"loggedIn":true,"email":"r@lab.org"}' })).toEqual({
+    signedIn: false,
+    recognised: false,
+  });
 });
 
 it("reads codex's answer wherever it actually printed it, without mistaking a refusal for an approval", () => {
@@ -78,14 +96,27 @@ it("reads codex's answer wherever it actually printed it, without mistaking a re
   // `--json` for at all. This is the exact shape that read as signed out
   // for as long as `agentAuthStates` existed, until the plumbing started
   // handing both streams to this closure instead of stdout alone.
-  expect(read({ stdout: "", stderr: "Logged in using ChatGPT" })).toEqual({ signedIn: true });
+  expect(read({ stdout: "", stderr: "Logged in using ChatGPT" })).toEqual({
+    signedIn: true,
+    recognised: true,
+  });
   // Read wherever it lands rather than only where it is observed today, in
   // case a future release moves it.
-  expect(read({ stdout: "Logged in using ChatGPT", stderr: "" })).toEqual({ signedIn: true });
+  expect(read({ stdout: "Logged in using ChatGPT", stderr: "" })).toEqual({
+    signedIn: true,
+    recognised: true,
+  });
   // "Not logged in" contains "logged in"; anchoring is what keeps them
-  // apart, checked on both streams.
-  expect(read({ stdout: "", stderr: "Not logged in" })).toEqual({ signedIn: false });
-  expect(read({ stdout: "Not logged in", stderr: "" })).toEqual({ signedIn: false });
+  // apart, checked on both streams. Both are recognised answers — this CLI
+  // said one of the two things it says.
+  expect(read({ stdout: "", stderr: "Not logged in" })).toEqual({ signedIn: false, recognised: true });
+  expect(read({ stdout: "Not logged in", stderr: "" })).toEqual({ signedIn: false, recognised: true });
+  // Neither sentence appeared, so nothing was understood. Signed out for the
+  // pairing page; not an answer for the redirect proof.
+  expect(read({ stdout: "", stderr: "error: unknown subcommand" })).toEqual({
+    signedIn: false,
+    recognised: false,
+  });
 });
 
 it("declares what rides an agent's own per-session channel, for an agent that has one", async () => {
@@ -136,7 +167,32 @@ it("offers claude only the adapter that can actually carry a plan", () => {
   // exact list rather than an absence, so re-admitting it is a deliberate
   // act that trips a test naming why it was dropped, instead of a name
   // quietly reappearing beside the one that works.
-  expect(isolationFor("claude")!.adapters).toEqual(["claude-agent-acp"]);
+  expect(isolationFor("claude")!.adapters).toEqual([
+    { command: "claude-agent-acp", args: [], provenance: "protocol" },
+  ]);
+});
+
+it("declares codex's adapter as a launch spec, provenance included", () => {
+  // Pinned per row rather than only for claude. `provenance` decides whether
+  // a researcher is asked before this adapter runs beside their sign-in, and
+  // a value no test names can be changed without anything noticing.
+  expect(isolationFor("codex")!.adapters).toEqual([
+    { command: "codex-acp", args: [], provenance: "protocol" },
+  ]);
+});
+
+it("declares every adapter as a bare executable, never a path and never a shell", () => {
+  // `command` is resolved on PATH by `resolveOnPath`, so a path here would
+  // silently skip that resolution and a shell metacharacter would only matter
+  // if something ever stopped spawning with an explicit argv. Said out loud
+  // because `args` is where a path starts looking reasonable, and the type
+  // now has somewhere to put one.
+  for (const entry of CATALOGUE) {
+    for (const launch of entry.isolation?.adapters ?? []) {
+      expect(launch.command).not.toContain(sep);
+      expect(launch.command).toMatch(/^[A-Za-z0-9._-]+$/);
+    }
+  }
 });
 
 it("names a PATH-resolved claude, so an adapter that honours the key cannot pick its own vendored binary", async () => {

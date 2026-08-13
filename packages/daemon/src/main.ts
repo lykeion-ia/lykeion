@@ -8,6 +8,9 @@ import { DAEMON_VERSION, readDaemonConfig, USAGE, type DaemonConfig } from "./co
 import { labLabel, readState, revokedStatePath, setAsidePairing, type PairedState } from "./state";
 import { beginPairing, beginSignIn, PairingRefused, type PairingSession } from "./pairing";
 import { cliFingerprint, platformTag, probeAgentClis } from "./probe";
+import { adapterFor, rememberAdapters } from "./ready-adapters";
+import { acceptAdapter, revokeAdapter } from "./adapter-consent";
+import type { AdapterLaunch } from "./agent-registry";
 import { installAgentHomes } from "./agent-install";
 import { heartbeat, report, workspacesGone } from "./lab";
 import { createRetryLoop, type RetryLoop } from "./retry";
@@ -164,23 +167,22 @@ async function shutdown(): Promise<void> {
  *  there is no separate "initial" case to keep behaving the same as this
  *  one as the two would otherwise drift apart. */
 let lastReported = "";
-let readyAdapters = new Map<string, string>();
 
 /**
  * Probes this machine and reports again only when what it found differs, on
  * `(id, version, available)`, from what was last sent.
  */
 async function reportIfChanged(machine: PairedState, dataDir: string): Promise<void> {
-  const resolved = new Map<string, string>();
+  const resolved = new Map<string, AdapterLaunch>();
   const clis = await probeAgentClis({
     // A probe runs the researcher's own agent CLI and confines it exactly
     // as a session is confined, and the boundary denies this machine's own
     // state — so it has to be told where that is.
     dataDir,
     signal: inFlight.signal,
-    onAdapterResolved: (agentId, command) => resolved.set(agentId, command),
+    onAdapterResolved: (agentId, launch) => resolved.set(agentId, launch),
   });
-  readyAdapters = resolved;
+  rememberAdapters(resolved);
   if (cliFingerprint(clis) === lastReported) return;
   await retries.run(machine.lab, "report", () =>
     report(
@@ -275,17 +277,6 @@ function describe(config: DaemonConfig, machine: PairedState | undefined): Recor
     machine: machine?.machineName ?? hostname(),
     paired: machine !== undefined,
   };
-}
-
-/** Which adapter speaks ACP for a given agent id — the same lookup
- *  `probe.ts`'s own `sessionReady` handshake resolves on `PATH`, so a run is
- *  never launched through a different program than the one that was checked.
- *  An agent with no known adapter refuses here, the same way an unknown
- *  agent id already did: `runs.ts` reports that as the run's own refusal
- *  rather than launching a command probing never vetted. */
-function adapterFor(agent: string): { command: string; args: string[] } | undefined {
-  const command = readyAdapters.get(agent);
-  return command ? { command, args: [] } : undefined;
 }
 
 /** What starts this machine's kernel host: `uv`, resolving the interpreter
@@ -393,6 +384,14 @@ async function runServe(config: DaemonConfig): Promise<void> {
       },
       stop: () => {
         void shutdown();
+      },
+      setAdapterConsent: (agent, command, accepted) => {
+        // Against this machine's own data directory, the same place the
+        // pairing token lives — an acceptance decides what runs beside a
+        // credential, so it belongs with the rest of what only this account
+        // may edit.
+        if (accepted) acceptAdapter(config.dataDir, agent, command);
+        else revokeAdapter(config.dataDir, agent, command);
       },
     },
   });

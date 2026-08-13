@@ -82,6 +82,26 @@ export interface AuthCheckOptions {
    *  machine's real `dataDir` (the one `serve` claimed and every other
    *  confined caller already uses) is what has to. */
   dataDir: string;
+  /** What each throwaway workspace this creates is named, so a test watching
+   *  for its own leaks can watch a prefix nobody else is using. The temp
+   *  directory is shared by every process on the machine and by every test
+   *  file the runner has in flight at once — a test that watched the default
+   *  would be reporting on workspaces belonging to whoever else happened to
+   *  be asking at the same moment. Production has one caller and no reason
+   *  to set it. */
+  workspacePrefix?: string;
+  /** How a command is wrapped in its boundary. Injectable for the reason
+   *  `run` is throughout this file: the workspace has to survive `confine`
+   *  throwing, and every real way of making it throw either needs a platform
+   *  this machine is not or a policy that cannot be built by a caller. A
+   *  seam is honest about being a seam; a contrived input pretends to be a
+   *  scenario. */
+  confineFn?: typeof confine;
+  /** Variables to clear from the environment before running, whatever this
+   *  process inherited. The redirect proof needs it: a CLI that reads its
+   *  sign-in out of an ambient variable answers the same from any home, and
+   *  a question asked in that environment is not asking anything. */
+  unsetEnv?: readonly string[];
 }
 
 /**
@@ -126,7 +146,20 @@ export interface AuthCheckOptions {
  * What was confined here is *whether an unconfined status check ever
  * happens at all* — not a guarantee that every such check can be cut short.
  */
-function confinedRunCommand(options: AuthCheckOptions): RunCommand {
+/** `env` with `names` removed rather than blanked. A CLI that reads an
+ *  ambient credential usually treats the empty string as "set", so emptying
+ *  one would leave the very behaviour the caller asked to be rid of. */
+function withoutAmbient(
+  env: Record<string, string | undefined>,
+  names: readonly string[] | undefined,
+): Record<string, string | undefined> {
+  if (names === undefined || names.length === 0) return env;
+  const stripped = { ...env };
+  for (const name of names) delete stripped[name];
+  return stripped;
+}
+
+export function confinedRunCommand(options: AuthCheckOptions): RunCommand {
   const pathValue = options.path ?? process.env.PATH ?? "";
   const timeoutMs = options.timeoutMs ?? STATUS_TIMEOUT_MS;
   const platform = options.platform ?? process.platform;
@@ -141,19 +174,33 @@ function confinedRunCommand(options: AuthCheckOptions): RunCommand {
     // actually known rather than assumed to have already been checked.
     if (sandboxBackendFor(platform) === undefined) throw new Error(noBackendReason(platform));
     const agent = CATALOGUE.find((entry) => entry.command === command)?.id ?? command;
-    const workspace = mkdtempSync(join(tmpdir(), "lykeion-auth-"));
-    const confined = confine(
-      platform,
-      policyFor({ workspace, grants: [], dataDir: options.dataDir, ...confinementFor(agent, workspace) }),
-      { command: resolved, args: [...args] },
-    );
-    return new Promise((resolvePromise, rejectPromise) => {
-      execFile(
-        confined.command,
-        confined.args,
-        { timeout: timeoutMs, signal: options.signal, cwd: workspace, env: { ...process.env, ...env } },
-        (error, stdout, stderr) => {
-          rmSync(workspace, { recursive: true, force: true });
+    const workspace = mkdtempSync(join(tmpdir(), options.workspacePrefix ?? "lykeion-auth-"));
+    // Handed over once `execFile` owns the directory as its working
+    // directory, after which its own callback removes it. Until then nothing
+    // else would: the removal below lives inside that callback, so anything
+    // throwing in between — a policy that will not render, a spawn that fails
+    // synchronously — would leave the workspace behind with no one left to
+    // clean it up. The platform-with-no-backend case is already guarded
+    // above, before the directory exists at all; this covers every other way.
+    let handedOff = false;
+    try {
+      const confined = (options.confineFn ?? confine)(
+        platform,
+        policyFor({ workspace, grants: [], dataDir: options.dataDir, ...confinementFor(agent, workspace) }),
+        { command: resolved, args: [...args] },
+      );
+      const answer = new Promise<CommandOutput>((resolvePromise, rejectPromise) => {
+        execFile(
+          confined.command,
+          confined.args,
+          {
+            timeout: timeoutMs,
+            signal: options.signal,
+            cwd: workspace,
+            env: withoutAmbient({ ...process.env, ...env }, options.unsetEnv),
+          },
+          (error, stdout, stderr) => {
+            rmSync(workspace, { recursive: true, force: true });
           // Resolved on whatever was printed even when the exit code is not
           // zero: a CLI that answers "Not logged in" and exits non-zero has
           // answered the question, and the declaration's `read` is what
@@ -163,11 +210,16 @@ function confinedRunCommand(options: AuthCheckOptions): RunCommand {
           // would reject that answer before `read` ever saw it. Only a
           // command that said nothing on either stream is a run this
           // machine could not learn from.
-          if (error && !stdout && !stderr) rejectPromise(error);
-          else resolvePromise({ stdout, stderr });
-        },
-      );
-    });
+            if (error && !stdout && !stderr) rejectPromise(error);
+            else resolvePromise({ stdout, stderr });
+          },
+        );
+      });
+      handedOff = true;
+      return await answer;
+    } finally {
+      if (!handedOff) rmSync(workspace, { recursive: true, force: true });
+    }
   };
 }
 

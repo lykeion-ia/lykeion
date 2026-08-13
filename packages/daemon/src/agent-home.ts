@@ -187,6 +187,18 @@ function researcherHomes(): string[] {
     // else is not covered by this and needs its own path recorded; that
     // belongs on the catalogue row rather than here, and is phase 2's.
     ...CATALOGUE.map((entry) => join(homedir(), `.${entry.command}`)),
+    // Both conventions, for every entry, rather than one per row. Which of
+    // the two a given CLI follows is exactly the fact this list must not have
+    // to be right about in advance: a wrong guess leaves a credential
+    // directory readable, and a needless deny costs a directory nothing was
+    // going to read anyway. The asymmetry is the whole argument.
+    ...CATALOGUE.map((entry) => join(homedir(), ".config", entry.command)),
+    // Anywhere else a row says its own CLI keeps things. `~/.<command>` was
+    // five for five on the installations this machine had, and then a sixth
+    // broke it in the instructive direction — an editor build whose
+    // `~/.<command>` holds only its plugins, with the sign-in somewhere the
+    // rule never looks. A row that knows better says so here.
+    ...CATALOGUE.flatMap((entry) => entry.isolation?.researcherHome ?? []),
     // The stores that belong to no single CLI, so no row derives them.
     // `~/.agents` and `~/.gsd` are both a shared, cross-tool skills catalogue
     // — the same shape `~/.claude/skills` is, just not scoped to one CLI's
