@@ -86,6 +86,7 @@ export function AgentsScreen({
   onAllow,
   onDismiss,
   onSkip,
+  boundList = false,
 }: {
   clis: AgentCli[];
   /** False on a platform with no sandbox backend, where no agent is offered
@@ -117,6 +118,23 @@ export function AgentsScreen({
   /** Given during the first run, where leaving is a step. Absent in Machines,
    *  which nobody is passing through. */
   onSkip?: () => void;
+  /**
+   * Caps the rows at a height and scrolls them inside it, so this step is a
+   * card the size of the other two rather than a page of its own.
+   *
+   * For the first run and nowhere else. Every other step of the wizard is a
+   * short block centred in the window; this one lists the whole catalogue, so
+   * at twelve agents it stood three times taller than step 1 and turned the
+   * flow's last screen into something that scrolled. The ceiling is on the
+   * rows alone — the title, the chips that filter them and the way out stay
+   * where the eye already found them, which is what makes scrolling the rows
+   * read as a list with more in it rather than as a page continuing.
+   *
+   * Machines passes nothing: there the list IS the page, it is arrived at
+   * rather than passed through, and a second scrolling region inside a screen
+   * that already scrolls is a worse answer than a long list.
+   */
+  boundList?: boolean;
 }) {
   const [which, setWhich] = useState<Which>("all");
   /** Whose terms are open, by agent id. */
@@ -201,7 +219,7 @@ export function AgentsScreen({
         />
       </div>
 
-      <div className="mt-5">
+      <div className={cn("mt-5", boundList && "max-h-[16rem] overflow-y-auto pr-2")}>
         {which !== "not-installed" && (
           <Group title="Installed" clis={installed} onSignIn={onSignIn} onReview={review} />
         )}

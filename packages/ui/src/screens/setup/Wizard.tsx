@@ -78,12 +78,28 @@ export function Wizard({
   const showBack = onBack !== undefined || backLabel !== undefined;
 
   return (
-    <div className="flex min-h-screen flex-col bg-canvas text-fg">
-      <div className="flex flex-1 items-center justify-center px-6 py-10">
-        <div className="w-full max-w-[560px]">{children}</div>
+    // The window itself, not a minimum. `min-h-screen` let a step taller than
+    // the viewport grow the whole frame, and the strip that counts went with
+    // it: step 3 lists twelve agents, so the heading scrolled away off the top
+    // and the dots sat below the fold, on the one screen whose whole job is to
+    // say how much is left. Every step now wears the frame step 1 establishes —
+    // a column in the middle, the count along the bottom, always both on screen.
+    <div className="flex h-screen flex-col bg-canvas text-fg">
+      {/* Overflow belongs to this region rather than to the page, so a long
+          step scrolls its own content under a footer that stays put.
+
+          Centred with `m-auto` rather than `items-center`, and the difference
+          only shows on the step that needed this: a flex child centred by the
+          container is centred even when it is taller than the container, which
+          pushes its first line above the top of the scroll box where nothing
+          can scroll back to it. Auto margins give up when there is no room to
+          spare, so a short step sits in the middle and a tall one starts at the
+          top and scrolls. */}
+      <div className="flex flex-1 overflow-y-auto px-6 py-10">
+        <div className="m-auto w-full max-w-[560px]">{children}</div>
       </div>
 
-      <div className="border-t border-line px-6 py-4">
+      <div className="shrink-0 border-t border-line px-6 py-4">
         <div className="mx-auto flex w-full max-w-[560px] items-center justify-between gap-4">
           {showBack ? (
             <button

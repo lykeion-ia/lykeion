@@ -119,7 +119,7 @@ export function AgentsStep({ onDone }: { onDone: () => void }) {
 
   return (
     <Wizard step={3} total={3}>
-      <AgentsScreen clis={clis} onSignIn={signIn} onAllow={allow} onSkip={onDone} />
+      <AgentsScreen clis={clis} onSignIn={signIn} onAllow={allow} onSkip={onDone} boundList />
     </Wizard>
   );
 }
