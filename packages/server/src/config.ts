@@ -44,10 +44,24 @@ function defaultDataDir(env: NodeJS.ProcessEnv): string {
   );
 }
 
+/**
+ * `0` is a port here, and the one the daemon asks for: a lab started behind
+ * a front door is reached only through it, and taking whatever is free is
+ * what keeps two labs on one computer from racing for a number neither of
+ * them needs. The startup line then says which port it actually took, which
+ * is how the daemon learns where to forward.
+ *
+ * Which is why the caller passes this through `nonEmpty` first, as every
+ * other setting here already was. A unit file or `.env` that blanks a
+ * setting assigns it the empty string, `Number("")` is `0`, and without that
+ * the one spelling of "I meant to say nothing" would have become the one
+ * spelling of "put this lab wherever you like" — a lab that quietly leaves
+ * 1421 and prints where it went.
+ */
 function readPort(raw: string | undefined): number {
   if (raw === undefined) return 1421;
   const port = Number(raw);
-  if (!Number.isInteger(port) || port < 1 || port > 65535)
+  if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new Error(`LYKEION_PORT must be a port number, not ${raw}`);
   return port;
 }
@@ -74,7 +88,7 @@ function defaultUiDir(): string {
 export function readConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   return {
     host: nonEmpty(env.LYKEION_HOST) ?? "127.0.0.1",
-    port: readPort(env.LYKEION_PORT),
+    port: readPort(nonEmpty(env.LYKEION_PORT)),
     dataDir: nonEmpty(env.LYKEION_DATA_DIR) ?? defaultDataDir(env),
     tlsCertPath: nonEmpty(env.LYKEION_TLS_CERT),
     tlsKeyPath: nonEmpty(env.LYKEION_TLS_KEY),

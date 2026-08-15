@@ -149,6 +149,18 @@ export function startRuns(options: {
   /** Where this machine keeps its own state, so the boundary can deny it. */
   dataDir: string;
   adapterFor(agent: string): { command: string; args: string[] } | undefined;
+  /**
+   * The probe's own account of why an agent it did not vet cannot run —
+   * signed out, isolation unproven, waiting on a decision about its adapter.
+   *
+   * Absent, or answering nothing, leaves the refusal as it was. What it
+   * replaces is one sentence doing the work of five: a run refused for an
+   * agent this machine cannot start said it had no adapter for it, which is
+   * right for one cause out of several and actively misleading for the
+   * commonest — a CLI whose token lapsed overnight, sending the researcher to
+   * install a bridge they already have.
+   */
+  heldBackReason?(agent: string): string | undefined;
   /** The platform whose sandbox backend confines every run here. Production
    *  passes none and this machine's own platform is used; a test naming one
    *  is how the no-backend path is exercised without a second machine. */
@@ -1015,7 +1027,12 @@ export function startRuns(options: {
 
     const adapter = agent === undefined ? undefined : options.adapterFor(agent);
     if (agent === undefined || !adapter) {
-      refuse(runId, `this machine has no adapter for "${agent ?? "no agent named"}"`);
+      // The probe's own sentence where it has one, because it knows which of
+      // the several ways this happens actually happened and this does not.
+      // The old wording survives for the case it was always right about: an
+      // agent nothing has vetted and nothing has anything to say about.
+      const why = agent === undefined ? undefined : options.heldBackReason?.(agent);
+      refuse(runId, why ?? `this machine has no adapter for "${agent ?? "no agent named"}"`);
       return;
     }
     if (

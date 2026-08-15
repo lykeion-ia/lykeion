@@ -11,17 +11,48 @@ export interface PairingPageInput {
 }
 
 const PAIRING_CSS = `
-:root{color-scheme:dark;--canvas:#0f0f10;--surface:#151516;--surface-2:#1d1d20;--ink:#eeeff1;--muted:#aeb1b6;--subtle:#777c84;--line:#29292d;--accent:#d25e65;--success:#58be70;--warning:#d9a441;--danger:#e5705b;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif}
+:root{color-scheme:dark;
+/* The same five seeds the application derives its whole palette from — see
+   packages/ui/src/styles/tokens.css — mixed here by the same formulas rather
+   than matched by hand. These pages and the setup wizard are one first run
+   seen either side of a redirect, and two hand-tuned palettes drift: the
+   muted step here was #aeb1b6 against a computed #c6c7c9 there. */
+--seed-bg:#0f0f10;--seed-ink:#eeeff1;--seed-surface:#151516;--seed-accent:#d25e65;
+--canvas:var(--seed-bg);--surface:var(--seed-surface);--surface-2:color-mix(in srgb,var(--seed-surface) 92%,var(--seed-ink));
+--ink:var(--seed-ink);--muted:color-mix(in srgb,var(--seed-ink) 82%,var(--seed-bg));--subtle:color-mix(in srgb,var(--seed-ink) 55%,var(--seed-bg));
+--line:color-mix(in srgb,var(--seed-bg) 88%,var(--seed-ink));--line-strong:color-mix(in srgb,var(--seed-bg) 80%,var(--seed-ink));
+--accent:var(--seed-accent);--success:#58be70;--warning:#d9a441;--danger:#e5705b;
+font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif}
 *{box-sizing:border-box}html,body{min-height:100%;margin:0}body{background:var(--canvas);color:var(--ink);overflow-wrap: anywhere}
-body::before{content:"";position:fixed;z-index:-1;inset:-12rem -10rem auto auto;width:28rem;height:28rem;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--accent) 18%,transparent),transparent 70%)}
-.page{width:min(100%,34rem);min-height:100vh;margin:auto;padding:2rem;display:flex;flex-direction:column}.brand{display:flex;align-items:center;gap:.6rem;font-size:.75rem;font-weight:650;letter-spacing:.02em}.brand-mark{display:grid;place-items:center;width:1.6rem;height:1.6rem;border-radius:.45rem;background:var(--accent);color:white}
-.panel{margin:auto 0;padding:4rem 0}.status-mark{width:3.5rem;height:3.5rem;margin-bottom:1.5rem;border:1px solid var(--line);border-radius:50%;background:var(--surface);animation:arrive .35s ease-out both}.eyebrow{margin:0 0 .75rem;color:var(--subtle);font:650 .68rem/1.2 ui-monospace,"SF Mono",monospace;letter-spacing:.12em;text-transform:uppercase}h1{margin:0;color:var(--ink);font-size:clamp(2rem,8vw,3.25rem);line-height:1;letter-spacing:-.045em}.description{max-width:29rem;margin:1rem 0 0;color:var(--muted);font-size:.95rem;line-height:1.6}.page-footer{margin:2rem 0 0;color:var(--subtle);font-size:.75rem}
-body[data-tone="success"] .status-mark{border-color:#25452c;background:#17271b;box-shadow:inset 0 0 0 1rem color-mix(in srgb,var(--success) 10%,transparent)}body[data-tone="warning"] .status-mark{border-color:#584825;background:#292316}body[data-tone="refusal"] .status-mark{border-color:#713c4a;background:#291b21;box-shadow:inset 0 0 0 1rem color-mix(in srgb,var(--accent) 8%,transparent)}body[data-tone="error"] .status-mark{border-color:#5a3028;background:#291a18}
-.machine-summary{display:grid;gap:.5rem;margin:1.5rem 0 0;padding:.5rem;border:1px solid var(--line);border-radius:.75rem;background:var(--surface)}.machine-summary>div{display:grid;grid-template-columns:minmax(0,8rem) minmax(0,1fr);gap:1rem;padding:.5rem}.machine-summary>div+div{border-top:1px solid var(--line)}.machine-summary dt{color:var(--muted);font:650 .68rem/1.2 ui-monospace,"SF Mono",monospace;letter-spacing:.08em;text-transform:uppercase}.machine-summary dd{margin:0;color:var(--ink);overflow-wrap:anywhere}
-.lab-link{display:inline-block;margin:1.5rem 0 0;border-radius:.55rem;background:var(--ink);color:var(--canvas);padding:.75rem 1rem;font-weight:650;text-decoration:none;overflow-wrap:anywhere}.recovery{margin:1.5rem 0 0;padding:.9rem 1rem;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:.65rem;background:var(--surface);color:var(--muted);font-size:.86rem;line-height:1.6}.recovery code{padding:.15rem .35rem;border:1px solid var(--line);border-radius:.3rem;background:var(--surface-2);color:var(--ink);font:inherit;white-space:normal;overflow-wrap:anywhere}.technical-detail{max-width:100%;margin:1.5rem 0 0;padding:1rem;border:1px solid var(--line);border-radius:.65rem;background:var(--surface);color:var(--muted);font:.78rem/1.55 ui-monospace,"SF Mono",monospace;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto}
-input,button{font:inherit}input{width:100%;border:1px solid var(--line);border-radius:.55rem;background:var(--surface-2);color:var(--ink);padding:.75rem .8rem}button{border:0;border-radius:.55rem;background:var(--ink);color:var(--canvas);padding:.75rem 1rem;font-weight:650}button:disabled{cursor:wait;opacity:.55}.agent[data-available="false"]{opacity:.55}.agent[data-available="false"] .agent-signin{cursor:not-allowed}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-@keyframes arrive{from{opacity:0;transform:translateY(.4rem) scale(.96)}to{opacity:1;transform:none}}
-@media (max-width: 420px){.page{padding:1.25rem}.panel{padding:2.5rem 0}h1{font-size:2.25rem}.machine-summary>div{grid-template-columns:1fr;gap:.25rem}}
+/* The wizard's own frame (Wizard.tsx): one 560px column, its content centred
+   in the space above, and a bordered strip beneath it when there is anything
+   to put there. A refusal has nothing, so it gets no strip — a progress rule
+   on a page where the flow stopped would draw movement that is not happening. */
+.page{display:flex;min-height:100vh;flex-direction:column}
+.frame{display:flex;flex:1;align-items:center;justify-content:center;padding:2.5rem 1.5rem}
+.column{width:100%;max-width:560px}
+.strip{border-top:1px solid var(--line);padding:1rem 1.5rem}
+.strip .column{margin:0 auto;color:var(--subtle);font-size:.8125rem}
+.brand{display:flex;align-items:center;gap:.5rem;font-size:.8125rem;font-weight:600;letter-spacing:.02em;color:var(--ink)}
+.brand-mark{display:grid;place-items:center;width:1.5rem;height:1.5rem;border-radius:.45rem;background:var(--accent);color:#fff}
+h1{margin:1.75rem 0 0;color:var(--ink);font-size:2rem;font-weight:600;line-height:1.25;letter-spacing:-.03em}
+.description{max-width:34rem;margin:.75rem 0 0;color:var(--muted);font-size:1rem;line-height:1.625}
+.machine-summary{display:grid;gap:.5rem;margin:1.5rem 0 0;padding:.5rem;border:1px solid var(--line);border-radius:.75rem;background:var(--surface)}.machine-summary>div{display:grid;grid-template-columns:minmax(0,8rem) minmax(0,1fr);gap:1rem;padding:.5rem}.machine-summary>div+div{border-top:1px solid var(--line)}.machine-summary dt{color:var(--muted);font:600 .8125rem/1.4 ui-monospace,"SF Mono",monospace;letter-spacing:.08em;text-transform:uppercase}.machine-summary dd{margin:0;color:var(--ink);overflow-wrap:anywhere}
+.lab-link{display:inline-block;margin:1.5rem 0 0;border-radius:.375rem;background:var(--ink);color:var(--canvas);padding:.5rem .875rem;font-size:.9375rem;font-weight:500;text-decoration:none;overflow-wrap:anywhere}
+/* Tone lives here now rather than in a coloured circle above the heading. The
+   wizard has no such ornament, and the one thing on these pages that is
+   genuinely about the tone is the way out. */
+.recovery{margin:1.5rem 0 0;padding:.9rem 1rem;border:1px solid var(--line);border-left:3px solid var(--line-strong);border-radius:.65rem;background:var(--surface);color:var(--muted);font-size:.9375rem;line-height:1.6}
+body[data-tone="success"] .recovery{border-left-color:var(--success)}body[data-tone="warning"] .recovery{border-left-color:var(--warning)}body[data-tone="refusal"] .recovery{border-left-color:var(--accent)}body[data-tone="error"] .recovery{border-left-color:var(--danger)}
+.recovery code{padding:.15rem .35rem;border:1px solid var(--line);border-radius:.3rem;background:var(--surface-2);color:var(--ink);font:inherit;white-space:normal;overflow-wrap:anywhere}
+.technical-detail{max-width:100%;margin:1.5rem 0 0;padding:1rem;border:1px solid var(--line);border-radius:.65rem;background:var(--surface);color:var(--muted);font:.8125rem/1.55 ui-monospace,"SF Mono",monospace;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto}
+.setup-form{display:flex;flex-direction:column;gap:.75rem;margin:2rem 0 0}.field{display:flex;flex-direction:column;gap:.25rem}.field label{color:color-mix(in srgb,var(--seed-ink) 40%,var(--seed-bg));font-size:.8125rem;font-weight:500;letter-spacing:.4px;text-transform:uppercase}.field-help{margin:0;color:var(--subtle);font-size:.8125rem}.form-error{margin:0;color:var(--danger);font-size:.875rem}.form-error:empty{display:none}
+input,button{font:inherit}input{width:100%;border:1px solid var(--line);border-radius:.375rem;background:var(--surface-2);color:var(--ink);padding:.375rem .5rem;font-size:.9375rem}input:focus{border-color:var(--line-strong);outline:none}
+button{align-self:flex-start;margin-top:.25rem;border:0;border-radius:.375rem;background:var(--ink);color:var(--canvas);padding:.375rem .875rem;font-size:.9375rem;font-weight:500}button:disabled{cursor:wait;opacity:.4}
+.agent[data-available="false"]{opacity:.55}.agent[data-available="false"] .agent-signin{cursor:not-allowed}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media (max-width: 420px){.frame{padding:1.5rem 1.25rem}h1{font-size:1.75rem}.machine-summary>div{grid-template-columns:1fr;gap:.25rem}}
 @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation: none !important;scroll-behavior:auto!important}}
 `;
 
@@ -46,10 +77,18 @@ function redactSensitiveValues(message: string, sensitiveValues: readonly string
 
 export function renderPairingPage(input: PairingPageInput): string {
   const content = input.contentHtml ?? "";
-  const footer = input.footer
-    ? `<p class="page-footer">${escapeHtml(input.footer)}</p>`
+  // The strip is the wizard's, and on a real step it carries the dots. A page
+  // with nothing to put in it gets none: an empty bordered rule is furniture,
+  // and a progress strip on a refusal would draw movement that has stopped.
+  const strip = input.footer
+    ? `<footer class="strip"><div class="column">${escapeHtml(input.footer)}</div></footer>`
     : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(input.title)} · Lykeion</title><style>${PAIRING_CSS}</style></head><body data-tone="${input.tone}"><main class="page"><header class="brand" aria-label="Lykeion"><span class="brand-mark" aria-hidden="true">λ</span><span>Lykeion</span></header><section class="panel"><div class="status-mark" role="status"><span aria-hidden="true"></span><span class="sr-only">${escapeHtml(input.eyebrow)}</span></div><p class="eyebrow">${escapeHtml(input.eyebrow)}</p><h1>${escapeHtml(input.heading)}</h1><p class="description">${escapeHtml(input.description)}</p>${content}${footer}</section></main></body></html>`;
+  // The eyebrow keeps its job and loses its weight. It said what kind of page
+  // this is — "Pairing session unavailable" — which the wizard has no
+  // equivalent of and which a screen reader still needs; the uppercase mono
+  // label over a display-size heading is what made these read as another
+  // product.
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(input.title)} · Lykeion</title><style>${PAIRING_CSS}</style></head><body data-tone="${input.tone}"><main class="page"><div class="frame"><div class="column"><header class="brand" aria-label="Lykeion"><span class="brand-mark" aria-hidden="true">λ</span><span>Lykeion</span></header><p class="sr-only" role="status">${escapeHtml(input.eyebrow)}</p><h1>${escapeHtml(input.heading)}</h1><p class="description">${escapeHtml(input.description)}</p>${content}</div></div>${strip}</main></body></html>`;
 }
 
 export interface SetupPageInput {
@@ -310,7 +349,7 @@ export function renderExpiredLinkPage(): string {
     eyebrow: "Pairing link expired",
     heading: "This link has expired",
     description: "The pairing link is no longer current.",
-    contentHtml: recovery(`Run ${command("lykeion-daemon status")} for the current link.`),
+    contentHtml: recovery(`Run ${command("lykeion open")} for a fresh link.`),
   });
 }
 
@@ -321,7 +360,7 @@ export function renderNoSessionPage(): string {
     eyebrow: "Pairing session unavailable",
     heading: "No pairing session is available",
     description: "This browser has not been admitted to an active pairing session.",
-    contentHtml: recovery(`Run ${command("lykeion-daemon status")} for a link admitted to this browser.`),
+    contentHtml: recovery(`Run ${command("lykeion open")} for a link admitted to this browser.`),
   });
 }
 
@@ -332,7 +371,7 @@ export function renderExpiredRequestPage(): string {
     eyebrow: "Pairing request expired",
     heading: "This pairing request has expired",
     description: "The lab can no longer approve this request.",
-    contentHtml: recovery(`Use the fresh link printed in the daemon terminal, or run ${command("lykeion-daemon status")}.`),
+    contentHtml: recovery(`Use the fresh link printed in the daemon terminal, or run ${command("lykeion open")}.`),
   });
 }
 

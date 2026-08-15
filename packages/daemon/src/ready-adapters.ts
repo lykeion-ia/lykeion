@@ -37,3 +37,34 @@ export function adapterFor(agent: string): { command: string; args: string[] } |
   const launch = vetted.get(agent);
   return launch === undefined ? undefined : { command: launch.command, args: [...launch.args] };
 }
+
+/**
+ * Why each agent this machine did NOT vet was held back, in the probe's own
+ * words, kept beside the map of the ones it did.
+ *
+ * The map above answers whether a run may start. This answers why not, and the
+ * two are separate on purpose: nothing here widens what is launchable. An
+ * agent with a reason and no vetted adapter is exactly as unlaunchable as it
+ * was — a run is still started only through a program a probe handshook.
+ *
+ * It exists because one sentence was being used for every cause. A run refused
+ * for an agent this machine cannot start said "this machine has no adapter for
+ * claude", which is right for exactly one of the ways that happens. The common
+ * one is a CLI whose token lapsed overnight, and that message sends the
+ * researcher off to install a bridge they already have while the thing that
+ * would fix it — signing in again — goes unmentioned.
+ */
+let heldBack: ReadonlyMap<string, string> = new Map();
+
+export function rememberHeldBack(next: ReadonlyMap<string, string>): void {
+  // Replaced wholesale, for the reason the vetted map is: a researcher who
+  // signs back in must stop being told they are signed out, and a merge would
+  // leave last cycle's sentence standing for the life of the daemon.
+  heldBack = new Map(next);
+}
+
+/** The probe's own account of why this agent cannot run, or `undefined` when
+ *  the last cycle had nothing to say about it. */
+export function heldBackReason(agent: string): string | undefined {
+  return heldBack.get(agent);
+}

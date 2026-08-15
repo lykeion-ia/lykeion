@@ -1,12 +1,26 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { connect, type Socket } from "node:net";
+import { createHash } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { spawn } from "node:child_process";
-import { PairingRefused, startPairing, type PairingSession } from "./pairing";
+import { decodeRequest } from "@lykeion/api/pair-code";
+import { acceptedAdapters, consentKey } from "./adapter-consent";
+import { DAEMON_VERSION } from "./config";
+import { platformTag } from "./probe";
+import { pasteInstructions, PairingRefused, startPairing, type PairingSession } from "./pairing";
+import { forwardTo } from "./front-door";
+import { CATALOGUE } from "./probe";
+import { isolationFor } from "./agent-registry";
 import { readState, type PairedState } from "./state";
+import { labIsHere } from "./lab-child";
 import type { AgentAuth } from "./agent-auth";
 
 let clock = 1_700_000_000;
@@ -26,6 +40,40 @@ function freshDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "lykeion-pairing-"));
   dirs.push(dir);
   return dir;
+}
+
+/** A built application for the front door to serve. Injected rather than
+ *  taken from `packages/ui/dist`, so that what this server answers at a path
+ *  it has no route for is decided here and not by whether the machine running
+ *  the suite happens to have built the UI — with nothing there the door
+ *  answers its own 404, which is the same status as the refusal these tests
+ *  are about and would pass them for the wrong reason. */
+function builtUi(): string {
+  const dir = freshDir();
+  writeFileSync(join(dir, "index.html"), "<!doctype html><title>Lykeion</title>");
+  return dir;
+}
+
+/** A GET whose request target arrives exactly as it was written. `fetch`
+ *  collapses dot segments before it sends anything, so the spellings that
+ *  matter most — the ones no ordinary client can even produce — would reach
+ *  the server as something else and the test would be proving nothing. */
+function rawGet(
+  base: string,
+  target: string,
+  cookie: string,
+): Promise<{ status: number; body: string }> {
+  const { hostname, port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: hostname, port, path: target, headers: { cookie } }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => (body += chunk));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 /** A PATH holding a runnable stand-in for each named command, so whether
@@ -73,6 +121,15 @@ async function pairing(
     /** Opens the session the way a daemon that was already paired when it
      *  started opens one: serving the sign-in step and nothing else. */
     alreadyPaired?: PairedState;
+    /** The built application the front door serves. Left out by every test
+     *  that is not about the front door, which then gets the real one. */
+    uiDir?: string;
+    /** Where the lab's own routes go, when a lab is running on this
+     *  computer. Left out by everything but the two tests about that. */
+    forward?: (req: IncomingMessage, res: ServerResponse) => void;
+    /** Brings a lab up because the first run said it lives here. Left out by
+     *  everything but the two tests about that. */
+    onLabHere?: () => Promise<void>;
   } = {},
 ): Promise<PairingSession> {
   const session = await startPairing({
@@ -83,6 +140,7 @@ async function pairing(
     onRequestExpired: options.onRequestExpired,
     now: () => clock,
     alreadyPaired: options.alreadyPaired,
+    uiDir: options.uiDir,
     // `/paired` asks this too now, by default against whatever this
     // machine's real PATH resolves `claude`/`codex` to, the same real,
     // confined subprocess call `agent-auth.test.ts` exercises on its own.
@@ -94,6 +152,8 @@ async function pairing(
     authStates: options.authStates === "real" ? undefined : (options.authStates ?? (async () => [])),
     signInSpawn: options.signInSpawn,
     signInPath: options.signInPath,
+    forward: options.forward,
+    onLabHere: options.onLabHere,
   });
   sessions.push(session);
   // A test that never touches `paired` (most of them only care about one
@@ -339,7 +399,7 @@ it("tells a browser its approval was for a request that has since expired", asyn
   const body = await res.text();
   expect(body).toContain("This pairing request has expired");
   expect(body).toContain("Use the fresh link printed in the daemon terminal");
-  expect(body).toContain("lykeion-daemon status");
+  expect(body).toContain("lykeion open");
   // The other answer is for a callback that was never this machine's, and
   // telling the two apart is the whole reason the previous state is kept.
   expect(body).not.toContain("This callback does not match the pairing request");
@@ -376,7 +436,7 @@ it("gives the researcher a full span again when they leave for the lab", async (
     body: JSON.stringify({ lab: lab.base, name: "ana-macbook" }),
     redirect: "manual",
   });
-  expect(res.status).toBe(302);
+  expect(res.status).toBe(200);
 
   // Past where the original span ran out, well inside the one the handoff
   // bought. A request that had not been pushed is already gone by here.
@@ -391,7 +451,7 @@ it("refuses a request carrying neither nonce nor cookie", async () => {
   expect(res.status).toBe(403);
   const body = await res.text();
   expect(body).toContain("No pairing session is available");
-  expect(body).toContain("lykeion-daemon status");
+  expect(body).toContain("lykeion open");
 });
 
 it("refuses a nonce older than three minutes", async () => {
@@ -401,11 +461,14 @@ it("refuses a nonce older than three minutes", async () => {
   expect(res.status).toBe(403);
   const body = await res.text();
   expect(body).toContain("This link has expired");
-  expect(body).toContain("lykeion-daemon status");
+  expect(body).toContain("lykeion open");
 });
 
 it("serves the setup page to a tab admitted by cookie, without a nonce", async () => {
-  const session = await pairing();
+  // An empty `uiDir`, so this exercises the daemon's OWN page: `/` serves the
+  // application wherever one is built, and what is asserted below is the
+  // fallback a daemon running from source falls back to.
+  const session = await pairing({ uiDir: freshDir() });
   const cookie = await admit(session);
   const res = await fetch(`${session.base}/`, { headers: { cookie } });
   expect(res.status).toBe(200);
@@ -456,8 +519,8 @@ it("sends the browser to the lab with everything the approval screen needs", asy
     body: JSON.stringify({ lab: lab.base, name: "ana-macbook" }),
     redirect: "manual",
   });
-  expect(res.status).toBe(302);
-  const target = new URL(res.headers.get("location")!);
+  expect(res.status).toBe(200);
+  const target = new URL(((await res.clone().json()) as { redirect?: string }).redirect!);
   const params = new URLSearchParams(target.hash.slice(target.hash.indexOf("?")));
   expect(target.origin).toBe(lab.base);
   expect(params.get("name")).toBe("ana-macbook");
@@ -485,7 +548,10 @@ it("returns JSON 400 when the lab connection is refused", async () => {
 });
 
 it("rejects a non-HTTP lab without retaining it", async () => {
-  const session = await pairing();
+  // An empty `uiDir`, so this exercises the daemon's OWN page: `/` serves the
+  // application wherever one is built, and what is asserted below is the
+  // fallback a daemon running from source falls back to.
+  const session = await pairing({ uiDir: freshDir() });
   const cookie = await admit(session);
   const asked = session.state;
   const res = await fetch(`${session.base}/connect`, {
@@ -530,7 +596,7 @@ it("probes the lab with a material-free HEAD and does not follow redirects", asy
     redirect: "manual",
   });
 
-  expect(res.status).toBe(302);
+  expect(res.status).toBe(200);
   expect(observed).toMatchObject({ method: "HEAD", url: "/", body: "" });
   expect(JSON.stringify(observed)).not.toMatch(/ana-macbook|challenge|state|redirect|verifier|code/i);
 });
@@ -546,6 +612,10 @@ it("rejects cross-origin and safelisted connect attempts before probing or exten
   const session = await pairing({
     ttlSeconds: 0.7,
     onRequestExpired: (link) => announced.push(link),
+  // An empty `uiDir`, so this exercises the daemon's OWN page: `/` serves the
+  // application wherever one is built, and what is asserted below is the
+  // fallback a daemon running from source falls back to.
+    uiDir: freshDir(),
   });
   const cookie = await admit(session);
   const asked = session.state;
@@ -655,14 +725,16 @@ it("commits the first completed connect and conflicts an overlapping slower one"
     body: JSON.stringify({ lab: fast.base, name: "fast-machine" }),
     redirect: "manual",
   });
-  expect(fastConnect.status).toBe(302);
-  expect(new URL(fastConnect.headers.get("location")!).origin).toBe(fast.base);
+  expect(fastConnect.status).toBe(200);
+  const wonRedirect = ((await fastConnect.clone().json()) as { redirect: string }).redirect;
+  expect(new URL(wonRedirect).origin).toBe(fast.base);
 
   await sleep(450);
   releaseSlowHead();
   const lateSlow = await slowConnect;
   expect(lateSlow.status).toBe(409);
-  expect(lateSlow.headers.get("location")).toBeNull();
+  // The loser gets a refusal, and above all no address to leave for.
+  expect(((await lateSlow.clone().json()) as { redirect?: string }).redirect).toBeUndefined();
   expect(await lateSlow.json()).toEqual({
     error: "this pairing request is already continuing to a lab",
   });
@@ -746,8 +818,8 @@ it("rejects a preflight that finishes after the request rotated", async () => {
   const res = await connecting;
   expect(session.state).not.toBe(asked);
   expect(res.status).toBe(403);
-  expect(res.headers.get("location")).toBeNull();
-  expect(await res.json()).toEqual({ error: "run lykeion-daemon status for a fresh link" });
+  expect(((await res.clone().json()) as { redirect?: string }).redirect).toBeUndefined();
+  expect(await res.json()).toEqual({ error: "run lykeion open for a fresh link" });
 
   const callback = await fetch(`${session.base}/paired?code=must-not-exchange&state=${session.state}`);
   expect(callback.status).toBe(400);
@@ -847,7 +919,11 @@ it("exchanges the code and writes the token", async () => {
 it("says on the page which lab the machine now belongs to, and links back to it", async () => {
   let verifier = "";
   const lab = await stubLab({ expectVerifier: (v) => v === verifier, labName: "Ana's Lab" });
-  const session = await pairing({ lab: lab.base });
+  // Against a daemon with no built application, which is the one arrangement
+  // where this page is still what `/paired` answers with. With an application
+  // to serve, pairing comes back onto the wizard's own agents step instead —
+  // and what that page says is asserted where that page is built.
+  const session = await pairing({ lab: lab.base, uiDir: join(freshDir(), "nothing-built-here") });
   verifier = session.verifier;
   const res = await fetch(`${session.base}/paired?code=abc&state=${session.state}`);
   const body = await res.text();
@@ -874,7 +950,9 @@ it("names the lab by its address on that page when the lab has no name of its ow
   // pairing flow ever shows them.
   let verifier = "";
   const lab = await stubLab({ expectVerifier: (v) => v === verifier, labName: "" });
-  const session = await pairing({ lab: lab.base });
+  // No built application, so this page is what `/paired` answers with — see
+  // the test above for why that is now the one arrangement it appears in.
+  const session = await pairing({ lab: lab.base, uiDir: join(freshDir(), "nothing-built-here") });
   verifier = session.verifier;
   const res = await fetch(`${session.base}/paired?code=abc&state=${session.state}`);
   const body = await res.text();
@@ -934,6 +1012,10 @@ it("serves the sign-in step again to a daemon that was already paired", async ()
     authStates: async () => [
       { agent: "claude", name: "Claude Code", available: true, signedIn: false },
     ],
+  // An empty `uiDir`, so this exercises the daemon's OWN page: `/` serves the
+  // application wherever one is built, and what is asserted below is the
+  // fallback a daemon running from source falls back to.
+    uiDir: freshDir(),
   });
   const admitted = await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" });
   expect(admitted.status).toBe(200);
@@ -975,6 +1057,50 @@ it("routes neither /connect nor /paired for a daemon that is already paired", as
   expect(paired.status).toBe(404);
   // Nothing was re-homed by either attempt.
   expect(readState(session.dataDir)).toBeUndefined();
+});
+
+it("refuses a route it does not have in every spelling of it, rather than serving the application", async () => {
+  // The front door stands in front of this refusal and answers everything
+  // else with the application, so `/paired` on a paired daemon is the one
+  // place the two decisions meet. Asserted on the body as well as the status,
+  // because the door's own "the application has not been built" is a 404 too:
+  // a status alone passes on any machine where the UI is simply missing,
+  // which is every clean checkout, and would have said nothing at all.
+  const session = await pairing({ alreadyPaired: ALREADY_PAIRED, uiDir: builtUi() });
+  const cookie = await admit(session);
+  const query = `code=abc&state=${session.state}`;
+  // Every way of writing the one route. `%70` is `p` (RFC 3986 §6.2.2.2) and
+  // `/paired/` names what `/paired` names — neither of which the URL parser
+  // touches. The dot segments and the protocol-relative form are the other
+  // half: the parser collapses all four to `/paired` before the route table
+  // ever sees them, so a guard that read the request target instead would let
+  // them past on their way to a route that must not exist here.
+  for (const spelling of [
+    "/paired",
+    "/%70aired",
+    "/paired/",
+    "/x/../paired",
+    "/./paired",
+    "/%2e%2e/paired",
+    "//somewhere-else/paired",
+  ]) {
+    const refused = await rawGet(session.base, `${spelling}?${query}`, cookie);
+    expect(refused.status, spelling).toBe(404);
+    expect(JSON.parse(refused.body), spelling).toEqual({ error: "no such route" });
+  }
+  expect(readState(session.dataDir)).toBeUndefined();
+});
+
+it("answers a path it has no route for with the application, so a deep link opens", async () => {
+  // The other half of the same decision, and the reason the one above cannot
+  // be read as "this server answers 404 to everything". No cookie: what the
+  // front door widened is what is served, never what is decided — `/` is
+  // still behind the nonce gate, and nothing here touches it.
+  const session = await pairing({ uiDir: builtUi() });
+  const deep = await fetch(`${session.base}/start`);
+  expect(deep.status).toBe(200);
+  expect(deep.headers.get("content-type")).toContain("text/html");
+  expect(await deep.text()).toContain("<title>Lykeion</title>");
 });
 
 it("still gates the sign-in routes of an already-paired daemon on admission and origin", async () => {
@@ -1025,6 +1151,10 @@ it("keeps minting nothing on its own clock after pairing during its own run", as
     lab: lab.base,
     ttlSeconds: 0.2,
     onRequestExpired: (link) => announced.push(link),
+  // An empty `uiDir`, so this exercises the daemon's OWN page: `/` serves the
+  // application wherever one is built, and what is asserted below is the
+  // fallback a daemon running from source falls back to.
+    uiDir: freshDir(),
   });
   verifier = session.verifier;
   expect((await fetch(`${session.base}/paired?code=abc&state=${session.state}`)).status).toBe(200);
@@ -1039,7 +1169,7 @@ it("keeps minting nothing on its own clock after pairing during its own run", as
 it("lets a link minted after this session paired actually use the page it opens", async () => {
   // The gap the two cases above cannot see. A session that pairs during its
   // own run freezes `pairedCookie`, and `signInAuthorized` used to accept
-  // only that — so the fresh link `status` now mints for a paired daemon
+  // only that — so the fresh link `open` mints for a paired daemon
   // admitted a browser at `/`, served it the sign-in page, and then refused
   // that page's own first `/agents` poll and every `/agents/signin` it could
   // send. Bricked before its own script ran a single request, which is the
@@ -1055,6 +1185,10 @@ it("lets a link minted after this session paired actually use the page it opens"
     ],
     signInSpawn: (() => ({ on: () => {}, unref: () => {} })) as unknown as typeof spawn,
     signInPath: pathHolding("claude"),
+    // An empty `uiDir`, so this exercises the daemon's OWN page: `/` serves
+    // the application wherever one is built, and what this asserts on is the
+    // fallback a daemon running from source falls back to.
+    uiDir: freshDir(),
   });
   verifier = session.verifier;
   // The tab that carried pairing through, and the cookie it still holds.
@@ -1064,7 +1198,7 @@ it("lets a link minted after this session paired actually use the page it opens"
       .status,
   ).toBe(200);
 
-  // Months later: `lykeion-daemon status` mints a fresh admission link, and a
+  // Months later: `lykeion open` mints a fresh admission link, and a
   // second browser opens it.
   const link = session.rotateNonce();
   const opened = await fetch(link, { redirect: "manual" });
@@ -1107,7 +1241,19 @@ it("answers /agents with what authStates reports, once admitted", async () => {
   const cookie = await admit(session);
   const res = await fetch(`${session.base}/agents`, { headers: { cookie } });
   expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ agents });
+  // Matched rather than equalled: this route also carries each agent's
+  // adapter on this machine, and whether one resolves depends on what is
+  // installed where the suite happens to be running. What is asserted is that
+  // every field `authStates` reported survives the trip unchanged — the
+  // augmentation adds, and must never overwrite.
+  const body = (await res.json()) as { agents: Record<string, unknown>[] };
+  // The whole catalogue is listed; what this asserts is that every field
+  // `authStates` reported about the two it CAN ask about survives the trip
+  // unchanged. The roster adds rows, and must never overwrite an answer.
+  for (const expected of agents)
+    expect(body.agents.find((row) => row.agent === expected.agent)).toMatchObject(
+      expected as unknown as Record<string, unknown>,
+    );
 });
 
 it("answers /agents with the real, uninjected agentAuthStates when nothing overrides it", async () => {
@@ -1119,7 +1265,7 @@ it("answers /agents with the real, uninjected agentAuthStates when nothing overr
   const cookie = await admit(session);
   const res = await fetch(`${session.base}/agents`, { headers: { cookie } });
   expect(res.status).toBe(200);
-  const body = (await res.json()) as { agents: unknown[] };
+  const body = (await res.json()) as { agents: Record<string, unknown>[] };
   expect(Array.isArray(body.agents)).toBe(true);
   for (const agent of body.agents) {
     expect(agent).toMatchObject({
@@ -1128,10 +1274,25 @@ it("answers /agents with the real, uninjected agentAuthStates when nothing overr
       // this answer, and a row it cannot tell "not installed" from "signed
       // out" for is a row it offers a dead button on.
       available: expect.any(Boolean),
-      signedIn: expect.any(Boolean),
     });
   }
-});
+  // And the sign-in answer is there for exactly the agents that have a
+  // confined home to be asked from, and absent for the rest. Both halves,
+  // because this route now lists the whole catalogue: a boolean on a row
+  // nothing asked would be a claim, and a missing one on a row that WAS
+  // asked would cost that row its Sign in control.
+  const declared = new Set(
+    CATALOGUE.filter((entry) => isolationFor(entry.id) !== undefined).map((entry) => entry.id),
+  );
+  expect(declared.size).toBeGreaterThan(0);
+  for (const agent of body.agents)
+    expect(typeof agent.signedIn === "boolean").toBe(declared.has(agent.agent as string));
+  // The budget every other test in this repo that spawns real confined
+  // subprocesses carries. This one reaches the production default, which asks
+  // two agent CLIs about themselves inside the sandbox, and it had been
+  // running on vitest's 5s default — thin for that before this route also
+  // walked the catalogue, and the first thing to go on a busy machine.
+}, 30_000);
 
 it("refuses /agents/signin to a request that was never admitted", async () => {
   const session = await pairing();
@@ -1406,4 +1567,863 @@ it("settles even when the browser's connection is destroyed before the response 
   const closeStart = Date.now();
   await session.close();
   expect(Date.now() - closeStart).toBeLessThan(2000);
+});
+
+it("hands the lab's own routes to the lab when one is running on this computer", async () => {
+  const asked: string[] = [];
+  const session = await pairing({
+    forward: (req, res) => {
+      asked.push(`${req.method} ${req.url}`);
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("the lab answered");
+    },
+  });
+
+  const answer = await fetch(`${session.base}/rpc`, { method: "POST", body: "{}" });
+
+  expect(answer.status).toBe(200);
+  expect(await answer.text()).toBe("the lab answered");
+  expect(asked).toEqual(["POST /rpc"]);
+});
+
+it("goes on refusing the lab's routes when the lab is somewhere else", async () => {
+  const session = await pairing();
+
+  const answer = await fetch(`${session.base}/rpc`, { method: "POST", body: "{}" });
+
+  expect(answer.status).toBe(404);
+});
+
+it("keeps its own routes when a lab is running behind it", async () => {
+  let forwarded = false;
+  const session = await pairing({
+    forward: (_req, res) => {
+      forwarded = true;
+      res.end("the lab answered");
+    },
+  });
+
+  // Nonceless, so it is refused by the route rather than answered by it —
+  // the point is which of the two decided, and admission is not what this
+  // test is about.
+  const answer = await fetch(`${session.base}/`, { redirect: "manual" });
+
+  expect(forwarded).toBe(false);
+  expect(answer.status).not.toBe(404);
+});
+
+/** Posts the first run's branching answer the way its own page does. Takes
+ *  the cookie rather than admitting itself: a session admits one tab, and a
+ *  helper that admitted on every call would spend a nonce per question. */
+function chooseTopology(
+  session: PairingSession,
+  cookie: string,
+  topology: unknown,
+  extra: Record<string, string> = {},
+): Promise<Response> {
+  return fetch(`${session.base}/setup/topology`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json", ...extra },
+    body: JSON.stringify({ topology }),
+  });
+}
+
+it("writes the researcher's answer where the next start of this daemon will read it", async () => {
+  // The lab being here is a fact about this computer, not about the tab that
+  // answered — so it has to outlive the page, and a reload must not be able
+  // to un-decide it.
+  const session = await pairing({ authStates: async () => [] });
+  const cookie = await admit(session);
+  expect(labIsHere(session.dataDir)).toBe(false);
+
+  const answer = await chooseTopology(session, cookie, "here");
+
+  expect(answer.status).toBe(200);
+  expect(await answer.json()).toEqual({ topology: "here" });
+  expect(labIsHere(session.dataDir)).toBe(true);
+});
+
+it("takes somewhere else back, rather than only declining to say here", async () => {
+  // The absence of the record is what "the lab is not here" means, so this
+  // answer has to REMOVE it. A researcher who chose wrongly and came back
+  // would otherwise be told their answer was taken while the daemon went on
+  // starting a lab they had just said they did not want.
+  const session = await pairing({ authStates: async () => [] });
+  const cookie = await admit(session);
+  await chooseTopology(session, cookie, "here");
+  expect(labIsHere(session.dataDir)).toBe(true);
+
+  const answer = await chooseTopology(session, cookie, "elsewhere");
+
+  expect(answer.status).toBe(200);
+  expect(labIsHere(session.dataDir)).toBe(false);
+});
+
+it("refuses an answer nobody recognises rather than guessing which was meant", async () => {
+  const session = await pairing({ authStates: async () => [] });
+  const cookie = await admit(session);
+  for (const topology of ["HERE", "local", "", undefined, 1, null]) {
+    const answer = await chooseTopology(session, cookie, topology);
+    expect(answer.status, JSON.stringify(topology)).toBe(400);
+  }
+  expect(labIsHere(session.dataDir)).toBe(false);
+});
+
+it("refuses to be told where the lab lives by a request that was never admitted", async () => {
+  // No content-type gate means this is a CORS-simple request: without the
+  // admission check, any page open in this browser could decide where a
+  // researcher's lab lives.
+  const session = await pairing({ authStates: async () => [] });
+  const answer = await fetch(`${session.base}/setup/topology`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ topology: "here" }),
+  });
+  expect(answer.status).toBe(403);
+  expect(labIsHere(session.dataDir)).toBe(false);
+});
+
+it("refuses that route to a page from any other origin", async () => {
+  const session = await pairing({ authStates: async () => [] });
+  const cookie = await admit(session);
+  const answer = await chooseTopology(session, cookie, "here", { "sec-fetch-site": "cross-site" });
+  expect(answer.status).toBe(403);
+  expect(labIsHere(session.dataDir)).toBe(false);
+});
+
+it("never answers the topology route with the application", async () => {
+  // It is a route this server owns, so a GET has to be refused rather than
+  // fall through to the page — the same rule that keeps the SPA fallback
+  // from swallowing a forwarded prefix.
+  const session = await pairing({ authStates: async () => [] });
+  const cookie = await admit(session);
+  const answer = await fetch(`${session.base}/setup/topology`, { headers: { cookie } });
+  expect(answer.status).toBe(404);
+  expect(answer.headers.get("content-type") ?? "").not.toContain("text/html");
+});
+
+/** A session whose lab is standing behind this daemon, which is what the
+ *  co-located routes require: the forwarding handler IS that fact. */
+async function coLocated(labBase: string): Promise<PairingSession> {
+  return pairing({ lab: labBase, forward: () => {}, authStates: async () => [] });
+}
+
+it("hands its own page the secrets the redirect would have carried", async () => {
+  const lab = await stubLab({ expectVerifier: () => true });
+  const session = await coLocated(lab.base);
+  const cookie = await admit(session);
+
+  const answer = await fetch(`${session.base}/setup/challenge`, { headers: { cookie } });
+
+  expect(answer.status).toBe(200);
+  const body = (await answer.json()) as Record<string, string>;
+  expect(body.challenge).toBe(session.challenge);
+  expect(body.state).toBe(session.state);
+  expect(body.redirect).toBe(`${session.base}/paired`);
+  // Prefilled rather than asked for: the machine's own name is a thing this
+  // computer knows about itself, and typing it again is ceremony.
+  expect(body.name).toBeTruthy();
+});
+
+it("completes the same exchange the redirect does, without one", async () => {
+  let verifier = "";
+  const lab = await stubLab({ expectVerifier: (v) => v === verifier });
+  const session = await coLocated(lab.base);
+  verifier = session.verifier;
+  const cookie = await admit(session);
+
+  const answer = await fetch(`${session.base}/setup/paired`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ code: "abc", state: session.state }),
+  });
+
+  expect(answer.status).toBe(200);
+  expect(readState(session.dataDir)!.token).toBe("a-machine-token");
+  // Settled the same way the redirect settles it: the session's own promise
+  // resolves, so whatever is waiting on this daemon being paired goes on.
+  await expect(session.paired).resolves.toMatchObject({ token: "a-machine-token" });
+});
+
+it("never takes this path for a lab that is not on this machine", async () => {
+  // The whole argument for skipping the approval screen is that the person
+  // approving and the person asking are demonstrably the same, which holds
+  // only while the lab is behind this daemon's own address.
+  const session = await pairing({ lab: "https://lab.example.edu", authStates: async () => [] });
+  const cookie = await admit(session);
+
+  expect((await fetch(`${session.base}/setup/challenge`, { headers: { cookie } })).status).toBe(409);
+  const posted = await fetch(`${session.base}/setup/paired`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ code: "abc", state: session.state }),
+  });
+  expect(posted.status).toBe(409);
+  expect(readState(session.dataDir)).toBeUndefined();
+});
+
+it("refuses an answer minted for a different pairing request", async () => {
+  const lab = await stubLab({ expectVerifier: () => true });
+  const session = await coLocated(lab.base);
+  const cookie = await admit(session);
+
+  const answer = await fetch(`${session.base}/setup/paired`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ code: "abc", state: "not-the-state-this-session-minted" }),
+  });
+
+  expect(answer.status).toBe(400);
+  expect(readState(session.dataDir)).toBeUndefined();
+});
+
+it("refuses both co-located routes to a page that was never admitted, and to any other origin", async () => {
+  const lab = await stubLab({ expectVerifier: () => true });
+  const session = await coLocated(lab.base);
+  const cookie = await admit(session);
+
+  expect((await fetch(`${session.base}/setup/challenge`)).status).toBe(403);
+  expect(
+    (
+      await fetch(`${session.base}/setup/challenge`, {
+        headers: { cookie, "sec-fetch-site": "cross-site" },
+      })
+    ).status,
+  ).toBe(403);
+
+  const unadmitted = await fetch(`${session.base}/setup/paired`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: "abc", state: session.state }),
+  });
+  expect(unadmitted.status).toBe(403);
+  expect(readState(session.dataDir)).toBeUndefined();
+});
+
+it("never answers either co-located route with the application", async () => {
+  const lab = await stubLab({ expectVerifier: () => true });
+  const session = await coLocated(lab.base);
+  const cookie = await admit(session);
+  // A GET on the exchange route, and a route the server owns either way.
+  const answer = await fetch(`${session.base}/setup/paired`, { headers: { cookie } });
+  expect(answer.status).toBe(404);
+  expect(answer.headers.get("content-type") ?? "").not.toContain("text/html");
+});
+
+it("starts the lab when the first run says it lives here, so the next step has one", async () => {
+  // The step after the question creates the owner account IN this lab,
+  // through this daemon's own address. Waiting for the next start of the
+  // daemon would meet the researcher with a screen that has nothing behind
+  // it — so answering the question is what brings the lab up.
+  const lab = await stubLab({ expectVerifier: () => true });
+  const labPort = Number(new URL(lab.base).port);
+  let started = 0;
+  const session = await pairing({
+    authStates: async () => [],
+    onLabHere: async () => {
+      started += 1;
+      session.serveLabThrough(labPort);
+    },
+  });
+  const cookie = await admit(session);
+
+  // Before the answer there is no lab behind this daemon, and the co-located
+  // routes say so rather than pretending.
+  expect((await fetch(`${session.base}/setup/challenge`, { headers: { cookie } })).status).toBe(409);
+
+  const answer = await chooseTopology(session, cookie, "here");
+  expect(answer.status).toBe(200);
+  expect(started).toBe(1);
+  expect(labIsHere(session.dataDir)).toBe(true);
+  expect((await fetch(`${session.base}/setup/challenge`, { headers: { cookie } })).status).toBe(200);
+});
+
+it("takes the record back when the lab it just recorded will not start", async () => {
+  // Keeping it would leave this machine saying its lab is here on the
+  // strength of an attempt that failed, while the researcher was told it did
+  // not work.
+  const session = await pairing({
+    authStates: async () => [],
+    onLabHere: async () => {
+      throw new Error("no port to be had");
+    },
+  });
+  const cookie = await admit(session);
+
+  const answer = await chooseTopology(session, cookie, "here");
+
+  expect(answer.status).toBe(500);
+  expect(((await answer.json()) as { error: string }).error).toContain("no port to be had");
+  expect(labIsHere(session.dataDir)).toBe(false);
+  expect((await fetch(`${session.base}/setup/challenge`, { headers: { cookie } })).status).toBe(409);
+});
+
+it("comes back onto the agents step rather than a seam", async () => {
+  // The trip out to the lab and back happened INSIDE step 2, so the count
+  // promised at step 1 still holds: a researcher returning from approving
+  // their machine lands on the step that was waiting, not on a page from a
+  // different product.
+  const ui = freshDir();
+  writeFileSync(join(ui, "index.html"), '<!doctype html><html lang="en"><body></body></html>');
+  let verifier = "";
+  const lab = await stubLab({ expectVerifier: (v) => v === verifier });
+  const session = await pairing({ lab: lab.base, uiDir: ui, authStates: async () => [] });
+  verifier = session.verifier;
+  await admit(session);
+
+  const answer = await fetch(`${session.base}/paired?code=abc&state=${session.state}`);
+
+  expect(answer.status).toBe(200);
+  expect(answer.headers.get("content-type") ?? "").toContain("text/html");
+  expect(await answer.text()).toContain('data-setup-step="3"');
+});
+
+it("still answers with its own page when there is no application to serve", async () => {
+  // A daemon running from source with no built UI has just completed a real
+  // pairing. Saying so on a page it renders itself beats a 404 for a page it
+  // has not got.
+  let verifier = "";
+  const lab = await stubLab({ expectVerifier: (v) => v === verifier });
+  const session = await pairing({
+    lab: lab.base,
+    uiDir: join(freshDir(), "nothing-built-here"),
+    authStates: async () => [],
+  });
+  verifier = session.verifier;
+  await admit(session);
+
+  const answer = await fetch(`${session.base}/paired?code=abc&state=${session.state}`);
+
+  expect(answer.status).toBe(200);
+  const body = await answer.text();
+  expect(body).not.toContain("data-setup-step");
+  expect(body).toContain("Lykeion");
+});
+
+it("tells its own page what this machine is called, whatever the topology", async () => {
+  // The join branch needs a machine name to offer, and its lab is explicitly
+  // somewhere else — so this cannot be the route that refuses when the lab is
+  // not here.
+  const session = await pairing({ lab: "https://lab.example.edu", authStates: async () => [] });
+  const cookie = await admit(session);
+
+  const answer = await fetch(`${session.base}/setup/machine`, { headers: { cookie } });
+
+  expect(answer.status).toBe(200);
+  const body = (await answer.json()) as Record<string, string>;
+  expect(body.name).toBeTruthy();
+  expect(body.platform).toBeTruthy();
+  expect(body.daemonVersion).toBeTruthy();
+  // And the co-located route still refuses, on the same session.
+  expect((await fetch(`${session.base}/setup/challenge`, { headers: { cookie } })).status).toBe(409);
+});
+
+it("refuses the machine route to a request that was never admitted", async () => {
+  const session = await pairing({ authStates: async () => [] });
+  expect((await fetch(`${session.base}/setup/machine`)).status).toBe(403);
+});
+
+// ---------------------------------------------------------------------------
+// Two clocks.
+//
+// A pairing link is a door into this machine: anyone who can reach the port
+// and knows the nonce gets the page. Three minutes is what keeps one left in
+// scrollback from staying open. A paste request opens nothing — it is a
+// challenge and three facts, printed on purpose for a person to carry to
+// another computer — so ending it on the same clock would only punish the
+// walk.
+// ---------------------------------------------------------------------------
+
+it("keeps the link short-lived and the paste request alive", async () => {
+  const session = await pairing({ ttlSeconds: 180 });
+  const request = session.pasteRequest();
+
+  clock += 600; // ten minutes: more than three times the link's life
+
+  // The link is a door into this machine, and it is gone.
+  expect((await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" })).status).toBe(403);
+  // The paste request opens nothing, and is still good.
+  expect(session.pasteRequest()).toBe(request);
+});
+
+it("carries exactly the fields the redirect carries", async () => {
+  const session = await pairing();
+  const request = decodeRequest(session.pasteRequest());
+
+  expect(request).toEqual({
+    name: hostname(),
+    platform: platformTag(),
+    version: DAEMON_VERSION,
+    challenge: session.challenge,
+    state: session.state,
+    // The same callback `/connect`'s redirect names. A machine reached over
+    // SSH cannot open it, but the lab still checks it is loopback and the
+    // daemon still recognises its own — so what changes on this path is who
+    // carries the answer, not what the answer is about.
+    redirect: `${session.base}/paired`,
+  });
+});
+
+it("does not rotate a request somebody has walked away with", async () => {
+  // The failure this guards: a researcher pastes the line into a laptop on
+  // the other side of the building, approves it, walks back — and the daemon
+  // has replaced the challenge they just approved, so the code they carry
+  // redeems against a verifier that no longer exists.
+  //
+  // A session with no paste request out DOES rotate on this same clock; that
+  // is what "keeps the port it was reached on when a request is replaced"
+  // above proves at this very ttl.
+  const announced: string[] = [];
+  const session = await pairing({ ttlSeconds: 0.05, onRequestExpired: (link) => announced.push(link) });
+
+  // Snapshotted rather than assumed empty: what matters is that nothing
+  // rotates from the moment the request is taken, not what happened in the
+  // milliseconds before it.
+  const request = session.pasteRequest();
+  const challengeThen = session.challenge;
+  const announcedThen = announced.length;
+
+  await new Promise((resolve) => setTimeout(resolve, 400)); // eight ttls
+
+  expect(session.pasteRequest()).toBe(request);
+  expect(session.challenge).toBe(challengeThen);
+  expect(announced.length).toBe(announcedThen);
+});
+
+it("rotates it anyway when something asks for a new request outright", async () => {
+  // The timer is stopped; `rotateRequest` is not. Expiring is the flow
+  // deciding nobody is coming, which is exactly the judgement a printed
+  // paste request contradicts — but a caller that asks for a fresh request
+  // by name has said the old one is finished.
+  const session = await pairing();
+  const first = session.pasteRequest();
+  session.rotateRequest();
+  expect(session.pasteRequest()).not.toBe(first);
+});
+
+// ---------------------------------------------------------------------------
+// The code, carried back by hand.
+// ---------------------------------------------------------------------------
+
+it("turns a code carried back by hand into a token, by the exchange the callback makes", async () => {
+  let presented = "";
+  const lab = await stubLab({
+    expectVerifier: (verifier) => {
+      presented = verifier;
+      return true;
+    },
+  });
+  const session = await pairing({ lab: lab.base });
+  const request = decodeRequest(session.pasteRequest());
+
+  const paired = await session.redeemCode("a-code-from-the-lab");
+
+  expect(paired.machineName).toBe("ana-macbook");
+  expect(readState(session.dataDir)?.token).toBe("a-machine-token");
+  // The daemon goes on with its life from here exactly as it does when a
+  // browser carries the code back: `paired` is what `runServe` is waiting on.
+  await expect(session.paired).resolves.toEqual(paired);
+  // And what the lab was given redeems what the researcher was shown — the
+  // one thing that would silently be a different pairing request.
+  expect(createHash("sha256").update(presented).digest("base64url")).toBe(request?.challenge);
+});
+
+it("refuses a code when nothing has said which lab to join", async () => {
+  const session = await pairing();
+  await expect(session.redeemCode("a-code")).rejects.toThrow(/which lab/i);
+});
+
+it("refuses a second code once this machine has paired", async () => {
+  const lab = await stubLab({ expectVerifier: () => true });
+  const session = await pairing({ lab: lab.base });
+  await session.redeemCode("the-first");
+  await expect(session.redeemCode("a-second")).rejects.toThrow(/already paired/i);
+});
+
+it("says what the lab said when an exchange is refused, and stays open for another", async () => {
+  const lab = await labServer((_req, res) => {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "that code has expired" }));
+  });
+  const session = await pairing({ lab: lab.base });
+  const before = session.challenge;
+
+  await expect(session.redeemCode("stale")).rejects.toThrow(/expired/i);
+  // Unsettled on purpose, the same way `/paired` leaves it: a refused
+  // exchange is not a refused request, and the request this session holds is
+  // still the one that would succeed on a second try.
+  expect(session.challenge).toBe(before);
+});
+
+it("prints instructions a person can follow from another computer", () => {
+  // Everything somebody needs and nothing they have to work out: which lab,
+  // what this machine will be called there, the address to open, the line to
+  // paste, and the one command that finishes it. A machine reached over SSH
+  // is the whole audience, so nothing here assumes a browser is nearby.
+  const printed = pasteInstructions("https://lab.example.edu", "gpu-box", "LYK1.abcdef");
+
+  expect(printed).toContain('This machine needs to join https://lab.example.edu as "gpu-box".');
+  expect(printed).toContain("https://lab.example.edu/#/pair");
+  expect(printed).toContain("LYK1.abcdef");
+  expect(printed).toContain("lykeion pair --code");
+});
+
+it("names the lab once, without a trailing slash doubling the one in the address", () => {
+  const printed = pasteInstructions("https://lab.example.edu/", "gpu-box", "LYK1.abcdef");
+  expect(printed).toContain("https://lab.example.edu/#/pair");
+  expect(printed).not.toContain("edu//#/pair");
+});
+
+// ---------------------------------------------------------------------------
+// The one decision that is the researcher's alone.
+//
+// Whether to run an adapter neither the agent's vendor nor the ACP project
+// published. It is recorded here, in this machine's own data directory beside
+// its pairing token, because it decides what runs next to a credential only
+// this account may read — a lab on another computer can show the terms and
+// must not be able to answer them.
+// ---------------------------------------------------------------------------
+
+it("says whether a decision is outstanding, beside who is signed in", async () => {
+  const session = await pairing({
+    authStates: async () => [
+      { agent: "claude", name: "Claude Code", available: true, signedIn: true },
+    ],
+  });
+  const cookie = await admit(session);
+
+  const res = await fetch(`${session.base}/agents`, { headers: { cookie } });
+  const body = (await res.json()) as { agents: Array<Record<string, unknown>> };
+  const claude = body.agents.find((a) => a.agent === "claude")!;
+
+  // Whether an adapter resolved on this machine decides what is knowable
+  // here. What must always be true is that the page is never left guessing:
+  // a key that is absent is absent, never a default that reads as an answer.
+  expect("consentNeeded" in claude ? typeof claude.consentNeeded : "absent").not.toBe("string");
+  expect(claude.signedIn).toBe(true);
+});
+
+it("records an acceptance against the declared adapter, not one a page named", async () => {
+  // The page says which AGENT was allowed and nothing else. Letting it name
+  // the command would let whatever can reach this route write an acceptance
+  // for a program this machine never declared — and the acceptance is what
+  // rung 6 reads before spawning anything.
+  const session = await pairing();
+  const cookie = await admit(session);
+
+  const res = await fetch(`${session.base}/agents/consent`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ agent: "claude", command: "anything-i-like", accepted: true }),
+  });
+
+  expect(res.status).toBe(200);
+  const written = acceptedAdapters(session.dataDir);
+  expect(written.has(consentKey("claude", "anything-i-like"))).toBe(false);
+});
+
+it("refuses a consent that did not come from this daemon's own page", async () => {
+  const session = await pairing();
+  const res = await fetch(`${session.base}/agents/consent`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ agent: "claude", accepted: true }),
+  });
+  expect(res.status).toBe(403);
+});
+
+it("takes an acceptance back", async () => {
+  const session = await pairing();
+  const cookie = await admit(session);
+  const post = (accepted: boolean) =>
+    fetch(`${session.base}/agents/consent`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ agent: "claude", accepted }),
+    });
+
+  expect((await post(true)).status).toBe(200);
+  expect((await post(false)).status).toBe(200);
+  // Whatever key the declaration produced, revoking leaves none of it behind:
+  // an acceptance that could be given and not taken back would be a decision
+  // with no way out of it.
+  expect(acceptedAdapters(session.dataDir).size).toBe(0);
+});
+
+// ---------------------------------------------------------------------------
+// The link opens the first run, not a page beside it.
+//
+// `/paired` was taught to serve the application at step 3 so a researcher
+// coming back from a lab lands on the step that was waiting. The link the
+// daemon prints is the other end of the same journey, and it was still
+// answering with a page of the daemon's own — so the flow those three steps
+// describe could not be reached from the one address that is printed.
+// ---------------------------------------------------------------------------
+
+/** A built application with a real `<html>` element, which is what the step
+ *  mark is written onto. `builtUi()` above is deliberately the barest file
+ *  that proves a build exists, and has no element to mark. */
+function markableUi(): string {
+  const dir = freshDir();
+  writeFileSync(join(dir, "index.html"), '<!doctype html><html lang="en"><body></body></html>');
+  return dir;
+}
+
+it("opens the first run on the link it prints, at step 1", async () => {
+  const session = await pairing({ uiDir: markableUi() });
+  const res = await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" });
+  expect(res.status).toBe(200);
+  const body = await res.text();
+  // The application, marked with the step it opens on — the same mechanism
+  // `/paired` uses, so one function decides how a step is carried.
+  expect(body).toContain("<html");
+  expect(body).toContain('data-setup-step="1"');
+});
+
+it("opens a paired machine's own page on step 3, where signing agents in is", async () => {
+  const session = await pairing({
+    uiDir: markableUi(),
+    alreadyPaired: ALREADY_PAIRED,
+  });
+  const body = await (await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" })).text();
+  expect(body).toContain('data-setup-step="3"');
+});
+
+it("still renders its own page when there is no application to serve", async () => {
+  // A daemon running from source with nothing built has a real pairing
+  // request to show and no page to show it on. Its own page is the answer,
+  // exactly as it was — this adds a better surface, it does not remove the
+  // one that works everywhere.
+  const session = await pairing({ uiDir: freshDir() });
+  const body = await (await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" })).text();
+  expect(body).toContain("Lykeion lab address");
+  expect(body).toContain("Machine name");
+});
+
+it("stops asking where the lab lives once one is running here", async () => {
+  // The question step 1 asks is answered the moment a lab comes up behind this
+  // daemon. Serving step 1 again would ask a researcher where their lab lives
+  // while it is already running behind the page they are reading — and what
+  // comes next, creating the owner account IN it, is behind the auth gate
+  // rather than in the wizard's own route.
+  const lab = await labServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  const session = await pairing({ uiDir: markableUi(), forward: forwardTo(Number(new URL(lab.base).port)) });
+
+  const body = await (await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" })).text();
+  expect(body).not.toContain("data-setup-step");
+  // And it declares the workspace, so the page reaches the lab rather than
+  // running its own in-browser demo against a machine that has a real one.
+  expect(body).toContain('name="lykeion-workspace"');
+});
+
+it("declares no workspace while there is no lab behind this daemon", async () => {
+  // The other half, and the one that must not be got wrong: a daemon whose lab
+  // is on another computer forwards none of the lab's routes through this
+  // origin, so a page told it had a workspace here would call /rpc on a door
+  // that answers 404.
+  const session = await pairing({ uiDir: markableUi() });
+  const body = await (await fetch(`${session.base}/?nonce=${session.nonce}`, { redirect: "manual" })).text();
+  expect(body).toContain('data-setup-step="1"');
+  expect(body).not.toContain('name="lykeion-workspace"');
+});
+
+it("stops the request expiring once the researcher is filling in the form that creates the lab", async () => {
+  // The failure this prevents was silent and cost the whole pairing. Answering
+  // "here" starts a lab and hands the researcher a form — name, email,
+  // password — and from this process that looks exactly like nobody arriving.
+  // Rotating retires the cookie their open page holds, so `/setup/paired`
+  // refuses the very exchange this flow exists to make: the lab is created,
+  // the machine does not join it, and nothing on screen says so.
+  const announced: string[] = [];
+  const session = await pairing({
+    ttlSeconds: 0.05,
+    onRequestExpired: (link) => announced.push(link),
+    onLabHere: async () => {},
+  });
+  const cookie = await admit(session);
+
+  expect(
+    (
+      await fetch(`${session.base}/setup/topology`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ topology: "here" }),
+      })
+    ).status,
+  ).toBe(200);
+  // Snapshotted AFTER the answer, because that is where the claim starts:
+  // nothing rotates from the moment the topology is recorded. Taken before,
+  // this test also asserts that nothing rotated DURING the request — which is
+  // the ordinary clock doing its job on a 50ms lease, and on a loaded machine
+  // it fails for the one reason this test is not about.
+  const held = session.state;
+  const announcedThen = announced.length;
+
+  await new Promise((resolve) => setTimeout(resolve, 400)); // eight ttls
+
+  expect(session.state).toBe(held);
+  expect(announced.length).toBe(announcedThen);
+  // And the page that is still open can still be heard.
+  expect((await fetch(`${session.base}/setup/machine`, { headers: { cookie } })).status).toBe(200);
+});
+
+it("goes on expiring for a researcher who said the lab is somewhere else", async () => {
+  // The other answer commits nothing on this machine and leaves for a lab
+  // that will do its own asking, so the ordinary clock is right: a request
+  // nobody came back to should be replaced.
+  const announced: string[] = [];
+  const session = await pairing({
+    ttlSeconds: 0.05,
+    onRequestExpired: (link) => announced.push(link),
+  });
+  const cookie = await admit(session);
+  await fetch(`${session.base}/setup/topology`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ topology: "elsewhere" }),
+  });
+
+  await waitFor(() => announced.length > 0, "the request to expire");
+});
+
+it("starts the clock again when a researcher answers the first question", async () => {
+  // `touchDeadline`'s own rule — every step that shows somebody is still
+  // working through the flow — applied to a step that was never wired to it.
+  // Without this the time to type a lab address into step 2 was whatever was
+  // left over from reading step 1, and running out silently retired the
+  // cookie the open page holds: the next submit is refused, and what it says
+  // is to go and run a command.
+  let clockNow = 1_000;
+  const session = await startPairing({
+    port: 0,
+    dataDir: freshDir(),
+    ttlSeconds: 180,
+    now: () => clockNow,
+    authStates: async () => [],
+    uiDir: freshDir(),
+  });
+  sessions.push(session);
+  const cookie = await admit(session);
+
+  clockNow += 170; // nearly out, the way reading step 1 spends it
+  expect(
+    (
+      await fetch(`${session.base}/setup/topology`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ topology: "elsewhere" }),
+      })
+    ).status,
+  ).toBe(200);
+
+  // The nonce is not rotated by answering, so the page keeps its admission —
+  // and the span it has for the next step starts over rather than being what
+  // was left of the last one.
+  expect((await fetch(`${session.base}/setup/machine`, { headers: { cookie } })).status).toBe(200);
+});
+
+// ---------------------------------------------------------------------------
+// The list this machine's own page shows is the list the lab shows.
+//
+// `/agents` answered only for entries carrying an isolation declaration — two
+// of the twelve — while Machines shows what `probeAgentClis` walks, which is
+// the whole catalogue. So the first run counted "All 2" and the workbench the
+// researcher reached a moment later counted "All 12", about the same computer.
+// ---------------------------------------------------------------------------
+
+it("lists every agent the lab lists, not only the two it can ask about", async () => {
+  const session = await pairing({
+    authStates: async () => [
+      { agent: "claude", name: "Claude Code", available: true, signedIn: true },
+    ],
+  });
+  const cookie = await admit(session);
+
+  const body = (await (await fetch(`${session.base}/agents`, { headers: { cookie } })).json()) as {
+    agents: { agent: string }[];
+  };
+
+  // Catalogue order, so the two lists read the same top to bottom as well as
+  // counting the same.
+  expect(body.agents.map((a) => a.agent)).toEqual(CATALOGUE.map((entry) => entry.id));
+});
+
+it("says nothing about the sign-in of an agent nothing can ask", async () => {
+  // An entry with no isolation declaration has no confined home to ask from,
+  // so there is no sign-in question to answer. Absent, never `false`: `false`
+  // is what puts a Sign in control on a row, and pressing it there would
+  // spawn nothing.
+  const session = await pairing({
+    authStates: async () => [
+      { agent: "claude", name: "Claude Code", available: true, signedIn: false },
+    ],
+  });
+  const cookie = await admit(session);
+
+  const body = (await (await fetch(`${session.base}/agents`, { headers: { cookie } })).json()) as {
+    agents: Record<string, unknown>[];
+  };
+  const asked = body.agents.find((a) => a.agent === "claude")!;
+  const notAsked = body.agents.find((a) => a.agent === "kiro")!;
+
+  expect(asked.signedIn).toBe(false);
+  expect("signedIn" in notAsked).toBe(false);
+  // It is still a real row with a real name, because the lower half of that
+  // screen is a shopping list and a row with no name is not on it.
+  expect(notAsked.name).toBe("Kiro");
+  expect(typeof notAsked.available).toBe("boolean");
+});
+
+it("keeps the request alive for as long as somebody has the page open", async () => {
+  // The bug this closes, found by leaving a browser on the first question:
+  // the request expired while a researcher was reading it, the nonce rotated,
+  // and the cookie their tab was holding stopped being recognised — so every
+  // control on the page went quiet with nothing said.
+  const announced: string[] = [];
+  const session = await pairing({
+    ttlSeconds: 0.15,
+    onRequestExpired: (link) => announced.push(link),
+  });
+  const cookie = await admit(session);
+  const held = session.state;
+
+  // Four pings across a span the request would not have survived untouched.
+  for (let i = 0; i < 4; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(
+      (await fetch(`${session.base}/setup/still-here`, { method: "POST", headers: { cookie } }))
+        .status,
+    ).toBe(200);
+  }
+
+  expect(session.state).toBe(held);
+  expect(announced).toHaveLength(0);
+  // And the page is still admitted, which is the part that actually broke.
+  expect((await fetch(`${session.base}/setup/machine`, { headers: { cookie } })).status).toBe(200);
+});
+
+it("goes back to expiring once nobody is looking at it", async () => {
+  // The other half, and why holding the clock this way is safe: the page stops
+  // saying so the moment the tab is closed, so a request nobody is working
+  // through is replaced exactly as it was before.
+  const announced: string[] = [];
+  const session = await pairing({
+    ttlSeconds: 0.05,
+    onRequestExpired: (link) => announced.push(link),
+  });
+  const cookie = await admit(session);
+  expect(
+    (await fetch(`${session.base}/setup/still-here`, { method: "POST", headers: { cookie } }))
+      .status,
+  ).toBe(200);
+
+  await waitFor(() => announced.length > 0, "the request to expire once the pings stop");
+});
+
+it("refuses a still-here that did not come from this daemon's own page", async () => {
+  const session = await pairing();
+  expect((await fetch(`${session.base}/setup/still-here`, { method: "POST" })).status).toBe(403);
 });

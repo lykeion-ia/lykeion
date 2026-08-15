@@ -306,11 +306,9 @@ function RuntimeTable({
  * again to come back — which is the sentence this dialog exists to say.
  */
 function RemoveMachineModal({
-  runtime,
   onClose,
   onConfirm,
 }: {
-  runtime: Runtime;
   onClose: () => void;
   onConfirm: () => Promise<void>;
 }) {
@@ -321,9 +319,6 @@ function RemoveMachineModal({
       confirmLabel="Remove"
       onClose={onClose}
       onConfirm={onConfirm}
-      subject={
-        <p className="truncate text-ui font-medium text-fg">{runtime.name}</p>
-      }
       body={
         <p className="text-sub leading-snug text-fg-subtle">
           Its daemon loses access to this lab immediately and has to be paired
@@ -548,7 +543,6 @@ export function RuntimesList({
 
       {pendingRemove && (
         <RemoveMachineModal
-          runtime={pendingRemove}
           onClose={() => setPendingRemove(null)}
           onConfirm={() => removeRuntime(pendingRemove.id)}
         />

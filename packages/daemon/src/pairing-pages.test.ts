@@ -158,15 +158,19 @@ describe("terminal pairing states", () => {
   });
 
   it("distinguishes a deliberate refusal from warnings and failures", () => {
+    // The tone used to colour a circle above the heading. The wizard has no
+    // such ornament, so it colours the one thing on these pages that is
+    // genuinely about the tone: the way out.
     const html = renderRefusedPage();
     expect(html).toContain('data-tone="refusal"');
-    expect(html).toContain('body[data-tone="refusal"] .status-mark');
+    expect(html).toContain('body[data-tone="refusal"] .recovery{border-left-color:var(--accent)}');
+    expect(html).toContain('body[data-tone="error"] .recovery{border-left-color:var(--danger)}');
   });
 
   it.each([
-    ["expired link", renderExpiredLinkPage(), "lykeion-daemon status"],
-    ["no session", renderNoSessionPage(), "lykeion-daemon status"],
-    ["expired request", renderExpiredRequestPage(), "lykeion-daemon status"],
+    ["expired link", renderExpiredLinkPage(), "lykeion open"],
+    ["no session", renderNoSessionPage(), "lykeion open"],
+    ["expired request", renderExpiredRequestPage(), "lykeion open"],
     ["foreign callback", renderForeignCallbackPage(), "restart the daemon"],
     ["refused", renderRefusedPage(), "start the daemon again"],
     ["missing code", renderMissingCodePage(), "restart the daemon"],
@@ -287,5 +291,67 @@ describe("agent sign-in page", () => {
       ],
     });
     expect(html).not.toContain("<script>x</script>");
+  });
+});
+
+describe("the wizard's frame", () => {
+  // These pages and the setup wizard are the same first run seen either side
+  // of a redirect. They were two visual registers: a 34rem full-height column
+  // with a status circle and an uppercase mono eyebrow over a display-size
+  // heading, against the wizard's 560px column with a modest heading and a
+  // footer strip. A researcher crossing between them saw two products.
+
+  it("derives its palette from the same five seeds the application does", () => {
+    // Not matched by hand. The greys were picked independently and had already
+    // drifted — the muted step was #aeb1b6 here against a computed #c6c7c9
+    // there — and two hand-tuned palettes drift again the moment either moves.
+    const html = renderNoSessionPage();
+    expect(html).toContain("--seed-bg:#0f0f10");
+    expect(html).toContain("--seed-ink:#eeeff1");
+    expect(html).toContain("--seed-surface:#151516");
+    expect(html).toContain("--seed-accent:#d25e65");
+    expect(html).toContain("color-mix(in srgb,var(--seed-ink) 82%,var(--seed-bg))");
+  });
+
+  it("holds its content in the column width the wizard holds its own in", () => {
+    expect(renderNoSessionPage()).toContain("max-width:560px");
+  });
+
+  it("sets its heading at the wizard's size rather than at display size", () => {
+    const html = renderNoSessionPage();
+    expect(html).toContain("font-size:2rem");
+    expect(html).toContain("letter-spacing:-.03em");
+    // The old clamp went to 3.25rem, which is what made these pages read as a
+    // different product from two rooms away.
+    expect(html).not.toContain("clamp(2rem,8vw,3.25rem)");
+  });
+
+  it("keeps the status for a screen reader after taking the circle away", () => {
+    // The eyebrow said what kind of page this is — "PAIRING SESSION
+    // UNAVAILABLE" — and the wizard has nothing like it. Dropping it from the
+    // page would drop that from assistive technology too, so it stays as the
+    // live region and loses only its visual weight.
+    const html = renderNoSessionPage();
+    expect(html).toContain('role="status"');
+    expect(html).toContain("Pairing session unavailable");
+    expect(html).not.toContain('class="status-mark"');
+  });
+
+  it("gives a footer strip only to a page that has something to put in it", () => {
+    // The strip is the wizard's, and on a step it carries the dots. A refusal
+    // is where the flow stopped: a progress strip there would draw movement
+    // that is not happening, and an empty bordered rule would be furniture.
+    expect(
+      renderSetupPage({
+        lab: "http://127.0.0.1:1421",
+        machineName: "ana-macbook",
+        challenge: "c",
+        state: "s",
+        platform: "macos-aarch64",
+        version: "0.1.0",
+        redirect: "http://127.0.0.1:9999/paired",
+      }),
+    ).toContain('class="strip"');
+    expect(renderNoSessionPage()).not.toContain('class="strip"');
   });
 });

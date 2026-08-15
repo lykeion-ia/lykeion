@@ -2941,3 +2941,62 @@ it("names one Task at a time, declining the rest rather than forking an agent pe
   ]);
   expect(lab.titleReplies.find((r) => r.requestId === "ntreq_a")?.title).toBe("The one that ran");
 });
+
+it("says why a run cannot start, when the probe knows something better than \"no adapter\"", async () => {
+  // The message this replaces was the one bug report worth fixing twice: a
+  // researcher whose Claude token lapsed overnight was told their machine had
+  // no adapter for it, went looking for a bridge that was already installed,
+  // and never learned the thing that would have fixed it in a minute.
+  const lab = await stubLab([
+    { type: "start-run", runId: "run_held", studyId: "s_h", sessionId: "se_h", agent: "claude", prompt: "go", grants: [] },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const r = startRuns({
+    lab: lab.base,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () => undefined,
+    heldBackReason: (agent) => (agent === "claude" ? "sign in to Claude Code to run it" : undefined),
+  });
+  running.push(r);
+  await until(
+    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
+    "a refusal",
+  );
+  const done = lab.events
+    .flatMap((e) => e.frames)
+    .find((f) => f.event.event === "completed") as { event: { state: { state: string; reason?: string } } };
+  expect(done.event.state.state).toBe("failed");
+  expect(done.event.state.reason).toBe("sign in to Claude Code to run it");
+  // And it does NOT say the thing that was wrong.
+  expect(done.event.state.reason).not.toMatch(/no adapter/);
+});
+
+it("still says there is no adapter when that is what is true", async () => {
+  // The other half. An agent nothing has ever vetted and nothing has anything
+  // to say about is exactly what the old sentence described, and it survives.
+  const lab = await stubLab([
+    { type: "start-run", runId: "run_none", studyId: "s_n", sessionId: "se_n", agent: "nope", prompt: "go", grants: [] },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const r = startRuns({
+    lab: lab.base,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () => undefined,
+    heldBackReason: () => undefined,
+  });
+  running.push(r);
+  await until(
+    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
+    "a refusal",
+  );
+  const done = lab.events
+    .flatMap((e) => e.frames)
+    .find((f) => f.event.event === "completed") as { event: { state: { state: string; reason?: string } } };
+  expect(done.event.state.reason).toMatch(/no adapter for "nope"/);
+});

@@ -4,11 +4,15 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { mkdtempSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { encodeRequest } from "@lykeion/api/pair-code";
 import { DAEMON_VERSION, type DaemonConfig } from "./config";
-import { platformTag } from "./probe";
+import { adapterOnThisMachine, catalogueOnThisMachine, platformTag } from "./probe";
 import { labLabel, writeState, type PairedState } from "./state";
 import { exchangeCode } from "./lab";
+import { appPage, forwardTo, isForwarded, requestPath, serveApp, uiDirectory } from "./front-door";
 import { agentAuthStates, startSignIn, type AgentAuth } from "./agent-auth";
+import { forgetLabHere, recordLabHere } from "./lab-child";
+import { acceptAdapter, revokeAdapter } from "./adapter-consent";
 import {
   renderAgentSignInPage,
   renderExchangeFailurePage,
@@ -39,6 +43,33 @@ const REQUEST_TTL_SECONDS = 180;
 const COOKIE_NAME = "lykeion_pair";
 
 const MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * Every path this server owns, listed so that the front door below cannot
+ * take one over.
+ *
+ * Two of them exist for only part of a session — `/connect` and `/paired` are
+ * not routed at all once this machine has paired — and a route that has
+ * nothing to say must answer that it does not exist, not hand back the
+ * application with a 200. `/` is listed even though every branch of it
+ * answers today, because it is the path the nonce gate stands on: if one
+ * branch ever stopped answering, an unadmitted browser would be handed the
+ * application instead of the refusal, and the gate would have been walked
+ * around without anyone editing it.
+ */
+const OWN_ROUTES = new Set([
+  "/",
+  "/connect",
+  "/agents",
+  "/agents/signin",
+  "/agents/consent",
+  "/paired",
+  "/setup/topology",
+  "/setup/challenge",
+  "/setup/paired",
+  "/setup/machine",
+  "/setup/still-here",
+]);
 
 /**
  * A member said no. Distinguished from every other way pairing ends so the
@@ -73,6 +104,17 @@ export interface PairingSession {
    */
   rotateNonce(): string;
   /**
+   * Points this session's forwarded prefixes at a lab that has just started
+   * behind this daemon.
+   *
+   * Exists because the lab can arrive after the session does: a first run
+   * serves its own setup page, asks where the lab lives, and starts one only
+   * once the researcher has answered. Until this is called the session
+   * forwards nothing and refuses the co-located routes, which is the truth
+   * about a daemon with no lab behind it.
+   */
+  serveLabThrough(labPort: number): void;
+  /**
    * Throws away this request and opens another in its place — a new nonce,
    * and with it a new verifier, challenge and state — answering with the
    * link to the replacement. This is what an unanswered request expiring
@@ -81,6 +123,32 @@ export interface PairingSession {
    * the request the approval screen is looking at intact, and this ends it.
    */
   rotateRequest(): string;
+  /**
+   * The open request as one line a person can carry to another computer.
+   *
+   * Same request, different transport: the same challenge, state and three
+   * facts a pairing link puts in a query string, encoded so they survive
+   * being printed into a terminal and pasted into a browser somewhere else.
+   * For a machine with no browser of its own and no route back to its own
+   * loopback address, which is most of the machines research actually runs
+   * on.
+   *
+   * Taking one stops the expiry timer for good — see `touchDeadline`. It is
+   * derived from the live request, so {@link rotateRequest} still replaces
+   * it; what must not replace it is a clock counting down while somebody is
+   * walking to another building.
+   */
+  pasteRequest(): string;
+  /**
+   * Redeems a code a person carried back, by the exchange `/paired` makes.
+   *
+   * Settles `paired` exactly as the callback does, so a daemon waiting on
+   * that promise goes on with its life without knowing which way the answer
+   * arrived. Rejects rather than settling when the lab refuses: a failed
+   * exchange is not a refused request, and the request this session holds is
+   * still the one that would succeed on another try.
+   */
+  redeemCode(code: string): Promise<PairedState>;
   close(): Promise<void>;
 }
 
@@ -126,6 +194,14 @@ export interface StartPairingOptions {
    *  depend on whether the machine running these tests happens to have Claude
    *  Code installed. */
   signInPath?: string;
+  /** Where the built application this server also serves is, defaulting to
+   *  `uiDirectory()` — the real one, two directories above this package.
+   *  Injectable because the most delicate line in this file is the one that
+   *  keeps the front door off the routes above it, and against the real
+   *  directory that line is only under test on a machine where the UI happens
+   *  to have been built: with nothing there, the front door answers its own
+   *  404 and a test asserting a status alone cannot tell the two apart. */
+  uiDir?: string;
   /**
    * The machine this daemon has already paired, when this session exists only
    * to serve the sign-in step again.
@@ -144,6 +220,30 @@ export interface StartPairingOptions {
    * single-use nonce, the same HttpOnly cookie, the same origin gating.
    */
   alreadyPaired?: PairedState;
+  /**
+   * Where to send the routes the lab answers, when the lab runs on this
+   * computer — `forwardTo(labPort)`, and nothing else in production.
+   *
+   * Undefined is the lab being somewhere else, which is every daemon that
+   * joins a lab it did not start: those routes are then not this server's to
+   * answer and it says so with a 404, exactly as before this existed.
+   */
+  forward?: (req: IncomingMessage, res: ServerResponse) => void;
+  /**
+   * Brings a lab up on this computer, called when the first run says the lab
+   * lives here.
+   *
+   * A hook rather than something this module does itself: starting a child
+   * process, supervising it and tearing it down on the way out belongs to
+   * whoever owns this daemon's lifetime, and a pairing server that spawned
+   * processes would own a lifetime it cannot see the end of. What this module
+   * knows is when the researcher answered.
+   *
+   * It is expected to install forwarding through `serveLabThrough` before it
+   * resolves, so that the next request — the application asking the lab who
+   * it is — has somewhere to go.
+   */
+  onLabHere?: () => Promise<void>;
 }
 
 function readCookie(req: IncomingMessage): string | undefined {
@@ -267,6 +367,7 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
   const dataDir = options.dataDir ?? mkdtempSync(join(tmpdir(), "lykeion-daemon-"));
 
   const ttl = options.ttlSeconds ?? REQUEST_TTL_SECONDS;
+  const uiDir = options.uiDir ?? uiDirectory();
 
   /** Whether this session was opened only to serve the sign-in step again,
    *  for a machine that is already paired — see `alreadyPaired`. Decides
@@ -311,6 +412,27 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
    *  one, in its cookie. */
   let previousNonce: string | undefined;
   let currentLab = options.lab;
+
+  /**
+   * Where the lab's own routes go, when there is a lab behind this daemon.
+   *
+   * Held here rather than read off `options` on every request because it can
+   * arrive AFTER this session opened: a first run serves its own setup page,
+   * asks where the lab lives, and only then starts one. The session that
+   * asked the question is the session that has to carry the answer.
+   */
+  let forward = options.forward;
+
+  /**
+   * Whether the lab this session pairs with is running behind this daemon.
+   *
+   * Read off the forwarding handler rather than off a flag, because that
+   * handler IS the fact: it exists when, and only when, a lab child is up on
+   * this computer and this daemon is the address in front of it. A separate
+   * boolean could disagree with it, and the one it would be wrong about is
+   * the case that decides whether an approval screen may be skipped.
+   */
+  const hasLocalLab = (): boolean => forward !== undefined;
   /** The request whose first successful `/connect` already chose its lab.
    *  Kept separate from `currentLab`: a lab supplied on the command line is
    *  merely a prefilled choice and remains editable until the browser
@@ -320,6 +442,23 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
   /** Counts down to the open request being replaced. Re-armed by every step
    *  that shows somebody is still working through the flow. */
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Whether this session's request must stop expiring.
+   *
+   * Set by the two moments that put a person somewhere this process cannot
+   * see, working on something a replaced request would ruin:
+   *
+   * - a paste request has been handed out, and whoever took it is walking to
+   *   another computer to approve it;
+   * - the researcher has answered that the lab lives HERE, and is now filling
+   *   in the form that creates it.
+   *
+   * Both are the flow working, and in both the terminal goes quiet — which is
+   * the only thing the expiry clock can actually measure. Never unset:
+   * `rotateRequest` mints a new request, and the new one is just as committed
+   * as the old, since whoever caused this is still on the same path.
+   */
+  let requestHeldOpen = false;
   /** True once this session has paired — set once, alongside `expiryTimer`
    *  being cleared, and never unset. `/connect` refuses outright once this
    *  is true, rather than `committedState` being reset to let a second one
@@ -409,15 +548,30 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
       // that a paired session is kept open on purpose, to keep serving the
       // sign-in page `/paired` just rendered, this is what has to stop it
       // instead.
-      // Before the timer is cleared, so nothing between the two lines can
-      // arm another: `touchDeadline` refuses outright once this is set.
-      pairedMachine = outcome.state;
-      if (expiryTimer) clearTimeout(expiryTimer);
-      expiryTimer = undefined;
-      resolvePaired(outcome.state);
+      settlePaired(outcome);
     } else {
       rejectPaired(outcome.error);
     }
+  }
+
+  /**
+   * What pairing actually settles, with nothing said about how the answer was
+   * rendered.
+   *
+   * Split out of `finishPaired` because the co-located path settles the same
+   * session without an HTML page anywhere in it: the browser is already on
+   * the application and is told in JSON. Two copies of this would be two
+   * definitions of "paired", and the one that forgot to stop the timer would
+   * mint a fresh, working pairing link on a machine that already holds a
+   * token — which is exactly the failure the comment below exists for.
+   */
+  function settlePaired(outcome: { ok: true; state: PairedState }): void {
+    // Before the timer is cleared, so nothing between the two lines can
+    // arm another: `touchDeadline` refuses outright once this is set.
+    pairedMachine = outcome.state;
+    if (expiryTimer) clearTimeout(expiryTimer);
+    expiryTimer = undefined;
+    resolvePaired(outcome.state);
   }
 
   let base = "";
@@ -462,14 +616,33 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
    * be ended by the timer it replaced.
    */
   function touchDeadline(): void {
+    // A request somebody is part-way through is not a request nobody is
+    // answering — it is the one case where an empty terminal is evidence the
+    // flow is working. The clock this timer runs measures nobody arriving,
+    // and on both of `requestHeldOpen`'s paths the person is expected to be
+    // elsewhere: at another computer approving a pasted request, or in front
+    // of a form that creates a lab. Rotating underneath either of them
+    // replaces the challenge in play, and what they carry back then redeems
+    // against a verifier that no longer exists.
+    //
+    // That failure was silent and it cost the whole pairing: rotating also
+    // retires the cookie the open page holds, so `/setup/machine`,
+    // `/setup/challenge` and `/setup/paired` all begin refusing a page that
+    // is still on screen. The researcher creates their lab, the machine
+    // quietly fails to join it, and nothing on the page says so.
+    //
+    // Safe to leave standing because the link is what expiring protects. A
+    // pairing link is a door into this machine and closes on its own clock,
+    // checked at `/` against `nonceMintedAt` and untouched by this.
+    if (requestHeldOpen) return;
     // A machine that already holds a token has no request left to expire, and
     // arming this for one is not merely pointless: the timer's own callback
     // calls `rotateRequest`, which mints a fresh, WORKING pairing link and
     // announces it — forever, every ttl seconds, on a machine that is already
     // paired. `finishPaired` stops the timer that is running when a session
     // pairs; this is what keeps `rotateNonce` from arming another one
-    // afterwards, now that `status` mints an admission link for a paired
-    // daemon too.
+    // afterwards, now that a paired daemon mints an admission link too, on
+    // request through `mintLink` rather than as a side effect of `status`.
     if (pairedMachine !== undefined) return;
     if (expiryTimer) clearTimeout(expiryTimer);
     expiryTimer = setTimeout(() => {
@@ -495,6 +668,47 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
     previousState = state;
     mintRequest();
     return rotateNonce();
+  }
+
+  /** @see PairingSession.pasteRequest */
+  function pasteRequest(): string {
+    requestHeldOpen = true;
+    // The timer that is already armed, as well as the ones `touchDeadline`
+    // will now decline to arm. Setting the flag alone would leave whatever
+    // was counting down when this was called still counting.
+    if (expiryTimer) clearTimeout(expiryTimer);
+    expiryTimer = undefined;
+    return encodeRequest({
+      name: hostname(),
+      platform: platformTag(),
+      version: DAEMON_VERSION,
+      challenge,
+      state,
+      // The same callback the redirect names. Nobody on this path can open
+      // it — that is the whole reason this path exists — but the lab still
+      // checks it is loopback and this daemon still recognises its own, so
+      // what changes here is who carries the answer, not what it is about.
+      redirect: `${base}/paired`,
+    });
+  }
+
+  /** @see PairingSession.redeemCode */
+  async function redeemCode(code: string): Promise<PairedState> {
+    // Before the lab is asked anything. A second code against a machine that
+    // already holds a token would overwrite the identity it is running as,
+    // and the same guard `/connect` and `/paired` stand behind.
+    if (pairedMachine !== undefined) throw new Error("this machine has already paired");
+    if (!currentLab)
+      throw new Error(
+        "this daemon does not know which lab to join — start it again with --lab <url>",
+      );
+    if (!code) throw new Error("that was not a code");
+    const result = await exchangeCode(currentLab, code, verifier, outboundCalls.signal);
+    const paired: PairedState = { lab: currentLab, ...result };
+    writeState(dataDir, paired);
+    settled = true;
+    settlePaired({ ok: true, state: paired });
+    return paired;
   }
 
   function authorized(req: IncomingMessage): boolean {
@@ -555,23 +769,53 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
    * route used to make, so the two pages cannot come apart on which one a
    * reload, a nonce and a cookie each get.
    */
+  /**
+   * What the link this daemon prints actually opens.
+   *
+   * The application, on the step this machine is up to — step 1 for a machine
+   * with no identity yet, step 3 for one that has an identity and may still
+   * want to sign an agent in. The same mechanism `/paired` uses, through the
+   * same `appPage`, so how a step is carried into the page is decided once.
+   *
+   * Without this the first run was unreachable. Steps 1 to 3 live at
+   * `#/setup/N` inside the application, `/` is a route this server owns so the
+   * front door never offers it, and every branch here answered with a page of
+   * the daemon's own — so the one address a researcher is ever given opened
+   * the surface the wizard was written to replace.
+   *
+   * Both of those pages stay as the fallback, and that is not politeness: a
+   * daemon running from source with no `ui/dist` has a real pairing request to
+   * show and nothing to show it on, and its own page works everywhere.
+   */
   async function landingPage(): Promise<string> {
     if (pairedMachine === undefined)
-      return renderSetupPage({
-        lab: currentLab ?? "",
-        machineName: hostname(),
-        challenge,
-        state,
-        platform: platformTag(),
-        version: DAEMON_VERSION,
-        redirect: `${base}/paired`,
-      });
-    return renderAgentSignInPage({
-      machineName: pairedMachine.machineName,
-      labLabel: labLabel(pairedMachine),
-      labUrl: pairedMachine.lab,
-      agents: await readAgentAuthStates(),
-    });
+      return (
+        // Step 1 only while the question step 1 asks is still open. Once a lab
+        // is running here that question is answered, and what comes next —
+        // creating the owner account IN that lab — lives behind the auth gate
+        // rather than in the wizard's own route. Serving step 1 again would
+        // ask a researcher where their lab lives while it is already running
+        // behind the page they are reading.
+        appPage(uiDir, hasLocalLab() ? undefined : 1, { workspace: hasLocalLab() }) ??
+        renderSetupPage({
+          lab: currentLab ?? "",
+          machineName: hostname(),
+          challenge,
+          state,
+          platform: platformTag(),
+          version: DAEMON_VERSION,
+          redirect: `${base}/paired`,
+        })
+      );
+    return (
+      appPage(uiDir, 3, { workspace: hasLocalLab() }) ??
+      renderAgentSignInPage({
+        machineName: pairedMachine.machineName,
+        labLabel: labLabel(pairedMachine),
+        labUrl: pairedMachine.lab,
+        agents: await readAgentAuthStates(),
+      })
+    );
   }
 
   const server = createServer((req, res) => {
@@ -615,7 +859,7 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
         // `/paired` just stopped and redirecting to whatever lab a caller
         // names.
         if (settled) return sendJson(res, 409, { error: "this machine has already paired" });
-        if (!authorized(req)) return sendJson(res, 403, { error: "run lykeion-daemon status for a fresh link" });
+        if (!authorized(req)) return sendJson(res, 403, { error: "run lykeion open for a fresh link" });
         const mediaType = (req.headers["content-type"] ?? "")
           .split(";", 1)[0]!
           .trim()
@@ -658,7 +902,7 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
           !secretsMatch(preflightNonce, nonce) ||
           !authorized(req)
         )
-          return sendJson(res, 403, { error: "run lykeion-daemon status for a fresh link" });
+          return sendJson(res, 403, { error: "run lykeion open for a fresh link" });
         if (committedState !== undefined && secretsMatch(committedState, state))
           return sendJson(res, 409, {
             error: "this pairing request is already continuing to a lab",
@@ -680,9 +924,27 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
           `challenge=${encodeURIComponent(challenge)}`,
           `state=${encodeURIComponent(state)}`,
           `redirect=${encodeURIComponent(redirect)}`,
+          // Which step of the first run this trip is inside, so the lab's
+          // approval screen can keep the count going rather than dropping the
+          // researcher into what reads as a different product halfway
+          // through. Step 2, because the trip out and back happens INSIDE it
+          // — the same reason `/paired` brings them back to step 3 and not to
+          // a fourth. A pairing link opened cold carries none of this, and
+          // that screen stays bare, which is right: whoever opened it is not
+          // in a wizard.
+          `step=2`,
         ].join("&");
-        res.writeHead(302, { location: `${lab}/#/pair?${query}` });
-        return res.end();
+        // Answered as JSON rather than as a 302, because every caller of this
+        // route asks with `fetch` — and `fetch` follows a redirect ITSELF. It
+        // does not navigate the tab. A 302 here meant the page called this,
+        // quietly received the lab's own HTML into a promise nobody read, and
+        // stayed exactly where it was; the screen reported that it could not
+        // reach the daemon, which was the one thing that had worked.
+        //
+        // The daemon's own fallback page is unaffected: it asks with
+        // `redirect: "manual"`, tolerates anything that is not an error, and
+        // builds the same address itself from values baked into it.
+        return sendJson(res, 200, { redirect: `${lab}/#/pair?${query}` });
       }
 
       if (path === "/agents" && req.method === "GET") {
@@ -702,8 +964,103 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
         if (!signInAuthorized(req))
           return sendJson(res, 403, { error: "that call must come from this daemon's own sign-in page" });
         if (crossOrigin(req)) return sendJson(res, 403, { error: "that call must come from this daemon page" });
-        const agents = await readAgentAuthStates();
-        return sendJson(res, 200, { agents });
+        // The whole catalogue, in catalogue order — the same list
+        // `probeAgentClis` walks and therefore the same list the lab shows
+        // once it has heard from this machine. Answering only for the agents
+        // that can be ASKED about a sign-in made this screen count two while
+        // the workbench a moment later counted twelve, about one computer.
+        const roster = await catalogueOnThisMachine(process.env.PATH ?? "");
+        const asked = await readAgentAuthStates();
+        // Each agent's adapter alongside who is signed in, because the page
+        // reading this has to decide which of two things is standing in a
+        // row's way — a sign-in, or a program nobody has agreed to run. It
+        // costs a PATH lookup and a file read per agent; nothing is spawned.
+        return sendJson(res, 200, {
+          agents: await Promise.all(
+            roster.map(async (row) => ({
+              ...row,
+              // Spread over the roster row, so an entry nothing could ask
+              // carries no `signedIn` key at all rather than a `false` —
+              // `false` is what puts a Sign in control on a row, and pressing
+              // it for an agent with no confined home to sign into would
+              // spawn nothing. Where a state does exist its own `available`
+              // wins: it ran the command, which is better evidence than a
+              // PATH lookup.
+              ...(asked.find((state) => state.agent === row.agent) ?? {}),
+              ...(await adapterOnThisMachine(row.agent, process.env.PATH ?? "", dataDir)),
+            })),
+          ),
+        });
+      }
+
+      /**
+       * The page saying it is still open.
+       *
+       * `touchDeadline`'s rule is "every step that shows somebody is still
+       * working through this flow", and a browser sitting on the first
+       * question is exactly that — but it was the one kind of evidence
+       * nothing reported. So the request expired underneath a researcher who
+       * was reading it, the nonce rotated, the cookie their tab holds stopped
+       * being recognised, and every control on the page went quiet.
+       *
+       * Guarded like the rest, which is what makes it safe to let it hold the
+       * clock: only a browser this daemon actually admitted can send it, the
+       * nonce it was admitted on is already spent, and a tab that is closed
+       * stops sending — so the request goes back to expiring the moment
+       * nobody is looking at it, which is what the clock is for.
+       */
+      if (path === "/setup/still-here" && req.method === "POST") {
+        if (!signInAuthorized(req))
+          return sendJson(res, 403, {
+            error: "that call must come from this daemon's own setup page",
+          });
+        if (crossOrigin(req))
+          return sendJson(res, 403, { error: "that call must come from this daemon page" });
+        touchDeadline();
+        return sendJson(res, 200, { ok: true });
+      }
+
+      /**
+       * The answer to the one question this product asks that only the
+       * researcher can settle.
+       *
+       * Written here rather than at the lab, and that is the whole shape of
+       * it: an acceptance decides what runs beside a credential in a home
+       * this daemon owns, so it lives in this machine's own data directory
+       * next to the pairing token, and a lab on another computer can present
+       * the terms but never record the answer.
+       *
+       * The body names the AGENT and nothing else. Letting it name the
+       * command would let whatever can reach this route write an acceptance
+       * for a program this machine never declared — and that acceptance is
+       * exactly what rung 6 reads before it spawns anything.
+       */
+      if (path === "/agents/consent" && req.method === "POST") {
+        // The same two checks `/agents/signin` opens with, and for the same
+        // reasons: this route has no content-type gate either, so it is
+        // CORS-simple and reachable cross-origin with no preflight at all.
+        if (!signInAuthorized(req))
+          return sendJson(res, 403, {
+            error: "that call must come from this daemon's own sign-in page",
+          });
+        if (crossOrigin(req))
+          return sendJson(res, 403, { error: "that call must come from this daemon page" });
+        let body: unknown;
+        try {
+          body = await readJsonBody(req);
+        } catch (err) {
+          return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        const record = body as Record<string, unknown>;
+        const agent = typeof record.agent === "string" ? record.agent : "";
+        const found = await adapterOnThisMachine(agent, process.env.PATH ?? "", dataDir);
+        if (found.adapterCommand === undefined)
+          return sendJson(res, 400, {
+            error: `this machine has no adapter for ${agent || "that agent"} to decide about`,
+          });
+        if (record.accepted === true) acceptAdapter(dataDir, agent, found.adapterCommand);
+        else revokeAdapter(dataDir, agent, found.adapterCommand);
+        return sendJson(res, 200, { ok: true });
       }
 
       if (path === "/agents/signin" && req.method === "POST") {
@@ -727,6 +1084,189 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
         const agent = typeof record.agent === "string" ? record.agent : "";
         const outcome = await startSignIn(agent, options.signInSpawn, options.signInPath);
         return sendJson(res, outcome.started ? 202 : 400, outcome);
+      }
+
+      // The first run's one branching answer, kept where the daemon can act
+      // on it. The lab being here is a fact about this computer, not about
+      // the browser that happened to ask — so it is written into the data
+      // directory rather than held in a page that a reload would forget.
+      //
+      // Guarded exactly as `/agents/signin` is, and for the same reason: no
+      // content-type gate means a CORS-simple request, so without the
+      // admission check any page open in this browser could decide where a
+      // researcher's lab lives.
+      if (path === "/setup/topology" && req.method === "POST") {
+        if (!signInAuthorized(req))
+          return sendJson(res, 403, {
+            error: "that call must come from this daemon's own setup page",
+          });
+        if (crossOrigin(req))
+          return sendJson(res, 403, { error: "that call must come from this daemon page" });
+        let body: unknown;
+        try {
+          body = await readJsonBody(req);
+        } catch (err) {
+          return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        const topology = (body as Record<string, unknown>).topology;
+        // Named rather than coerced: this decides whether a lab process is
+        // started on this computer, and a spelling nobody recognises must not
+        // fall through to either answer.
+        if (topology !== "here" && topology !== "elsewhere")
+          return sendJson(res, 400, {
+            error: `topology must be "here" or "elsewhere", not ${JSON.stringify(topology)}`,
+          });
+        if (topology !== "here") {
+          forgetLabHere(dataDir);
+          // Answering the first question is a step somebody took, which is
+          // exactly what this clock is for — "every step that shows somebody
+          // is still working through the flow". It was never wired here, so
+          // the span a researcher had to type a lab address into the next
+          // screen was whatever was left of the one they spent reading the
+          // first, and running out revoked the cookie their open page held.
+          touchDeadline();
+          return sendJson(res, 200, { topology });
+        }
+        recordLabHere(dataDir);
+        try {
+          // Started now rather than on the next run of this daemon. The step
+          // after this one creates the owner account IN that lab, through
+          // this daemon's own address — so a researcher told "taken" while
+          // nothing was listening would meet the next screen with nothing
+          // behind it.
+          await options.onLabHere?.();
+        } catch (err) {
+          // The record goes back too. Keeping it would leave this machine
+          // saying its lab is here, on the strength of an attempt that
+          // failed, and the researcher was just told it did not work.
+          forgetLabHere(dataDir);
+          return sendJson(res, 500, {
+            error: `the lab for this machine did not start: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+        // The request stops expiring from here. What comes next is a person
+        // typing their name, their email and a password into a form, and the
+        // clock this stops measures nobody arriving — which is exactly what a
+        // researcher filling in a form looks like from this process. Rotating
+        // underneath them retires the cookie their open page holds, so the
+        // pairing this very flow is in the middle of starts refusing itself:
+        // the lab gets created, the machine quietly does not join it, and the
+        // page says nothing because it never asked anything that failed
+        // loudly.
+        requestHeldOpen = true;
+        if (expiryTimer) clearTimeout(expiryTimer);
+        expiryTimer = undefined;
+        return sendJson(res, 200, { topology });
+      }
+
+      // The two halves of pairing a machine to the lab standing beside it.
+      //
+      // In this topology the browser already holds both ends: it was admitted
+      // to this page by the nonce, it is signed in to the lab as the owner it
+      // has just created, and both are the same origin because this daemon
+      // proxies the lab. So the page runs the existing handshake itself, and
+      // what disappears is the ceremony — a form asking for an address the
+      // browser is already at, and an approval screen asking somebody to
+      // approve themselves.
+      //
+      // NOTHING new is trusted. Same PKCE secrets, same one-time code on the
+      // same clock, same `owner_id` binding, same loopback redirect. The
+      // difference is who carries the code between the two ends: a redirect
+      // there, a `fetch` here.
+      // What this computer calls itself, answered whatever the topology is.
+      //
+      // Separate from `/setup/challenge` because that route refuses outright
+      // when the lab is not here, and the join branch — where the lab is
+      // explicitly somewhere else — still has to offer a machine name the
+      // researcher can change. These are facts about the machine, not about
+      // a pairing request, and a browser cannot work either of them out: it
+      // knows its own user agent, not which daemon build is running here.
+      if (path === "/setup/machine" && req.method === "GET") {
+        if (!signInAuthorized(req))
+          return sendJson(res, 403, {
+            error: "that call must come from this daemon's own setup page",
+          });
+        if (crossOrigin(req))
+          return sendJson(res, 403, { error: "that call must come from this daemon page" });
+        return sendJson(res, 200, {
+          name: hostname(),
+          platform: platformTag(),
+          daemonVersion: DAEMON_VERSION,
+        });
+      }
+
+      if (path === "/setup/challenge" && req.method === "GET") {
+        if (!signInAuthorized(req))
+          return sendJson(res, 403, {
+            error: "that call must come from this daemon's own setup page",
+          });
+        if (crossOrigin(req))
+          return sendJson(res, 403, { error: "that call must come from this daemon page" });
+        // Refused rather than answered for a lab somewhere else, and this is
+        // the check that keeps the shortcut honest. The whole argument for
+        // skipping the approval screen is that the person approving and the
+        // person asking are demonstrably the same — which holds only because
+        // the lab is behind this daemon's own address. A remote lab has
+        // members this browser is not, and it approves its own machines.
+        if (!hasLocalLab())
+          return sendJson(res, 409, {
+            error: "the lab for this machine is not on this machine",
+          });
+        // Everything `pairMachine` needs, so the page composes nothing about
+        // this machine out of what a browser can see. A browser knows its own
+        // user agent; it does not know which daemon build is running here or
+        // what this platform is called, and a page guessing either would put
+        // a wrong answer in the lab's own record of the machine.
+        return sendJson(res, 200, {
+          challenge,
+          state,
+          redirect: `${base}/paired`,
+          name: hostname(),
+          platform: platformTag(),
+          daemonVersion: DAEMON_VERSION,
+        });
+      }
+
+      if (path === "/setup/paired" && req.method === "POST") {
+        if (!signInAuthorized(req))
+          return sendJson(res, 403, {
+            error: "that call must come from this daemon's own setup page",
+          });
+        if (crossOrigin(req))
+          return sendJson(res, 403, { error: "that call must come from this daemon page" });
+        if (!hasLocalLab())
+          return sendJson(res, 409, {
+            error: "the lab for this machine is not on this machine",
+          });
+        let body: unknown;
+        try {
+          body = await readJsonBody(req);
+        } catch (err) {
+          return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        const sent = body as Record<string, unknown>;
+        // The same comparison `/paired` makes on its own callback, and for
+        // the same reason: this is what tells a code this session asked for
+        // apart from one somebody else's page obtained.
+        if (!secretsMatch(typeof sent.state === "string" ? sent.state : "", state))
+          return sendJson(res, 400, { error: "that answer is for a different pairing request" });
+        const code = typeof sent.code === "string" ? sent.code : "";
+        if (!currentLab || !code)
+          return sendJson(res, 400, { error: "that answer carried no code to redeem" });
+        try {
+          const result = await exchangeCode(currentLab, code, verifier, outboundCalls.signal);
+          const paired: PairedState = { lab: currentLab, ...result };
+          writeState(dataDir, paired);
+          settlePaired({ ok: true, state: paired });
+          return sendJson(res, 200, { machineName: paired.machineName, lab: labLabel(paired) });
+        } catch (err) {
+          // Left unsettled on purpose: a failed exchange is not a refusal,
+          // and the request this session is holding is still the one that
+          // would succeed on a retry.
+          return sendJson(res, 502, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
 
       // Not routed for an `alreadyPaired` session either, for the same
@@ -786,15 +1326,26 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
               ? requestCookie
               : undefined;
           settled = true;
+          // Back onto the step that was waiting, rather than onto a page of
+          // this daemon's own. The trip out to the lab and back happened
+          // INSIDE step 2, so the count promised at step 1 still holds and
+          // the researcher lands where the flow left off — with the agents
+          // step in front of them instead of a seam between two products.
+          //
+          // The daemon's own sign-in page remains the answer when there is no
+          // built application to serve: a daemon running from source with no
+          // `ui/dist` has just completed a real pairing, and saying so on a
+          // page it renders itself beats a 404 for the page it has not got.
           await finishPaired(
             res,
             200,
-            renderAgentSignInPage({
-              machineName: paired.machineName,
-              labLabel: labLabel(paired),
-              labUrl: paired.lab,
-              agents,
-            }),
+            appPage(uiDir, 3, { workspace: hasLocalLab() }) ??
+              renderAgentSignInPage({
+                machineName: paired.machineName,
+                labLabel: labLabel(paired),
+                labUrl: paired.lab,
+                agents,
+              }),
             { ok: true, state: paired },
           );
         } catch (err) {
@@ -809,6 +1360,45 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
             },
           );
         }
+        return;
+      }
+
+      // Everything the application asks for once its page has loaded: its own
+      // assets, and any deep link a researcher types or a reload sends back.
+      // Last, and only for paths this server does not own, so that it widens
+      // what one address serves without touching what any route decides —
+      // admission to `/` is still the cookie or a live nonce, and the front
+      // door has no say in it.
+      //
+      // Asked of `path` — the pathname every route above matched on — rather
+      // than of the request target, and then of `requestPath` for the two
+      // things the URL parser leaves alone. The parser has already collapsed
+      // the dot segments, so `/x/../paired` and `//elsewhere/paired` arrive
+      // here as `/paired`; `requestPath` decodes `/%70aired` and drops the
+      // slash off `/paired/`. Between them the guard sees every spelling the
+      // route table sees and a few it does not, which is the direction this
+      // has to err in: a route that answers 404 because it does not exist on
+      // this daemon must not be reachable by writing its name differently.
+      const named = requestPath(path);
+      const ours = named !== undefined && OWN_ROUTES.has(named);
+      if (!ours && serveApp(req, res, uiDir, undefined, hasLocalLab())) return;
+
+      // What the application calls once its page has loaded, when the lab it
+      // calls is running beside this daemon. `serveApp` hands these back
+      // deliberately — a forwarded prefix is never a page — and this is the
+      // other half of that: with a lab here they go to it, and with the lab
+      // somewhere else they were never this server's to answer and fall
+      // through to the 404 below.
+      //
+      // Behind the same `ours` guard as the front door, so that widening
+      // what one address serves cannot reach a route this server owns. No
+      // route it owns is a forwarded prefix today, and this is what keeps
+      // that from being something the next prefix has to remember: a path
+      // this daemon answers means this machine here and something else
+      // entirely at a lab, and it must not stop meaning the first because a
+      // lab happens to be running behind it.
+      if (!ours && forward !== undefined && isForwarded(req.url)) {
+        forward(req, res);
         return;
       }
 
@@ -841,7 +1431,18 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
       return nonce;
     },
     rotateNonce,
+    serveLabThrough(labPort) {
+      // One call sets both halves of the same fact. Where the lab's routes go
+      // and what address this daemon redeems a pairing code against are the
+      // same lab, and setting them apart is how they come to disagree — the
+      // co-located exchange would then be offered (forwarding is up) with
+      // nothing to redeem against (no lab named).
+      forward = forwardTo(labPort);
+      currentLab = `http://127.0.0.1:${labPort}`;
+    },
     rotateRequest,
+    pasteRequest,
+    redeemCode,
     // Getters for the same reason `nonce` is one: a request that runs out
     // of time is replaced in place, and a copy taken at startup would go on
     // naming secrets this session has stopped answering to.
@@ -886,8 +1487,13 @@ export async function startPairing(options: StartPairingOptions): Promise<Pairin
  * this process's problem to raise — the link is already sitting on screen
  * for a person to click themselves — so it prints a line rather than
  * throwing.
+ *
+ * Exported for `runOpen` in `main.ts`, which mints a link the same way
+ * `beginPairing` below does but outside a pairing session — `lykeion
+ * open` asks a daemon that is already running rather than starting one —
+ * and has no reason to carry a second copy of what opening a browser takes.
  */
-function openBrowser(url: string): void {
+export function openBrowser(url: string): void {
   const [command, args]: [string, string[]] =
     process.platform === "darwin"
       ? ["open", [url]]
@@ -900,6 +1506,35 @@ function openBrowser(url: string): void {
 }
 
 /**
+ * What a machine with no browser prints instead of a link nobody there can
+ * open: which lab, what this machine will be called in it, the address to
+ * open somewhere that does have a browser, the line to paste, and the one
+ * command that finishes it.
+ *
+ * Exported for its own test. Every part of it is something a person has to
+ * be able to act on from another computer, and the failure mode is silent —
+ * a researcher who cannot work out what to do with this simply does not
+ * pair the machine.
+ */
+export function pasteInstructions(lab: string, name: string, blob: string): string {
+  // A lab written with a trailing slash is a lab somebody typed, and
+  // `https://lab.example.edu//#/pair` is not an address anybody should be
+  // asked to notice is wrong.
+  const at = lab.replace(/\/+$/, "");
+  return [
+    `This machine needs to join ${at} as "${name}".`,
+    `Open ${at}/#/pair in a browser and paste this:`,
+    "",
+    `  ${blob}`,
+    "",
+    "Then bring back the code it gives you:",
+    "",
+    "  lykeion pair --code <code>",
+    "",
+  ].join("\n");
+}
+
+/**
  * Opens pairing for an unpaired daemon: mints the loopback session, prints
  * the one line a person or a log needs to find it, and opens a browser onto
  * it unless suppressed. The session is handed back still running rather
@@ -907,11 +1542,17 @@ function openBrowser(url: string): void {
  * — a person who lost the link asks it for another one, and only the
  * session that is still open can mint that.
  */
-export async function beginPairing(config: DaemonConfig): Promise<PairingSession> {
+export async function beginPairing(
+  config: DaemonConfig,
+  forward?: StartPairingOptions["forward"],
+  onLabHere?: StartPairingOptions["onLabHere"],
+): Promise<PairingSession> {
   const session = await startPairing({
     port: config.port,
     dataDir: config.dataDir,
     lab: config.lab,
+    forward,
+    onLabHere,
     // A request that ran out is replaced rather than fatal: nobody decided
     // anything, so there is nothing to honour by giving up, and a daemon
     // that exited here would punish walking away from the keyboard. The
@@ -924,7 +1565,22 @@ export async function beginPairing(config: DaemonConfig): Promise<PairingSession
   });
   const link = `${session.base}/?nonce=${session.nonce}`;
   process.stdout.write(`Pair this machine -> ${link}\n`);
-  if (config.openBrowser) openBrowser(link);
+  if (config.openBrowser) {
+    openBrowser(link);
+    return session;
+  }
+  // Somebody asked for no browser AND is watching this terminal — which is
+  // this program's best evidence that the machine it is running on has no
+  // browser of its own. A detached start is not that: it prints into a log
+  // for a researcher who is sitting at this same computer and will open the
+  // link there, and taking a paste request on their behalf would stop this
+  // session's request from ever expiring for a flow nobody is using.
+  //
+  // A lab has to be named, because the instructions are entirely about where
+  // to go: without one there is no address to open and no page to paste
+  // into, and the link above is all this can honestly offer.
+  if (!config.detached && config.lab !== undefined)
+    process.stdout.write(`\n${pasteInstructions(config.lab, hostname(), session.pasteRequest())}`);
   return session;
 }
 
@@ -937,18 +1593,20 @@ export async function beginPairing(config: DaemonConfig): Promise<PairingSession
  * is a thing somebody is standing at a terminal waiting to finish; this is a
  * door left unlocked for whoever skipped signing an agent in, or whose token
  * lapsed months later — both of whom `probe.ts`'s dock string sends here, and
- * neither of whom is watching this process start. `lykeion-daemon status` is
- * what mints the link, on the same terms it already mints a pairing one:
- * fresh on every ask, retiring the last.
+ * neither of whom is watching this process start. `lykeion open` is
+ * what mints the link, on the same terms it mints a pairing one: fresh on
+ * every ask, retiring the last.
  */
 export async function beginSignIn(
   config: DaemonConfig,
   machine: PairedState,
+  forward?: StartPairingOptions["forward"],
 ): Promise<PairingSession> {
   return startPairing({
     port: config.port,
     dataDir: config.dataDir,
     lab: machine.lab,
     alreadyPaired: machine,
+    forward,
   });
 }

@@ -157,6 +157,20 @@ describe("parseHash", () => {
     expect(parseHash("#/workflows")).toEqual({ name: "workflows" });
   });
 
+  it("round-trips the setup route, so a step survives a reload", () => {
+    expect(parseHash("#/setup/3")).toEqual({ name: "setup", step: 3 });
+    expect(routeHash({ name: "setup", step: 3 })).toBe("#/setup/3");
+  });
+
+  it("reads a step it cannot make sense of as the first one", () => {
+    // The address comes from outside the app — a redirect the daemon
+    // composed, or a link somebody kept — so every unusable spelling has to
+    // resolve to something, and starting over is the only answer that is
+    // always safe to give.
+    for (const hash of ["#/setup", "#/setup/", "#/setup/nonsense", "#/setup/0", "#/setup/-2"])
+      expect(parseHash(hash)).toEqual({ name: "setup", step: 1 });
+  });
+
   it("percent-encodes agent names in the route", () => {
     expect(routeHash({ name: "agent", agentId: "Deep Research" })).toBe(
       "#/agents/Deep%20Research",

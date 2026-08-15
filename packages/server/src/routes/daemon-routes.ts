@@ -105,6 +105,13 @@ interface ReportedCli {
    *  when no session could be opened to ask, which is not the same as an
    *  agent that advertised nothing. */
   options?: AgentOption[];
+  /** Whether the CLI is signed in. ABSENT when nothing got far enough to
+   *  ask, which is not the same as a CLI that answered no — see
+   *  `AgentCli.signedIn`, and the nullable column behind it. */
+  signedIn?: boolean;
+  account?: string;
+  heldBackReason?: string;
+  adapterProvenance?: "vendor" | "protocol" | "community";
 }
 
 /** Malformed entries are dropped rather than failing the whole report: a
@@ -140,6 +147,13 @@ function parseClis(entries: unknown[]): ReportedCli[] {
     };
     if (typeof row.sessionReadyReason === "string") cli.sessionReadyReason = row.sessionReadyReason;
     if (Array.isArray(row.options)) cli.options = row.options as AgentOption[];
+    // Read as three-valued on purpose: `true`, `false`, and not sent. Anything
+    // that is not a boolean is not an answer, and is stored as none.
+    if (typeof row.signedIn === "boolean") cli.signedIn = row.signedIn;
+    if (typeof row.account === "string") cli.account = row.account;
+    if (typeof row.heldBackReason === "string") cli.heldBackReason = row.heldBackReason;
+    if (row.adapterProvenance === "vendor" || row.adapterProvenance === "protocol" || row.adapterProvenance === "community")
+      cli.adapterProvenance = row.adapterProvenance;
     out.push(cli);
   }
   return out;
@@ -178,18 +192,61 @@ function cliSetChanged(
   // Keyed as JSON rather than a delimited string: a version is free-form and
   // routinely holds spaces ("2.1.226 (Claude Code)"), so a separator that can
   // occur inside a field cannot be what tells the fields apart.
-  const key = (
-    id: string,
-    version: string,
-    available: boolean,
-    sessionReady: boolean,
-    options: string | null,
-  ) => JSON.stringify([id, version, available, sessionReady, options]);
+  const key = (row: {
+    id: string;
+    version: string;
+    available: boolean;
+    sessionReady: boolean;
+    options: string | null;
+    signedIn: boolean | undefined;
+    account: string | undefined;
+    heldBackReason: string | undefined;
+    adapterProvenance: string | undefined;
+  }) =>
+    JSON.stringify([
+      row.id,
+      row.version,
+      row.available,
+      row.sessionReady,
+      row.options,
+      // `null` where the column is empty and `undefined` where the report
+      // said nothing both serialize to the same thing inside an array, which
+      // is what makes comparing the two shapes honest.
+      row.signedIn ?? null,
+      row.account ?? null,
+      row.heldBackReason ?? null,
+      row.adapterProvenance ?? null,
+    ]);
   const storedKeys = new Set(
-    stored.map((row) => key(row.cliId, row.version, row.available, row.sessionReady, row.options)),
+    stored.map((row) =>
+      key({
+        id: row.cliId,
+        version: row.version,
+        available: row.available,
+        sessionReady: row.sessionReady,
+        options: row.options,
+        signedIn: row.signedIn,
+        account: row.account,
+        heldBackReason: row.heldBackReason,
+        adapterProvenance: row.adapterProvenance,
+      }),
+    ),
   );
   return reported.some(
-    (cli) => !storedKeys.has(key(cli.id, cli.version, cli.available, cli.sessionReady, optionsOf(cli))),
+    (cli) =>
+      !storedKeys.has(
+        key({
+          id: cli.id,
+          version: cli.version,
+          available: cli.available,
+          sessionReady: cli.sessionReady,
+          options: optionsOf(cli),
+          signedIn: cli.signedIn,
+          account: cli.account,
+          heldBackReason: cli.heldBackReason,
+          adapterProvenance: cli.adapterProvenance,
+        }),
+      ),
   );
 }
 
@@ -199,6 +256,10 @@ interface StoredCli {
   available: boolean;
   sessionReady: boolean;
   options: string | null;
+  signedIn: boolean | undefined;
+  account: string | undefined;
+  heldBackReason: string | undefined;
+  adapterProvenance: string | undefined;
 }
 
 /**
@@ -380,7 +441,9 @@ function report(req: DaemonRequest): DaemonResult {
     ])!;
     const existing = store
       .all(
-        `SELECT cli_id, version, available, session_ready, options FROM runtime_clis WHERE runtime_id = ?`,
+        `SELECT cli_id, version, available, session_ready, options,
+                signed_in, account, held_back_reason, adapter_provenance
+           FROM runtime_clis WHERE runtime_id = ?`,
         [machine.runtimeId],
       )
       .map((row) => ({
@@ -389,6 +452,12 @@ function report(req: DaemonRequest): DaemonResult {
         available: row.available === 1,
         sessionReady: row.session_ready === 1,
         options: (row.options as string | null) ?? null,
+        // NULL is a CLI nothing asked, which is not the same as one that
+        // answered no — the column is nullable for exactly this.
+        signedIn: row.signed_in === null || row.signed_in === undefined ? undefined : row.signed_in === 1,
+        account: (row.account as string | null) ?? undefined,
+        heldBackReason: (row.held_back_reason as string | null) ?? undefined,
+        adapterProvenance: (row.adapter_provenance as string | null) ?? undefined,
       }));
 
     const metaChanged =
@@ -408,8 +477,9 @@ function report(req: DaemonRequest): DaemonResult {
       store.run(
         `INSERT INTO runtime_clis
            (runtime_id, cli_id, name, command, version, available, session_ready,
-            session_ready_reason, options, seq)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            session_ready_reason, options, signed_in, account, held_back_reason,
+            adapter_provenance, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           machine.runtimeId,
           cli.id,
@@ -424,6 +494,12 @@ function report(req: DaemonRequest): DaemonResult {
           // session could be opened against keeps whatever this lab already
           // held — NULL only when it never held anything.
           optionsFor(cli),
+          // NULL rather than 0 when the report said nothing, so "nobody
+          // asked" survives the round trip as itself.
+          cli.signedIn === undefined ? null : cli.signedIn ? 1 : 0,
+          cli.account ?? null,
+          cli.heldBackReason ?? null,
+          cli.adapterProvenance ?? null,
           nextSeq(store),
         ],
       );

@@ -998,3 +998,126 @@ it("runs a command in the directory its boundary was rendered for, not the one t
   expect(claude.version).toContain("lykeion-probe-");
   expect(claude.version).not.toBe(process.cwd());
 });
+
+// ---------------------------------------------------------------------------
+// What a row says about itself beyond whether it can run.
+//
+// The screen a researcher meets after pairing shows every catalogue entry and
+// what stands in each one's way. Three of those four facts are produced here
+// and nowhere else — the lab stores what it is told — so this is where they
+// are held to their meaning.
+// ---------------------------------------------------------------------------
+
+it("reports which account an agent is signed in as, once something has asked", async () => {
+  const path = pathRunning({
+    claude: 'if [ "$1" = "auth" ]; then printf \'{"loggedIn":false}\'; else echo "2.1.220"; fi',
+    "claude-agent-acp": acpHandshakeScript(),
+  });
+  const claude = (
+    await probeAgentClis({
+      dataDir: stateDir(),
+      path,
+      timeoutMs: 30_000,
+      authStates: async () => [
+        { agent: "claude", name: "Claude Code", available: true, signedIn: true, account: "ana@uni.edu" },
+      ],
+    })
+  ).find((c) => c.id === "claude")!;
+
+  expect(claude.signedIn).toBe(true);
+  expect(claude.account).toBe("ana@uni.edu");
+}, 30_000);
+
+it("says signed out rather than saying nothing, which is what earns the row a Sign in", async () => {
+  const path = pathRunning({
+    claude: 'if [ "$1" = "auth" ]; then printf \'{"loggedIn":false}\'; else echo "2.1.220"; fi',
+    "claude-agent-acp": acpHandshakeScript(),
+  });
+  const claude = (
+    await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedOut("claude") })
+  ).find((c) => c.id === "claude")!;
+
+  // `false`, not absent. The row draws its one actionable control off this
+  // distinction, and a screen that could not tell the two apart would offer a
+  // sign-in on a machine where signing in changes nothing.
+  expect(claude.signedIn).toBe(false);
+  expect("account" in claude).toBe(false);
+}, 30_000);
+
+it("says nothing about a sign-in nothing got far enough to ask about", async () => {
+  // No adapter on PATH, so the ladder never reaches the rung that asks. A
+  // `false` here would be a claim this probe never made.
+  const path = pathWith({ claude: "2.1.220" });
+  const claude = (
+    await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedIn("claude") })
+  ).find((c) => c.id === "claude")!;
+
+  expect(claude.sessionReady).toBe(false);
+  expect("signedIn" in claude).toBe(false);
+  expect("account" in claude).toBe(false);
+}, 30_000);
+
+it("names who published the adapter, from the moment one resolves", async () => {
+  const path = pathRunning({
+    claude: 'if [ "$1" = "auth" ]; then printf \'{"loggedIn":false}\'; else echo "2.1.220"; fi',
+    "claude-agent-acp": acpHandshakeScript(),
+  });
+  const claude = (
+    await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedIn("claude") })
+  ).find((c) => c.id === "claude")!;
+
+  expect(claude.adapterProvenance).toBe("protocol");
+}, 30_000);
+
+it("gives a rung-5 refusal a sentence written for the researcher, not for a log", async () => {
+  // Two sentences, and the diagnostic beside them. `sessionReadyReason` names
+  // the environment variable, which is what somebody debugging a catalogue
+  // row needs and what a researcher can do nothing with. `heldBackReason` is
+  // what the row shows a person: this will not run, and here is why that is
+  // not something you left undone.
+  const path = pathRunning({
+    claude: 'if [ "$1" = "auth" ]; then printf \'{"loggedIn":true,"email":"r@lab.org"}\'; else echo "2.1.220"; fi',
+    "claude-agent-acp": acpHandshakeScript(),
+  });
+  const claude = (
+    await probeAgentClis({ dataDir: stateDir(), path, timeoutMs: 30_000, authStates: signedIn("claude") })
+  ).find((c) => c.id === "claude")!;
+
+  expect(claude.sessionReady).toBe(false);
+  expect(claude.sessionReadyReason).toContain("CLAUDE_CONFIG_DIR");
+  expect(claude.heldBackReason).toBe(
+    "answered as signed in from a home created empty a moment ago, so Lykeion cannot keep its runs separate from yours",
+  );
+  // Held back is not signed out. Nothing asked rung 7 — the ladder stopped a
+  // rung earlier — and a row that reported both would draw a Sign in control
+  // beside a statement that signing in is not the problem.
+  expect("signedIn" in claude).toBe(false);
+}, 30_000);
+
+it("counts a sign-in among the things worth telling the lab about", async () => {
+  // The daemon only reports when this fingerprint changes. On a machine whose
+  // adapter is already resolved and ready, signing in moves `signedIn` and
+  // `account` and nothing else — so a fingerprint blind to them would swallow
+  // the one event this whole screen exists to show.
+  const ready = (extra: Partial<ProbedCli>): ProbedCli[] => [
+    {
+      id: "claude",
+      name: "Claude Code",
+      command: "claude",
+      version: "2.1.220",
+      available: true,
+      sessionReady: true,
+      ...extra,
+    },
+  ];
+
+  expect(cliFingerprint(ready({ signedIn: false }))).not.toBe(
+    cliFingerprint(ready({ signedIn: true })),
+  );
+  expect(cliFingerprint(ready({ signedIn: true, account: "ana@uni.edu" }))).not.toBe(
+    cliFingerprint(ready({ signedIn: true, account: "bo@uni.edu" })),
+  );
+  expect(cliFingerprint(ready({ heldBackReason: "one thing" }))).not.toBe(
+    cliFingerprint(ready({ heldBackReason: "another" })),
+  );
+});

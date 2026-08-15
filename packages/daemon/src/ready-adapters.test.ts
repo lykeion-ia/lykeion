@@ -1,5 +1,10 @@
 import { expect, it } from "vitest";
-import { adapterFor, rememberAdapters } from "./ready-adapters";
+import {
+  adapterFor,
+  heldBackReason,
+  rememberAdapters,
+  rememberHeldBack,
+} from "./ready-adapters";
 
 it("hands a run the same program the probe vetted, arguments included", () => {
   // The invariant `main.ts` has always claimed. It used to hold only because
@@ -33,4 +38,34 @@ it("cannot be mutated through the arguments it handed out", () => {
   rememberAdapters(new Map([["antigravity", vetted]]));
   adapterFor("antigravity")!.args.push("--dangerous");
   expect(adapterFor("antigravity")).toEqual({ command: "/opt/bin/agy", args: ["--acp"] });
+});
+
+// ---------------------------------------------------------------------------
+// Why an agent is not launchable, as opposed to whether it is.
+//
+// A run refused for an agent this machine cannot start used to say one
+// sentence for every cause: "this machine has no adapter for claude". That is
+// the right answer for exactly one of them. For a CLI whose token lapsed
+// overnight — the common one, and the one that resolves in a minute — it is
+// wrong, and it sends the researcher to install a bridge they already have.
+// ---------------------------------------------------------------------------
+
+it("remembers why an agent it did not vet was held back", () => {
+  rememberAdapters(new Map());
+  rememberHeldBack(new Map([["claude", "sign in to Claude Code to run it"]]));
+  expect(heldBackReason("claude")).toBe("sign in to Claude Code to run it");
+});
+
+it("says nothing about an agent that is perfectly fine", () => {
+  rememberHeldBack(new Map());
+  expect(heldBackReason("claude")).toBeUndefined();
+});
+
+it("forgets a reason once a later cycle no longer has one", () => {
+  // The same wholesale replacement `rememberAdapters` does, and for the same
+  // reason: a researcher who signs back in must not go on being told they are
+  // signed out, and a merge would leave the old sentence standing forever.
+  rememberHeldBack(new Map([["claude", "not signed in"]]));
+  rememberHeldBack(new Map());
+  expect(heldBackReason("claude")).toBeUndefined();
 });

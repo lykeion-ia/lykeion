@@ -22,14 +22,17 @@ import {
   type ControlHandlers,
   type ControlServer,
 } from "./control";
+import { startPairing, type PairingSession } from "./pairing";
 
 const TOKEN = "a-control-token-as-long-as-a-real-one-is-ok";
 
 const dirs: string[] = [];
 const servers: ControlServer[] = [];
+const sessions: PairingSession[] = [];
 
 afterEach(async () => {
   for (const server of servers.splice(0)) await server.close();
+  for (const session of sessions.splice(0)) await session.close();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -58,7 +61,13 @@ function deadPid(): Promise<number> {
 async function portNobodyIsOn(): Promise<number> {
   const server = await startControlServer({
     token: TOKEN,
-    handlers: { status: () => ({}), stop: () => {}, setAdapterConsent: () => {} },
+    handlers: {
+      status: () => ({}),
+      stop: () => {},
+      setAdapterConsent: () => {},
+      mintLink: () => ({ link: "http://127.0.0.1/?nonce=unused", kind: "pairing" }),
+      pairWithCode: async () => ({ paired: true }),
+    },
   });
   const { port } = server;
   await server.close();
@@ -72,11 +81,34 @@ async function control(handlers: Partial<ControlHandlers> = {}): Promise<Control
       status: () => ({ running: true, version: "0.1.0" }),
       stop: () => {},
       setAdapterConsent: () => {},
+      mintLink: () => ({ link: "http://127.0.0.1/?nonce=unused", kind: "pairing" }),
+      pairWithCode: async () => ({ paired: true }),
       ...handlers,
     },
   });
   servers.push(server);
   return { pid: process.pid, port: server.port, token: TOKEN };
+}
+
+/** A control server backed by a real pairing session rather than stub
+ *  handlers, for the tests that care what `status` and `/link` actually do
+ *  to that session's nonce — `control()`'s handlers above answer with fixed
+ *  objects and have no nonce to rotate. */
+async function runningDaemon(): Promise<{ file: ControlFile; session: PairingSession }> {
+  const session = await startPairing({ port: 0, dataDir: freshDir() });
+  const server = await startControlServer({
+    token: TOKEN,
+    handlers: {
+      status: () => ({ running: true, port: session.port }),
+      stop: () => {},
+      setAdapterConsent: () => {},
+      mintLink: () => ({ link: session.rotateNonce(), kind: "pairing" }),
+      pairWithCode: async () => ({ paired: true }),
+    },
+  });
+  servers.push(server);
+  sessions.push(session);
+  return { file: { pid: process.pid, port: server.port, token: TOKEN }, session };
 }
 
 it("says a process that is running is running, and one that is gone is gone", async () => {
@@ -314,6 +346,41 @@ it("answers status to a call carrying the token", async () => {
   expect(answer.body).toEqual({ running: true, paired: false });
 });
 
+it("answers status without minting a link, so polling costs nothing", async () => {
+  const daemon = await runningDaemon();
+  const before = daemon.session.nonce;
+  const first = await callControl(daemon.file, "/status");
+  const second = await callControl(daemon.file, "/status");
+  expect(daemon.session.nonce).toBe(before);
+  expect((first.body as Record<string, unknown>).pairingLink).toBeUndefined();
+  expect((second.body as Record<string, unknown>).port).toBe(daemon.session.port);
+});
+
+it("mints a fresh link only when one is asked for by name", async () => {
+  const daemon = await runningDaemon();
+  const before = daemon.session.nonce;
+  const answer = await callControl(daemon.file, "/link");
+  expect(daemon.session.nonce).not.toBe(before);
+  expect((answer.body as { link: string }).link).toContain(daemon.session.nonce);
+});
+
+it("passes on why there is no link rather than answering as a broken server", async () => {
+  // A daemon that has not opened its page yet, which is every daemon for the
+  // stretch between claiming its directory and finishing its startup. The
+  // handler used to throw here, and a throw inside this server is caught by
+  // the same catch every genuine bug lands in: a 500 saying "the control
+  // server failed", with the one sentence that explained anything thrown
+  // away. 503 is the honest code — it is this daemon, and it will have one.
+  const file = await control({
+    mintLink: () => ({ unavailable: "this daemon is still starting up and has no page to open yet" }),
+  });
+  const answer = await callControl(file, "/link");
+  expect(answer.status).toBe(503);
+  expect(answer.body).toEqual({
+    error: "this daemon is still starting up and has no page to open yet",
+  });
+});
+
 it("carries an adapter acceptance, and a withdrawal, through to the handler", async () => {
   // The pairing page asks the question; this is the only way the answer gets
   // back to the daemon that has to act on it.
@@ -423,4 +490,43 @@ it("gives up waiting on a process that stays", async () => {
   const started = Date.now();
   expect(await waitForExit(process.pid, 200)).toBe(false);
   expect(Date.now() - started).toBeGreaterThanOrEqual(190);
+});
+
+// ---------------------------------------------------------------------------
+// The code, handed to a daemon that is already running.
+// ---------------------------------------------------------------------------
+
+it("hands a code to the daemon and answers what became of it", async () => {
+  const carried: string[] = [];
+  const file = await control({
+    pairWithCode: async (code) => {
+      carried.push(code);
+      return { paired: true };
+    },
+  });
+
+  const answer = await callControl(file, "/pair?code=one-time-code");
+
+  expect(answer.status).toBe(200);
+  expect(answer.body).toEqual({ paired: true });
+  expect(carried).toEqual(["one-time-code"]);
+});
+
+it("gives back the daemon's own reason when a code will not redeem", async () => {
+  // The lab is the only party that knows why — expired, already spent, for a
+  // different machine — and a command that printed its own guess instead
+  // would send somebody to check the wrong thing.
+  const file = await control({
+    pairWithCode: async () => ({ paired: false, error: "that code has expired" }),
+  });
+
+  const answer = await callControl(file, "/pair?code=stale");
+
+  expect(answer.status).toBe(400);
+  expect(answer.body).toEqual({ error: "that code has expired" });
+});
+
+it("refuses a pair call carrying no code at all", async () => {
+  const file = await control({ pairWithCode: async () => ({ paired: true }) });
+  expect((await callControl(file, "/pair")).status).toBe(400);
 });

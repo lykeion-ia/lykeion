@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Agentation } from "agentation";
 import type { LykeionApi, Transport } from "@lykeion/api";
 import { ApiProvider } from "./api/ApiContext";
@@ -6,7 +6,8 @@ import { hasWorkspaceServer, selectApi } from "./api/select";
 import { useChangeChannel } from "./hooks/useChangeChannel";
 import { hasDestination, landingHash } from "./lib/landing";
 import { AuthGate } from "./shell/AuthGate";
-import { RouterProvider, useRoute } from "./router";
+import { parseHash, RouterProvider, useRoute } from "./router";
+import { drawsSetupStep, SetupFlow } from "./screens/setup/SetupFlow";
 import { ThemeProvider } from "./theme/ThemeContext";
 import { Shell } from "./shell/Shell";
 import { PairScreen } from "./screens/PairScreen";
@@ -18,6 +19,71 @@ import "./styles/app.css";
 function ChangeChannel({ transport }: { transport: Transport | undefined }) {
   useChangeChannel(transport);
   return null;
+}
+
+/**
+ * The setup step off the current hash, or `null` off any other route and off
+ * a step this build does not draw yet.
+ *
+ * Read from the hash rather than from the router for the same reason
+ * `AuthGate` reads it that way: setup renders ABOVE the gate, which is above
+ * `RouterProvider`, so there is no router context to ask. `parseHash` is
+ * still the one function that decides what a hash means.
+ */
+function setupStepFromHash(): number | null {
+  const route = parseHash(window.location.hash);
+  return route.name === "setup" && drawsSetupStep(route.step) ? route.step : null;
+}
+
+/**
+ * The step the daemon served this page FOR, read off the mark it put on the
+ * document.
+ *
+ * A daemon hands this application out at two moments that carry a step with
+ * them and no hash to say so: the link it prints, which opens the first run,
+ * and the callback a lab redirects to after approving this machine, which
+ * lands on the step that was waiting. Both are a plain page load at `/` or
+ * `/paired` — the step cannot be in the address, because the address is what
+ * the daemon was reached at.
+ *
+ * So it rides on the document instead, and `adoptServedStep` below promotes it
+ * into the address exactly once. Everything after that is ordinary hash
+ * routing, which is what makes leaving the flow — clearing the hash — mean
+ * something.
+ */
+function servedSetupStep(): number | null {
+  const marked = Number(document.documentElement.dataset.setupStep);
+  return Number.isInteger(marked) && drawsSetupStep(marked) ? marked : null;
+}
+
+/**
+ * Which step this page opens on, taking the mark into the address if that is
+ * where it came from.
+ *
+ * The hash wins when it names a step: a researcher who navigated inside the
+ * flow, or came back to a link they kept, has said something more specific
+ * than the page they were served.
+ *
+ * `replaceState` rather than assigning the hash, because this runs while the
+ * first state is being computed — the value is returned directly, and firing a
+ * `hashchange` to tell the listener what it is about to be told anyway would
+ * only race it. The mark is deliberately NOT cleared afterwards: React
+ * double-invokes a state initializer under StrictMode, and a mark consumed on
+ * the first invocation would leave the second answering `null` and the whole
+ * flow skipped.
+ */
+function adoptServedStep(): number | null {
+  const fromHash = setupStepFromHash();
+  if (fromHash !== null) return fromHash;
+  // Any address at all wins, not just one naming a step. A daemon that has
+  // paired serves its page marked step 3, and that same origin is where a
+  // researcher lands when the lab redirects them to `#/pair?…` to approve
+  // another machine — so a mark that only deferred to setup hashes would
+  // throw away the pairing request and show the agents step instead.
+  if (hasDestination(window.location.hash)) return null;
+  const served = servedSetupStep();
+  if (served !== null) window.history.replaceState(null, "", `#/setup/${served}`);
+  return served;
 }
 
 /**
@@ -59,6 +125,16 @@ export default function App({ api }: { api?: LykeionApi }) {
   );
   const currentUser = useCallback(() => resolved.api.currentUser(), [resolved]);
 
+  // Setup moves between its own steps by changing the hash, and nothing else
+  // in this component would notice — the same reason `AuthGate` listens for a
+  // join code appearing.
+  const [setupStep, setSetupStep] = useState<number | null>(adoptServedStep);
+  useEffect(() => {
+    const sync = () => setSetupStep(setupStepFromHash());
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
+
   // Signing in is the one moment the landing rule applies. Held here rather
   // than in the gate because it is the only place that has both the API to
   // ask with and a single callback fired exactly once per sign-in — and
@@ -92,6 +168,19 @@ export default function App({ api }: { api?: LykeionApi }) {
     </ApiProvider>
   );
 
+  // First of all, and above BOTH the gate and the demo check.
+  //
+  // Above the gate because a machine whose lab does not exist yet has nobody
+  // to sign in AS — the gate would be resolving an identity against a lab
+  // nobody has created, and setup is what creates it.
+  //
+  // Above the demo check because a first run looks exactly like demo mode from
+  // here and is the opposite of it: a daemon serving this page before a lab
+  // exists forwards nothing, so the page finds no workspace marker and would
+  // fall through to the in-browser demo — on the one machine where a real lab
+  // is one answer away. Setup talks to the daemon's own routes, never to a
+  // lab, so it needs no data layer at all to run.
+  if (setupStep !== null) return <SetupFlow step={setupStep} />;
   // Demo mode has nobody to sign in, so it is not gated: the gate exists to
   // resolve a lab member, and there is no lab.
   if (api || !hasWorkspaceServer()) return shell;

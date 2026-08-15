@@ -14,14 +14,33 @@ export function AuthShell({
   title,
   subtitle,
   children,
+  framed = true,
 }: {
   title: string;
   subtitle: string;
   children: ReactNode;
+  /**
+   * Whether this shell owns the whole window.
+   *
+   * True everywhere it is the only thing on screen — signing in, joining by
+   * invite, approving a machine. False inside the setup wizard, which already
+   * centres its content in a full-height column with a footer under it: a
+   * second `min-h-screen` in there makes the page taller than the window and
+   * pushes that footer, and with it the progress strip, below the fold. The
+   * strip is the one thing on those screens that says how far along the
+   * researcher is, and it was invisible on exactly the step that needed it.
+   */
+  framed?: boolean;
 }) {
   return (
-    <div className="grid min-h-screen place-items-center bg-canvas px-4">
-      <div className="w-full max-w-[360px]">
+    <div className={framed ? "grid min-h-screen place-items-center bg-canvas px-4" : undefined}>
+      {/* The narrow measure is this shell's own, for when it owns the window:
+          a sign-in form centred in an empty page reads better at 360px than
+          at full width. Inside the wizard it is wrong twice over — the column
+          around it is already 560px and already centred, so a narrower block
+          sits against its left edge while the dots below centre on the
+          column, and every other step of the flow fills that column. */}
+      <div className={framed ? "w-full max-w-[360px]" : "w-full"}>
         <h1 className="text-title font-semibold tracking-[-0.2px] text-fg">{title}</h1>
         <p className="mb-5 mt-1 text-ui text-fg-muted">{subtitle}</p>
         {children}

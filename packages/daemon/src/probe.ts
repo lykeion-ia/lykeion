@@ -9,9 +9,15 @@ import { confine, noBackendReason, policyFor, sandboxBackendFor } from "./sandbo
 import { readAdvertised } from "./agent-options";
 import { sessionMetaFor } from "./session";
 import { confinedEnv } from "./confined-env";
-import { CATALOGUE, entryFor, isolationFor, type AdapterLaunch } from "./agent-registry";
+import {
+  CATALOGUE,
+  entryFor,
+  isolationFor,
+  type AdapterLaunch,
+  type AdapterProvenance,
+} from "./agent-registry";
 import { agentAuthStates, confinedRunCommand, type AgentAuth } from "./agent-auth";
-import { gatesOffering, provesRedirect } from "./redirect";
+import { gatesOffering, provesRedirect, type RedirectState } from "./redirect";
 import { acceptedAdapters, consentKey } from "./adapter-consent";
 import { resolveOnPath } from "./command-path";
 import { isDemoted } from "./agent-demotions";
@@ -343,6 +349,123 @@ export function consentGap(
 }
 
 /**
+ * Every agent the catalogue knows, and whether its CLI is on this PATH.
+ *
+ * The roster, not the interrogation. `agentAuthStates` answers for the agents
+ * that have an isolation declaration, because only those have a confined home
+ * to ask a sign-in question from — two entries out of twelve. That is the
+ * right list for that question and the wrong list for a screen, and the two
+ * were the same list: the first run counted the agents it could ask about
+ * while the workbench a moment later counted the whole catalogue, about the
+ * same computer.
+ *
+ * Availability comes from a PATH lookup rather than from running each command
+ * with `--version`, the way `probeAgentClis` does. This answers a route a page
+ * polls; twelve spawns per poll is not a price a list is worth.
+ */
+export interface AgentOnThisMachine {
+  agent: string;
+  name: string;
+  available: boolean;
+}
+
+export async function catalogueOnThisMachine(pathValue: string): Promise<AgentOnThisMachine[]> {
+  return Promise.all(
+    CATALOGUE.map(async (entry) => ({
+      agent: entry.id,
+      name: entry.name,
+      available: (await resolveOnPath(entry.command, pathValue)) !== undefined,
+    })),
+  );
+}
+
+/**
+ * What one agent's adapter is on THIS machine, for the page that asks a
+ * researcher to decide about it.
+ *
+ * Answered without spawning anything: a PATH lookup and one file read. That
+ * matters because it is asked from a route a browser polls, and the ladder in
+ * `probeAdapter` — which knows all of this already — costs a confined
+ * subprocess and an ACP handshake to reach the same three fields.
+ *
+ * Every field is absent rather than defaulted where nothing is known. A page
+ * that could not tell "no adapter here" from "an adapter nobody has agreed
+ * to" would ask about a program that is not on the machine.
+ */
+export interface AdapterOnThisMachine {
+  /** The bare name a catalogue row declares, never a path. */
+  adapterCommand?: string;
+  /** Where that name resolved. The same name can be several programs. */
+  adapterPath?: string;
+  /** Whether a decision is outstanding. Absent when no adapter resolved, so
+   *  there is nothing yet to decide about. */
+  consentNeeded?: boolean;
+}
+
+export async function adapterOnThisMachine(
+  agentId: string,
+  pathValue: string,
+  dataDir: string,
+): Promise<AdapterOnThisMachine> {
+  const entry = entryFor(agentId);
+  const declared = isolationFor(agentId)?.adapters;
+  if (entry === undefined || declared === undefined) return {};
+  const launch = await resolveLaunch(declared, pathValue);
+  if (launch === undefined) return {};
+  // The same file-name match `probeAdapter` makes, and for the same reason: a
+  // declared `agy-acp` is a suffix of a resolved `/opt/bin/my-agy-acp`, and
+  // an acceptance recorded against the wrong one accepts a different program.
+  const declaredAdapter = declared.find((a) => basename(launch.command) === a.command) ?? launch;
+  return {
+    adapterCommand: declaredAdapter.command,
+    adapterPath: launch.command,
+    consentNeeded: consentGap(entry, declaredAdapter, acceptedAdapters(dataDir)) !== undefined,
+  };
+}
+
+/**
+ * What one entry's rungs settled, split into the verdict and the facts that
+ * ride alongside it.
+ *
+ * The verdict stays a discriminated union, so "ready, and here is why it is
+ * not" remains unrepresentable. The facts are separate because they are not
+ * the verdict: an agent that is signed out and an agent whose isolation could
+ * not be demonstrated both fail, and a row has to tell them apart to know
+ * whether there is anything a person could do about it.
+ */
+type AdapterFacts = {
+  /** Set when, and only when, a rung actually asked. See `AgentCli.signedIn`
+   *  — absent and `false` are different answers all the way down. */
+  signedIn?: boolean;
+  account?: string;
+  heldBackReason?: string;
+  adapterProvenance?: AdapterProvenance;
+};
+
+type AdapterOutcome = AdapterFacts &
+  ({ sessionReady: true; options?: AgentOption[] } | { sessionReady: false; sessionReadyReason: string });
+
+/**
+ * What a row says to the researcher when rung 5 holds it back, as opposed to
+ * what it says to a log.
+ *
+ * `sessionReadyReason` names the environment variable and the row that
+ * declared it, which is what somebody debugging a catalogue entry needs.
+ * Neither of these sentences does, because neither of these is a problem the
+ * researcher can solve: what they need to know is that Lykeion will not run
+ * this agent and why that is not negligence. Written here rather than in the
+ * page that shows them, because the daemon is the only thing that knows
+ * which of the two happened.
+ */
+function heldBackByRungFive(state: RedirectState): string | undefined {
+  if (state === "redirect-broken")
+    return "answered as signed in from a home created empty a moment ago, so Lykeion cannot keep its runs separate from yours";
+  if (state === "not-understood")
+    return "answered in a way this machine could not read, so nothing was shown either way";
+  return undefined;
+}
+
+/**
  * Whether `agentId` can actually be run: its adapter resolved on `PATH` and
  * answered `initialize` inside the probe's own budget. An id with no adapter
  * mapping is settled without spawning anything — there is nothing to look
@@ -370,10 +493,7 @@ async function probeAdapter(
    *  awaiting a version here to build a key would quietly turn that back into
    *  a sum, on every entry, forever. */
   cliVersion: Promise<{ available: boolean; version: string }>,
-): Promise<
-  | { sessionReady: true; options?: AgentOption[] }
-  | { sessionReady: false; sessionReadyReason: string }
-> {
+): Promise<AdapterOutcome> {
   // Asked before anything is looked for. A machine whose platform has no
   // sandbox backend cannot confine a run, and no agent is offered on it —
   // an agent that is never offered is the whole of how "never launch an
@@ -403,6 +523,18 @@ async function probeAdapter(
           ? `no adapter for ${agentId} is installed`
           : adapterMissingReason(entry, adapterCommands),
     };
+
+  // Matched on the file name rather than on how the path ends: a declared
+  // `agy-acp` is a suffix of a resolved `/opt/bin/my-agy-acp`, and the two are
+  // different programs whose acceptances must not be confused.
+  //
+  // Resolved here rather than at rung 6, which is where it used to be looked
+  // up, because who published this adapter is a fact about the machine from
+  // the moment one is found — and a row held back at rung 5 still has to say
+  // whose program it was going to run.
+  const declaredAdapter =
+    adapterCommands.find((a) => basename(launch.command) === a.command) ?? launch;
+  const facts: AdapterFacts = { adapterProvenance: declaredAdapter.provenance };
 
   // Rung 5. The row SAYS `homeEnv` moves this CLI's configuration somewhere
   // we own; this is where that stops being a claim. A declaration that is
@@ -442,8 +574,15 @@ async function probeAdapter(
         // in the same environment.
       }),
     );
-    if (gatesOffering(proof))
-      return { sessionReady: false, sessionReadyReason: proof.reason ?? "isolation unverified" };
+    if (gatesOffering(proof)) {
+      const heldBack = heldBackByRungFive(proof.state);
+      return {
+        ...facts,
+        sessionReady: false,
+        sessionReadyReason: proof.reason ?? "isolation unverified",
+        ...(heldBack === undefined ? {} : { heldBackReason: heldBack }),
+      };
+    }
   }
 
   // Rung 6. A community adapter is not started until the researcher has said
@@ -455,13 +594,8 @@ async function probeAdapter(
   // absolute path this machine happened to resolve — an acceptance recorded
   // against a path would silently lapse the next time the adapter moved.
   if (entry !== undefined) {
-    // Matched on the file name rather than on how the path ends: a declared
-    // `agy-acp` is a suffix of a resolved `/opt/bin/my-agy-acp`, and the two
-    // are different programs whose acceptances must not be confused.
-    const declaredAdapter =
-      adapterCommands.find((a) => basename(launch.command) === a.command) ?? launch;
     const gap = consentGap(entry, declaredAdapter, acceptedAdapters(dataDir));
-    if (gap !== undefined) return { sessionReady: false, sessionReadyReason: gap };
+    if (gap !== undefined) return { ...facts, sessionReady: false, sessionReadyReason: gap };
   }
 
   // Rung 7. Asked before anything is spawned: an adapter started against an
@@ -474,8 +608,17 @@ async function probeAdapter(
   // this share one round trip through every declared agent's CLI rather than
   // each starting a fresh one.
   const authState = (await authStates()).find((state) => state.agent === agentId);
+  // Recorded from here on, and only from here: this is the first rung that
+  // actually asks. A row that never got this far reports no answer rather
+  // than a `false` that would put a Sign in control on a machine where
+  // signing in changes nothing.
+  if (authState !== undefined) {
+    facts.signedIn = authState.signedIn;
+    if (authState.account !== undefined) facts.account = authState.account;
+  }
   if (authState !== undefined && !authState.signedIn)
     return {
+      ...facts,
       sessionReady: false,
       sessionReadyReason: signedOutReasonFor(agentId) ?? "not signed in",
     };
@@ -531,7 +674,7 @@ async function probeAdapter(
       // same answer when a turn starts, but keeps it to itself: nothing on
       // the run path carries it back to the lab.
     }
-    return { sessionReady: true, ...(options === undefined ? {} : { options }) };
+    return { ...facts, sessionReady: true, ...(options === undefined ? {} : { options }) };
   } catch (err) {
     // An adapter fails in one of two ways, and they need different sentences.
     //
@@ -545,7 +688,7 @@ async function probeAdapter(
     // What it wrote on its way to saying nothing is worth more than anything
     // this file could compose, because it is the vendor's own account of why.
     const tail = connection.stderrTail().trim();
-    if (tail) return { sessionReady: false, sessionReadyReason: tail };
+    if (tail) return { ...facts, sessionReady: false, sessionReadyReason: tail };
 
     // Silent, so there is nothing to quote. Only the budget running out earns
     // the sentence about the handshake — an adapter that EXITED has its own
@@ -553,10 +696,15 @@ async function probeAdapter(
     // plain lie about what happened.
     if (err instanceof ProbeTimeout)
       return {
+        ...facts,
         sessionReady: false,
         sessionReadyReason: `${launch.command} started but never completed the ACP handshake within ${timeoutMs}ms`,
       };
-    return { sessionReady: false, sessionReadyReason: err instanceof Error ? err.message : String(err) };
+    return {
+      ...facts,
+      sessionReady: false,
+      sessionReadyReason: err instanceof Error ? err.message : String(err),
+    };
   } finally {
     // Closed on every path, including the failing ones: a probe that leaks a
     // session leaks one every cycle, forever.
@@ -690,12 +838,31 @@ export async function probeAgentClis(options: ProbeOptions): Promise<ProbedCli[]
  * installed" to "not signed in". Every other field this hashes is unchanged,
  * so without the reason here that transition sends no report, and the dock
  * goes on telling a researcher to install an adapter they already have.
+ *
+ * `signedIn` and `account` are here because signing in is the one thing a
+ * researcher does at this screen and then waits to see happen. On a machine
+ * whose adapter is already resolved and ready, signing in changes these two
+ * fields and nothing else — so left out, the probe that finally sees the new
+ * account compares equal to the one before it, no report is sent, and the
+ * screen goes on saying "signed out" beside a CLI that is not. Switching
+ * accounts is the same shape with `signedIn` unchanged as well.
  */
 export function cliFingerprint(clis: ProbedCli[]): string {
   return JSON.stringify(
     [...clis]
       .sort((a, b) => a.id.localeCompare(b.id))
-      .map((cli) => [cli.id, cli.version, cli.available, cli.sessionReady, cli.sessionReadyReason, cli.options]),
+      .map((cli) => [
+        cli.id,
+        cli.version,
+        cli.available,
+        cli.sessionReady,
+        cli.sessionReadyReason,
+        cli.options,
+        cli.signedIn,
+        cli.account,
+        cli.heldBackReason,
+        cli.adapterProvenance,
+      ]),
   );
 }
 

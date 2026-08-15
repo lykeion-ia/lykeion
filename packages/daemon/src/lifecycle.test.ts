@@ -2,7 +2,15 @@ import { afterEach, beforeAll, expect, it } from "vitest";
 import { build } from "esbuild";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,10 +29,18 @@ import { ensureTaskDir } from "./workspace";
 const src = dirname(fileURLToPath(import.meta.url));
 
 let daemonBundle = "";
+let heldBundle = "";
 let controlBundle = "";
 let raceChild = "";
 let claimWriter = "";
 let releaseChild = "";
+
+/** The file `heldBundle`'s daemon waits for, inside its own data directory,
+ *  before it opens the sign-in page. Waited on rather than slept through: how
+ *  long a test's assertions take is not something to guess at, and a window
+ *  held open until it is closed on purpose cannot be missed on a loaded
+ *  machine. */
+const OPEN_THE_PAGE = "open-the-sign-in-page";
 
 const dirs: string[] = [];
 const running: ChildProcess[] = [];
@@ -34,6 +50,7 @@ beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), "lykeion-lifecycle-"));
   dirs.push(dir);
   daemonBundle = join(dir, "daemon.mjs");
+  heldBundle = join(dir, "daemon-held-at-startup.mjs");
   controlBundle = join(dir, "control.mjs");
   raceChild = join(dir, "race.mjs");
   claimWriter = join(dir, "claim-writer.mjs");
@@ -44,6 +61,52 @@ beforeAll(async () => {
     bundle: true,
     platform: "node",
     format: "esm",
+  });
+  // The same daemon, stopped inside its own startup window. `serve` binds the
+  // control endpoint and claims the directory before it has any page to open
+  // — it installs agent homes and opens the sign-in page after both — and
+  // `serve --detached` returns the moment that claim appears, so whatever a
+  // script runs on the next line asks a daemon that is up and has nothing to
+  // hand over yet. Reproducing that by racing it would be reproducing it
+  // sometimes.
+  //
+  // Every line of `main.ts` is the real one here, which is the point: the
+  // expressions under test are `main.ts`'s own `pairingSession?.` reads, and
+  // a test that stands up its own handlers cannot reach them. All that moves
+  // is when `beginSignIn` is allowed to finish, and it moves to a file the
+  // test writes when it is done looking.
+  await build({
+    entryPoints: [join(src, "main.ts")],
+    outfile: heldBundle,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    plugins: [
+      {
+        name: "hold-the-sign-in-page",
+        setup(builder) {
+          builder.onResolve({ filter: /^\.\/pairing$/ }, () => ({
+            path: join(src, "pairing.ts"),
+            namespace: "held-pairing",
+          }));
+          builder.onLoad({ filter: /.*/, namespace: "held-pairing" }, (args) => ({
+            contents: `
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { beginSignIn as openTheSignInPage } from ${JSON.stringify(args.path)};
+export * from ${JSON.stringify(args.path)};
+export async function beginSignIn(config, machine) {
+  while (!existsSync(join(config.dataDir, ${JSON.stringify(OPEN_THE_PAGE)})))
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  return openTheSignInPage(config, machine);
+}
+`,
+            resolveDir: src,
+            loader: "js",
+          }));
+        },
+      },
+    ],
   });
   await build({
     entryPoints: [join(src, "control.ts")],
@@ -145,9 +208,29 @@ function serve(
   dir: string,
   extra: string[] = [],
   env: Record<string, string> = {},
+  bundle: string = daemonBundle,
 ): { child: ChildProcess; output(): string } {
   let output = "";
-  const child = spawn(process.execPath, [daemonBundle, "serve", "--no-browser", "--data-dir", dir, ...extra], {
+  // Whatever is free, unless the test named a port itself. The daemon's own
+  // default is the one fixed address a machine offers, which only one process
+  // can hold: a suite taking it would fight the daemon a researcher already
+  // has running there, and every other case in this file. Added only when
+  // `extra` names no port, because the first of a repeated flag wins and this
+  // one is written first — a caller's own would be read past in silence.
+  const port = extra.some((arg) => arg === "--port" || arg.startsWith("--port=")) ? [] : ["--port", "0"];
+  // Beside this test's own data directory, for the same reason and by the
+  // same rule as the port above. The daemon's default work directory is now
+  // `~/Documents/Lykeion` — the researcher's own folder, and the one this
+  // daemon SWEEPS on startup, removing the working directory of every Task
+  // its lab no longer has. A suite that let its daemons default there would
+  // point that sweep at real work, with a stub lab deciding what is gone.
+  const workDir = extra.some((arg) => arg === "--work-dir" || arg.startsWith("--work-dir="))
+    ? []
+    : ["--work-dir", `${dir}-work`];
+  const child = spawn(
+    process.execPath,
+    [bundle, "serve", "--no-browser", "--data-dir", dir, ...port, ...workDir, ...extra],
+    {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...env },
   });
@@ -341,7 +424,10 @@ it(
       machine: "ana-macbook",
     });
 
-    const second = await run(["serve", "--no-browser", "--data-dir", dir]);
+    // Refused at the claim, before it binds anything, and it names a port
+    // anyway: were that refusal ever to move below the bind, this would
+    // become a test reaching for the one fixed address a machine offers.
+    const second = await run(["serve", "--no-browser", "--data-dir", dir, "--port", "0"]);
     expect(second.code).toBe(1);
     expect(second.stderr).toContain(`as pid ${daemon.child.pid}`);
     expect(readControlFile(dir)!.pid).toBe(daemon.child.pid);
@@ -366,24 +452,30 @@ it(
 
     const status = JSON.parse((await run(["status", "--data-dir", dir])).stdout) as Record<
       string,
-      string
+      unknown
     >;
-    // Named apart from `pairingLink`, and never offered alongside it: this
-    // machine has a token, and nothing here may read as an offer to pair it
-    // somewhere else.
+    // `status` mints nothing at all any more, paired or not — that is the
+    // whole change this daemon made to stop being unsafe to poll. There is
+    // no link on this answer to name apart from anything.
     expect(status.pairingLink, daemon.output()).toBeUndefined();
-    expect(status.signInLink, daemon.output()).toContain("nonce=");
+    expect(status.signInLink, daemon.output()).toBeUndefined();
+
+    // `url` is what mints one now, by name. Named apart from `pairingLink`
+    // there instead: this machine has a token, and nothing this command
+    // hands back may read as an offer to pair it somewhere else.
+    const link = (await run(["url", "--data-dir", dir])).stdout.trim();
+    expect(link, daemon.output()).toContain("nonce=");
     // Nor announced on the terminal the way a pairing link is. Nobody is
     // watching a paired daemon start; whoever wants this asks for it.
     expect(daemon.output()).not.toContain("Pair this machine ->");
 
-    const page = await fetch(status.signInLink!, { redirect: "manual" });
+    const page = await fetch(link, { redirect: "manual" });
     expect(page.status).toBe(200);
     expect(await page.text()).toContain("Sign in your agents");
 
     // And pairing itself is not back with it. `/connect` is the route that
     // would re-home this machine to another lab.
-    const origin = new URL(status.signInLink!).origin;
+    const origin = new URL(link).origin;
     const connect = await fetch(`${origin}/connect`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -396,19 +488,118 @@ it(
 );
 
 it(
+  "follows a log by printing what was appended to it, and only that",
+  async () => {
+    // `--tail` used to re-read the whole file on every change and print all
+    // of it again. A daemon that cannot reach its lab writes a retry line
+    // every few seconds, which is exactly when somebody is watching this, so
+    // the output doubled and then tripled while the reason they were looking
+    // for scrolled away.
+    const dir = freshDir();
+    const log = join(dir, "daemon.log");
+    writeFileSync(log, "could not reach the lab\n");
+
+    const child = spawn(process.execPath, [daemonBundle, "logs", "--tail", "--data-dir", dir], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    running.push(child);
+    let seen = "";
+    child.stdout.on("data", (chunk: Buffer) => (seen += chunk.toString("utf8")));
+
+    await waitFor("the log it already had", () => seen.includes("could not reach the lab"));
+    appendFileSync(log, "reached the lab\n");
+    await waitFor("the line written while it was watching", () => seen.includes("reached the lab"));
+    // Give it the time it would have needed to print the first line a second
+    // time, so that this is a claim about what it does rather than about how
+    // quickly the assertion arrived.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(seen).toBe("could not reach the lab\nreached the lab\n");
+  },
+  60_000,
+);
+
+it(
+  "says a daemon that has no page yet is starting, not that nothing is running",
+  async () => {
+    // What `lykeion serve --detached && lykeion open` asks, on
+    // a machine that was already paired. `--detached` returns as soon as the
+    // claim is published, which is before the sign-in page exists, so the
+    // second command reaches a daemon that is up and has nothing to open.
+    //
+    // It used to be told "no daemon is running here — start one", from a
+    // catch that threw away the answer the daemon actually gave. Both halves
+    // of that were wrong and the second one is expensive: a caller that
+    // believes it starts a second daemon on a machine identity that already
+    // has one. Starting up is worth waiting out; nothing running is not.
+    const dir = freshDir();
+    const lab = await silentLab();
+    pairWith(dir, lab.base);
+
+    const daemon = serve(dir, [], {}, heldBundle);
+    await waitFor("the daemon to claim the directory", () => readControlFile(dir) !== undefined);
+
+    const asked = await run(["url", "--data-dir", dir]);
+    expect(asked.stderr, daemon.output()).toContain("still starting up");
+    // Not the sentence for a directory nobody is serving. The two are told
+    // apart or this test is measuring nothing.
+    expect(asked.stderr).not.toContain("start one with");
+    expect(asked.code).toBe(1);
+    // And nothing at all where a link goes: `url` exists to be piped, so a
+    // caller that pipes it gets a link or gets an empty stream, never an
+    // explanation it would then treat as an address.
+    expect(asked.stdout).toBe("");
+
+    const starting = JSON.parse((await run(["status", "--data-dir", dir])).stdout) as Record<
+      string,
+      unknown
+    >;
+    expect(starting, daemon.output()).toMatchObject({ running: true, starting: true });
+    // The page is what has a port, and there is no page yet. Absent rather
+    // than invented — and `starting` is the field that says which kind of
+    // absence this is.
+    expect(starting.port).toBeUndefined();
+
+    // Let it finish, and ask both questions again: what makes the answers
+    // above a stage rather than a verdict is that they stop being true.
+    writeFileSync(join(dir, OPEN_THE_PAGE), "");
+    await waitFor("the daemon to finish starting", async () => {
+      const answer = JSON.parse((await run(["status", "--data-dir", dir])).stdout) as {
+        starting?: boolean;
+      };
+      return answer.starting === false;
+    });
+
+    const ready = JSON.parse((await run(["status", "--data-dir", dir])).stdout) as Record<
+      string,
+      unknown
+    >;
+    expect(typeof ready.port, daemon.output()).toBe("number");
+    const link = await run(["url", "--data-dir", dir]);
+    expect(link.stdout, daemon.output()).toContain("nonce=");
+    expect(link.code).toBe(0);
+  },
+  60_000,
+);
+
+it(
   "hands a fresh link to every ask, and the one before it stops working",
   async () => {
+    // Asked with `url`, not `status` — `status` used to be the only place
+    // that minted a link, which was exactly the problem: a person merely
+    // checking on the daemon retired whatever link somebody else was
+    // holding. `url` is where that rotation lives now, and this is its test.
     const dir = freshDir();
     const daemon = serve(dir, ["--lab", "http://127.0.0.1:1"]);
     await waitFor("the daemon to claim the directory", () => readControlFile(dir) !== undefined);
 
-    const first = JSON.parse((await run(["status", "--data-dir", dir])).stdout) as Record<string, string>;
-    const second = JSON.parse((await run(["status", "--data-dir", dir])).stdout) as Record<string, string>;
+    const first = (await run(["url", "--data-dir", dir])).stdout.trim();
+    const second = (await run(["url", "--data-dir", dir])).stdout.trim();
 
-    expect(first.pairingLink, daemon.output()).toBeTruthy();
-    expect(second.pairingLink).not.toBe(first.pairingLink);
-    expect((await fetch(first.pairingLink!, { redirect: "manual" })).status).toBe(403);
-    expect((await fetch(second.pairingLink!, { redirect: "manual" })).status).toBe(200);
+    expect(first, daemon.output()).toBeTruthy();
+    expect(second).not.toBe(first);
+    expect((await fetch(first, { redirect: "manual" })).status).toBe(403);
+    expect((await fetch(second, { redirect: "manual" })).status).toBe(200);
   },
   60_000,
 );
@@ -511,7 +702,10 @@ it(
 
     const paired = await run(["status", "--data-dir", dir]);
     expect(JSON.parse(paired.stdout)).toMatchObject({ running: true, paired: false });
-    expect(JSON.parse(paired.stdout).pairingLink).toContain("nonce=");
+    // `status` mints nothing now — `url` is what a fresh pairing link comes
+    // from, and this machine having one to give is what "a pairing one"
+    // above actually means.
+    expect((await run(["url", "--data-dir", dir])).stdout.trim()).toContain("nonce=");
   },
   90_000,
 );
@@ -651,7 +845,10 @@ it(
       expect(stopped.code).toBe(1);
       expect(readControlFile(dir)).toEqual(claim);
 
-      const second = await run(["serve", "--no-browser", "--data-dir", dir]);
+      // A port for the same reason as the second daemon that finds the
+      // directory held: refused before it binds, and not reaching for the one
+      // fixed address a machine offers should that ever stop being true.
+      const second = await run(["serve", "--no-browser", "--data-dir", dir, "--port", "0"]);
       expect(second.stderr).toContain("may be paused or stuck");
       expect(second.code).toBe(1);
       expect(readControlFile(dir)).toEqual(claim);

@@ -57,7 +57,16 @@ export type Route =
    * and the screen that reads `params` is the one place that decides
    * whether what arrived is enough to act on.
    */
-  | { name: "pair"; params: PairParams };
+  | { name: "pair"; params: PairParams }
+  /**
+   * The first run, addressed by which step it is on. Reachable with nobody
+   * signed in, and read ahead of `AuthGate` for a stronger reason than
+   * `join`'s: a machine whose lab does not exist yet has nobody to sign in
+   * AS, so the gate has nothing it could resolve. The step is in the address
+   * so that the trip out to a remote lab and back lands on the step that was
+   * waiting rather than at the beginning.
+   */
+  | { name: "setup"; step: number };
 
 /** The fields a pairing link carries, read off `#/pair?…`. Every one of
  *  them is optional at parse time — see the `pair` arm of `Route`. */
@@ -68,6 +77,21 @@ export interface PairParams {
   challenge?: string;
   state?: string;
   redirect?: string;
+  /**
+   * Which wizard step this approval is happening inside, when it is happening
+   * inside one at all.
+   *
+   * A daemon composing the redirect for its own first run says so; a pairing
+   * link somebody opens cold carries nothing. That is the whole difference
+   * between a researcher who is mid-flow and a colleague approving a machine
+   * from their own browser, and it is the only thing that can tell the two
+   * apart — the approval screen is served by the lab, on a different origin,
+   * and cannot ask the daemon anything.
+   *
+   * A string like every other value read off a hash, and validated where it is
+   * used rather than here: this parser's job is to report what arrived.
+   */
+  step?: string;
 }
 
 const PAIR_PARAM_KEYS = [
@@ -77,6 +101,7 @@ const PAIR_PARAM_KEYS = [
   "challenge",
   "state",
   "redirect",
+  "step",
 ] as const;
 
 function parsePairParams(query: string): PairParams {
@@ -160,6 +185,14 @@ export function parseHash(hash: string): Route {
       return a !== undefined ? { name: "join", code: a } : { name: "studies" };
     case "pair":
       return { name: "pair", params: parsePairParams(query ?? "") };
+    case "setup": {
+      // A step that is missing, not a number, or not a step this flow has
+      // reads as the first one. The address comes from outside the app —
+      // a redirect the daemon composed, or a link somebody kept — and
+      // starting over is the one answer that is always safe to give.
+      const step = Number(a);
+      return { name: "setup", step: Number.isInteger(step) && step >= 1 ? step : 1 };
+    }
     default:
       return { name: "studies" };
   }
@@ -213,6 +246,8 @@ export function routeHash(route: Route): string {
       const query = pairQueryString(route.params);
       return query ? `#/pair?${query}` : "#/pair";
     }
+    case "setup":
+      return `#/setup/${route.step}`;
   }
 }
 

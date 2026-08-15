@@ -380,11 +380,24 @@ async function pairAndServe(
       options.bundle ?? daemonBundle,
       "serve",
       "--no-browser",
+      // Whatever is free. These cases read the daemon's address off the
+      // pairing link it prints, so the number is nothing to them — while the
+      // daemon's own default is the single fixed address a machine offers,
+      // and several of these run against one machine at once.
+      "--port",
+      "0",
       "--data-dir",
       dataDir,
       "--lab",
       lab.base,
-      ...(options.workDir === undefined ? [] : ["--work-dir", options.workDir]),
+      // Always named, never left to the default. The daemon's default work
+      // directory is `~/Documents/Lykeion` — the researcher's own folder,
+      // which a starting daemon SWEEPS, removing the working directory of
+      // every Task its lab no longer has. These labs are stubs built fresh
+      // per test, so every real Task on this machine is one they would call
+      // gone.
+      "--work-dir",
+      options.workDir ?? `${dataDir}-work`,
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
@@ -413,9 +426,15 @@ async function pairAndServe(
     body: JSON.stringify({ lab: lab.base, name }),
     redirect: "manual",
   });
-  if (connected.status !== 302)
+  if (connected.status !== 200)
     throw new Error(`the daemon's /connect answered ${connected.status}: ${await connected.text()}`);
-  const target = new URL(connected.headers.get("location")!);
+  // The address comes back in the body, not in a `location` header. `/connect`
+  // is only ever called with `fetch`, which follows a redirect itself rather
+  // than navigating the tab — so answering 302 here handed the lab's HTML to a
+  // promise nobody read and left the page where it was. This reads the
+  // envelope the route actually answers with, the same as the page does.
+  const { redirect } = (await connected.json()) as { redirect: string };
+  const target = new URL(redirect);
   const params = new URLSearchParams(target.hash.slice(target.hash.indexOf("?")));
 
   const { code } = await ownerApi.pairMachine({

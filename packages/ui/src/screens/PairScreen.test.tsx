@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createInMemoryApi, LykeionError, type LykeionApi } from "@lykeion/api";
+import { createInMemoryApi, encodeRequest, LykeionError, type LykeionApi } from "@lykeion/api";
 import App from "../App";
 
 // The pairing link a daemon prints when it asks a browser to approve it.
@@ -264,12 +264,163 @@ it("still offers a machine whose link it has not seen, once another has been spe
   expect(screen.queryByText(/already been used/i)).toBeNull();
 });
 
-it("says so plainly, rather than rendering an empty form, when the hash carries no parameters", async () => {
-  window.location.hash = "#/pair";
+it("says so plainly, rather than rendering an empty form, when the hash carries only part of a request", async () => {
+  // A link that was truncated by a chat window or edited by hand. It is not
+  // an invitation to paste — the researcher already opened something that
+  // was meant to work — so it says what went wrong with the thing they have
+  // rather than offering a different way in.
+  window.location.hash = "#/pair?name=demo-machine&platform=macos-aarch64";
   render(<App api={createInMemoryApi()} />);
 
   expect(
     await screen.findByText(/nothing to approve|no machine|no pairing/i),
   ).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+});
+
+// ---------------------------------------------------------------------------
+// A machine with no browser, and no way back to its own loopback address.
+//
+// Same handshake, same three facts, same two answers. What changes is that a
+// person carries the request in and the code back out, so this screen is
+// reached with an empty hash and leaves for nowhere at the end of it.
+// ---------------------------------------------------------------------------
+
+const PASTED = encodeRequest({
+  name: "gpu-box",
+  platform: "linux-x64",
+  version: "0.1.0",
+  challenge: "pasted-challenge",
+  state: "pasted-state",
+  redirect: "http://127.0.0.1:1421/paired",
+});
+
+it("offers somewhere to paste, when the hash carries nothing at all", async () => {
+  window.location.hash = "#/pair";
+  render(<App api={createInMemoryApi()} />);
+
+  expect(await screen.findByRole("textbox")).toBeInTheDocument();
+  // Nothing to approve yet: there is no machine on this page until a request
+  // has been read, and an Approve standing over an empty box would be a
+  // button for a decision nobody has been shown.
+  expect(screen.queryByRole("button", { name: /^approve/i })).not.toBeInTheDocument();
+});
+
+it("shows a pasted request as the same three facts the link shows", async () => {
+  const user = userEvent.setup();
+  window.location.hash = "#/pair";
+  render(<App api={createInMemoryApi()} />);
+
+  await user.type(await screen.findByRole("textbox"), PASTED);
+  await user.click(screen.getByRole("button", { name: /read it/i }));
+
+  expect(await screen.findByText("gpu-box")).toBeInTheDocument();
+  expect(screen.getByText("linux-x64")).toBeInTheDocument();
+  expect(screen.getByText("0.1.0")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^approve/i })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /refuse/i })).toBeInTheDocument();
+});
+
+it("shows the code instead of leaving, because there is no browser on the far end", async () => {
+  const user = userEvent.setup();
+  window.location.hash = "#/pair";
+  const pairMachine = vi.fn().mockResolvedValue({ code: "carry-me-back" });
+  const api: LykeionApi = { ...createInMemoryApi(), pairMachine };
+  render(<App api={api} />);
+
+  await user.type(await screen.findByRole("textbox"), PASTED);
+  await user.click(screen.getByRole("button", { name: /read it/i }));
+  await user.click(await screen.findByRole("button", { name: /^approve/i }));
+
+  // Exactly the call the link path makes. The transport changed; the
+  // handshake did not.
+  await waitFor(() => expect(pairMachine).toHaveBeenCalledTimes(1));
+  expect(pairMachine).toHaveBeenCalledWith({
+    name: "gpu-box",
+    platform: "linux-x64",
+    daemonVersion: "0.1.0",
+    challenge: "pasted-challenge",
+    redirect: "http://127.0.0.1:1421/paired",
+  });
+
+  expect(await screen.findByText("carry-me-back")).toBeInTheDocument();
+  // The redirect in a pasted request is a loopback address on somebody
+  // else's machine. Going there would land this browser on nothing, and
+  // lose the code on the way.
+  expect(assign).not.toHaveBeenCalled();
+});
+
+it("says how to carry the code back, since typing it somewhere is the whole rest of the job", async () => {
+  const user = userEvent.setup();
+  window.location.hash = "#/pair";
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    pairMachine: vi.fn().mockResolvedValue({ code: "carry-me-back" }),
+  };
+  render(<App api={api} />);
+
+  await user.type(await screen.findByRole("textbox"), PASTED);
+  await user.click(screen.getByRole("button", { name: /read it/i }));
+  await user.click(await screen.findByRole("button", { name: /^approve/i }));
+
+  expect(await screen.findByText(/lykeion pair --code/i)).toBeInTheDocument();
+});
+
+it("refuses without leaving either, and mints no code doing it", async () => {
+  const user = userEvent.setup();
+  window.location.hash = "#/pair";
+  const pairMachine = vi.fn();
+  const api: LykeionApi = { ...createInMemoryApi(), pairMachine };
+  render(<App api={api} />);
+
+  await user.type(await screen.findByRole("textbox"), PASTED);
+  await user.click(screen.getByRole("button", { name: /read it/i }));
+  await user.click(await screen.findByRole("button", { name: /refuse/i }));
+
+  // There is no callback to send a refusal to: the daemon is not reachable
+  // from this browser, which is why the request came in by hand. It hears
+  // nothing, and its request stands until it is stopped.
+  expect(await screen.findByRole("heading", { name: /refused/i })).toBeInTheDocument();
+  expect(assign).not.toHaveBeenCalled();
+  expect(pairMachine).not.toHaveBeenCalled();
+});
+
+it("says what a line that is not a request is, and keeps what was typed", async () => {
+  const user = userEvent.setup();
+  window.location.hash = "#/pair";
+  render(<App api={createInMemoryApi()} />);
+
+  const box = await screen.findByRole("textbox");
+  await user.type(box, "LYK1.definitely-not-a-request");
+  await user.click(screen.getByRole("button", { name: /read it/i }));
+
+  expect(await screen.findByText(/not a request/i)).toBeInTheDocument();
+  // Kept, not cleared. A researcher who pasted the wrong half of a wrapped
+  // line needs to see what they pasted to work out which half it was.
+  expect(box).toHaveValue("LYK1.definitely-not-a-request");
+});
+
+it("holds a pasted challenge it has already spent, the same way it holds a link's", async () => {
+  const user = userEvent.setup();
+  window.location.hash = "#/pair";
+  const pairMachine = vi.fn().mockResolvedValue({ code: "carry-me-back" });
+  const api: LykeionApi = { ...createInMemoryApi(), pairMachine };
+
+  render(<App api={api} />);
+  await user.type(await screen.findByRole("textbox"), PASTED);
+  await user.click(screen.getByRole("button", { name: /read it/i }));
+  await user.click(await screen.findByRole("button", { name: /^approve/i }));
+  await waitFor(() => expect(pairMachine).toHaveBeenCalledTimes(1));
+
+  // The same blob again, in the same browser — a researcher who lost the
+  // code and went back for it. The daemon settled this request when the
+  // first code was minted, so there is nothing here left to approve.
+  cleanup();
+  render(<App api={api} />);
+  await user.type(await screen.findByRole("textbox"), PASTED);
+  await user.click(screen.getByRole("button", { name: /read it/i }));
+
+  expect(await screen.findByText(/already been used/i)).toBeInTheDocument();
+  expect(pairMachine).toHaveBeenCalledTimes(1);
 });

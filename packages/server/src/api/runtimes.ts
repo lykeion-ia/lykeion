@@ -53,6 +53,19 @@ function toAgentCli(row: Row): AgentCli {
     ...(row.options === null || row.options === undefined
       ? {}
       : { options: JSON.parse(row.options as string) as AgentCli["options"] }),
+    // NULL stays absent rather than becoming `false`. A CLI nothing got far
+    // enough to ask about and one that answered no are different facts, and
+    // only the second gets a sign-in control — see `AgentCli.signedIn`.
+    ...(row.signed_in === null || row.signed_in === undefined
+      ? {}
+      : { signedIn: row.signed_in === 1 }),
+    ...(row.account === null || row.account === undefined ? {} : { account: row.account as string }),
+    ...(row.held_back_reason === null || row.held_back_reason === undefined
+      ? {}
+      : { heldBackReason: row.held_back_reason as string }),
+    ...(row.adapter_provenance === null || row.adapter_provenance === undefined
+      ? {}
+      : { adapterProvenance: row.adapter_provenance as AgentCli["adapterProvenance"] }),
   };
 }
 

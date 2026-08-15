@@ -9,6 +9,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "install:cli": "./scripts/install.sh",
     "build": "pnpm -r run build",
     "test": "pnpm -r --workspace-concurrency=1 run test",
     "typecheck": "pnpm -r run typecheck",

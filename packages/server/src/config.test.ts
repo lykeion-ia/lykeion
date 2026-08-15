@@ -23,6 +23,20 @@ describe("readConfig", () => {
     expect(() => readConfig({ LYKEION_PORT: "70000" })).toThrow(/LYKEION_PORT/);
   });
 
+  it("takes 0 as a port, which is what a lab started behind a front door binds", () => {
+    expect(readConfig({ LYKEION_PORT: "0" }).port).toBe(0);
+  });
+
+  it("treats a blank port as unset rather than as a request for any free one", () => {
+    // The difference matters precisely because 0 is now a port: a unit file
+    // that blanks this setting means the default, and `Number("")` is 0.
+    expect(readConfig({ LYKEION_PORT: "" }).port).toBe(1421);
+  });
+
+  it("rejects a port below zero, which is not a port at all", () => {
+    expect(() => readConfig({ LYKEION_PORT: "-1" })).toThrow(/LYKEION_PORT/);
+  });
+
   it("defaults change-log retention to a window wide enough to matter", () => {
     // Pinned so the default can't drift to something that discards history
     // on the first prune without a single test noticing.

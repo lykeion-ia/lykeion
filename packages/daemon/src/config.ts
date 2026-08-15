@@ -8,54 +8,103 @@ export const DAEMON_VERSION = "0.1.0";
 
 /**
  * What this program was asked to do. `serve` is the machine itself — the
- * process that pairs, heartbeats and reports; `status` and `stop` are two
- * ways of talking to one that is already running. `help` and `version` are
- * not words anybody types: they are what the two flags that ask this program
+ * process that pairs, heartbeats and reports; `status`, `stop`, `open`,
+ * `url` and `logs` are five ways of talking to one that is already running.
+ * `open` and `url` both mint a fresh link to this machine's own page — the
+ * first opens a browser on it, the second prints it alone for a caller over
+ * SSH — and neither one is `status`, which answers nothing but how the
+ * daemon is doing and must be safe to poll. `help` and `version` are not
+ * words anybody types: they are what the two flags that ask this program
  * about itself resolve to, and they are commands here so that answering one
  * is a thing this program does rather than a thing it does on the way to
  * serving.
  */
-export type DaemonCommand = "serve" | "status" | "stop" | "help" | "version";
+export type DaemonCommand =
+  | "serve"
+  | "status"
+  | "stop"
+  | "open"
+  | "url"
+  | "logs"
+  | "pair"
+  | "help"
+  | "version";
 
 /** The words that name a command. */
-const COMMANDS: readonly DaemonCommand[] = ["serve", "status", "stop"];
+const COMMANDS: readonly DaemonCommand[] = [
+  "serve",
+  "status",
+  "stop",
+  "open",
+  "url",
+  "logs",
+  "pair",
+];
 
 /** Flags that carry a value, written either as `--flag value` or
  *  `--flag=value`. */
-const VALUE_FLAGS: readonly string[] = ["--lab", "--port", "--data-dir", "--work-dir"];
+const VALUE_FLAGS: readonly string[] = ["--lab", "--port", "--data-dir", "--work-dir", "--code"];
 
 /** Flags that stand on their own. */
-const BARE_FLAGS: readonly string[] = ["--no-browser", "--detached", "--help", "-h", "--version"];
+const BARE_FLAGS: readonly string[] = [
+  "--no-browser",
+  "--detached",
+  "--help",
+  "-h",
+  "--version",
+  "--tail",
+  "--lab-only",
+];
 
 /** What `--help` prints. Written out here, beside the parsing it describes,
  *  so that a flag gained or lost is one edit rather than two that can drift
  *  apart — a help screen that names a flag the parser refuses is worse than
  *  no help screen at all. */
-export const USAGE = `lykeion-daemon — the per-machine process that pairs a computer with a lab.
+export const USAGE = `lykeion — the per-machine process that pairs a computer with a lab.
 
 Usage:
-  lykeion-daemon [serve] [flags]   Pair this machine if it is not paired, then
-                                   heartbeat and report until it is stopped.
-                                   The default when no command is named.
-  lykeion-daemon status [flags]    Ask a running daemon how it is doing.
-                                   Always answers with JSON, whatever went wrong.
-  lykeion-daemon stop [flags]      Ask a running daemon to stop, and wait until
-                                   it actually has.
+  lykeion [serve] [flags]   Pair this machine if it is not paired, then
+                            heartbeat and report until it is stopped.
+                            The default when no command is named.
+  lykeion status [flags]    Ask a running daemon how it is doing.
+                            Always answers with JSON, whatever went wrong.
+  lykeion stop [flags]      Ask a running daemon to stop, and wait until
+                            it actually has.
+  lykeion open [flags]      Mint a fresh link to this machine's own page
+                            and open a browser on it.
+  lykeion url [flags]       Print a fresh link and nothing else, for a
+                            machine you reach over SSH.
+  lykeion logs [flags]      Print the newest log from the data directory.
+                            --tail follows it.
+  lykeion pair --code <c>   Finish pairing a machine that has no browser:
+                            hand a running daemon the code the lab gave
+                            whoever pasted its request.
 
 Flags:
   --lab <url>        The lab to pair with. Only used while unpaired; once a
                      token is on disk the lab it names is the lab. [LYKEION_LAB]
-  --port <n>         The loopback port the pairing page binds. 0 takes whatever
-                     is free. [LYKEION_DAEMON_PORT]
+  --port <n>         The loopback port the pairing page binds. Defaults to
+                     1421; 0 takes whatever is free. [LYKEION_DAEMON_PORT]
   --data-dir <dir>   Where this machine keeps what it knows about itself. One
-                     directory is one machine identity, and all three commands
-                     read it. [LYKEION_DAEMON_DATA_DIR]
+                     directory is one machine identity, and every command but
+                     --help and --version reads it. [LYKEION_DAEMON_DATA_DIR]
   --work-dir <dir>   Where Task workspaces live while an agent runs in them.
-                     Defaults to a directory beside --data-dir, and may not be
-                     inside it. [LYKEION_DAEMON_WORK_DIR]
-  --no-browser       Print the pairing link rather than opening a browser on it.
+                     Defaults to ~/Documents/Lykeion, and may not be inside
+                     --data-dir. [LYKEION_DAEMON_WORK_DIR]
+  --lab-only         Serve a lab on this computer and no machine: no pairing,
+                     no agents, nothing to run a Task on. The lab itself binds
+                     --port. Cannot be given with --lab, which says the lab is
+                     somewhere else, nor with --detached, which hands back a
+                     daemon that status and stop can find again.
+  --code <code>      The one-time code the lab gave for this machine's pasted
+                     request. Only pair takes it.
+  --no-browser       Print the pairing link rather than opening a browser on it,
+                     and, when a lab is named, print the request as one line to
+                     paste into it from a computer that has one.
   --detached         Serve in the background and return to the terminal.
                      Implies --no-browser.
+  --tail             Follow the log logs prints rather than printing it once.
+                     Only logs reads it.
   -h, --help         Print this and do nothing else.
   --version          Print this build's version and do nothing else.
 
@@ -67,17 +116,39 @@ command as after it, and a flag that takes a value takes it either way round:
 /**
  * Everything the daemon reads about its environment, resolved once at
  * startup. A researcher who runs the daemon with no configuration at all
- * still gets a working process: no lab paired yet, a free loopback port for
- * the setup page, and a platform-conventional place to keep its own state.
+ * still gets a working process: no lab paired yet, the same loopback port
+ * every time, and a platform-conventional place to keep its own state.
  */
 export interface DaemonConfig {
   command: DaemonCommand;
   /** The lab to pair with. Undefined until the person names one. */
   lab?: string;
-  /** The loopback port the setup page is served on. 0 picks a free one. */
+  /**
+   * The one-time code a person carried back from a lab they pasted this
+   * machine's request into. Set only by `pair`, which is the only command
+   * that has anything to do with one.
+   */
+  code?: string;
+  /**
+   * Serve a lab on this computer and nothing else — no pairing session, no
+   * front door, no machine. The lab binds `port` itself, which is what makes
+   * `--lab-only` the one topology where 1421 is the lab rather than the
+   * daemon in front of it: there is no daemon in front of it to hold that
+   * port, and the browser still opens the same address it opens everywhere
+   * else. Anyone who wants a machine on this computer too wants the default,
+   * where the front door holds 1421 and the lab child takes a free port
+   * behind it.
+   */
+  labOnly: boolean;
+  /** The loopback port the setup page is served on. 1421 unless somebody
+   *  says otherwise, and 0 picks a free one. */
   port: number;
   openBrowser: boolean;
   detached: boolean;
+  /** Whether `logs` should keep the process open and print each new line as
+   *  it is written, rather than printing what is on disk once and exiting.
+   *  Read by no command but `logs`. */
+  tail: boolean;
   /** Where this machine keeps what it knows about itself. One directory is
    *  one daemon: it holds the token, and the file that says which process
    *  owns both. Naming another one is how a machine runs a second daemon
@@ -123,11 +194,11 @@ function defaultDataDir(env: Record<string, string | undefined>): string {
   );
 }
 
-/** Beside the data directory rather than inside it, so the tree holding
- *  this machine's own state and the tree an agent writes in are disjoint by
- *  default and nobody has to know why. */
-function defaultWorkDir(dataDir: string): string {
-  return `${dataDir}-work`;
+/** In the researcher's Documents folder rather than inside this machine's
+ *  private state, so Task outputs are both discoverable and kept outside the
+ *  boundary every agent is denied. */
+function defaultWorkDir(_dataDir: string): string {
+  return join(homedir(), "Documents", "Lykeion");
 }
 
 /** Whether `inner` is `outer` or lies beneath it, read lexically on the
@@ -139,8 +210,15 @@ function within(outer: string, inner: string): boolean {
   return path === root || path.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
 }
 
+/** The port the browser opens, in every topology. Fixed rather than
+ *  ephemeral so `ssh -L 1421:localhost:1421` needs nothing looked up first,
+ *  and so the address `probe.ts` tells a researcher to re-open is one they
+ *  can actually know. `0` still takes whatever is free, for a second daemon
+ *  on one machine. */
+const DEFAULT_PORT = 1421;
+
 function readPort(raw: string | undefined): number {
-  if (raw === undefined) return 0;
+  if (raw === undefined) return DEFAULT_PORT;
   const port = Number(raw);
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new Error(`LYKEION_DAEMON_PORT must be a port number, not ${raw}`);
@@ -232,8 +310,8 @@ function scan(argv: string[]): CommandLine {
  * Which of the commands the line names. A line with no command word on it is
  * `serve`, so the plainest way to run this machine — name a lab and nothing
  * else — stays the plainest way to run it. A word that is not one of the
- * three is refused by name rather than quietly serving: somebody who typed
- * `lykeion-daemon restart` meant something, and starting a second daemon is
+ * seven is refused by name rather than quietly serving: somebody who typed
+ * `lykeion restart` meant something, and starting a second daemon is
  * not it. A second word is refused for saying what it is: two commands is
  * not a thing to pick a winner from.
  *
@@ -252,7 +330,7 @@ function readCommand(line: CommandLine): DaemonCommand {
   const command = COMMANDS.find((name) => name === first);
   if (command === undefined)
     throw new Error(
-      `${first} is not a command — this program takes serve, status, or stop, and --help for the rest`,
+      `${first} is not a command — this program takes serve, status, stop, open, url, logs or pair, and --help for the rest`,
     );
   return command;
 }
@@ -269,11 +347,55 @@ export function readDaemonConfig(
   // program with a complaint about something else.
   if (command === "help" || command === "version") {
     const dir = defaultDataDir(env);
-    return { command, port: 0, openBrowser: false, detached: false, dataDir: dir, workDir: dir };
+    return {
+      command,
+      port: 0,
+      openBrowser: false,
+      detached: false,
+      tail: false,
+      labOnly: false,
+      dataDir: dir,
+      workDir: dir,
+    };
   }
 
   const detached = line.present.has("--detached");
+  const tail = line.present.has("--tail");
+  const labOnly = line.present.has("--lab-only");
   const lab = nonEmpty(line.values.get("--lab")) ?? nonEmpty(env.LYKEION_LAB);
+  // Two answers to one question. `--lab-only` says the lab is this computer
+  // and `--lab` says it is that URL, and a line carrying both has not asked
+  // for either strongly enough to pick: serving here would ignore the
+  // address somebody typed, and joining there would ignore the lab they
+  // asked to run. Only the flag is refused, never the environment variable,
+  // because `LYKEION_LAB` is a shell profile's standing answer for the
+  // machines on this computer and `--lab-only` on one command line is the
+  // person overriding it on purpose.
+  if (labOnly && nonEmpty(line.values.get("--lab")) !== undefined)
+    throw new Error(
+      "--lab-only serves a lab here and --lab joins one elsewhere — asking for both asks for neither",
+    );
+  // Refused for the same reason, one step further on: `--detached` returns to
+  // the terminal as soon as the daemon it started has claimed its data
+  // directory, and it is the claim that `status` and `stop` then find it by.
+  // A lab-only daemon claims nothing and answers neither, because it is a lab
+  // and not a machine — so the two together would print that the background
+  // daemon failed to start, exit 1, and leave a lab running behind that
+  // sentence with nothing able to name it but the port it holds.
+  if (labOnly && detached)
+    throw new Error(
+      "--lab-only serves a lab, which is not something --detached can hand back to the terminal — a lab-only daemon claims no data directory, so nothing could find it again to ask its status or stop it",
+    );
+  const code = nonEmpty(line.values.get("--code"));
+  // Refused rather than ignored, in both directions. `pair` with no code has
+  // nothing to carry and would send a daemon to the lab with the empty
+  // string; `serve --code` is somebody who meant `pair --code` and would get
+  // a daemon that dropped the code on the floor and started pairing from
+  // scratch — a second request, and a code still in their hand for the first.
+  if (command === "pair" && code === undefined)
+    throw new Error('pair needs the code the lab gave you: lykeion pair --code <code>');
+  if (command !== "pair" && code !== undefined)
+    throw new Error(`--code is what pair carries back — ${command} does not take one`);
   const port = readPort(nonEmpty(line.values.get("--port")) ?? nonEmpty(env.LYKEION_DAEMON_PORT));
   const openBrowser = !detached && !line.present.has("--no-browser");
   const dataDir =
@@ -292,5 +414,5 @@ export function readDaemonConfig(
       `--work-dir ${workDir} is inside --data-dir ${dataDir}, and an agent's workspace cannot live in the directory this machine keeps its own state in`,
     );
 
-  return { command, lab, port, openBrowser, detached, dataDir, workDir };
+  return { command, lab, code, port, openBrowser, detached, tail, labOnly, dataDir, workDir };
 }

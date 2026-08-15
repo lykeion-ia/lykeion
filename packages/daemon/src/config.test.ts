@@ -1,11 +1,20 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { expect, it } from "vitest";
 import { readDaemonConfig } from "./config";
 
-it("defaults to a free loopback port and no lab", () => {
+it("defaults to no lab and a browser", () => {
   const config = readDaemonConfig({}, []);
-  expect(config.port).toBe(0);
   expect(config.lab).toBeUndefined();
   expect(config.openBrowser).toBe(true);
+});
+
+it("binds a port somebody can forward without looking it up first", () => {
+  expect(readDaemonConfig({}, []).port).toBe(1421);
+});
+
+it("still takes zero when a caller wants whatever is free", () => {
+  expect(readDaemonConfig({}, ["--port", "0"]).port).toBe(0);
 });
 
 it("takes the lab from a flag", () => {
@@ -44,9 +53,39 @@ it("takes each of the commands it has", () => {
   expect(readDaemonConfig({}, ["stop"]).command).toBe("stop");
 });
 
+it("takes the commands that mint and read links", () => {
+  for (const word of ["open", "url", "logs"])
+    expect(readDaemonConfig({}, [word]).command).toBe(word);
+});
+
 it("refuses a command it does not have, saying which it does", () => {
   expect(() => readDaemonConfig({}, ["restart"])).toThrow(
-    /restart is not a command.*serve, status, or stop.*--help/,
+    /restart is not a command.*serve, status, stop, open, url, logs or pair.*--help/,
+  );
+});
+
+it("takes a code carried back by hand", () => {
+  const config = readDaemonConfig({}, ["pair", "--code", "one-time-code"]);
+  expect(config.command).toBe("pair");
+  expect(config.code).toBe("one-time-code");
+});
+
+it("takes the code either way round, the way every other value flag reads", () => {
+  expect(readDaemonConfig({}, ["pair", "--code=one-time-code"]).code).toBe("one-time-code");
+});
+
+it("refuses pair with no code, rather than asking a daemon to redeem nothing", () => {
+  // The command exists only to carry one value. Without it there is nothing
+  // to do, and a daemon told to redeem the empty string would spend a round
+  // trip to the lab finding that out.
+  expect(() => readDaemonConfig({}, ["pair"])).toThrow(/pair needs the code/i);
+});
+
+it("refuses a code given to something that is not pair", () => {
+  // Not pedantry: `serve --code` is somebody who meant `pair --code` and got
+  // a daemon that ignored the code and started pairing from scratch instead.
+  expect(() => readDaemonConfig({}, ["status", "--code", "one-time-code"])).toThrow(
+    /--code.*pair/i,
   );
 });
 
@@ -144,8 +183,10 @@ it("falls back to a platform-conventional place for its state", () => {
   expect(readDaemonConfig({}, []).dataDir).not.toBe("");
 });
 
-it("defaults the work directory to a tree beside the data directory, never inside it", () => {
-  expect(readDaemonConfig({}, ["--data-dir", "/tmp/lyk-p1"]).workDir).toBe("/tmp/lyk-p1-work");
+it("defaults Task workspaces to the researcher's Documents folder", () => {
+  expect(readDaemonConfig({}, ["--data-dir", "/tmp/lyk-p1"]).workDir).toBe(
+    join(homedir(), "Documents", "Lykeion"),
+  );
 });
 
 it("refuses a work directory inside the data directory, naming the conflict", () => {
@@ -177,9 +218,38 @@ it("lets a work-dir flag beat the environment", () => {
 
 it("treats an empty work-dir environment value as unset", () => {
   const config = readDaemonConfig({ LYKEION_DAEMON_WORK_DIR: "", LYKEION_DAEMON_DATA_DIR: "/tmp/lyk-p1" }, []);
-  expect(config.workDir).toBe("/tmp/lyk-p1-work");
+  expect(config.workDir).toBe(join(homedir(), "Documents", "Lykeion"));
 });
 
 it("refuses --work-dir with no value the same way --data-dir does", () => {
   expect(() => readDaemonConfig({}, ["--work-dir"])).toThrow(/--work-dir needs a value/);
+});
+
+it("takes --lab-only and starts no machine", () => {
+  expect(readDaemonConfig({}, ["--lab-only"]).labOnly).toBe(true);
+});
+
+it("leaves --lab-only off when nobody asks for it", () => {
+  expect(readDaemonConfig({}, []).labOnly).toBe(false);
+});
+
+it("refuses --lab-only together with a lab to join, which cannot both be meant", () => {
+  expect(() => readDaemonConfig({}, ["--lab-only", "--lab", "https://lab.example.edu"])).toThrow(
+    /--lab-only serves a lab here/,
+  );
+});
+
+it("lets --lab-only override a standing LYKEION_LAB rather than refusing it", () => {
+  const config = readDaemonConfig({ LYKEION_LAB: "https://lab.example.edu" }, ["--lab-only"]);
+  expect(config.labOnly).toBe(true);
+});
+
+it("refuses --lab-only together with --detached, which would hand back nothing to find", () => {
+  expect(() => readDaemonConfig({}, ["--lab-only", "--detached"])).toThrow(
+    /--lab-only serves a lab, which is not something --detached can hand back/,
+  );
+});
+
+it("refuses --lab-only a value, since it is either given or it is not", () => {
+  expect(() => readDaemonConfig({}, ["--lab-only=yes"])).toThrow(/--lab-only does not take a value/);
 });

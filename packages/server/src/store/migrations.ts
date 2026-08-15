@@ -800,6 +800,26 @@ export const MIGRATIONS: Migration[] = [
       store.run(`CREATE INDEX turns_by_session_task ON turns(session_id, task_id)`);
     },
   },
+  {
+    version: 22,
+    up(store) {
+      // What a machine now says about each agent beyond whether it can run:
+      // whether the CLI is signed in, as whom, why it is held back when
+      // nothing the researcher does would change that, and who published the
+      // adapter it would be run through.
+      //
+      // `signed_in` is nullable rather than defaulted, and that is the whole
+      // point of the column. NULL is "nothing asked" — not installed, no
+      // adapter, an isolation that could not be demonstrated — and 0 is a CLI
+      // that was asked and said no. Only the second earns a sign-in control;
+      // a default would turn every unasked row into a button that spawns
+      // nothing.
+      store.run(`ALTER TABLE runtime_clis ADD COLUMN signed_in INTEGER`);
+      store.run(`ALTER TABLE runtime_clis ADD COLUMN account TEXT`);
+      store.run(`ALTER TABLE runtime_clis ADD COLUMN held_back_reason TEXT`);
+      store.run(`ALTER TABLE runtime_clis ADD COLUMN adapter_provenance TEXT`);
+    },
+  },
 ];
 
 assertAscending(MIGRATIONS);

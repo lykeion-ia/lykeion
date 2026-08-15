@@ -7,7 +7,9 @@
   "license": "AGPL-3.0-only",
   "exports": {
     ".": "./src/index.ts",
-    "./conformance": "./src/conformance.ts"
+    "./conformance": "./src/conformance.ts",
+    "./routes": "./src/routes.ts",
+    "./pair-code": "./src/pair-code.ts"
   },
   "scripts": {
     "test": "vitest run",

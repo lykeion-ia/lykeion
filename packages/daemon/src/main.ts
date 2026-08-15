@@ -1,15 +1,32 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  watch,
+} from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { DEMOTION_HOLD_SECONDS } from "./agent-demotions";
 import { runBridge } from "./bridge";
 import { DAEMON_VERSION, readDaemonConfig, USAGE, type DaemonConfig } from "./config";
+import { forwardTo } from "./front-door";
+import {
+  DEFAULT_LAB_COMMAND,
+  labDataDir,
+  labIsHere,
+  startLabChild,
+  type LabChild,
+} from "./lab-child";
 import { labLabel, readState, revokedStatePath, setAsidePairing, type PairedState } from "./state";
-import { beginPairing, beginSignIn, PairingRefused, type PairingSession } from "./pairing";
+import { beginPairing, beginSignIn, openBrowser, PairingRefused, type PairingSession } from "./pairing";
 import { cliFingerprint, platformTag, probeAgentClis } from "./probe";
-import { adapterFor, rememberAdapters } from "./ready-adapters";
+import { adapterFor, heldBackReason, rememberAdapters, rememberHeldBack } from "./ready-adapters";
 import { acceptAdapter, revokeAdapter } from "./adapter-consent";
 import type { AdapterLaunch } from "./agent-registry";
 import { installAgentHomes } from "./agent-install";
@@ -32,6 +49,7 @@ import {
   silentMessage,
   startControlServer,
   waitForExit,
+  type ControlAnswer,
   type ControlFile,
   type ControlServer,
 } from "./control";
@@ -79,7 +97,27 @@ let controlServer: ControlServer | undefined;
 let pairingSession: PairingSession | undefined;
 let runSubsystem: RunSubsystem | undefined;
 let kernelHost: KernelHost | undefined;
+/** The lab this daemon started, when the lab runs on this computer. Held
+ *  here rather than in `runServe` because the thing that has to end it is
+ *  `shutdown`, and a lab left running after the daemon that started it has
+ *  gone would hold the port and the database the next one needs. */
+let labChild: LabChild | undefined;
 let stopping = false;
+
+/** False from the moment the control endpoint starts answering until this
+ *  process has finished deciding whether it has a page to offer at all.
+ *
+ *  The window is real and it is not brief: `serve` binds and claims before it
+ *  pairs or opens the sign-in page, and between the two it walks the
+ *  filesystem installing agent homes. A `serve --detached` returns as soon as
+ *  the claim appears, so `lykeion serve --detached && lykeion
+ *  open` lands inside the window routinely rather than exceptionally.
+ *
+ *  It exists because `pairingSession === undefined` on its own cannot tell
+ *  "not yet" from "never": a paired daemon whose sign-in page failed to bind
+ *  is in that same state for good. The two call for opposite responses — wait
+ *  a moment, or stop waiting — so the two are said apart. */
+let startupFinished = false;
 
 /**
  * Everything this daemon currently has out in the world that answers to
@@ -142,6 +180,12 @@ function out(line: string): void {
 async function shutdown(): Promise<void> {
   if (stopping) return;
   stopping = true;
+  // A daemon on its way out is not one that is about to have a page, whatever
+  // point of its startup it was interrupted at. The control endpoint goes on
+  // answering through `release()` — deliberately, so a claim being let go can
+  // still be told from a pid that was reused — so this window has callers in
+  // it, and telling them to wait would be telling them to wait for good.
+  startupFinished = true;
   if (heartbeatTimer) clearTimeout(heartbeatTimer);
   if (probeTimer) clearTimeout(probeTimer);
   heartbeatTimer = undefined;
@@ -167,6 +211,13 @@ async function shutdown(): Promise<void> {
   const session = pairingSession;
   pairingSession = undefined;
   if (session) await session.close();
+
+  // After the front door, never before it: the session above is what carries
+  // requests to this lab, and a lab stopped first would answer the ones
+  // still in flight with a 502 rather than with what they asked for.
+  const lab = labChild;
+  labChild = undefined;
+  if (lab) await lab.stop();
 
   controlServer?.release();
 }
@@ -194,6 +245,22 @@ async function reportIfChanged(machine: PairedState, dataDir: string): Promise<v
     onAdapterResolved: (agentId, launch) => resolved.set(agentId, launch),
   });
   rememberAdapters(resolved);
+  // Beside the map of what may run, the reason each of the rest may not.
+  // Written from the same cycle that decided it, so the sentence a refused run
+  // gives is the sentence the machine's own page is showing at that moment
+  // rather than a second account of the same fact.
+  //
+  // `heldBackReason` first where there is one: it is written for a person,
+  // and `sessionReadyReason` is written for whoever is debugging a catalogue
+  // row. A run's refusal reaches a researcher, so it takes the first.
+  rememberHeldBack(
+    new Map(
+      clis
+        .filter((cli) => !cli.sessionReady)
+        .map((cli) => [cli.id, cli.heldBackReason ?? cli.sessionReadyReason ?? ""] as const)
+        .filter(([, reason]) => reason !== ""),
+    ),
+  );
   if (cliFingerprint(clis) === lastReported) return;
   await retries.run(machine.lab, "report", () =>
     report(
@@ -350,10 +417,67 @@ export function kernelHostFor(): KernelHost {
 }
 
 /**
+ * Serves a lab on this computer and nothing else: no pairing, no machine, no
+ * agents. The lab binds `config.port` itself, because with no front door in
+ * front of it the lab is what the browser opens, and the browser opens 1421
+ * in every topology.
+ *
+ * This process then exists only to hold that one child, so it waits on the
+ * child rather than on a schedule of its own: a lab that ends — cleanly, or
+ * because it could not start listening — ends the daemon holding it, rather
+ * than leaving a process that supervises nothing.
+ */
+async function runLabOnly(config: DaemonConfig): Promise<void> {
+  let lab: LabChild | undefined;
+
+  /**
+   * The only thing that ends the lab. It runs in a group of its own — see
+   * `startLabChild` for why it has to — so neither a Ctrl-C in the terminal
+   * nor a signal from whatever supervises this daemon reaches it directly,
+   * and a handler that did not stop it would leave the lab running with
+   * nothing left holding it.
+   *
+   * Registered before the lab is started rather than after, because starting
+   * it is the longest part of this command and the likeliest moment for
+   * somebody to change their mind: the default command builds the lab first,
+   * and a Ctrl-C inside that window used to take this process's default
+   * action — no handler, no `exit`, and a build and then a lab left running
+   * on the configured port with nothing supervising them.
+   *
+   * With no lab yet there is nothing to ask politely, so this exits instead,
+   * which runs the sweep `startLabChild` registered the moment it spawned
+   * anything. That sweep is the only thing that can reach a child this
+   * function has not been handed yet.
+   */
+  const stopLab = (): void => {
+    if (lab === undefined) process.exit(0);
+    void lab.stop();
+  };
+  process.once("SIGINT", stopLab);
+  process.once("SIGTERM", stopLab);
+
+  lab = await startLabChild(labDataDir(config.dataDir), DEFAULT_LAB_COMMAND, {
+    port: config.port,
+  });
+  labChild = lab;
+  // Said here because `startLabChild` swallows the lab's own line: that one
+  // names the port the lab was told to take, and this is the address of the
+  // lab a person is being invited to open.
+  out(`Lykeion lab on http://127.0.0.1:${lab.port}`);
+  await lab.finished;
+  labChild = undefined;
+}
+
+/**
  * The machine itself: claims the data directory, pairs if it has not
  * already, then heartbeats and reports for as long as it is left alone.
  */
 async function runServe(config: DaemonConfig): Promise<void> {
+  // Answered before a directory is claimed or a control endpoint is bound,
+  // because none of that is what was asked for: a lab is not a machine, and
+  // this process pairs nothing, reports nothing and runs no agent.
+  if (config.labOnly) return runLabOnly(config);
+
   // Read before anything is claimed or bound, so a state file that will not
   // parse fails on the spot. Pairing again on top of one would throw away
   // whatever token it already holds without anyone deciding that was right.
@@ -366,35 +490,73 @@ async function runServe(config: DaemonConfig): Promise<void> {
   controlServer = await startControlServer({
     token,
     handlers: {
-      status: () => {
-        // Asking a daemon how it is doing is how a person who lost the link
-        // gets another one, so every ask mints one — and retires the last,
-        // which is what keeps a link that was printed into a log or a
-        // scrollback from staying good.
-        //
-        // Minted whether or not this machine is paired, because the page
-        // behind it is not the same page in the two cases and both are
-        // needed. Unpaired, it opens the form that names a lab. Paired, it
-        // opens the sign-in step and nothing else — the loopback server for a
-        // paired daemon routes neither `/connect` nor `/paired` (see
-        // `alreadyPaired`), so this link cannot re-home this machine or spend
-        // a second code. It is named apart from `pairingLink` for that
-        // reason: a caller that could not tell the two apart would offer one
-        // where the other belongs.
-        //
-        // Withholding it while paired is what this used to do, and it left
-        // the researcher `probe.ts` sends to "Lykeion's setup page" with no
-        // such page anywhere on this machine.
+      status: () => ({
+        running: true,
+        // The one field that explains the absence of another. `port` is the
+        // loopback port this machine's own page is served on, and until
+        // that page is open there is no number to give — `JSON.stringify`
+        // drops the key rather than inventing one. A caller that finds no
+        // `port` beside `starting: true` is looking at a daemon that is
+        // about to have one; the same gap beside `starting: false` is a
+        // daemon that never will, because its page failed to bind. Saying
+        // nothing about which left a missing `port` reading as both.
+        starting: !startupFinished,
+        pid: process.pid,
+        port: pairingSession?.port,
+        ...describe(config, machine),
+      }),
+      // Mints whether or not this machine is paired, because the page
+      // behind the link is not the same page in the two cases and both are
+      // needed. Unpaired, it opens the form that names a lab. Paired, it
+      // opens the sign-in step and nothing else — the loopback server for a
+      // paired daemon routes neither `/connect` nor `/paired` (see
+      // `alreadyPaired`), so this link cannot re-home this machine or spend
+      // a second code. That is what `kind` tells a caller: a `pairingLink`
+      // and a `signInLink` open different forms, and offering one where the
+      // other belongs is exactly the confusion naming it apart from
+      // `status` was meant to end.
+      //
+      // Answering with a reason rather than minting nothing is deliberate: a
+      // caller that asked by name for a link gets a sentence saying why it
+      // cannot have one, not an empty answer that reads as this route not
+      // existing. There are two ways to have no page, and they are told
+      // apart because the answers differ. Still starting is worth waiting
+      // out. A paired daemon whose sign-in page failed to bind its port —
+      // see the `catch` around `beginSignIn` below — never will have one, and
+      // waiting on it is waiting on nothing.
+      mintLink: () => {
         const link = pairingSession?.rotateNonce();
+        if (link !== undefined)
+          return { link, kind: machine ? ("signIn" as const) : ("pairing" as const) };
         return {
-          running: true,
-          pid: process.pid,
-          ...describe(config, machine),
-          ...(link === undefined ? {} : machine ? { signInLink: link } : { pairingLink: link }),
+          unavailable: startupFinished
+            ? "this daemon has no page to open"
+            : "this daemon is still starting up and has no page to open yet",
         };
       },
       stop: () => {
         void shutdown();
+      },
+      // The other end of the by-hand path. A researcher pasted this
+      // machine's request into a lab on a computer that has a browser, and
+      // is now back at this terminal with the code it gave them.
+      pairWithCode: async (code) => {
+        if (pairingSession === undefined)
+          return {
+            paired: false,
+            error: startupFinished
+              ? "this daemon is not waiting to pair"
+              : "this daemon is still starting up",
+          };
+        try {
+          await pairingSession.redeemCode(code);
+          return { paired: true };
+        } catch (err) {
+          // The lab's own words, or this session's. Both are about the code
+          // rather than about this process, which is what the caller has to
+          // decide what to do about.
+          return { paired: false, error: err instanceof Error ? err.message : String(err) };
+        }
       },
       setAdapterConsent: (agent, command, accepted) => {
         // Against this machine's own data directory, the same place the
@@ -433,8 +595,72 @@ async function runServe(config: DaemonConfig): Promise<void> {
   process.once("SIGINT", () => void shutdown());
   process.once("SIGTERM", () => void shutdown());
 
+  // The lab, when this data directory says the lab lives here. Started
+  // before either kind of session below, because those sessions are the
+  // front door and a front door has to be told where it is forwarding to
+  // before it starts taking requests — a session opened first would answer
+  // the application's first call with a 404 for as long as the lab took to
+  // build and bind.
+  //
+  // A lab that will not start is fatal rather than stepped past: a daemon
+  // whose lab is here and did not come up has nothing to pair with, nothing
+  // to report to, and no page worth serving. The rejection carries which of
+  // the ways it failed it was, and `main`'s own handler prints it and lets
+  // go of everything this far up.
+  let forward: ReturnType<typeof forwardTo> | undefined;
+  if (labIsHere(config.dataDir)) {
+    // The other edge of the same window: a stop that arrived before this
+    // point has already let go of everything this process had, and starting
+    // a lab now would hand it back something to hold.
+    if (stopping) return;
+    const lab = await startLabChild(labDataDir(config.dataDir));
+    labChild = lab;
+    // A stop that arrived while the lab was still building ran against a
+    // daemon that had no lab to let go of yet — `shutdown` reads the handle
+    // this line has only just written. So the lab is stopped here, on the
+    // same terms `shutdown` would have stopped it, and this returns rather
+    // than going on: everything below opens something, and a daemon that has
+    // been told to stop must not answer by binding a pairing server.
+    if (stopping) {
+      labChild = undefined;
+      await lab.stop();
+      return;
+    }
+    forward = forwardTo(lab.port);
+    out("The lab for this machine runs here, behind this daemon's own address");
+  }
+
+  /**
+   * Brings the lab up on this computer because the first run just said it
+   * lives here.
+   *
+   * The step after that question creates the owner account IN this lab,
+   * through this daemon's own address, so waiting for the next start of the
+   * daemon would meet the researcher with a screen that has nothing behind
+   * it. Idempotent: a second answer, or a reload that re-posts, finds the
+   * lab already up rather than starting a second one.
+   */
+  const startLabHere = async (): Promise<void> => {
+    if (labChild !== undefined) return;
+    const lab = await startLabChild(labDataDir(config.dataDir));
+    // The same window `runServe` guards above: a stop that arrived while the
+    // lab was building must not be answered by handing this process a child
+    // to hold.
+    if (stopping) {
+      await lab.stop();
+      throw new Error("this daemon is stopping");
+    }
+    labChild = lab;
+    pairingSession?.serveLabThrough(lab.port);
+    out("The lab for this machine runs here, behind this daemon's own address");
+  };
+
   if (!machine) {
-    pairingSession = await beginPairing(config);
+    pairingSession = await beginPairing(config, forward, startLabHere);
+    // Named as well as forwarded, when the lab was already here at startup.
+    // `forward` alone tells the session where the lab's routes go; this is
+    // what tells it which address a pairing code is redeemed against.
+    if (labChild !== undefined) pairingSession.serveLabThrough(labChild.port);
     try {
       machine = await pairingSession.paired;
     } catch (err) {
@@ -496,12 +722,11 @@ async function runServe(config: DaemonConfig): Promise<void> {
   // process is actually for.
   if (pairingSession === undefined) {
     try {
-      pairingSession = await beginSignIn(config, identity);
+      pairingSession = await beginSignIn(config, identity, forward);
     } catch (err) {
-      // Named as a port only when one was actually named. `config.port`
-      // defaults to 0, which means "whatever is free" rather than port zero,
-      // and printing it reads as a nonsense number to whoever is trying to
-      // work out what is holding the address.
+      // Named as a port only when it is one. `0` means "whatever is free"
+      // rather than port zero, and printing it reads as a nonsense number to
+      // whoever is trying to work out what is holding the address.
       const where = config.port === 0 ? "on its loopback port" : `on port ${config.port}`;
       console.error(
         `this machine's sign-in page could not be opened ${where}: ` +
@@ -510,12 +735,19 @@ async function runServe(config: DaemonConfig): Promise<void> {
     }
   }
 
+  // Said only once both ways of getting a page have been tried, which is the
+  // only moment at which "this daemon has no page" stops being premature.
+  // Everything below is a schedule rather than a step: nothing after this
+  // point can open the page that was not opened above.
+  startupFinished = true;
+
   runSubsystem = startRuns({
     lab: identity.lab,
     token: identity.token,
     workDir: config.workDir,
     dataDir: config.dataDir,
     adapterFor,
+    heldBackReason,
     kernelHost: kernelHostFor,
   });
 
@@ -692,11 +924,213 @@ async function runStatus(config: DaemonConfig): Promise<void> {
   out(JSON.stringify(offlineStatus(config, silent), null, 2));
 }
 
+/**
+ * Asks the daemon holding this data directory for a fresh link, answering
+ * with the link or with `undefined` once it has said on standard error why
+ * there is none. Shared by `open` and `url`, which differ only in what they
+ * do with a link they got.
+ *
+ * The reason is never one sentence for every failure. Nothing running here
+ * invites starting a daemon; one that is still starting up invites waiting a
+ * moment; one holding the claim and not answering invites neither, because
+ * starting a second daemon on that machine identity is how one machine ends
+ * up reporting to a lab twice. A caller handed the same message for all three
+ * acts on the wrong one twice out of three times. This is `runStop`'s shape,
+ * for `runStop`'s reasons.
+ *
+ * Nothing here writes to standard output. `url` exists to be piped, so its
+ * output stream carries a link or carries nothing.
+ */
+async function askRunningDaemon(
+  config: DaemonConfig,
+  path: string,
+): Promise<{ file: ControlFile; answer: ControlAnswer } | undefined> {
+  const fail = (why: string): undefined => {
+    console.error(why);
+    process.exitCode = 1;
+    return undefined;
+  };
+
+  const file = readControlFile(config.dataDir);
+  if (!file)
+    return fail(
+      `No daemon is running for ${config.dataDir} — start one with "lykeion serve".`,
+    );
+
+  // Asked before the call is, and answered on the same short clock `status`
+  // and `stop` use, so that a claim left behind by a machine that lost power
+  // is not reported as a daemon that refused what was asked of it.
+  const state = await probeControl(file);
+  if (state === "gone") {
+    clearAbandoned(
+      config,
+      file,
+      `left by pid ${file.pid}, which is not running this daemon`,
+      console.error,
+    );
+    process.exitCode = 1;
+    return undefined;
+  }
+  if (state === "silent") return fail(silentMessage(config.dataDir, file.pid, file.port));
+
+  let answer: ControlAnswer;
+  try {
+    answer = await callControl(file, path);
+  } catch (err) {
+    // It answered the ping a moment ago, so this is a daemon that went away
+    // mid-conversation rather than one that was never there.
+    if (!isProcessAlive(file.pid)) {
+      clearAbandoned(config, file, `left by pid ${file.pid}, which has since gone`, console.error);
+      process.exitCode = 1;
+      return undefined;
+    }
+    return fail(
+      `the daemon on pid ${file.pid} stopped answering: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  return { file, answer };
+}
+
+/** What `open` and `url` both want: a fresh link, or `undefined` once the
+ *  reason there is none has been said on standard error. */
+async function mintFreshLink(config: DaemonConfig): Promise<string | undefined> {
+  const fail = (why: string): undefined => {
+    console.error(why);
+    process.exitCode = 1;
+    return undefined;
+  };
+
+  const reached = await askRunningDaemon(config, "/link");
+  if (reached === undefined) return undefined;
+  const { file, answer } = reached;
+
+  if (answer.status !== 200) {
+    // The daemon's own sentence wherever it sent one, rather than this
+    // command's guess at it: whether there is no page yet or never will be is
+    // known in the serving process and nowhere else, and the two call for
+    // opposite responses from whoever is reading this.
+    const said = (answer.body as { error?: unknown } | null)?.error;
+    return fail(
+      typeof said === "string"
+        ? `the daemon on pid ${file.pid} has no link to give: ${said}`
+        : `the daemon on pid ${file.pid} answered the link request with ${answer.status}`,
+    );
+  }
+
+  return (answer.body as { link: string }).link;
+}
+
+/** Prints a fresh link alone on standard output and nothing else, so a caller
+ *  over SSH can pipe it. Every other message this program writes goes to
+ *  standard error for the same reason. */
+async function runUrl(config: DaemonConfig): Promise<void> {
+  const link = await mintFreshLink(config);
+  if (link !== undefined) out(link);
+}
+
+/** Mints a link and opens a browser on it. What a person at the keyboard
+ *  wants; `url` is what a pipe wants. */
+async function runOpen(config: DaemonConfig): Promise<void> {
+  const link = await mintFreshLink(config);
+  if (link === undefined) return;
+  out(link);
+  openBrowser(link);
+}
+
+/**
+ * Carries a code back to the daemon that is waiting for it — the last step
+ * of joining a lab from a machine with no browser, where a person has been
+ * the transport for both halves.
+ *
+ * The daemon's own sentence is what gets printed when a code will not
+ * redeem, because the lab is the only party that knows which of the
+ * several reasons it is: expired, already spent, or minted for a request
+ * this daemon has since replaced. A command that guessed would send
+ * somebody to check the wrong thing.
+ */
+async function runPair(config: DaemonConfig): Promise<void> {
+  const code = config.code ?? "";
+  const reached = await askRunningDaemon(config, `/pair?code=${encodeURIComponent(code)}`);
+  if (reached === undefined) return;
+  const { file, answer } = reached;
+
+  if (answer.status === 200) {
+    out("Paired. That machine has joined the lab.");
+    return;
+  }
+
+  const said = (answer.body as { error?: unknown } | null)?.error;
+  console.error(
+    typeof said === "string"
+      ? `that code was not redeemed: ${said}`
+      : `the daemon on pid ${file.pid} answered the pairing request with ${answer.status}`,
+  );
+  process.exitCode = 1;
+}
+
+/** The newest log in the data directory. A daemon that cannot reach its lab
+ *  prints a retry line every few seconds, and when Runtimes says offline
+ *  those lines are the only thing that knows why. */
+function runLogs(config: DaemonConfig, tail: boolean): void {
+  const file = join(config.dataDir, LOG_FILE);
+  if (!existsSync(file)) {
+    console.error(`no log at ${file} — a daemon in the foreground writes to its terminal instead`);
+    process.exitCode = 1;
+    return;
+  }
+
+  /** How far into the log this command has already printed. Carried across
+   *  reads because `watch` says only that the file changed, never what
+   *  changed: without it the only thing a callback can do is read the file
+   *  again from the start and print all of it, which for a daemon that logs a
+   *  retry line every few seconds means printing its whole log again every
+   *  few seconds. Following is meant to show what was appended. */
+  let printed = 0;
+
+  /** Bytes, not decoded text, and written as bytes. A line arrives on this
+   *  file's own schedule rather than on a character boundary, so a multi-byte
+   *  character can straddle two reads; decoding each read on its own would
+   *  turn that character into two replacement marks, where passing the bytes
+   *  through leaves the two halves to meet again on the way out. */
+  const printAppended = (): void => {
+    const handle = openSync(file, "r");
+    try {
+      const size = fstatSync(handle).size;
+      // A log that has got shorter was rotated or truncated under this
+      // command. Reading on from an offset the file no longer reaches prints
+      // nothing ever again, which looks exactly like a daemon that went
+      // quiet, so the file it has become is followed from its start.
+      if (size < printed) printed = 0;
+      if (size === printed) return;
+      const buffer = Buffer.alloc(size - printed);
+      const got = readSync(handle, buffer, 0, buffer.length, printed);
+      printed += got;
+      process.stdout.write(buffer.subarray(0, got));
+    } finally {
+      closeSync(handle);
+    }
+  };
+
+  printAppended();
+  if (tail) watch(file, printAppended);
+}
+
 /** Says the claim is finished with and clears it. Only ever reached once
- *  asking the port has shown that nothing stands behind it. */
-function clearAbandoned(config: DaemonConfig, file: ControlFile, why: string): void {
+ *  asking the port has shown that nothing stands behind it.
+ *
+ *  Which stream it says so on is the caller's to choose: this is `stop`'s own
+ *  result and belongs on its output, but for `url` it is an explanation of an
+ *  absent link, and `url`'s output stream carries links or nothing so that it
+ *  can be piped. */
+function clearAbandoned(
+  config: DaemonConfig,
+  file: ControlFile,
+  why: string,
+  say: (line: string) => void = out,
+): void {
   removeControlFileIf(config.dataDir, file);
-  out(`No daemon is running for ${config.dataDir} — cleared a claim ${why}.`);
+  say(`No daemon is running for ${config.dataDir} — cleared a claim ${why}.`);
 }
 
 async function runStop(config: DaemonConfig): Promise<void> {
@@ -778,6 +1212,10 @@ async function main(): Promise<void> {
   if (config.command === "version") return out(DAEMON_VERSION);
   if (config.command === "status") return runStatus(config);
   if (config.command === "stop") return runStop(config);
+  if (config.command === "open") return runOpen(config);
+  if (config.command === "url") return runUrl(config);
+  if (config.command === "logs") return runLogs(config, config.tail);
+  if (config.command === "pair") return runPair(config);
   if (config.detached) return runDetached(config);
   return runServe(config);
 }

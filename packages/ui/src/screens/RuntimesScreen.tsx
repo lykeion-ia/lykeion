@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApi } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
 import { RuntimesList } from "../components/library/RuntimesList";
+import { AgentsScreen } from "./setup/AgentsScreen";
 import { taskLabeller } from "../components/library/KernelTree";
 import { ScreenHeader } from "../components/ui/ScreenHeader";
 
@@ -88,6 +89,27 @@ export function RuntimesScreen() {
           onInterrupt={onInterrupt}
           onRestart={onRestart}
         />
+
+        {/* The same list the first run ends on, for every later visit — this
+            is where somebody comes back to when an agent stops working or
+            when they finally install one they skipped. Only for machines
+            whose `clis` this member may see, which is the ownership rule
+            already deciding whether the key is there at all.
+
+            No `onSignIn`: a sign-in opens a browser flow against a vendor and
+            writes a credential into a home the daemon owns, and this page is
+            served by a lab that may be on another computer entirely. The
+            machine's own front door is the only thing that can start one. */}
+        {runtimes
+          .filter((runtime) => runtime.clis !== undefined)
+          .map((runtime) => (
+            <section key={runtime.id} className="mt-8">
+              <h2 className="mb-2 text-ui font-semibold text-fg">
+                Agents on {runtime.name}
+              </h2>
+              <AgentsScreen clis={runtime.clis ?? []} compact />
+            </section>
+          ))}
       </div>
     </div>
   );

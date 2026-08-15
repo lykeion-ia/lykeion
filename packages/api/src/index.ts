@@ -25,6 +25,12 @@ export * from "./account";
 export * from "./usage";
 export * from "./settings";
 export * from "./http";
+// Also its own entry point, `@lykeion/api/routes`, so that the daemon can read
+// the register without pulling in the rest of this package to get it.
+export * from "./routes";
+// Same arrangement, for the same reason: the daemon mints these blobs and the
+// UI reads them, and an encoder and a decoder in two packages drift.
+export * from "./pair-code";
 export {
   createInMemoryApi,
   createInMemoryLab,

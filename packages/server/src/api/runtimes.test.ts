@@ -33,6 +33,10 @@ async function report(
     available: boolean;
     sessionReady?: boolean;
     sessionReadyReason?: string;
+    signedIn?: boolean;
+    account?: string;
+    heldBackReason?: string;
+    adapterProvenance?: "vendor" | "protocol" | "community";
   }>,
 ): Promise<Response> {
   return fetch(`${base}/daemon/report`, {
@@ -358,4 +362,128 @@ it("shows a colleague's capabilities without showing which CLI produced them", a
   const [fromOwnersView] = await lab.ownerApi.listRuntimes();
   expect(fromOwnersView!.capabilities).toEqual(["sessions"]);
   expect("clis" in fromOwnersView!).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// Auth state, and who may read it.
+//
+// Whether an agent is signed in — and as whom — is the researcher's own
+// account with a third party. It travels because the machine's own page has
+// to show it; it travels no further than the member who paired that machine.
+// ---------------------------------------------------------------------------
+
+it("tells the member who paired a machine whether each agent is signed in", async () => {
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  await report(lab.base, token, [
+    {
+      id: "claude",
+      name: "Claude Code",
+      command: "claude",
+      version: "2.1.231",
+      available: true,
+      sessionReady: true,
+      signedIn: true,
+      account: "ana@uni.edu",
+      adapterProvenance: "protocol",
+    },
+    {
+      id: "codex",
+      name: "Codex",
+      command: "codex",
+      version: "0.58.0",
+      available: true,
+      sessionReady: false,
+      sessionReadyReason: "not signed in",
+      signedIn: false,
+    },
+    {
+      id: "qoder",
+      name: "Qoder",
+      command: "qoder",
+      version: "1.0.0",
+      available: true,
+      sessionReady: false,
+      sessionReadyReason: "isolation unverified",
+      heldBackReason:
+        "answered as signed in from a home created empty a moment ago, so Lykeion cannot keep its runs separate from yours",
+    },
+  ]);
+
+  const clis = await lab.ownerApi.listAgentClis();
+  expect(clis.find((c) => c.id === "claude")).toMatchObject({
+    signedIn: true,
+    account: "ana@uni.edu",
+    adapterProvenance: "protocol",
+  });
+  // False, not absent. "Signed out" is a fact a row acts on — it is what puts
+  // a Sign in control there — and it must not read the same as an agent whose
+  // sign-in was never asked about.
+  expect(clis.find((c) => c.id === "codex")).toMatchObject({ signedIn: false });
+  expect("account" in clis.find((c) => c.id === "codex")!).toBe(false);
+  expect(clis.find((c) => c.id === "qoder")).toMatchObject({
+    heldBackReason:
+      "answered as signed in from a home created empty a moment ago, so Lykeion cannot keep its runs separate from yours",
+  });
+  expect("signedIn" in clis.find((c) => c.id === "qoder")!).toBe(false);
+});
+
+it("tells nobody else", async () => {
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+  await report(lab.base, token, [
+    {
+      id: "claude",
+      name: "Claude Code",
+      command: "claude",
+      version: "2.1.231",
+      available: true,
+      sessionReady: true,
+      signedIn: true,
+      account: "ana@uni.edu",
+    },
+  ]);
+
+  // The owner paired it, so the member sees nothing — the same `WHERE
+  // r.owner_id = ?` that has always guarded this, standing between somebody
+  // else's colleague and the address they signed in to Claude with.
+  await expect(lab.memberApi.listAgentClis()).resolves.toEqual([]);
+});
+
+it("announces a sign-in even when nothing else about the agent changed", async () => {
+  // The gate that decides whether a change is worth telling anybody about
+  // compares a fixed set of fields. A researcher signing in mid-session
+  // changes `signedIn` and `account` — and, on a machine whose adapter was
+  // already resolved and ready, nothing else. Left out of that comparison,
+  // the row is rewritten and no page is told, so the screen that exists to
+  // show this goes on showing the opposite until a reload nobody knows to do.
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  const base = {
+    id: "claude",
+    name: "Claude Code",
+    command: "claude",
+    version: "2.1.231",
+    available: true,
+    sessionReady: true,
+  };
+  await report(lab.base, token, [{ ...base, signedIn: false }]);
+  const before = await lab.ownerApi.listRuntimes();
+
+  await report(lab.base, token, [{ ...base, signedIn: true, account: "ana@uni.edu" }]);
+
+  const [after] = await lab.ownerApi.listRuntimes();
+  expect(after.clis?.find((c) => c.id === "claude")).toMatchObject({
+    signedIn: true,
+    account: "ana@uni.edu",
+  });
+  expect(before[0]!.clis?.find((c) => c.id === "claude")).toMatchObject({ signedIn: false });
 });

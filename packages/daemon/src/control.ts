@@ -195,7 +195,7 @@ export interface Claim {
  *  from, so a daemon refused before it starts and one refused as it starts
  *  say the same thing. */
 export function heldMessage(dir: string, pid: number): string {
-  return `another daemon is already serving ${dir} as pid ${pid} — stop that one with "lykeion-daemon stop"`;
+  return `another daemon is already serving ${dir} as pid ${pid} — stop that one with "lykeion stop"`;
 }
 
 /** And when it is taken by one that is there but not talking. A person needs
@@ -451,13 +451,38 @@ export async function acquireControl(dir: string, file: ControlFile): Promise<vo
  *  the answer, `stop` begins shutting the daemon down. `stop` is called
  *  after its response has already gone out, so it is free to close the very
  *  server that answered. */
+/** Either a link to this machine's own page, or the reason there is none to
+ *  give. The second half is a first-class answer rather than a thrown error
+ *  because a daemon with no page open is an ordinary, temporary state — the
+ *  control server begins answering before the pairing or sign-in page has
+ *  been opened — and a throw here reaches a caller as the catch-all 500 that
+ *  every other bug in this server produces, which is the one thing it must
+ *  not be confused with. */
+export type MintedLink = { link: string; kind: "pairing" | "signIn" } | { unavailable: string };
+
 export interface ControlHandlers {
   status(): Record<string, unknown>;
+  /** Mints a fresh link to this machine's own page, retiring the last one.
+   *  Separate from `status` on purpose: asking a daemon how it is doing must
+   *  not invalidate a link somebody is holding, which is exactly what made
+   *  `status` unsafe to poll. */
+  mintLink(): MintedLink;
   stop(): void;
   /** Records, or withdraws, the researcher's agreement to run one
    *  community-published adapter as one agent. The pairing page is what
    *  presents the question; this is how the answer gets back. */
   setAdapterConsent(agent: string, command: string, accepted: boolean): void;
+  /**
+   * Redeems a code somebody carried back from a lab by hand, for a machine
+   * whose daemon has no browser and no route back to its own loopback
+   * address.
+   *
+   * Answers rather than throwing, because the interesting failure is not a
+   * fault: a code that expired, was already spent, or belongs to another
+   * machine is the lab's own sentence, and it is the one thing whoever is
+   * standing at the terminal needs to read.
+   */
+  pairWithCode(code: string): Promise<{ paired: boolean; error?: string }>;
 }
 
 export interface ControlServer {
@@ -520,14 +545,48 @@ export async function startControlServer(options: {
       const path = url.pathname;
       if (req.method !== "POST") return sendJson(res, 405, { error: "control calls are POST" });
 
-      // Answers for the daemon's existence and changes nothing. `status`
-      // cannot serve as that question: asking an unpaired daemon for its
-      // status mints a pairing link and retires the last one, so a caller
-      // merely checking whether anybody is home would invalidate the link a
-      // researcher is holding.
+      // Answers for the daemon's existence and changes nothing — the
+      // cheapest question this endpoint takes, and the one `probeControl`
+      // asks on `PROBE_TIMEOUT_MS` to tell a stale claim from a live one
+      // without waiting on whatever `status` has to read or compute to
+      // answer in full.
       if (path === "/ping") return sendJson(res, 200, { ok: true, pid: process.pid });
 
       if (path === "/status") return sendJson(res, 200, options.handlers.status());
+
+      // Kept apart from `/status` so that asking a daemon how it is doing
+      // never mints a link: a member polling `status` must not retire a
+      // link somebody else is already holding. Anything that wants a link —
+      // `open`, `url`, or a person who lost the one they had — asks here by
+      // name instead.
+      if (path === "/link") {
+        const minted = options.handlers.mintLink();
+        // 503 rather than 500, and carrying the daemon's own sentence: a
+        // daemon that is up and has not opened its page yet is a different
+        // fact from a daemon that is broken, and a different fact again from
+        // no daemon at all. A caller told the wrong one of those three either
+        // waits forever on something that will never answer or starts a
+        // second daemon on a machine identity that already has one.
+        if ("unavailable" in minted) return sendJson(res, 503, { error: minted.unavailable });
+        return sendJson(res, 200, minted);
+      }
+
+      // On the query string for the reason the adapter routes are: nothing
+      // this server answers reads a body, and the client beside it sends
+      // `content-length: 0`. A one-time code is not a secret in transit here
+      // — this port already requires the control token, which is the same
+      // bar as reading the bearer token beside it on disk.
+      if (path === "/pair") {
+        const code = url.searchParams.get("code") ?? "";
+        if (!code) return sendJson(res, 400, { error: "pair needs a code to redeem" });
+        const outcome = await options.handlers.pairWithCode(code);
+        // 400, not 500: a code the lab would not take is an answer about the
+        // code, and a caller told this was a fault would go looking at the
+        // daemon rather than at the thing they typed.
+        if (!outcome.paired)
+          return sendJson(res, 400, { error: outcome.error ?? "that code was not redeemed" });
+        return sendJson(res, 200, { paired: true });
+      }
 
       if (path === "/adapters/accept" || path === "/adapters/revoke") {
         // On the query string rather than in a body, because nothing this
