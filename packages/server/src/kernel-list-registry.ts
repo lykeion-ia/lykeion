@@ -35,6 +35,12 @@ export interface RawKernelReport {
   environment: string;
   startedTs?: number;
   lastActivityTs?: number;
+  reclaimedTs?: number;
+  processId?: number;
+  stoppedBy?: string;
+  stopReason?: string;
+  resources?: { memoryBytes?: number; cpuPercent?: number };
+  series?: Array<{ memoryBytes?: number; cpuPercent?: number }>;
 }
 
 export interface KernelListRegistry {

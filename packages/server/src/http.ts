@@ -126,7 +126,8 @@ function isRawKernelReport(value: unknown): value is RawKernelReport {
     typeof v.queueDepth === "number" &&
     typeof v.environment === "string" &&
     isEpochSecondsOrAbsent(v.startedTs) &&
-    isEpochSecondsOrAbsent(v.lastActivityTs)
+    isEpochSecondsOrAbsent(v.lastActivityTs) &&
+    isEpochSecondsOrAbsent(v.reclaimedTs)
   );
 }
 

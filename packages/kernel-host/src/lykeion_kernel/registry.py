@@ -22,6 +22,7 @@ from .interpreters import Runnable, runnables
 from .kernels import Kernel, KernelIdentity
 from .kernels.python import launch as launch_python
 from .kernels.r import launch as launch_r
+from .sampler import Probe, Sample
 
 # One launcher per language this host can start a kernel in, called with the
 # identity, the prefix the daemon rendered, the interpreter to run, and the
@@ -32,6 +33,48 @@ Launcher = Callable[[KernelIdentity, list[str], str, "str | None"], Kernel]
 # list of names kept beside this one, so "can be started" and "is published"
 # are one fact rather than two that can drift apart.
 LAUNCHERS: dict[str, Launcher] = {"python": launch_python, "r": launch_r}
+
+# How many readings a kernel's ring holds. See `Entry.ring` for why this many.
+RING = 8
+
+# What share of a machine this lab's kernels may hold before the oldest idle
+# one is taken back. A judgement rather than a measurement: a laptop is also
+# carrying a browser, an agent CLI and an editor, and kernels alone past about
+# two-thirds of memory is already a machine in trouble. Configurable because
+# this default is the weakest part of the policy.
+DEFAULT_SHARE = 0.6
+# Below this, a kernel is not a candidate however tight the machine is.
+# Without it, a researcher alternating between two Tasks would have whichever
+# they just left taken, repeatedly — thrashing the exact workflow the tree on
+# the Runtimes screen exists to support.
+IDLE_FLOOR_S = 300
+
+
+def _stopped_cell(reason: str | None, by: str | None, execution_count: int) -> dict[str, Any]:
+    """What a cell somebody ended looks like to the agent that was running it.
+
+    One `error` output and nothing else: a Python cell killed mid-flight has
+    produced nothing this end can read, and R handing back more than Python
+    would put a branch on language into a researcher's notebook.
+
+    Counted at whatever the kernel had reached, not at zero: a kernel that had
+    run nine cells is not one that has run none, and the record saying a person
+    ended it is the last place to lose the count.
+    """
+    said = f"{by} stopped this kernel" if by else "this kernel was stopped"
+    message = f"{said}: {reason}" if reason else said
+    return {
+        "ok": False,
+        "execution_count": execution_count,
+        "outputs": [
+            {
+                "kind": "error",
+                "ename": "KernelStopped",
+                "evalue": message,
+                "traceback": [message],
+            }
+        ],
+    }
 
 
 def kernel_id_for(identity: KernelIdentity) -> str:
@@ -182,11 +225,57 @@ class Entry:
     # stopped and a kernel that died are different facts, and the second is
     # never reported as the first.
     stopped: bool = False
+    # Written before the process is killed, and read by `execute` when the
+    # stream it was reading is abandoned. This is the only thing that tells a
+    # kernel somebody ended from a kernel that died: on the pipe the two are
+    # the same event.
+    #
+    # Kept apart from `stop_reason`, which can be absent even when this is
+    # true: a stop is what somebody chose, and choosing it is not the same
+    # fact as having something to say about it. Keying the discriminator on
+    # the reason being non-`None` would report a kernel stopped with nothing
+    # said as a crash — a stop with nothing said is still a stop.
+    #
+    # Also the latch `stop()` reads back once its kill returns, the way
+    # `reclaim_requested` is for `reclaim()`: `_replace` clears it the instant
+    # a relaunch reaches this entry, and finding it cleared is how `stop()`
+    # learns that the kernel it is about to write an ending over is a live one
+    # somebody else started while the escalation ladder was running.
+    stop_requested: bool = False
+    stop_reason: str | None = None
+    stopped_by: str | None = None
+    # Set when this machine's own pressure policy took the kernel back,
+    # rather than a researcher stopping it or its process crashing. A third
+    # ending, kept apart from `stopped`: the sentence a researcher typed
+    # belongs to a choice they made, and a kernel this machine took back on
+    # its own must never be reported as one they ended, nor the reverse.
+    reclaimed_ts: int | None = None
+    # Written under the same locked block that drops `kernel` in `reclaim()`,
+    # before the kill that can hold that window open for seconds, unlocked —
+    # long enough for a cell to arrive and relaunch through `_replace` before
+    # `reclaim()`'s own post-kill write would otherwise land. Cleared by
+    # `_replace` alongside `reclaimed_ts`, so a relaunch that wins the race
+    # leaves nothing here for that post-kill write to find still set. What it
+    # guards: a live, freshly relaunched kernel must never be stamped
+    # `reclaimed_ts` nor have the probe reading it was just given nulled out
+    # from under it.
+    reclaim_requested: bool = False
     # The boundary the process behind this entry was started inside, kept as
     # it was at that moment. Configuring a session again decides what the next
     # process gets and moves nothing that is already running, so a record read
     # off the session would name an environment this kernel is not in.
     confinement: Confinement | None = None
+    # The handle this entry's process is read through, and the newest reading
+    # taken with it. Both belong to one incarnation: the probe is dropped when
+    # the process is, because a handle carried across a restart would report
+    # the dead process's average as the new one's first sample.
+    probe: Probe | None = None
+    latest: Sample = field(default_factory=Sample)
+    # Sixteen seconds of history at a two-second tick, against a screen that
+    # polls every four: every poll carries roughly two new readings and six
+    # the browser has already seen, which is what lets a sparkline stay
+    # continuous across a refresh or a second researcher opening the screen.
+    ring: deque[Sample] = field(default_factory=lambda: deque(maxlen=RING))
 
 
 class Registry:
@@ -301,7 +390,28 @@ class Registry:
         with entry.turn.taken(place):
             kernel = self._running(entry)
             began = time.monotonic()
-            result = kernel.execute(source)
+            try:
+                result = kernel.execute(source)
+            except RuntimeError:
+                # A kernel somebody ended and a kernel that fell over abandon
+                # this stream identically, and both raise from here. Whether a
+                # stop was requested on the entry is the only thing that tells
+                # them apart — not whether a reason was given, since a stop
+                # with nothing said is still a stop.
+                if not entry.stop_requested:
+                    # Nobody chose this. The crash path is unchanged, and the
+                    # caller is owed the error it has always been given.
+                    raise
+                result = _stopped_cell(entry.stop_reason, entry.stopped_by, entry.execution_count)
+                # Under the lock, like every other write to this field:
+                # `stop()` and `_replace` both write it inside `self._lock`,
+                # and a lock only one side takes excludes nothing. Nothing
+                # here needs the read and the clear to be one step — the read
+                # above already happened — but a field written under a mutex
+                # in three places and free of it in a fourth is a rule that
+                # holds only until somebody reads the fourth and copies it.
+                with self._lock:
+                    entry.stop_reason = None
             wall_ms = int((time.monotonic() - began) * 1000)
             # This cell's own counter, kept while the kernel is still held:
             # the entry's is what the next cell will overwrite, and a cell
@@ -354,6 +464,168 @@ class Registry:
         if entry.kernel is not None:
             entry.kernel.interrupt()
 
+    def stop(self, kernel_id: str, *, feedback: str | None = None, by: str | None = None) -> None:
+        """Ends this kernel, and tells whatever cell was in it why.
+
+        The reason is written before anything is killed. A cell in flight is
+        about to lose its stream, and the only way `execute` can tell that
+        from an interpreter that fell over is to find a reason waiting for it.
+        Written under the lock, the same way `sample()` snapshots before doing
+        its own work outside it: a lazy relaunch racing this write is what
+        would turn a chosen stop into a reported crash, on a window otherwise
+        left to chance.
+
+        The process is dropped along with the handle, rather than left dead
+        behind the entry the way a crash leaves one. `_running` refuses a dead
+        kernel because a crash took a namespace nobody chose to lose; a stop
+        is chosen and announced, so the researcher already knows the namespace
+        went and the next cell is owed a process rather than a refusal.
+
+        A cell already queued behind this kernel is owed that same fresh
+        process, today, whether or not it was authored knowing the namespace
+        would go — it is not told the kernel it was queued for is gone, and
+        can succeed in the new, empty namespace with a plausible wrong answer
+        rather than raising. Known wrong, and deferred to its own task.
+        """
+        entry = self._known(kernel_id)
+        with self._lock:
+            entry.stop_requested = True
+            entry.stop_reason = feedback
+            entry.stopped_by = by
+            kernel = entry.kernel
+            entry.kernel = None
+        # The kill itself is done outside the lock: a kernel's `stop()` has an
+        # escalation ladder that can take seconds, and holding the lock across
+        # it would block `list()` and every other reader for as long as that
+        # takes.
+        if kernel is not None:
+            kernel.stop()
+        # Locked, the same mutex the first three fields above were written
+        # under and the same one `_replace`'s clearing block takes: `_replace`
+        # writes `entry.stopped = False` as one of its own four fields inside
+        # `self._lock`, and an unlocked write here could still land between
+        # that block's individual assignments — landing after `stopped` is
+        # cleared but before the other three are — leaving `stopped` true
+        # while `stop_requested`, `stop_reason`, and `stopped_by` all read
+        # cleared. A lock only one side takes excludes nothing, which is what
+        # closing it on three fields and leaving it open on the fourth would
+        # still be.
+        #
+        # And keyed on the latch the same way `reclaim()`'s post-kill block
+        # is, for the same reason and against a wider window: the ladder above
+        # spends a second per rung, and its `join` does not return early while
+        # the cell's own forked workers still hold the pipe — which is exactly
+        # the workload a researcher reaches for Stop over. The in-flight cell
+        # raises the moment the process dies and a queued one relaunches
+        # through `_replace` inside that second, so by the time the kill
+        # returns this entry can already hold a live process somebody else
+        # started. Writing `stopped` over it would report a running kernel as
+        # ended — permanently, since `stopped` is the first branch `_state`
+        # asks and `_replace` only runs for an entry holding no kernel — and
+        # nulling the probe would hide that live process from the sampler and
+        # from the pressure policy for the rest of its life. Cleared means a
+        # relaunch already claimed this entry: none of the five writes below
+        # belong to it, not one of them, since a half-applied ending is still
+        # an ending reported over a kernel that has not had one.
+        with self._lock:
+            still_this_incarnation = entry.stop_requested
+            if still_this_incarnation:
+                entry.stopped = True
+                entry.probe = None
+        if still_this_incarnation:
+            entry.latest = Sample()
+            entry.ring.clear()
+
+    def reclaim(
+        self,
+        *,
+        total_memory: int,
+        holding: int,
+        share: float = DEFAULT_SHARE,
+        now: int | None = None,
+    ) -> str | None:
+        """Takes back the least-recently-used idle kernel, if this machine is
+        over its ceiling. Returns which, or `None`.
+
+        One per pass, deliberately. Resident memory does not return the
+        instant a process dies, so a batch chosen from a single reading
+        over-reclaims — three kernels taken to get under a line that one
+        would have cleared. The next tick tells the truth.
+
+        `share >= 1.0` is a researcher saying take nothing, ever, and is
+        answered before a single figure is read. `running` is never a
+        candidate — killing live work to save memory is the one thing Stop
+        exists to make deliberate, and the policy must not reintroduce it
+        through a side door — nor is anything idle for less than
+        `IDLE_FLOOR_S`, which is what keeps a researcher alternating between
+        two Tasks from having whichever they just left taken, repeatedly.
+        """
+        if share >= 1.0 or total_memory <= 0:
+            return None
+        if holding <= total_memory * share:
+            return None
+        when = int(time.time()) if now is None else now
+        with self._lock:
+            candidates = [
+                (kernel_id, entry)
+                for kernel_id, entry in self._entries.items()
+                # `idle` only. `running` is working; the rest hold no process.
+                if self._state(entry) == "idle"
+                and when - (entry.last_activity_ts or entry.started_ts or when) >= IDLE_FLOOR_S
+            ]
+            if not candidates:
+                return None
+            kernel_id, entry = min(
+                candidates,
+                key=lambda pair: pair[1].last_activity_ts or pair[1].started_ts or 0,
+            )
+            # The handle snapshot goes under the lock, the same as `stop()`'s
+            # does: dropped here rather than left dead behind the entry, so
+            # `_running` finds a lazy entry at the next cell and relaunches
+            # through `_replace` instead of raising "this kernel crashed" —
+            # a researcher did not choose this ending, but the next cell is
+            # still owed a process rather than a refusal.
+            kernel = entry.kernel
+            entry.kernel = None
+            # Set here, under the same lock the drop above just happened
+            # under, and read back below once the kill has returned. `_replace`
+            # clears it, under its own locked block, the instant a relaunch
+            # reaches that entry — which the escalation ladder below gives it
+            # seconds to do, unlocked. A lock around the post-kill write alone
+            # closes only that write being torn; it does not stop the write
+            # from happening at all, which is what this flag is for.
+            entry.reclaim_requested = True
+        # The kill itself is done outside the lock, the same reason `stop()`'s
+        # is: a kernel's `stop()` has an escalation ladder that can take
+        # seconds, and holding the lock across it would block `list()` and
+        # every other reader for as long as that takes. It is exactly this
+        # window — unlocked and seconds long — that a cell can arrive in and
+        # relaunch this same entry through `_replace` before the block below
+        # ever runs.
+        if kernel is not None:
+            kernel.stop()
+        # Locked, the same mutex `_replace`'s clearing block writes
+        # `reclaimed_ts = None` and `reclaim_requested = False` under. The
+        # lock makes this write atomic; it does not make it correct on its
+        # own — a relaunch fully finishing, under its own lock uses, while
+        # this thread was parked inside `kernel.stop()` above is not torn,
+        # it is just a fact this thread has not read yet, and reading
+        # `reclaim_requested` is how it catches up: still set means nothing
+        # claimed this entry in between, and the stamp belongs to the
+        # process that was just killed; cleared means a relaunch already
+        # gave the entry a live process, and stamping over it here would
+        # mislabel that process `reclaimed` and blind the sampler to it by
+        # nulling the probe it was just given.
+        with self._lock:
+            still_this_incarnation = entry.reclaim_requested
+            if still_this_incarnation:
+                entry.reclaimed_ts = when
+                entry.probe = None
+        if still_this_incarnation:
+            entry.latest = Sample()
+            entry.ring.clear()
+        return kernel_id
+
     def restart(self, kernel_id: str) -> dict[str, Any]:
         """A new process behind the same name, and the kernel as it now is.
 
@@ -378,6 +650,20 @@ class Registry:
             known = list(self._entries.items())
         return [self._described(kernel_id, entry) for kernel_id, entry in known]
 
+    def sample(self) -> None:
+        """Reads every live kernel's process once.
+
+        The lock is taken only to snapshot which entries to read, never
+        across the reads themselves: a sampler holding it would contend with
+        a cell, and this figure is not worth a millisecond of a researcher's
+        work.
+        """
+        with self._lock:
+            entries = [entry for entry in self._entries.values() if entry.probe is not None]
+        for entry in entries:
+            entry.latest = entry.probe.sample()  # type: ignore[union-attr]
+            entry.ring.append(entry.latest)
+
     def release_session(self, session_id: str) -> int:
         """Ends every kernel of a session and forgets them.
 
@@ -399,6 +685,8 @@ class Registry:
         for entry in released:
             if entry.kernel is not None:
                 entry.kernel.stop()
+                entry.probe = None
+                entry.latest = Sample()
         return len(released)
 
     def shutdown(self) -> None:
@@ -414,6 +702,9 @@ class Registry:
             if entry.kernel is not None:
                 entry.kernel.stop()
                 entry.stopped = True
+                entry.probe = None
+                entry.latest = Sample()
+                entry.ring.clear()
 
     def _entry_for(self, kernel_id: str, identity: KernelIdentity) -> Entry:
         with self._lock:
@@ -498,15 +789,57 @@ class Registry:
             runnable.interpreter,
             confinement.workspace,
         )
+        entry.probe = Probe(entry.kernel.pid)
+        entry.latest = Sample()
+        entry.ring.clear()
         entry.confinement = confinement
         entry.incarnation += 1
         entry.execution_count = 0
         entry.started_ts = int(time.time())
         entry.last_activity_ts = None
-        entry.stopped = False
+        # Locked, the same mutex `stop()` writes these under: a lazy relaunch
+        # clearing `stop_requested` while `stop()` is mid-write to it is the
+        # exact race that turns a chosen stop into a reported crash, and a
+        # lock only one side takes excludes nothing.
+        with self._lock:
+            entry.stopped = False
+            # Cleared with it. A reason left standing from one incarnation
+            # would be found by the first abandoned cell of the next, and a
+            # crash would be reported as a stop by somebody who ended a
+            # process that no longer exists.
+            entry.stop_requested = False
+            entry.stop_reason = None
+            entry.stopped_by = None
+            # Cleared alongside them: a kernel this call just gave a fresh
+            # process is not a kernel still reclaimed, and a `reclaimed_ts`
+            # left standing would have the next incarnation reporting the
+            # ending of the one it replaced.
+            entry.reclaimed_ts = None
+            # Cleared here too, and for the same reason `reclaimed_ts` is: a
+            # `reclaim()` call already past its own kill, parked on this same
+            # lock, reads this flag once it gets back in to decide whether to
+            # stamp `reclaimed_ts`/null `probe` at all. This relaunch just
+            # gave the entry a live process — clearing the flag it would
+            # otherwise still find set is what tells that `reclaim()` call to
+            # leave this incarnation alone.
+            entry.reclaim_requested = False
         return entry.kernel
 
     def _described(self, kernel_id: str, entry: Entry) -> dict[str, Any]:
+        # Copied out in one step, under the lock, before anything is built
+        # from it. `sample()` appends to this deque every tick and `stop`,
+        # `reclaim`, `_replace` and `shutdown` each clear it, so walking the
+        # live deque while building a dict per reading — bytecode, and
+        # interruptible between readings — raises "deque mutated during
+        # iteration". That reaches the daemon as an error answer, the daemon
+        # posts no kernels at all, and a machine that is online and running
+        # work reports holding none for the whole of that poll. Taken in its
+        # own block rather than around the whole method: `_boundary_of` and
+        # `_state` below reach for locks of their own, and this mutex is not
+        # reentrant.
+        with self._lock:
+            ring = list(entry.ring)
+            latest = entry.latest
         described: dict[str, Any] = {
             "id": kernel_id,
             "sessionId": entry.identity.session_id,
@@ -519,6 +852,36 @@ class Registry:
             "queueDepth": entry.turn.depth,
             "environment": self._boundary_of(entry).environment_for(entry.identity.language),
         }
+        if entry.kernel is not None:
+            described["processId"] = entry.kernel.pid
+        # Who ended this kernel and what they said, for as long as it stays
+        # ended. Absent rather than null on one nobody ended, and gone again
+        # the moment a relaunch clears them — a name here belongs to the
+        # incarnation it was said about.
+        if entry.stopped_by is not None:
+            described["stoppedBy"] = entry.stopped_by
+        if entry.stop_reason is not None:
+            described["stopReason"] = entry.stop_reason
+        resources: dict[str, Any] = {}
+        if latest.memory_bytes is not None:
+            resources["memoryBytes"] = latest.memory_bytes
+        if latest.cpu_percent is not None:
+            resources["cpuPercent"] = latest.cpu_percent
+        # Absent rather than empty: a kernel nobody has measured must not be
+        # reported as one measured at nothing.
+        if resources:
+            described["resources"] = resources
+        # Absent when the ring holds nothing — a restart just cleared it, or
+        # nobody has sampled yet — rather than an empty list a sparkline
+        # would draw as a flat line for a kernel that was never measured.
+        if ring:
+            described["series"] = [
+                {
+                    **({} if s.memory_bytes is None else {"memoryBytes": s.memory_bytes}),
+                    **({} if s.cpu_percent is None else {"cpuPercent": s.cpu_percent}),
+                }
+                for s in ring
+            ]
         # Absent rather than zero: nothing has started and nothing has
         # happened are facts about a kernel, and a timestamp of zero is a
         # moment in 1970.
@@ -526,14 +889,28 @@ class Registry:
             described["startedTs"] = entry.started_ts
         if entry.last_activity_ts is not None:
             described["lastActivityTs"] = entry.last_activity_ts
+        if entry.reclaimed_ts is not None:
+            described["reclaimedTs"] = entry.reclaimed_ts
         return described
 
     @staticmethod
     def _state(entry: Entry) -> str:
-        if entry.kernel is None:
-            return "lazy"
+        # Ended on purpose is asked first, and before "has no process at all".
+        # `stop` drops the handle along with the process, so a kernel somebody
+        # ended holds no kernel — and read the other way round it would report
+        # as one that has never been started, which is a kernel with a
+        # namespace still ahead of it rather than one whose namespace went.
         if entry.stopped:
             return "stopped"
+        # Asked next, for the same reason: `reclaim()` drops the handle
+        # exactly the way `stop()` does, so a kernel this machine took back
+        # on its own would otherwise report as one that has never been
+        # started — a kernel with a namespace still ahead of it rather than
+        # one whose namespace went.
+        if entry.reclaimed_ts is not None:
+            return "reclaimed"
+        if entry.kernel is None:
+            return "lazy"
         if not entry.kernel.alive():
             return "crashed"
         return "running" if entry.turn.running else "idle"

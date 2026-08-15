@@ -1,7 +1,7 @@
 import type { AgentCli } from "./agent-cli";
 
 /** What a paired machine can do. Empty until a daemon says otherwise. */
-export type RuntimeCapability = "sessions";
+export type RuntimeCapability = "sessions" | "kernels";
 
 /** A machine a researcher has paired with this lab. */
 export interface Runtime {
@@ -19,6 +19,20 @@ export interface Runtime {
   health: "online" | "unstable" | "offline";
   lastSeenTs: number;
   capabilities: RuntimeCapability[];
+  /** Why `capabilities` carries no `"kernels"`, on a machine where it does
+   *  not. Absent both on a machine that CAN host kernels and on one whose
+   *  daemon has never checked — the same "absent is not zero" rule
+   *  `AgentCli.heldBackReason` follows: silence is not a claim that the
+   *  floor was measured and failed. */
+  kernelsReason?: string;
+  /** Which process-visibility rule this machine's own platform applies —
+   *  what tells a researcher whether an em dash in a memory or processor
+   *  column means "not measured yet" or "this platform will not say".
+   *  Sourced from the machine that reported it, never inferred here from
+   *  `platform`: two machines can report the same platform string and owe a
+   *  researcher different answers. Absent on a daemon that predates this
+   *  report. */
+  processVisibility?: string;
   /** Absent on a machine that is not yours. An empty array would be
    *  indistinguishable from a machine with nothing installed, and what a
    *  colleague has on their PATH is their business. */
@@ -79,16 +93,27 @@ export interface KernelIdentity {
 
 /**
  * Where a kernel stands.
- * - `lazy`     — it has an identity and no process. Nothing has run code yet.
- * - `starting` — a process is coming up.
- * - `idle`     — up, holding a namespace, running nothing.
- * - `running`  — executing a cell.
- * - `stopped`  — ended on purpose: idle expiry, an environment change, the
- *                session ending, or a researcher stopping it.
- * - `crashed`  — ended without anyone choosing to end it, which is a
- *                different fact and never reported as the one above.
+ * - `lazy`      — it has an identity and no process. Nothing has run code yet.
+ * - `starting`  — a process is coming up.
+ * - `idle`      — up, holding a namespace, running nothing.
+ * - `running`   — executing a cell.
+ * - `stopped`   — ended on purpose: idle expiry, an environment change, the
+ *                 session ending, or a researcher stopping it.
+ * - `crashed`   — ended without anyone choosing to end it, which is a
+ *                 different fact and never reported as the one above.
+ * - `reclaimed` — ended by the machine's own memory pressure policy rather
+ *                 than a researcher's choice or a crash — a third ending,
+ *                 never reported as either of the other two. Only an `idle`
+ *                 kernel is ever a candidate; a `running` one is never taken.
  */
-export type KernelState = "lazy" | "starting" | "idle" | "running" | "stopped" | "crashed";
+export type KernelState =
+  | "lazy"
+  | "starting"
+  | "idle"
+  | "running"
+  | "stopped"
+  | "crashed"
+  | "reclaimed";
 
 /**
  * What a kernel is using, as the machine holding it last reported. Every
@@ -112,6 +137,8 @@ export interface RunningKernel extends KernelIdentity {
   /** Which incarnation of the process is behind this identity. A kernel
    *  outlives its own process — a restart raises this and keeps the id. */
   incarnation: number;
+  /** The process behind this incarnation. Absent before one is started. */
+  processId?: number;
   /** The counter the last completed cell reported. */
   executionCount: number;
   /** Cells waiting behind the one running. */
@@ -122,7 +149,53 @@ export interface RunningKernel extends KernelIdentity {
   lastCellTitle?: string;
   startedTs?: number;
   lastActivityTs?: number;
+  /** When this machine's own memory pressure policy took the kernel back.
+   *  Absent on one nobody's policy reclaimed — including one a researcher
+   *  stopped, which is a different fact and never reported as this one —
+   *  and gone again the moment a fresh process comes up behind the same
+   *  identity. */
+  reclaimedTs?: number;
+  /** The member who ended this kernel, for as long as it stays ended. Absent
+   *  on one nobody ended — including one that crashed, which is a different
+   *  fact and never reported as this one — and gone again the moment a fresh
+   *  process comes up behind the same identity. */
+  stoppedBy?: string;
+  /** What that member said when they ended it. Absent when they said
+   *  nothing, and absent once the cell that was running has been handed it:
+   *  the sentence is delivered to the call it interrupted, not kept. */
+  stopReason?: string;
   resources?: KernelResources;
+  /** Its last several readings, oldest first — the same figures `resources`
+   *  carries the newest of, kept across the ticks a screen might have missed
+   *  between polls. Absent for a kernel nobody has sampled since it (or its
+   *  process) started; each slot carries only the fields that tick's probe
+   *  could measure, the same rule `resources` follows. */
+  series?: Array<{ memoryBytes?: number; cpuPercent?: number }>;
+}
+
+/**
+ * What one machine's kernels are using, against what that machine has.
+ *
+ * One entry per runtime, never one for the lab: a figure summed across
+ * several researchers' laptops would describe nowhere. Every field but the
+ * id is optional, and an offline machine carries none of them — a machine
+ * that answered "no kernels" and a machine nobody could reach must not
+ * render alike.
+ */
+export interface MachineCompute {
+  runtimeId: string;
+  memoryBytes?: number;
+  totalMemoryBytes?: number;
+  cpuPercent?: number;
+  cores?: number;
+  kernelCount?: number;
+  runningCount?: number;
+  /** The machine's kernels summed by index, oldest first — one slot per tick
+   *  the shortest-lived of them has lived through, since a longer-running
+   *  kernel's earlier readings describe a moment the shorter one was not
+   *  there for. Absent when none of this machine's kernels has a series of
+   *  its own. */
+  series?: Array<{ memoryBytes?: number; cpuPercent?: number }>;
 }
 
 /**

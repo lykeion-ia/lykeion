@@ -1531,6 +1531,10 @@ export function createInMemoryLab(
       // An empty list, not a refusal: "none running" is a real answer.
       return [];
     },
+    async computeSnapshot() {
+      // No machine behind a browser core, so nothing to report against.
+      return [];
+    },
     async taskNotebook(_taskId: string) {
       return [];
     },
@@ -1542,6 +1546,12 @@ export function createInMemoryLab(
     },
     async kernelInterrupt(_kernelId: string) {
       // Nothing to interrupt without a kernel.
+    },
+    async kernelStop(_kernelId: string, _feedback?: string) {
+      // Nothing to stop, and so nothing holding a cell for the feedback to
+      // reach. A kernel that was never there has already ended, which is what
+      // this asks for — unlike `kernelRestart`, which promises a fresh
+      // namespace the browser core has no process to hold.
     },
     async kernelRestart(_kernelId: string) {
       throw new LykeionError(

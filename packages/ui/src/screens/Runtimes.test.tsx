@@ -1,7 +1,13 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { render, screen, cleanup, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createInMemoryApi, type LykeionApi, type Runtime, type User } from "@lykeion/api";
+import {
+  createInMemoryApi,
+  type LykeionApi,
+  type Runtime,
+  type RunningKernel,
+  type User,
+} from "@lykeion/api";
 import { ApiProvider } from "../api/ApiContext";
 import App from "../App";
 import { RuntimesScreen } from "./RuntimesScreen";
@@ -168,4 +174,134 @@ it("clears its interval on unmount, rather than leaking one that fires forever",
   expect(vi.getTimerCount()).toBe(2);
   unmount();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+function runningKernel(overrides: Partial<RunningKernel> = {}): RunningKernel {
+  return {
+    id: "k_1",
+    runtimeId: "rt_1",
+    studyId: "st_1",
+    sessionId: "ses_1",
+    taskId: "tk_1",
+    name: "main",
+    language: "python",
+    state: "running",
+    incarnation: 1,
+    executionCount: 1,
+    queueDepth: 0,
+    environment: "python",
+    startedTs: 1_700_000_000,
+    lastActivityTs: 1_700_000_000,
+    ...overrides,
+  };
+}
+
+it("confirming Stop with nothing typed, or only whitespace, sends no feedback either way — the record carries no stopReason key", async () => {
+  // `stopReason` is absent when nothing was said — never `""` — and the
+  // composer seeds its input at `""` and sends it unconditionally on
+  // confirm. This pins the fix at the seam that turns an untyped, or
+  // typed-but-blank, reason back into an absent one before it ever reaches
+  // the wire: `RuntimesScreen`'s `onStop`. Two kernels, one Python and one
+  // R, so the two Stop composers this test opens in turn have distinct
+  // accessible names rather than colliding on the same one.
+  const user = userEvent.setup();
+  let kernels: RunningKernel[] = [
+    runningKernel({ id: "k_1", language: "python" }),
+    runningKernel({ id: "k_2", language: "r" }),
+  ];
+  const kernelStop = vi.fn(async (kernelId: string, feedback?: string) => {
+    kernels = kernels.map((k) => {
+      if (k.id !== kernelId) return k;
+      const next: RunningKernel = { ...k, state: "stopped" };
+      // Mirrors the host's own `_described`: the key is reported only when a
+      // reason was actually given, exactly the "absent is not zero" rule
+      // `RunningKernel.stopReason`'s own doc comment states.
+      if (feedback !== undefined) next.stopReason = feedback;
+      return next;
+    });
+  });
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    listRuntimes: async () => [machine()],
+    listRunningKernels: async () => kernels,
+    kernelStop,
+  };
+
+  render(<App api={api} />);
+  await user.click(await screen.findByRole("link", { name: /Machines/i }));
+  await screen.findByText("ana-macbook");
+
+  // Nothing typed.
+  await user.click(screen.getByRole("button", { name: /Actions for the Py kernel/i }));
+  await user.click(screen.getByRole("menuitem", { name: /^Stop$/ }));
+  await user.click(screen.getByRole("button", { name: /^Stop$/ }));
+
+  await waitFor(() => expect(kernelStop).toHaveBeenCalledTimes(1));
+  expect(kernelStop).toHaveBeenNthCalledWith(1, "k_1", undefined);
+
+  // Only whitespace typed — a reason with something in it by a length check,
+  // but nothing said by this project's rule.
+  await user.click(screen.getByRole("button", { name: /Actions for the R kernel/i }));
+  await user.click(screen.getByRole("menuitem", { name: /^Stop$/ }));
+  await user.type(
+    screen.getByRole("textbox", { name: /Why the R kernel is being stopped/i }),
+    "   ",
+  );
+  await user.click(screen.getByRole("button", { name: /^Stop$/ }));
+
+  await waitFor(() => expect(kernelStop).toHaveBeenCalledTimes(2));
+  expect(kernelStop).toHaveBeenNthCalledWith(2, "k_2", undefined);
+
+  const after = await api.listRunningKernels();
+  expect(after[0]!.state).toBe("stopped");
+  expect(after[1]!.state).toBe("stopped");
+  // Key presence, not value, on both: `undefined` and `""` would both pass a
+  // naive `toBeUndefined()` or falsy check, and this project's rule is that
+  // an unstated value is omitted, not present-and-empty.
+  expect(Object.prototype.hasOwnProperty.call(after[0]!, "stopReason")).toBe(false);
+  expect(Object.prototype.hasOwnProperty.call(after[1]!, "stopReason")).toBe(false);
+});
+
+it("carries a sentence a researcher typed through to the kernel being stopped", async () => {
+  // The half the two cases above never covered: both send nothing, so
+  // `feedback.trim() || undefined` collapsing every reason to `undefined`
+  // passed the whole UI suite — and the sentence is the entire reason this
+  // control takes a text box rather than being a menu item on its own.
+  const user = userEvent.setup();
+  let kernels: RunningKernel[] = [runningKernel({ id: "k_1", language: "python" })];
+  const kernelStop = vi.fn(async (kernelId: string, feedback?: string) => {
+    kernels = kernels.map((k) => {
+      if (k.id !== kernelId) return k;
+      const next: RunningKernel = { ...k, state: "stopped" };
+      if (feedback !== undefined) next.stopReason = feedback;
+      return next;
+    });
+  });
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    listRuntimes: async () => [machine()],
+    listRunningKernels: async () => kernels,
+    kernelStop,
+  };
+
+  render(<App api={api} />);
+  await user.click(await screen.findByRole("link", { name: /Machines/i }));
+  await screen.findByText("ana-macbook");
+
+  await user.click(screen.getByRole("button", { name: /Actions for the Py kernel/i }));
+  await user.click(screen.getByRole("menuitem", { name: /^Stop$/ }));
+  await user.type(
+    screen.getByRole("textbox", { name: /Why the Py kernel is being stopped/i }),
+    "  redo this using less memory  ",
+  );
+  await user.click(screen.getByRole("button", { name: /^Stop$/ }));
+
+  await waitFor(() => expect(kernelStop).toHaveBeenCalledTimes(1));
+  // Trimmed, and still said: the surrounding whitespace is not part of what
+  // the researcher wrote, and stripping it must not strip the sentence with
+  // it — which is the failure the two blank cases above cannot see.
+  expect(kernelStop).toHaveBeenNthCalledWith(1, "k_1", "redo this using less memory");
+
+  const after = await api.listRunningKernels();
+  expect(after[0]!.stopReason).toBe("redo this using less memory");
 });

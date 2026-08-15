@@ -87,6 +87,7 @@ function tree(runtimes: Runtime[], kernels: RunningKernel[], handlers = {}) {
         now={NOW}
         meId="u_you"
         onInterrupt={vi.fn()}
+        onStop={vi.fn()}
         onRestart={vi.fn()}
         {...handlers}
       />
@@ -107,14 +108,30 @@ it("groups a machine's kernels under the Task that is running them", () => {
 });
 
 it("renders an unreported figure as an em dash rather than as zero", () => {
-  // Nothing on any machine reports resource use today. A zero here would be a
-  // measurement, and this is the absence of one.
+  // A machine that could not read a kernel's process, or has not read it yet,
+  // sends no `resources` at all. A zero here would be a measurement, and this
+  // is the absence of one.
   tree([machine()], [kernel({ resources: undefined })]);
 
   const dashes = screen.getAllByText(/—/);
   expect(dashes.length).toBeGreaterThan(0);
   expect(screen.queryByText(/^0 B$/)).not.toBeInTheDocument();
   expect(screen.queryByText(/^0\.0$/)).not.toBeInTheDocument();
+});
+
+it("draws a kernel's shape over time against the machine holding it, not against its own peak", () => {
+  // The call site, which nothing queried: `Sparkline`'s own suite pins that
+  // it honours the ceiling it is handed, and this pins which ceiling a
+  // kernel row hands it. An idle kernel holding 600 KB and one eating 6 GB
+  // are each their own maximum, so auto-scaling — every library's default,
+  // and the thing the component exists to refuse — would draw the two
+  // identically. The machine's own compute row carries no series, so the
+  // only sparkline on screen is the kernel's.
+  tree([machine()], [kernel({ series: [{ memoryBytes: 600_000 }, { memoryBytes: 1_200_000 }] })], {
+    compute: [{ runtimeId: "rt_1", totalMemoryBytes: 8 * 1024 * 1024 * 1024, cores: 8 }],
+  });
+
+  expect(screen.getByLabelText("Memory over time").textContent).toBe("▁▁");
 });
 
 it("reports a measured zero as zero, and not as absent", () => {
@@ -160,6 +177,59 @@ it("offers Interrupt only while a cell is actually running", async () => {
   ).toBeInTheDocument();
 });
 
+it("offers Stop only while something is running", async () => {
+  // The sentence a stop carries is answered to the cell that is running, so a
+  // kernel with nothing in it has no call for it to reach.
+  const user = userEvent.setup();
+  const { unmount } = tree([machine()], [kernel({ state: "idle" })]);
+  await user.click(screen.getByRole("button", { name: /Actions for the Py kernel/i }));
+  expect(
+    within(screen.getByRole("menu")).queryByRole("menuitem", { name: /^Stop$/ }),
+  ).not.toBeInTheDocument();
+  unmount();
+
+  tree([machine()], [kernel({ state: "running" })]);
+  await user.click(screen.getByRole("button", { name: /Actions for the Py kernel/i }));
+  expect(
+    within(screen.getByRole("menu")).getByRole("menuitem", { name: /^Stop$/ }),
+  ).toBeInTheDocument();
+});
+
+it("sends what the researcher typed", async () => {
+  const user = userEvent.setup();
+  const onStop = vi.fn();
+  const k = kernel({ state: "running" });
+  tree([machine()], [k], { onStop });
+
+  await user.click(screen.getByRole("button", { name: /Actions for the Py kernel/i }));
+  await user.click(screen.getByRole("menuitem", { name: /^Stop$/ }));
+  await user.type(
+    screen.getByRole("textbox", { name: /Why the Py kernel is being stopped/i }),
+    "redo this using less memory",
+  );
+  await user.click(screen.getByRole("button", { name: /^Stop$/ }));
+
+  expect(onStop).toHaveBeenCalledWith(k.id, "redo this using less memory");
+});
+
+it("backs out of a stop on Esc without ending anything", async () => {
+  // Opening the composer is not the command. A researcher who chose Stop by
+  // mistake must not have to send a sentence to get out of it.
+  const user = userEvent.setup();
+  const onStop = vi.fn();
+  tree([machine()], [kernel({ state: "running" })], { onStop });
+
+  await user.click(screen.getByRole("button", { name: /Actions for the Py kernel/i }));
+  await user.click(screen.getByRole("menuitem", { name: /^Stop$/ }));
+  const box = screen.getByRole("textbox", { name: /Why the Py kernel is being stopped/i });
+  await user.type(box, "second thoughts{Escape}");
+
+  expect(onStop).not.toHaveBeenCalled();
+  expect(box).not.toBeInTheDocument();
+  // And the figures the composer stood in front of are back.
+  expect(screen.getByRole("button", { name: /Actions for the Py kernel/i })).toBeInTheDocument();
+});
+
 it("reaches the kernel the row is for when Restart is chosen", async () => {
   const user = userEvent.setup();
   const onRestart = vi.fn();
@@ -186,8 +256,8 @@ it("gives a machine holding nothing no disclosure, and still lists the machine",
 
 it("says on the row how many kernels a machine holds and how many are working", () => {
   // The one thing the machine header carried that the roster row did not
-  // already say. Its memory and processor columns are not missed: nothing
-  // reports either, so both read as em dashes on every machine.
+  // already say. Its memory and processor columns are not missed: the row has
+  // a column each for them now, summed over these same kernels.
   tree([machine()], [kernel({ state: "running" }), kernel({ state: "idle" })]);
 
   // Asserted through the disclosure's accessible name, which is the machine

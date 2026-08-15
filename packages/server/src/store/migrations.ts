@@ -820,6 +820,37 @@ export const MIGRATIONS: Migration[] = [
       store.run(`ALTER TABLE runtime_clis ADD COLUMN adapter_provenance TEXT`);
     },
   },
+  {
+    version: 23,
+    up(store) {
+      // Nullable with no default, deliberately: a machine whose daemon
+      // predates this report has not said "zero cores" or "no memory" — it
+      // has said nothing, and NULL is what lets the read path tell the two
+      // apart.
+      store.run(`ALTER TABLE runtimes ADD COLUMN total_memory_bytes INTEGER`);
+      store.run(`ALTER TABLE runtimes ADD COLUMN cores INTEGER`);
+    },
+  },
+  {
+    version: 24,
+    up(store) {
+      // `kernels_ready` follows `signed_in`'s own rule: NULL is "never
+      // checked" — a daemon too old to probe the floor at all — 0 is
+      // "checked and failed", and only the second is a claim this machine
+      // cannot host a kernel. A default of 0 here would tell every machine
+      // paired before this shipped that it had already failed a check that
+      // never ran.
+      store.run(`ALTER TABLE runtimes ADD COLUMN kernels_ready INTEGER`);
+      // Set only alongside kernels_ready = 0 — see `probeKernelFloor`, whose
+      // `reason` is never present when `ready` is true.
+      store.run(`ALTER TABLE runtimes ADD COLUMN kernels_reason TEXT`);
+      // Which process-visibility rule this machine's own platform applies,
+      // as the machine itself reported it — never derived here from
+      // `platform`, which two machines can share while owing a researcher
+      // different answers (a Linux box mounted with hidepid and one without).
+      store.run(`ALTER TABLE runtimes ADD COLUMN process_visibility TEXT`);
+    },
+  },
 ];
 
 assertAscending(MIGRATIONS);

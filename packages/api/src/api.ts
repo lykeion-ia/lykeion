@@ -40,6 +40,7 @@ import type {
   KernelEnvStatus,
   NotebookCell,
   RunningKernel,
+  MachineCompute,
 } from "./runtime";
 import type { AgentCli } from "./agent-cli";
 import type {
@@ -318,6 +319,10 @@ export interface LykeionApi {
   /** Every kernel any machine in this lab is holding. Empty when none is. */
   listRunningKernels(): Promise<RunningKernel[]>;
 
+  /** What every machine in this lab is holding, one entry per machine.
+   *  Served from the same reading `listRunningKernels` returns. */
+  computeSnapshot(): Promise<MachineCompute[]>;
+
   /**
    * Every cell run against this Task, in execution order, across every
    * session and kernel that touched it. Not language-scoped and not
@@ -335,6 +340,28 @@ export interface LykeionApi {
 
   /** Interrupt whatever this kernel is running. A no-op when it is idle. */
   kernelInterrupt(kernelId: string): Promise<void>;
+
+  /**
+   * End this kernel, and tell whatever cell was in it why.
+   *
+   * `feedback` is the sentence the researcher typed, and it comes back to
+   * the agent as the result of the tool call it was in the middle of — a
+   * failed call whose text is what the person said, rather than a call that
+   * fails mutely. A cell that finished before this landed leaves the message
+   * nothing to attach to, and it is dropped: the kernel still stops, and
+   * nothing raises.
+   *
+   * The namespace goes with the process, which is what ending a kernel is.
+   * The identity survives, and the next cell addressed to it starts a fresh
+   * process — unlike a crash, which refuses until somebody asks for a
+   * restart, because nobody chose a crash and the researcher who asked for
+   * this already knows what it cost them. That fresh process is not only for
+   * a cell run after this call returns: a cell already queued behind this
+   * kernel when it was stopped runs in it too, in the new, empty namespace,
+   * rather than being told the kernel it was queued for is gone — a known
+   * gap, since that cell may succeed with a plausible wrong answer.
+   */
+  kernelStop(kernelId: string, feedback?: string): Promise<void>;
 
   /** Restart this kernel into a fresh namespace. The counter resets, every
    *  variable is gone — the agent's included — and the identity survives with

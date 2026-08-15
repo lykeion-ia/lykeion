@@ -44,6 +44,11 @@ export function RuntimesScreen() {
   const q = usePromise(() => api.listRuntimes(), [api, tick]);
   const me = usePromise(() => api.currentUser(), [api]);
   const kernels = usePromise(() => api.listRunningKernels(), [api, kernelTick]);
+  // Read on the same tick `kernels` is: the server shares one fan-out
+  // between the two, and polling them on the same clock is what keeps that
+  // meaningful — a header and the rows under it built from two different
+  // sweeps could disagree with each other on screen.
+  const compute = usePromise(() => api.computeSnapshot(), [api, kernelTick]);
   // Names for the tree's middle level, as two calls rather than one per
   // kernel, re-read on the roster's slower clock: a Task's title does not
   // change on the scale a kernel's state does.
@@ -59,6 +64,19 @@ export function RuntimesScreen() {
   const onInterrupt = useCallback(
     (kernelId: string) => {
       void api.kernelInterrupt(kernelId).then(() => setKernelTick((n) => n + 1));
+    },
+    [api],
+  );
+  const onStop = useCallback(
+    (kernelId: string, feedback: string) => {
+      // The composer seeds this at `""` and sends it unconditionally on
+      // confirm, but an untyped reason is absent, not the empty string — the
+      // same "absent is not zero" rule `stopReason`'s own doc comment states.
+      // `.trim()` rather than a bare `||`: a reason of only whitespace is
+      // still nothing said, by the same rule, and `" "` is truthy.
+      void api
+        .kernelStop(kernelId, feedback.trim() || undefined)
+        .then(() => setKernelTick((n) => n + 1));
     },
     [api],
   );
@@ -83,10 +101,12 @@ export function RuntimesScreen() {
         <RuntimesList
           runtimes={runtimes}
           kernels={kernels.data ?? []}
+          compute={compute.data ?? []}
           taskLabel={taskLabel}
           now={Date.now() / 1000}
           meId={me.data?.id ?? null}
           onInterrupt={onInterrupt}
+          onStop={onStop}
           onRestart={onRestart}
         />
 

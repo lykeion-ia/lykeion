@@ -68,6 +68,10 @@ it("report posts what it found, with a bearer token and a JSON content-type", as
     clis: [
       { id: "claude", name: "Claude Code", command: "claude", version: "1.0.0", available: true, sessionReady: true },
     ],
+    totalMemoryBytes: 8 * 1024 * 1024 * 1024,
+    cores: 8,
+    kernels: { ready: true },
+    processVisibility: "macOS reports memory and processor use for a process Lykeion started itself.",
   };
 
   await report(lab.base, "a-token", body);
@@ -101,7 +105,16 @@ it("throws LabRefused on a 401, from either call", async () => {
 
   const lab2 = await stubLab(() => ({ status: 401, body: { error: "no such machine" } }));
   await expect(
-    report(lab2.base, "a-token", { platform: "", daemonVersion: "", capabilities: [], clis: [] }),
+    report(lab2.base, "a-token", {
+      platform: "",
+      daemonVersion: "",
+      capabilities: [],
+      clis: [],
+      totalMemoryBytes: 0,
+      cores: 0,
+      kernels: { ready: false, reason: "uv is not installed, and Lykeion starts kernels with it" },
+      processVisibility: "This platform has not been checked for process visibility.",
+    }),
   ).rejects.toBeInstanceOf(LabRefused);
 });
 

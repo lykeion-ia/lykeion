@@ -38,6 +38,7 @@ async function report(
     heldBackReason?: string;
     adapterProvenance?: "vendor" | "protocol" | "community";
   }>,
+  extra: { kernels?: { ready: boolean; reason?: string }; processVisibility?: string } = {},
 ): Promise<Response> {
   return fetch(`${base}/daemon/report`, {
     method: "POST",
@@ -47,6 +48,7 @@ async function report(
       daemonVersion: "0.1.0",
       capabilities: [],
       clis,
+      ...extra,
     }),
   });
 }
@@ -347,6 +349,131 @@ it("puts sessions in a machine's capabilities once one of its CLIs is session-re
   ]);
   const [after] = await lab.ownerApi.listRuntimes();
   expect(after!.capabilities).toEqual(["sessions"]);
+});
+
+it("stays paired and keeps running sessions on a machine that fails the kernel floor", async () => {
+  // A machine missing `uv` is a machine with one capability, not a machine
+  // that disappears — it can still run sessions, and the roster still shows
+  // it, with a reason for the one thing it cannot do.
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  await report(
+    lab.base,
+    token,
+    [{ id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true, sessionReady: true }],
+    { kernels: { ready: false, reason: "uv is not installed, and Lykeion starts kernels with it" } },
+  );
+
+  const [machine] = await lab.ownerApi.listRuntimes();
+  expect(machine!.capabilities).toContain("sessions");
+  expect(machine!.capabilities).not.toContain("kernels");
+  expect(machine!.kernelsReason).toBe("uv is not installed, and Lykeion starts kernels with it");
+});
+
+it("puts kernels in a machine's capabilities once it reports meeting the floor, and carries no reason", async () => {
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  await report(lab.base, token, [], { kernels: { ready: true } });
+
+  const [machine] = await lab.ownerApi.listRuntimes();
+  expect(machine!.capabilities).toContain("kernels");
+  expect("kernelsReason" in machine!).toBe(false);
+});
+
+it("never prints a reason beside a machine reporting it can host kernels, even a report contradicting itself", async () => {
+  // `daemon-routes.ts` stores `reason` independently of `ready` — a
+  // malformed or malicious report pairing `ready: true` with a `reason`
+  // would otherwise leave a row that carries the `"kernels"` capability
+  // while also printing "Cannot host kernels — …" beside it. A machine
+  // cannot both host kernels and refuse to.
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  await report(lab.base, token, [], {
+    kernels: { ready: true, reason: "uv is not installed, and Lykeion starts kernels with it" },
+  });
+
+  const [machine] = await lab.ownerApi.listRuntimes();
+  expect(machine!.capabilities).toContain("kernels");
+  expect("kernelsReason" in machine!).toBe(false);
+});
+
+it("says nothing about the kernel floor for a machine whose daemon has never checked", async () => {
+  // Absent is not zero: a daemon built before this report existed sends no
+  // `kernels` field at all, and that has to read as "never asked" rather
+  // than as a claim the machine failed a check that never ran.
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  await report(lab.base, token, []);
+
+  const [machine] = await lab.ownerApi.listRuntimes();
+  expect(machine!.capabilities).not.toContain("kernels");
+  expect("kernelsReason" in machine!).toBe(false);
+});
+
+it("carries this machine's own process-visibility rule out to whoever can see it", async () => {
+  // The one field `report`'s own `extra` could send that no test sent, so
+  // nothing said whether it survived the round trip at all. It is what
+  // separates the two readings of an em dash on the Runtimes screen —
+  // nothing measured yet, versus this platform will not say — and a Linux
+  // box with `hidepid` and one without report the same `platform`, so the
+  // browser cannot infer it.
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  await report(lab.base, token, [], {
+    processVisibility: "macOS reports memory and processor use for a process Lykeion started itself.",
+  });
+
+  const [machine] = await lab.ownerApi.listRuntimes();
+  expect(machine!.processVisibility).toBe(
+    "macOS reports memory and processor use for a process Lykeion started itself.",
+  );
+});
+
+it("says nothing about process visibility for a machine whose daemon has never reported it", async () => {
+  // Absent, not empty: an older daemon sends no such field, and the key has
+  // to stay off the record rather than arriving as `""` — which the screen
+  // would render as a sentence a researcher is owed and did not get.
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  await report(lab.base, token, []);
+
+  const [machine] = await lab.ownerApi.listRuntimes();
+  expect("processVisibility" in machine!).toBe(false);
+});
+
+it("tells a colleague which requirement a machine is missing, the same as it tells the owner", async () => {
+  // The reason a machine cannot host a kernel is installation software, not
+  // a researcher's own account — visible to whoever can see the machine at
+  // all, the same as `platform` and `daemonVersion` are, unlike `clis`.
+  const lab = await makeServerLab();
+  const { verifier, challenge } = secretPair();
+  const { code } = await lab.memberApi.pairMachine(pairInput(challenge));
+  const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
+
+  await report(lab.base, token, [], {
+    kernels: { ready: false, reason: "uv is not installed, and Lykeion starts kernels with it" },
+  });
+
+  const [fromOwnersView] = await lab.ownerApi.listRuntimes();
+  expect(fromOwnersView!.kernelsReason).toBe("uv is not installed, and Lykeion starts kernels with it");
 });
 
 it("shows a colleague's capabilities without showing which CLI produced them", async () => {

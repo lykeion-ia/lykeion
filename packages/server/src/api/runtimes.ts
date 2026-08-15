@@ -81,7 +81,13 @@ function hasSessionReadyCli(store: Store, runtimeId: string): boolean {
   );
 }
 
-function toRuntime(row: Row, now: number, clis: AgentCli[] | undefined, sessionsReady: boolean): Runtime {
+function toRuntime(
+  row: Row,
+  now: number,
+  clis: AgentCli[] | undefined,
+  sessionsReady: boolean,
+  kernelsReady: boolean,
+): Runtime {
   return {
     id: row.id as string,
     name: row.name as string,
@@ -90,7 +96,31 @@ function toRuntime(row: Row, now: number, clis: AgentCli[] | undefined, sessions
     daemonVersion: row.daemon_version as string,
     health: healthFor(row.last_seen_ts as number, now),
     lastSeenTs: row.last_seen_ts as number,
-    capabilities: sessionsReady ? (["sessions"] satisfies RuntimeCapability[]) : [],
+    // A machine that fails the floor stays paired and still runs sessions —
+    // it is a machine with one capability, never a machine that disappears.
+    capabilities: [
+      ...(sessionsReady ? (["sessions"] satisfies RuntimeCapability[]) : []),
+      ...(kernelsReady ? (["kernels"] satisfies RuntimeCapability[]) : []),
+    ],
+    // Present only once something has actually said this machine cannot
+    // host a kernel — never on a machine that can, and never on one whose
+    // daemon has not checked, which the NULL column already tells apart from
+    // a checked-and-failed 0.
+    //
+    // Gated on `kernels_ready === 0` rather than merely on the column being
+    // non-NULL: `daemon-routes.ts` stores whatever `reason` a report carried
+    // independently of whether it also carried `ready: true`, so a
+    // malformed or malicious report claiming both would otherwise produce a
+    // row that carries the `"kernels"` capability AND prints "Cannot host
+    // kernels — …" beside it. A machine cannot both host kernels and refuse
+    // to, so the reason can only ever surface for one that actually failed
+    // the floor.
+    ...(row.kernels_ready === 0 && row.kernels_reason !== null && row.kernels_reason !== undefined
+      ? { kernelsReason: row.kernels_reason as string }
+      : {}),
+    ...(row.process_visibility === null || row.process_visibility === undefined
+      ? {}
+      : { processVisibility: row.process_visibility as string }),
     ...(clis === undefined ? {} : { clis }),
   };
 }
@@ -125,7 +155,7 @@ export function runtimesApi(deps: Deps): RuntimesApi {
           const sessionsReady = clis
             ? clis.some((cli) => cli.sessionReady)
             : hasSessionReadyCli(store, row.id as string);
-          return toRuntime(row, nowTs, clis, sessionsReady);
+          return toRuntime(row, nowTs, clis, sessionsReady, row.kernels_ready === 1);
         });
     },
 

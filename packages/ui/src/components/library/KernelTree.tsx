@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
-import type { RunningKernel, Runtime, Study, Task } from "@lykeion/api";
+import type { MachineCompute, RunningKernel, Runtime, Study, Task } from "@lykeion/api";
 import { cn } from "../../lib/utils";
 import { formatBytes, formatCores, formatSince, UNREPORTED } from "../../lib/format";
 import { ChevronDownIcon } from "../icons";
+import { Sparkline } from "./Sparkline";
 
 /**
  * A machine's kernels, as a machine → Task → kernel disclosure.
@@ -19,10 +20,14 @@ import { ChevronDownIcon } from "../icons";
  * owns is everything under that row: the Task grouping and the kernel rows.
  *
  * Every figure here is what the machine holding the kernel reported, and no
- * figure is invented to fill a column. A machine reports no memory or
- * processor use at all today, so those columns read `—` on every row: that is
- * the honest rendering of a measurement nobody took, and it is a different
- * thing from a kernel measured at zero.
+ * figure is invented to fill a column. A machine now measures each kernel's
+ * own process family and sends both the newest reading and the last several,
+ * so a row carries memory, processor use, and a sparkline of each. What has
+ * not changed is what an unmeasured figure renders as: a machine that could
+ * not read a process, or has not read it yet, leaves the key off entirely and
+ * the column reads `—`. That is the honest rendering of a measurement nobody
+ * took, and it is a different thing from a kernel measured at zero, which
+ * reads `0 B`.
  */
 
 /** How a language is marked in a row, short enough for a 20px slot. */
@@ -51,6 +56,7 @@ const STATE_META: Record<RunningKernel["state"] | "unknown", StateMeta> = {
   running: { label: "running", dotClass: "bg-warn", textClass: "text-warn" },
   stopped: { label: "stopped", dotClass: "bg-fg-tertiary", textClass: "text-fg-tertiary" },
   crashed: { label: "crashed", dotClass: "bg-danger", textClass: "text-danger" },
+  reclaimed: { label: "reclaimed", dotClass: "bg-fg-tertiary", textClass: "text-fg-tertiary" },
   unknown: { label: "unknown", dotClass: "bg-fg-tertiary", textClass: "text-fg-tertiary" },
 };
 
@@ -65,21 +71,41 @@ function KernelRow({
   kernel,
   health,
   now,
+  compute,
   onInterrupt,
+  onStop,
   onRestart,
 }: {
   kernel: RunningKernel;
   health: Runtime["health"];
   now: number;
+  /** What the kernel's own machine has, so its sparklines scale against the
+   *  machine's capacity rather than against this one kernel's own peak.
+   *  Absent when the machine never reported its size — the sparklines then
+   *  render nothing, which is correct: there is no ceiling to judge the
+   *  readings against. */
+  compute?: MachineCompute;
   onInterrupt: (kernelId: string) => void;
+  onStop: (kernelId: string, feedback: string) => void;
   onRestart: (kernelId: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  // The sentence being typed, or `null` when nothing is being said. Held on
+  // the row rather than in a dialog: what is being ended is this kernel, and
+  // a modal over the screen would take away the figures the researcher is
+  // deciding from while they write about them.
+  const [saying, setSaying] = useState<string | null>(null);
   const state = stateOf(kernel, health);
   const meta = STATE_META[state];
   const since = formatSince(kernel.lastActivityTs ?? kernel.startedTs, now);
   const runs =
     kernel.executionCount === 1 ? "1 cell run" : `${kernel.executionCount} cells run`;
+  const memoryCeiling = compute?.totalMemoryBytes;
+  const processorCeiling = compute?.cores === undefined ? undefined : compute.cores * 100;
+  const stopWith = (said: string) => {
+    onStop(kernel.id, said);
+    setSaying(null);
+  };
 
   return (
     <li className="grid grid-cols-[20px_minmax(0,1fr)_90px_90px_28px] items-center gap-3 border-b border-line-soft py-2 pl-9 pr-3">
@@ -115,65 +141,128 @@ function KernelRow({
         )}
       </span>
 
-      <span className="text-right text-meta tabular-nums text-fg-muted">
-        {formatBytes(kernel.resources?.memoryBytes)}
-        <span className="ml-1 text-fg-tertiary">RSS</span>
-      </span>
-      <span className="text-right text-meta tabular-nums text-fg-muted">
-        {formatCores(kernel.resources?.cpuPercent)}
-        <span className="ml-1 text-fg-tertiary">CPU</span>
-      </span>
-
-      <span className="relative flex justify-end">
-        <button
-          type="button"
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          aria-label={`Actions for the ${languageMark(kernel.language)} kernel`}
-          onClick={() => setMenuOpen((o) => !o)}
-          onBlur={() => setMenuOpen(false)}
-          className="grid h-6 w-6 place-items-center rounded-md text-meta text-fg-tertiary hover:bg-surface-2 hover:text-fg"
-        >
-          ⋯
-        </button>
-        {menuOpen && (
-          <div
-            role="menu"
-            aria-label="Kernel actions"
-            className="absolute right-0 top-7 z-20 flex min-w-[150px] flex-col rounded-lg border border-line bg-surface-3 p-1 shadow-xl"
+      {saying !== null ? (
+        /* The row's trailing area, for as long as somebody is writing in it.
+           Not a dialog over the screen: what is being ended is this one
+           kernel, and a modal would cover the figures the researcher is
+           deciding from at the moment they are writing about them. */
+        <span className="col-span-3 flex items-center gap-1.5">
+          <input
+            // Focused on arrival, which an input that appears unbidden must
+            // never be: this one appears only because somebody chose Stop from
+            // the menu, and the caret belongs where they are already looking.
+            autoFocus
+            value={saying}
+            onChange={(event) => setSaying(event.target.value)}
+            onKeyDown={(event) => {
+              // Esc backs out, and nothing is stopped. A researcher who opened
+              // this by mistake must not have to send a sentence to get out of
+              // it.
+              if (event.key === "Escape") setSaying(null);
+              if (event.key === "Enter") stopWith(saying);
+            }}
+            placeholder="Why? The agent reads this."
+            aria-label={`Why the ${languageMark(kernel.language)} kernel is being stopped`}
+            className="min-w-0 flex-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-meta text-fg placeholder:text-fg-tertiary"
+          />
+          <button
+            type="button"
+            onClick={() => stopWith(saying)}
+            className="shrink-0 rounded-md border border-line-strong px-2 py-1 text-meta text-danger hover:bg-surface-2"
           >
-            {/* Interrupt reaches a cell, so it is offered only while one is
-                running. Neither control is offered for a machine that is not
-                answering: the command would be accepted here and delivered
-                nowhere. */}
-            {state === "running" && (
-              <button
-                type="button"
-                role="menuitem"
-                onMouseDown={() => onInterrupt(kernel.id)}
-                className="rounded-md px-2 py-1.5 text-left text-meta text-fg hover:bg-surface-4"
+            Stop
+          </button>
+        </span>
+      ) : (
+        <>
+          <span className="text-right text-meta tabular-nums text-fg-muted">
+            {formatBytes(kernel.resources?.memoryBytes)}
+            <span className="ml-1 text-fg-tertiary">RSS</span>
+            <span className="ml-1.5">
+              <Sparkline
+                values={kernel.series?.map((s) => s.memoryBytes) ?? []}
+                ceiling={memoryCeiling}
+                label="Memory over time"
+              />
+            </span>
+          </span>
+          <span className="text-right text-meta tabular-nums text-fg-muted">
+            {formatCores(kernel.resources?.cpuPercent)}
+            <span className="ml-1 text-fg-tertiary">CPU</span>
+            <span className="ml-1.5">
+              <Sparkline
+                values={kernel.series?.map((s) => s.cpuPercent) ?? []}
+                ceiling={processorCeiling}
+                label="Processor over time"
+              />
+            </span>
+          </span>
+
+          <span className="relative flex justify-end">
+            <button
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label={`Actions for the ${languageMark(kernel.language)} kernel`}
+              onClick={() => setMenuOpen((o) => !o)}
+              onBlur={() => setMenuOpen(false)}
+              className="grid h-6 w-6 place-items-center rounded-md text-meta text-fg-tertiary hover:bg-surface-2 hover:text-fg"
+            >
+              ⋯
+            </button>
+            {menuOpen && (
+              <div
+                role="menu"
+                aria-label="Kernel actions"
+                className="absolute right-0 top-7 z-20 flex min-w-[150px] flex-col rounded-lg border border-line bg-surface-3 p-1 shadow-xl"
               >
-                Interrupt
-              </button>
+                {/* Interrupt reaches a cell, so it is offered only while one is
+                    running. Neither control is offered for a machine that is not
+                    answering: the command would be accepted here and delivered
+                    nowhere. */}
+                {state === "running" && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onMouseDown={() => onInterrupt(kernel.id)}
+                    className="rounded-md px-2 py-1.5 text-left text-meta text-fg hover:bg-surface-4"
+                  >
+                    Interrupt
+                  </button>
+                )}
+                {/* Stop for the same reason Interrupt is: the sentence it
+                    carries is answered to the cell that is running, and a
+                    kernel with nothing in it has no call for it to reach. */}
+                {state === "running" && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onMouseDown={() => setSaying("")}
+                    className="rounded-md px-2 py-1.5 text-left text-meta text-fg hover:bg-surface-4"
+                  >
+                    Stop
+                  </button>
+                )}
+                {state !== "unknown" && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onMouseDown={() => onRestart(kernel.id)}
+                    className="rounded-md px-2 py-1.5 text-left text-meta text-fg hover:bg-surface-4"
+                  >
+                    Restart
+                  </button>
+                )}
+                {state === "unknown" && (
+                  <span className="px-2 py-1.5 text-meta text-fg-tertiary">
+                    This machine is offline.
+                  </span>
+                )}
+              </div>
             )}
-            {state !== "unknown" && (
-              <button
-                type="button"
-                role="menuitem"
-                onMouseDown={() => onRestart(kernel.id)}
-                className="rounded-md px-2 py-1.5 text-left text-meta text-fg hover:bg-surface-4"
-              >
-                Restart
-              </button>
-            )}
-            {state === "unknown" && (
-              <span className="px-2 py-1.5 text-meta text-fg-tertiary">
-                This machine is offline.
-              </span>
-            )}
-          </div>
-        )}
-      </span>
+          </span>
+        </>
+      )}
     </li>
   );
 }
@@ -183,14 +272,18 @@ function TaskGroup({
   kernels,
   health,
   now,
+  compute,
   onInterrupt,
+  onStop,
   onRestart,
 }: {
   label: string;
   kernels: RunningKernel[];
   health: Runtime["health"];
   now: number;
+  compute?: MachineCompute;
   onInterrupt: (kernelId: string) => void;
+  onStop: (kernelId: string, feedback: string) => void;
   onRestart: (kernelId: string) => void;
 }) {
   const [open, setOpen] = useState(true);
@@ -223,7 +316,9 @@ function TaskGroup({
             kernel={kernel}
             health={health}
             now={now}
+            compute={compute}
             onInterrupt={onInterrupt}
+            onStop={onStop}
             onRestart={onRestart}
           />
         ))}
@@ -248,14 +343,20 @@ export function MachineKernels({
   kernels,
   taskLabel,
   now,
+  compute,
   onInterrupt,
+  onStop,
   onRestart,
 }: {
   runtime: Runtime;
   kernels: RunningKernel[];
   taskLabel: (taskId: string) => string;
   now: number;
+  /** What this machine has, so a kernel row's sparklines scale against its
+   *  capacity. Absent when the machine's own size was never reported. */
+  compute?: MachineCompute;
   onInterrupt: (kernelId: string) => void;
+  onStop: (kernelId: string, feedback: string) => void;
   onRestart: (kernelId: string) => void;
 }) {
   const byTask = useMemo(() => {
@@ -277,7 +378,9 @@ export function MachineKernels({
           kernels={held}
           health={runtime.health}
           now={now}
+          compute={compute}
           onInterrupt={onInterrupt}
+          onStop={onStop}
           onRestart={onRestart}
         />
       ))}
@@ -289,11 +392,12 @@ export function MachineKernels({
  * What a machine is holding, in the few words that fit beside its name on the
  * roster row: how many kernels, and how many of them are actually working.
  *
- * Memory and processor use per machine are deliberately not here. Nothing on
- * a machine reports either one today, so a total built from them would be
- * arithmetic over nothing — which is why the header this replaced spent half
- * its width on two em dashes. The counts ARE known: they are the rows this
- * row opens onto.
+ * Memory and processor use are still not here, though a machine now reports
+ * both. They are not missing from the row — they have a column each, summed
+ * over these same kernels by `computeSnapshot` and rendered against what the
+ * machine has, which is a used-of-total pair that no sentence beside a name
+ * has room for. What this string carries is what a total cannot say: how many
+ * kernels, and how many of them are actually working.
  *
  * Empty for a machine holding nothing, so the roster says nothing at all
  * rather than "0 kernels" against every machine that is simply idle.

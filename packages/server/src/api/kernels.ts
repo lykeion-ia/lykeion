@@ -1,4 +1,10 @@
-import { LykeionError, type Language, type LykeionApi, type RunningKernel } from "@lykeion/api";
+import {
+  LykeionError,
+  type Language,
+  type LykeionApi,
+  type MachineCompute,
+  type RunningKernel,
+} from "@lykeion/api";
 import { NO_RUNTIME } from "./absent";
 import type { Deps } from "./index";
 import type { Actor } from "../auth";
@@ -13,9 +19,11 @@ import { healthFor } from "../runtime-health";
 export type KernelsApi = Pick<
   LykeionApi,
   | "listRunningKernels"
+  | "computeSnapshot"
   | "taskNotebook"
   | "kernelExecute"
   | "kernelInterrupt"
+  | "kernelStop"
   | "kernelRestart"
   | "kernelEnvSetup"
 >;
@@ -169,7 +177,15 @@ function deliverOrRefuse(runs: RunRelay, runtime: KernelRuntime, command: RunCom
  *  watching it at most one visibly slow refresh, never a stuck one. */
 const KERNEL_LIST_TIMEOUT_MS = 1200;
 
-const KERNEL_STATES = new Set(["lazy", "starting", "idle", "running", "stopped", "crashed"]);
+const KERNEL_STATES = new Set([
+  "lazy",
+  "starting",
+  "idle",
+  "running",
+  "stopped",
+  "crashed",
+  "reclaimed",
+]);
 
 /**
  * One raw report from a runtime's own `kernel.list`, enriched with the two
@@ -215,6 +231,12 @@ function toRunningKernel(
     environment: raw.environment,
     ...(raw.startedTs === undefined ? {} : { startedTs: raw.startedTs }),
     ...(raw.lastActivityTs === undefined ? {} : { lastActivityTs: raw.lastActivityTs }),
+    ...(raw.reclaimedTs === undefined ? {} : { reclaimedTs: raw.reclaimedTs }),
+    ...(raw.processId === undefined ? {} : { processId: raw.processId }),
+    ...(raw.stoppedBy === undefined ? {} : { stoppedBy: raw.stoppedBy }),
+    ...(raw.stopReason === undefined ? {} : { stopReason: raw.stopReason }),
+    ...(raw.resources === undefined ? {} : { resources: raw.resources }),
+    ...(raw.series === undefined ? {} : { series: raw.series }),
   };
 }
 
@@ -250,11 +272,96 @@ async function liveKernels(deps: Deps): Promise<RunningKernel[]> {
   return perRuntime.flat();
 }
 
+/**
+ * One fan-out, shared by however many callers ask while it is in flight.
+ *
+ * `listRunningKernels` and `computeSnapshot` are polled together by one
+ * render, and each reaches every machine in the lab. Sharing the sweep keeps
+ * that at one round of asks and — the part that matters more — makes the
+ * machine header arithmetic over the very rows beneath it, so the two cannot
+ * disagree.
+ *
+ * Nothing is retained once it resolves. A cache would need a lifetime nobody
+ * can pick: long enough to help is long enough to answer with a reading from
+ * before the thing the researcher just did.
+ */
+let inFlight: Promise<RunningKernel[]> | undefined;
+
+function sweep(deps: Deps): Promise<RunningKernel[]> {
+  if (inFlight) return inFlight;
+  inFlight = liveKernels(deps).finally(() => {
+    inFlight = undefined;
+  });
+  return inFlight;
+}
+
 export function kernelsApi(deps: Deps): KernelsApi {
   const { store, actor, now, runs, pendingCells } = deps;
   return {
     async listRunningKernels() {
-      return liveKernels(deps);
+      return sweep(deps);
+    },
+
+    async computeSnapshot() {
+      const kernels = await sweep(deps);
+      const rows = store.all(
+        `SELECT id, total_memory_bytes, cores, last_seen_ts FROM runtimes WHERE removed_ts IS NULL`,
+      );
+      const when = now();
+      return rows.map((row): MachineCompute => {
+        const runtimeId = row.id as string;
+        const machine: MachineCompute = { runtimeId };
+        // An offline machine carries nothing at all — not its counts, and not
+        // its own size either. The fan-out reports a machine that did not
+        // answer as holding nothing, which is the same shape as a machine
+        // that answered "none", and rendering that as "0 kernels" would tell
+        // a researcher their colleague's machine is idle when the truth is
+        // nobody could reach it. Size goes with the rest, and is why this
+        // return comes before it: a row carrying `totalMemoryBytes` and no
+        // `memoryBytes` renders "— of 8.0 GB", which reads as a live machine
+        // measured at nothing rather than as one nobody could reach. The
+        // type says so too — every field but the id is optional, and an
+        // offline machine carries none of them.
+        if (healthFor(row.last_seen_ts as number, when) === "offline") return machine;
+        if (row.total_memory_bytes !== null)
+          machine.totalMemoryBytes = row.total_memory_bytes as number;
+        if (row.cores !== null) machine.cores = row.cores as number;
+        const mine = kernels.filter((kernel) => kernel.runtimeId === runtimeId);
+        machine.kernelCount = mine.length;
+        machine.runningCount = mine.filter((k) => k.state === "running").length;
+        const measured = mine.filter((k) => k.resources?.memoryBytes !== undefined);
+        if (measured.length)
+          machine.memoryBytes = measured.reduce(
+            (n, k) => n + (k.resources?.memoryBytes ?? 0),
+            0,
+          );
+        const busy = mine.filter((k) => k.resources?.cpuPercent !== undefined);
+        if (busy.length)
+          machine.cpuPercent = busy.reduce((n, k) => n + (k.resources?.cpuPercent ?? 0), 0);
+        // Summed by index, shortest series wins: two kernels started at
+        // different moments have rings of different lengths, and aligning
+        // them past the shorter one would add a reading to a moment it was
+        // not taken in.
+        const lengths = mine.map((k) => k.series?.length ?? 0).filter((n) => n > 0);
+        if (lengths.length) {
+          const span = Math.min(...lengths);
+          machine.series = Array.from({ length: span }, (_, i) => {
+            // Index from the END of each series: the rings share a clock but
+            // not a start, so the newest reading is the aligned one.
+            const slot: { memoryBytes?: number; cpuPercent?: number } = {};
+            const mem = mine
+              .map((k) => k.series?.[k.series.length - span + i]?.memoryBytes)
+              .filter((n): n is number => n !== undefined);
+            if (mem.length) slot.memoryBytes = mem.reduce((a, b) => a + b, 0);
+            const cpu = mine
+              .map((k) => k.series?.[k.series.length - span + i]?.cpuPercent)
+              .filter((n): n is number => n !== undefined);
+            if (cpu.length) slot.cpuPercent = cpu.reduce((a, b) => a + b, 0);
+            return slot;
+          });
+        }
+        return machine;
+      });
     },
 
     async taskNotebook(taskId) {
@@ -292,6 +399,17 @@ export function kernelsApi(deps: Deps): KernelsApi {
     async kernelInterrupt(kernelId) {
       const resolved = await authorizedKernelRuntime(deps, actor, now(), kernelId);
       deliverOrRefuse(runs, resolved, { type: "kernel-interrupt", runId: kernelId, kernelId });
+    },
+
+    async kernelStop(kernelId, feedback) {
+      const resolved = await authorizedKernelRuntime(deps, actor, now(), kernelId);
+      deliverOrRefuse(runs, resolved, {
+        type: "kernel-stop",
+        runId: kernelId,
+        kernelId,
+        ...(feedback === undefined ? {} : { feedback }),
+        by: actor.userId,
+      });
     },
 
     async kernelRestart(kernelId) {

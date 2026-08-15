@@ -350,7 +350,7 @@ def test_this_package_reaches_for_nothing_it_does_not_declare():
     that pulled it in stops doing so, this one fails to start on a machine
     where nothing changed.
     """
-    declared = {"mcp"}
+    declared = {"mcp", "psutil"}
     source = Path(__file__).resolve().parent.parent / "src"
     reached: set[str] = set()
     for path in source.rglob("*.py"):

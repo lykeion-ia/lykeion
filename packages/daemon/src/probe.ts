@@ -106,6 +106,38 @@ function throwawayWorkspace(): string {
 }
 
 /**
+ * Runs an already-confined command in `workspace` and always removes it
+ * afterwards, whichever way the run went. The one place this file spawns
+ * anything: `readVersion` — which wants only the build a catalogued CLI
+ * printed — and `runConfined` — whose caller wants to know whether the
+ * command answered at all — both settle here rather than each owning an
+ * `execFile` call of their own.
+ */
+function execConfined(
+  confined: { command: string; args: string[] },
+  workspace: string,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise) => {
+    execFile(
+      confined.command,
+      confined.args,
+      // In the directory the boundary was rendered for. Without this the
+      // child inherits whichever directory this daemon happens to have been
+      // started in, which the profile does not allow — and a program that
+      // cannot reach its own working directory does not get as far as
+      // printing anything, so every run reads as unknown.
+      { timeout: timeoutMs, signal, cwd: workspace },
+      (error, stdout, stderr) => {
+        rmSync(workspace, { recursive: true, force: true });
+        resolvePromise({ ok: !error, stdout, stderr });
+      },
+    );
+  });
+}
+
+/**
  * Asks a resolved executable which build it is, and answers with what it
  * said — or the empty string, when it said nothing usable. Always an
  * argument array, never a shell string: a catalogue command name that
@@ -139,29 +171,62 @@ function readVersion(
     policyFor({ workspace, grants: [], dataDir, ...confinementFor(agent, workspace) }),
     { command: resolved, args: ["--version"] },
   );
-  return new Promise((resolvePromise) => {
-    const done = (version: string) => {
-      rmSync(workspace, { recursive: true, force: true });
-      resolvePromise(version);
-    };
-    execFile(
-      confined.command,
-      confined.args,
-      // In the directory the boundary was rendered for. Without this the
-      // child inherits whichever directory this daemon happens to have been
-      // started in, which the profile does not allow — and a program that
-      // cannot reach its own working directory does not get as far as
-      // printing its version, so every build reads as unknown.
-      { timeout: timeoutMs, signal, cwd: workspace },
-      (error, stdout, stderr) => {
-        if (error) {
-          done("");
-          return;
-        }
-        done(firstSpokenLine(stdout) || firstSpokenLine(stderr));
-      },
-    );
-  });
+  return execConfined(confined, workspace, timeoutMs, signal).then(({ ok, stdout, stderr }) =>
+    ok ? firstSpokenLine(stdout) || firstSpokenLine(stderr) : "",
+  );
+}
+
+/** An id no catalogue entry uses — never shown to anybody, only ever compared
+ *  against `CATALOGUE`. What `confinementFor` is given to render a boundary
+ *  for a command that belongs to no agent's own installation: it hands back
+ *  `NO_AGENT_HOME` for what the run owns, and every agent's own home plus
+ *  every researcher installation this machine knows of for what it may not
+ *  touch — the same posture an agent's own `--version` check gets, for a
+ *  command that is nobody's CLI. */
+const NO_AGENT = "lykeion:no-agent";
+
+/**
+ * Runs `command` inside this machine's own boundary and reports back
+ * whether it could be run at all, plus whatever it printed on each stream.
+ *
+ * Resolution and confinement are asked in the order `probeCliVersion` asks
+ * them, and for the same reason. A command missing from `PATH` never reaches
+ * a `confine()` call at all — `ok` false, both streams empty, nothing spent
+ * rendering a policy for a program that is not there. A command this
+ * platform has no sandbox backend to confine is reported found rather than
+ * run — `ok` true, both streams empty — because a platform with no backend
+ * decides whether a program can be CONFINED, never whether it exists.
+ *
+ * The one confined spawner this file owns for a command belonging to no
+ * particular agent. `probeKernelFloor` calls this rather than composing its
+ * own `execFile` + `confine()`, which is what keeps the `cwd` fix from
+ * `159d0f2` — passing the boundary the directory it was actually rendered
+ * for — from needing to be made a second time.
+ */
+export async function runConfined(
+  command: string,
+  args: string[],
+  opts: {
+    dataDir: string;
+    path?: string;
+    platform?: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  },
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const pathValue = opts.path ?? process.env.PATH ?? "";
+  const resolved = await resolveOnPath(command, pathValue);
+  if (resolved === undefined) return { ok: false, stdout: "", stderr: "" };
+  const platform = opts.platform ?? process.platform;
+  if (sandboxBackendFor(platform) === undefined) return { ok: true, stdout: "", stderr: "" };
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const workspace = throwawayWorkspace();
+  const confined = confine(
+    platform,
+    policyFor({ workspace, grants: [], dataDir: opts.dataDir, ...confinementFor(NO_AGENT, workspace) }),
+    { command: resolved, args },
+  );
+  return execConfined(confined, workspace, timeoutMs, opts.signal);
 }
 
 /**

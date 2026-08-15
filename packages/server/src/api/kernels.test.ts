@@ -143,6 +143,32 @@ async function pairClaudeMachine(
   return { runtimeId, token };
 }
 
+/** Reports the two figures Task 2 adds to `/daemon/report` — a machine's own
+ *  RAM and core count — for whichever paired machine `token` names. Its own
+ *  call rather than folded into `pairClaudeMachine`: most tests in this file
+ *  do not care how big a machine is, and a report that always claimed a
+ *  size would leave nothing standing in for the daemon that has never sent
+ *  one. */
+async function reportMachineFacts(
+  base: string,
+  token: string,
+  totalMemoryBytes: number,
+  cores: number,
+): Promise<void> {
+  await fetch(`${base}/daemon/report`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      platform: "macos-aarch64",
+      daemonVersion: "0.1.0",
+      capabilities: [],
+      clis: [{ id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true }],
+      totalMemoryBytes,
+      cores,
+    }),
+  });
+}
+
 interface KernelsLab {
   base: string;
   store: Store;
@@ -469,6 +495,30 @@ it("refuses to interrupt a kernel on a machine that is not yours", async () => {
   await expectRejection(lab.memberApi.kernelInterrupt(kernelId), "forbidden", /./);
 });
 
+it("stops a kernel by delivering what the researcher said to its runtime", async () => {
+  const lab = await freshLab();
+  const { kernelId } = await recordCellVia(lab, { source: "x = 1" });
+  const stub = attachStubDaemon(lab);
+  await expect(
+    lab.ownerApi.kernelStop(kernelId, "redo this using less memory"),
+  ).resolves.toBeUndefined();
+  expect(stub.taken.at(-1)).toMatchObject({
+    type: "kernel-stop",
+    kernelId,
+    feedback: "redo this using less memory",
+    // Named here, where the researcher asking is known, and never read off
+    // whatever the machine claims — the same rule `kernelExecute` follows for
+    // the member a cell is recorded as run by.
+    by: lab.ownerId,
+  });
+});
+
+it("refuses to stop a kernel on a machine that is not yours", async () => {
+  const lab = await freshLab();
+  const { kernelId } = await recordCellVia(lab, { source: "x = 1" });
+  await expectRejection(lab.memberApi.kernelStop(kernelId, "stop that"), "forbidden", /./);
+});
+
 it("restarts a kernel by delivering a real command to its runtime", async () => {
   const lab = await freshLab();
   const { kernelId } = await recordCellVia(lab, { source: "x = 1" });
@@ -546,6 +596,347 @@ it("reaches a paired machine's kernel.list and enriches it with the runtime and 
       environment: "python",
     },
   ]);
+});
+
+it("passes a kernel's processId and resources through when the host reported them, and leaves both keys absent when it did not", async () => {
+  // Task 1's own gap: nothing exercised `toRunningKernel`'s conditional
+  // spreads for these two fields. Presence is what is asserted, not
+  // `undefined` — an absent key and a key holding `undefined` are different
+  // things on the wire, and only the first is what an old host or a
+  // process-less kernel actually sends.
+  const lab = await freshLab();
+  const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
+  attachStubDaemon(lab, [
+    {
+      id: "k_measured",
+      sessionId,
+      taskId,
+      name: "main",
+      language: "python",
+      state: "running",
+      incarnation: 1,
+      executionCount: 0,
+      queueDepth: 0,
+      environment: "python",
+      processId: 4242,
+      resources: { memoryBytes: 1024, cpuPercent: 1.5 },
+    },
+    {
+      id: "k_unmeasured",
+      sessionId,
+      taskId,
+      name: "worker",
+      language: "python",
+      state: "idle",
+      incarnation: 1,
+      executionCount: 0,
+      queueDepth: 0,
+      environment: "python",
+    },
+  ]);
+
+  const kernels = await lab.ownerApi.listRunningKernels();
+
+  const measured = kernels.find((k) => k.id === "k_measured")!;
+  expect(measured.processId).toBe(4242);
+  expect(measured.resources).toEqual({ memoryBytes: 1024, cpuPercent: 1.5 });
+
+  const unmeasured = kernels.find((k) => k.id === "k_unmeasured")!;
+  expect("processId" in unmeasured).toBe(false);
+  expect("resources" in unmeasured).toBe(false);
+});
+
+it("passes on who ended a kernel and what they said, and names nobody for one nobody ended", async () => {
+  // Presence again, for the same reason: a crashed kernel and a stopped one
+  // are different facts, and a `stoppedBy` key holding `undefined` on the
+  // crashed one would be this lab claiming to know a name it does not have.
+  const lab = await freshLab();
+  const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
+  attachStubDaemon(lab, [
+    {
+      id: "k_stopped",
+      sessionId,
+      taskId,
+      name: "main",
+      language: "python",
+      state: "stopped",
+      incarnation: 1,
+      executionCount: 9,
+      queueDepth: 0,
+      environment: "python",
+      stoppedBy: "u_ana",
+      stopReason: "redo this using less memory",
+    },
+    {
+      id: "k_crashed",
+      sessionId,
+      taskId,
+      name: "worker",
+      language: "python",
+      state: "crashed",
+      incarnation: 1,
+      executionCount: 2,
+      queueDepth: 0,
+      environment: "python",
+    },
+  ]);
+
+  const kernels = await lab.ownerApi.listRunningKernels();
+
+  const stopped = kernels.find((k) => k.id === "k_stopped")!;
+  expect(stopped.stoppedBy).toBe("u_ana");
+  expect(stopped.stopReason).toBe("redo this using less memory");
+
+  const crashed = kernels.find((k) => k.id === "k_crashed")!;
+  expect("stoppedBy" in crashed).toBe(false);
+  expect("stopReason" in crashed).toBe(false);
+});
+
+it("recognizes a reclaimed kernel as a valid state and passes its reclaimedTs through", async () => {
+  // `toRunningKernel` refuses any state absent from `KERNEL_STATES` — a
+  // machine reporting `reclaimed` and finding it dropped here would have the
+  // row this whole policy exists to show never reach the lab at all.
+  const lab = await freshLab();
+  const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
+  attachStubDaemon(lab, [
+    {
+      id: "k_reclaimed",
+      sessionId,
+      taskId,
+      name: "main",
+      language: "python",
+      state: "reclaimed",
+      incarnation: 1,
+      executionCount: 4,
+      queueDepth: 0,
+      environment: "python",
+      reclaimedTs: 1_700_000_500,
+    },
+  ]);
+
+  const kernels = await lab.ownerApi.listRunningKernels();
+
+  const reclaimed = kernels.find((k) => k.id === "k_reclaimed");
+  expect(reclaimed?.state).toBe("reclaimed");
+  expect(reclaimed?.reclaimedTs).toBe(1_700_000_500);
+});
+
+it("drops a raw report whose reclaimedTs is not an epoch-seconds integer or absent", async () => {
+  // `isRawKernelReport` (`http.ts`) is the one gate a body that crossed a
+  // process this store did not write passes through before `settle` ever
+  // sees it — `startedTs`/`lastActivityTs` are guarded there the same way,
+  // and a `reclaimedTs` left unguarded would let a string like `"soon"`
+  // reach a field `RunningKernel` declares `number`.
+  const lab = await freshLab();
+  const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
+  attachStubDaemon(lab, [
+    {
+      id: "k_malformed",
+      sessionId,
+      taskId,
+      name: "main",
+      language: "python",
+      state: "reclaimed",
+      incarnation: 1,
+      executionCount: 4,
+      queueDepth: 0,
+      environment: "python",
+      reclaimedTs: "soon",
+    },
+    {
+      id: "k_valid",
+      sessionId,
+      taskId,
+      name: "worker",
+      language: "python",
+      state: "reclaimed",
+      incarnation: 1,
+      executionCount: 1,
+      queueDepth: 0,
+      environment: "python",
+      reclaimedTs: 1_700_000_600,
+    },
+  ]);
+
+  const kernels = await lab.ownerApi.listRunningKernels();
+
+  // The whole report is refused, not merely the one bad field — the same
+  // discipline `isRawKernelReport`'s other guarded fields already hold to.
+  expect(kernels.find((k) => k.id === "k_malformed")).toBeUndefined();
+  const valid = kernels.find((k) => k.id === "k_valid");
+  expect(valid?.reclaimedTs).toBe(1_700_000_600);
+});
+
+it("sums a machine's kernels against what that machine has", async () => {
+  const lab = await freshLab();
+  await reportMachineFacts(lab.base, lab.token, 8 * 1024 * 1024 * 1024, 8);
+  const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
+  // Two kernels on one runtime, 1 MB and 3 MB.
+  attachStubDaemon(lab, [
+    {
+      id: "k_1",
+      sessionId,
+      taskId,
+      name: "main",
+      language: "python",
+      state: "idle",
+      incarnation: 1,
+      executionCount: 0,
+      queueDepth: 0,
+      environment: "python",
+      resources: { memoryBytes: 1 * 1024 * 1024 },
+    },
+    {
+      id: "k_2",
+      sessionId,
+      taskId,
+      name: "worker",
+      language: "python",
+      state: "idle",
+      incarnation: 1,
+      executionCount: 0,
+      queueDepth: 0,
+      environment: "python",
+      resources: { memoryBytes: 3 * 1024 * 1024 },
+    },
+  ]);
+
+  const snapshot = await lab.ownerApi.computeSnapshot();
+  const machine = snapshot.find((m) => m.runtimeId === lab.runtimeId)!;
+  expect(machine.memoryBytes).toBe(4 * 1024 * 1024);
+  expect(machine.totalMemoryBytes).toBe(8 * 1024 * 1024 * 1024);
+  expect(machine.kernelCount).toBe(2);
+});
+
+it("aligns two kernels' series from the newest reading rather than the oldest", async () => {
+  // The rings share a clock but not a start: a kernel that has been up longer
+  // holds readings from before the other existed, and pairing them from the
+  // front would add a reading to a moment it was not taken in. An off-by-one
+  // here is invisible in the output — it is a plausible sparkline either way —
+  // so the arithmetic is asserted directly, on figures no two slots share.
+  const lab = await freshLab();
+  const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
+  const common = {
+    sessionId,
+    taskId,
+    language: "python",
+    state: "idle",
+    incarnation: 1,
+    executionCount: 0,
+    queueDepth: 0,
+    environment: "python",
+  };
+  attachStubDaemon(lab, [
+    {
+      ...common,
+      id: "k_long_lived",
+      name: "main",
+      // Eight ticks, oldest first, every figure distinct from every other.
+      series: [1, 2, 4, 8, 16, 32, 64, 128].map((memoryBytes, i) => ({
+        memoryBytes,
+        cpuPercent: i,
+      })),
+    },
+    {
+      ...common,
+      id: "k_just_started",
+      name: "worker",
+      // Two ticks: this kernel did not exist for the first six above.
+      series: [
+        { memoryBytes: 1000, cpuPercent: 100 },
+        { memoryBytes: 2000, cpuPercent: 200 },
+      ],
+    },
+  ]);
+
+  const snapshot = await lab.ownerApi.computeSnapshot();
+  const machine = snapshot.find((m) => m.runtimeId === lab.runtimeId)!;
+
+  // The shorter of the two. Eight slots would be six of them describing one
+  // kernel and calling the figure the machine's.
+  expect(machine.series).toHaveLength(2);
+  // Newest against newest: the long-lived kernel's last two readings, not its
+  // first two, paired with the young one's only two.
+  expect(machine.series).toEqual([
+    { memoryBytes: 64 + 1000, cpuPercent: 6 + 100 },
+    { memoryBytes: 128 + 2000, cpuPercent: 7 + 200 },
+  ]);
+});
+
+it("says nothing at all about a machine that is not answering", async () => {
+  const lab = await freshLab();
+  const offlineRuntimeId = lab.runtimeId;
+  // A machine that does not answer the fan-out reports no kernels, which is
+  // indistinguishable from answering "none" — so an offline machine must
+  // carry no counts either, or the screen reads it as idle.
+  //
+  // Its size is reported first, and on purpose: the lab still knows how big
+  // this machine is, from the last time it said so. That fact surviving into
+  // the snapshot is what put "— of 8.0 GB" on an unreachable machine's row —
+  // a live machine measured at nothing, which is the one reading this
+  // whole em-dash rule exists to prevent. Nothing at all, or the absence
+  // says something it does not mean.
+  await reportMachineFacts(lab.base, lab.token, 8 * 1024 * 1024 * 1024, 8);
+  lab.advanceClock(301);
+
+  const snapshot = await lab.ownerApi.computeSnapshot();
+  const machine = snapshot.find((m) => m.runtimeId === offlineRuntimeId)!;
+  expect(machine.kernelCount).toBeUndefined();
+  expect(machine.memoryBytes).toBeUndefined();
+  expect(machine.totalMemoryBytes).toBeUndefined();
+  expect(machine.cores).toBeUndefined();
+});
+
+it("serves one fan-out to both readers of it", async () => {
+  const lab = await freshLab();
+  const runtimeId = lab.runtimeId;
+  const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
+
+  // Attached by hand rather than through `attachStubDaemon`, which answers a
+  // `kernel-list` the instant it arrives — too fast to prove anything here,
+  // since `listRunningKernels` and `computeSnapshot` are two separate HTTP
+  // calls and an instant reply can settle the sweep before the second one
+  // has even reached the server. Held open until both have had the chance
+  // to ask is what makes "only one kernel-list went out" a fact about the
+  // sweep rather than a race this test happened to win.
+  const deliveries: RunCommand[] = [];
+  const detach = lab.relay.attach(runtimeId, (_seq, command) => deliveries.push(command));
+
+  const listing = lab.ownerApi.listRunningKernels();
+  const snapshotting = lab.ownerApi.computeSnapshot();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const kernelListCommands = deliveries.filter((c) => c.type === "kernel-list");
+  expect(kernelListCommands).toHaveLength(1);
+  await fetch(`${lab.base}/daemon/kernel/list`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify({
+      requestId: kernelListCommands[0]!.runId,
+      kernels: [
+        {
+          id: "k_1",
+          sessionId,
+          taskId,
+          name: "main",
+          language: "python",
+          state: "idle",
+          incarnation: 1,
+          executionCount: 0,
+          queueDepth: 0,
+          environment: "python",
+          resources: { memoryBytes: 2 * 1024 * 1024 },
+        },
+      ],
+    }),
+  });
+  detach();
+
+  const [kernels, snapshot] = await Promise.all([listing, snapshotting]);
+  const summed = kernels
+    .filter((k) => k.runtimeId === runtimeId)
+    .reduce((n, k) => n + (k.resources?.memoryBytes ?? 0), 0);
+  expect(snapshot.find((m) => m.runtimeId === runtimeId)!.memoryBytes).toBe(summed);
 });
 
 it("refuses a kernel-list reply from a machine the request was never sent to, and still accepts the real one", async () => {

@@ -565,6 +565,150 @@ it("a report records the one entry when only the platform, daemon version, or ca
   expect(changeLogCount(store)).toBe(1);
 });
 
+it("a report records the one entry when a machine's own memory or core count changes, and none for repeating the same figures", () => {
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  const body = {
+    platform: "macos-aarch64",
+    daemonVersion: "0.1.0",
+    capabilities: [],
+    clis: [],
+    totalMemoryBytes: 8 * 1024 * 1024 * 1024,
+    cores: 8,
+  };
+  // `insertPairedMachine` leaves total_memory_bytes/cores NULL, so a first
+  // report naming them is itself a change — the same way a first report
+  // naming a platform is.
+  expect(post(store, "/daemon/report", body, "Bearer a-real-token")!.status).toBe(200);
+  expect(changeLogCount(store)).toBe(1);
+
+  // The identical figures again record nothing further.
+  expect(post(store, "/daemon/report", body, "Bearer a-real-token")!.status).toBe(200);
+  expect(changeLogCount(store)).toBe(1);
+
+  // A changed core count — a resized VM, the case that actually happens —
+  // is its own entry, the same as a changed platform would be.
+  expect(
+    post(store, "/daemon/report", { ...body, cores: 16 }, "Bearer a-real-token")!.status,
+  ).toBe(200);
+  expect(changeLogCount(store)).toBe(2);
+});
+
+it("stores NULL for the kernel floor when a report says nothing about it, never a 0 standing in for unasked", () => {
+  const store = freshStore();
+  const { runtimeId } = insertPairedMachine(store, "a-real-token");
+  const body = { platform: "macos-aarch64", daemonVersion: "0.1.0", capabilities: [], clis: [] };
+
+  // No `kernels` field at all — the shape of a daemon built before this
+  // report existed. NULL, not 0: a 0 here would tell a researcher this
+  // machine failed a check that never ran.
+  expect(post(store, "/daemon/report", body, "Bearer a-real-token")!.status).toBe(200);
+  expect(runtimeRow(store, runtimeId).kernels_ready).toBeNull();
+  expect(runtimeRow(store, runtimeId).kernels_reason).toBeNull();
+  expect(runtimeRow(store, runtimeId).process_visibility).toBeNull();
+
+  // Checked and failed: 0, with the reason a person reads.
+  expect(
+    post(
+      store,
+      "/daemon/report",
+      { ...body, kernels: { ready: false, reason: "uv is not installed, and Lykeion starts kernels with it" } },
+      "Bearer a-real-token",
+    )!.status,
+  ).toBe(200);
+  expect(runtimeRow(store, runtimeId).kernels_ready).toBe(0);
+  expect(runtimeRow(store, runtimeId).kernels_reason).toBe(
+    "uv is not installed, and Lykeion starts kernels with it",
+  );
+
+  // Checked and ready: 1, with no reason to carry.
+  expect(
+    post(store, "/daemon/report", { ...body, kernels: { ready: true } }, "Bearer a-real-token")!.status,
+  ).toBe(200);
+  expect(runtimeRow(store, runtimeId).kernels_ready).toBe(1);
+  expect(runtimeRow(store, runtimeId).kernels_reason).toBeNull();
+
+  // The other half of the same column's rule, and the half nothing asserted:
+  // a sentence that was reported is stored as itself. Without this, a report
+  // handler that read `processVisibility` and dropped it on the floor would
+  // pass every assertion above — they all say only that an unreported one is
+  // NULL, which never storing anything satisfies perfectly.
+  expect(
+    post(
+      store,
+      "/daemon/report",
+      {
+        ...body,
+        kernels: { ready: true },
+        processVisibility:
+          "macOS reports memory and processor use for a process Lykeion started itself.",
+      },
+      "Bearer a-real-token",
+    )!.status,
+  ).toBe(200);
+  expect(runtimeRow(store, runtimeId).process_visibility).toBe(
+    "macOS reports memory and processor use for a process Lykeion started itself.",
+  );
+});
+
+it("a report records the one entry when the kernel floor or the process-visibility line changes, and none for repeating either", () => {
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  const body = { platform: "macos-aarch64", daemonVersion: "0.1.0", capabilities: [], clis: [] };
+
+  expect(
+    post(
+      store,
+      "/daemon/report",
+      { ...body, kernels: { ready: false, reason: "uv is not installed" }, processVisibility: "macOS says so" },
+      "Bearer a-real-token",
+    )!.status,
+  ).toBe(200);
+  expect(changeLogCount(store)).toBe(1);
+
+  // The identical answer again records nothing further.
+  expect(
+    post(
+      store,
+      "/daemon/report",
+      { ...body, kernels: { ready: false, reason: "uv is not installed" }, processVisibility: "macOS says so" },
+      "Bearer a-real-token",
+    )!.status,
+  ).toBe(200);
+  expect(changeLogCount(store)).toBe(1);
+
+  // Gaining uv is its own entry — the whole reason `reportIfChanged`'s own
+  // fingerprint had to be widened for this.
+  expect(
+    post(
+      store,
+      "/daemon/report",
+      { ...body, kernels: { ready: true }, processVisibility: "macOS says so" },
+      "Bearer a-real-token",
+    )!.status,
+  ).toBe(200);
+  expect(changeLogCount(store)).toBe(2);
+
+  // And the visibility line moving on its own — a machine remounted with
+  // `hidepid`, or a daemon upgraded onto a platform that has been checked.
+  // Every post above carries the same sentence, so without this one the
+  // `process_visibility` clause could be deleted from `metaChanged` outright
+  // and the whole test would still pass under its own name.
+  expect(
+    post(
+      store,
+      "/daemon/report",
+      {
+        ...body,
+        kernels: { ready: true },
+        processVisibility: "Linux reports these through /proc",
+      },
+      "Bearer a-real-token",
+    )!.status,
+  ).toBe(200);
+  expect(changeLogCount(store)).toBe(3);
+});
+
 it("names which of the Studies and Tasks a machine asked about are gone", () => {
   const store = freshStore();
   insertPairedMachine(store, "a-real-token");

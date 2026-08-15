@@ -54,7 +54,7 @@ export function absentApi(
   | "listResearchGroups" | "createResearchGroup"
   | "listRuntimes" | "listAgentClis" | "pairMachine" | "removeRuntime"
   | "startRun" | "submitRunDecision" | "runHistory" | "revertTurn"
-  | "listRunningKernels" | "taskNotebook" | "kernelExecute" | "kernelInterrupt" | "kernelRestart"
+  | "listRunningKernels" | "computeSnapshot" | "taskNotebook" | "kernelExecute" | "kernelInterrupt" | "kernelStop" | "kernelRestart"
   | "kernelEnvSetup"
 > {
   return {

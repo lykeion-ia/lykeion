@@ -1,7 +1,8 @@
+import type { ReactElement } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import { render, screen, cleanup, within } from "@testing-library/react";
+import { render as rtlRender, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createInMemoryApi, type LykeionApi, type Runtime } from "@lykeion/api";
+import { createInMemoryApi, type LykeionApi, type Runtime, type RunningKernel } from "@lykeion/api";
 import { ApiProvider } from "../../api/ApiContext";
 import { RuntimesList } from "./RuntimesList";
 
@@ -21,18 +22,50 @@ function machine(overrides: Partial<Runtime> = {}): Runtime {
   };
 }
 
+/** Every test below renders through this rather than `@testing-library/react`'s
+ *  own `render` directly: `RuntimesList` calls `useApi()` unconditionally, so
+ *  a tree with no `ApiProvider` above it throws before anything renders,
+ *  whether or not a given test ever exercises a control that reaches the
+ *  api. */
+function render(ui: ReactElement) {
+  const api: LykeionApi = createInMemoryApi();
+  return rtlRender(<ApiProvider api={api}>{ui}</ApiProvider>);
+}
+
 function renderList(
   runtimes: Runtime[],
   meId: string | null,
   apiOverrides: Partial<LykeionApi> = {},
 ) {
   const api: LykeionApi = { ...createInMemoryApi(), ...apiOverrides };
-  return render(
+  return rtlRender(
     <ApiProvider api={api}>
       <RuntimesList runtimes={runtimes} meId={meId} />
     </ApiProvider>,
   );
 }
+
+/** The baseline props every new test below starts from: one machine, owned
+ *  by the caller, so `compute`'s `rt_1` entries land on a row that is
+ *  actually on screen. */
+const props = { runtimes: [machine()], meId: "u_you" };
+
+/** A minimal, valid `RunningKernel` to spread and override — everything
+ *  `toRunningKernel` requires, none of what a particular test cares about. */
+const kernel: RunningKernel = {
+  id: "k_0",
+  sessionId: "sess_1",
+  taskId: "t_1",
+  name: "main",
+  language: "python",
+  runtimeId: "rt_1",
+  studyId: "study_1",
+  state: "idle",
+  incarnation: 1,
+  executionCount: 0,
+  queueDepth: 0,
+  environment: "python",
+};
 
 it("names the machine, its platform and its health", () => {
   renderList([machine()], "u_you");
@@ -319,4 +352,116 @@ it("keeps the confirmation open and shows the failure when removeRuntime rejects
 
   expect(await screen.findByText(/machine already gone/i)).toBeInTheDocument();
   expect(screen.getByRole("dialog", { name: /remove machine/i })).toBeInTheDocument();
+});
+
+it("shows what a machine's kernels are holding, against what it has", () => {
+  render(<RuntimesList {...props} compute={[{
+    runtimeId: "rt_1",
+    memoryBytes: 15_728_640,
+    totalMemoryBytes: 8 * 1024 * 1024 * 1024,
+    cpuPercent: 0,
+    cores: 8,
+  }]} />);
+  expect(screen.getByText("15.0 MB of 8.0 GB")).toBeInTheDocument();
+  expect(screen.getByText("0.0 of 8 cores")).toBeInTheDocument();
+});
+
+it("renders an em dash on both figures for a machine that reported none, and a zero on neither", () => {
+  render(<RuntimesList {...props} compute={[{ runtimeId: "rt_1" }]} />);
+  // Both cells, counted rather than merely non-empty: a machine row has two
+  // figures on it, and `getAllByText("—").length > 0` was satisfied by
+  // either one of them alone — so it passed with the other rendering
+  // anything at all, including a zero.
+  expect(screen.getAllByText("—")).toHaveLength(2);
+  // The half that was missing entirely, and the one `KernelTree`'s own em
+  // dash test already asserts for a kernel row: a figure nobody could
+  // measure must not read as one measured at nothing.
+  expect(screen.queryByText(/0 B/)).toBeNull();
+  expect(screen.queryByText(/0\.0 of/)).toBeNull();
+});
+
+it("draws a machine's shape over time against the machine, never against its own peak", () => {
+  // The call site, which nothing queried: `Sparkline`'s own suite pins that
+  // it honours the ceiling it is handed, and this pins which ceiling this
+  // row hands it. Auto-scaling — every library's default, and the thing the
+  // component exists to refuse — would draw these three readings as
+  // "▁▄█" and tell a researcher a machine holding 4 MB of 8 GB is full.
+  render(
+    <RuntimesList
+      {...props}
+      compute={[
+        {
+          runtimeId: "rt_1",
+          totalMemoryBytes: 8 * 1024 * 1024 * 1024,
+          cores: 8,
+          series: [
+            { memoryBytes: 1024 * 1024, cpuPercent: 1 },
+            { memoryBytes: 2 * 1024 * 1024, cpuPercent: 2 },
+            { memoryBytes: 4 * 1024 * 1024, cpuPercent: 4 },
+          ],
+        },
+      ]}
+    />,
+  );
+  expect(screen.getByLabelText("Memory over time").textContent).toBe("▁▁▁");
+  expect(screen.getByLabelText("Processor over time").textContent).toBe("▁▁▁");
+});
+
+it("says which requirement a machine is missing when it cannot host a kernel", () => {
+  renderList(
+    [machine({ kernelsReason: "uv is not installed, and Lykeion starts kernels with it" })],
+    "u_you",
+  );
+  expect(
+    screen.getByText(/uv is not installed, and Lykeion starts kernels with it/),
+  ).toBeInTheDocument();
+});
+
+it("says nothing about the kernel floor for a machine that can host one", () => {
+  renderList([machine({ capabilities: ["kernels"] })], "u_you");
+  expect(screen.queryByText(/cannot host kernels/i)).toBeNull();
+});
+
+it("names this platform's own process-visibility rule once, beneath the roster", () => {
+  renderList(
+    [
+      machine({
+        processVisibility:
+          "macOS reports memory and processor use for a process Lykeion started itself.",
+      }),
+    ],
+    "u_you",
+  );
+  expect(
+    screen.getAllByText(
+      /macOS reports memory and processor use for a process Lykeion started itself\./,
+    ),
+  ).toHaveLength(1);
+});
+
+it("says nothing about process visibility when the caller's own machine has never reported it", () => {
+  renderList([machine()], "u_you");
+  expect(
+    screen.queryByText(
+      /reports memory and processor use|reports these through \/proc|has not been checked for process visibility/,
+    ),
+  ).toBeNull();
+});
+
+it("shows a header figure that is the sum of the rows under it", () => {
+  // The reason `computeSnapshot` shares one fan-out. If these ever disagree
+  // on screen, the two calls came from different sweeps.
+  render(
+    <RuntimesList
+      {...props}
+      kernels={[
+        { ...kernel, id: "k_1", runtimeId: "rt_1", resources: { memoryBytes: 4_194_304 } },
+        { ...kernel, id: "k_2", runtimeId: "rt_1", resources: { memoryBytes: 2_097_152 } },
+      ]}
+      compute={[{ runtimeId: "rt_1", memoryBytes: 6_291_456, totalMemoryBytes: 8 * 1024 ** 3 }]}
+    />,
+  );
+  expect(screen.getByText("6.0 MB of 8.0 GB")).toBeInTheDocument();
+  expect(screen.getByText("4.0 MB")).toBeInTheDocument();
+  expect(screen.getByText("2.0 MB")).toBeInTheDocument();
 });

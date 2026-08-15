@@ -35,6 +35,7 @@ from .kernels import KernelIdentity
 from .mcp.endpoint import Endpoints
 from .protocol import PROTOCOL_VERSION, read_messages, write_message
 from .registry import Place, Registry
+from .sampler import total_memory
 
 # How long the calls still being answered are given, together, once the
 # stream has ended. Long enough for one that was about to finish to write
@@ -137,6 +138,15 @@ def _interrupt(holding: Holding, params: dict[str, Any], _place: Place | None) -
     return {}
 
 
+def _stop(holding: Holding, params: dict[str, Any], _place: Place | None) -> dict[str, Any]:
+    holding.registry.stop(
+        _text(params, "kernel_id"),
+        feedback=params.get("feedback"),
+        by=params.get("by"),
+    )
+    return {}
+
+
 def _restart(holding: Holding, params: dict[str, Any], _place: Place | None) -> dict[str, Any]:
     return holding.registry.restart(_text(params, "kernel_id"))
 
@@ -156,6 +166,7 @@ METHODS: dict[str, Handler] = {
     "kernel.configure_session": _configure_session,
     "kernel.execute": _execute,
     "kernel.interrupt": _interrupt,
+    "kernel.stop": _stop,
     "kernel.restart": _restart,
     "kernel.list": _list,
     "kernel.release_session": _release_session,
@@ -274,7 +285,62 @@ def _answer(
         write_message(stdout, {"id": request_id, **reply})
 
 
-def serve(stdin: IO[str], stdout: IO[str], registry: Registry | None = None) -> None:
+SAMPLE_INTERVAL_S = 2.0
+
+
+def _sampling(registry: Registry, share: float | None = None) -> threading.Thread:
+    """Reads every kernel's process on its own clock, and takes back memory
+    this machine cannot spare.
+
+    A daemon thread, because a host with nothing left to serve must not be
+    held open by a timer. Sampling continues whether or not anyone is
+    looking: history that only exists while a screen is open is a record of
+    who was watching.
+
+    `reclaim()` runs on the same tick, right after `sample()`: the figures it
+    judges pressure against are only as fresh as the reading that just
+    finished, and a separate clock for the policy would have it acting on a
+    machine's state from its own last tick rather than this one's. `share` is
+    what the daemon asked kernels be held under at launch; `None` when it
+    asked for nothing in particular, which leaves `reclaim()`'s own default
+    in force.
+    """
+
+    def loop() -> None:
+        while True:
+            time.sleep(SAMPLE_INTERVAL_S)
+            try:
+                registry.sample()
+                # What this machine has, and what its kernels are holding of
+                # it — summed from the reading `sample()` just took, over
+                # only the kernels that reading could measure. A kernel
+                # nobody has measured yet contributes nothing to the sum,
+                # the same as one truly holding nothing would.
+                machine_memory = total_memory()
+                held = sum(
+                    entry.get("resources", {}).get("memoryBytes", 0)
+                    for entry in registry.list()
+                )
+                overridden = {} if share is None else {"share": share}
+                registry.reclaim(total_memory=machine_memory, holding=held, **overridden)
+            except Exception:
+                # A sampler that raised would take the whole timer with it and
+                # leave every figure frozen at its last value, which reads as
+                # a measurement. Missing one tick is the smaller lie.
+                continue
+
+    thread = threading.Thread(target=loop, daemon=True, name="kernel-sampler")
+    thread.start()
+    return thread
+
+
+def serve(
+    stdin: IO[str],
+    stdout: IO[str],
+    registry: Registry | None = None,
+    *,
+    share: float | None = None,
+) -> None:
     # No prefix of its own. Nothing in this process can render a boundary,
     # so a host that has not been handed one holds no kernels rather than
     # starting interpreters outside every boundary this machine has.
@@ -284,6 +350,7 @@ def serve(stdin: IO[str], stdout: IO[str], registry: Registry | None = None) -> 
     # the lab. One event, written twice, because the two ends of it are
     # waiting in different places.
     kernels.on_cell = lambda cell: write_message(stdout, {"method": "cell", "params": cell})
+    _sampling(kernels, share)
     answering: list[threading.Thread] = []
     try:
         for message in read_messages(stdin):
@@ -355,6 +422,12 @@ def serve(stdin: IO[str], stdout: IO[str], registry: Registry | None = None) -> 
 
 
 def main() -> None:
+    # No `share` of its own: nothing on this machine's command line says one
+    # today, so this passes none and leaves `_sampling`'s and `reclaim`'s own
+    # default in force. `serve` still takes the argument — for a daemon this
+    # process is embedded in and could construct with one directly, and for a
+    # later launcher that does read it off argv, which needs no change here
+    # to do so.
     serve(sys.stdin, sys.stdout)
 
 

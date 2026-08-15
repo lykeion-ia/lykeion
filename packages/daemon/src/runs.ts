@@ -1157,6 +1157,31 @@ export function startRuns(options: {
   }
 
   /**
+   * Ends a kernel, carrying what the researcher said to whatever cell was in
+   * it. Not through `signalKernel`, which passes only `kernel_id`: the
+   * sentence and who said it are the whole point of this command, and a stop
+   * that arrived without them would end the kernel and leave the agent's tool
+   * call failing for no stated reason.
+   *
+   * Silent on failure for the same reason the signals above are — there is no
+   * run to attach a frame to, and a researcher watching a Stop control is
+   * better served by nothing happening than by an error this machine has
+   * nowhere to show them.
+   */
+  function handleKernelStop(command: RunCommand): void {
+    const kernelId = command.kernelId;
+    if (options.kernelHost === undefined || kernelId === undefined) return;
+    void options
+      .kernelHost()
+      .call("kernel.stop", {
+        kernel_id: kernelId,
+        ...(command.feedback === undefined ? {} : { feedback: command.feedback }),
+        ...(command.by === undefined ? {} : { by: command.by }),
+      })
+      .catch(() => {});
+  }
+
+  /**
    * A cell the researcher's own REPL asked a kernel to run, outside any
    * agent's turn — so there is no run for its output to travel a
    * `RunEvent` through the way an agent's cell does. `kernel.execute`
@@ -1307,6 +1332,7 @@ export function startRuns(options: {
     if (command.type === "cancel") return handleCancel(command);
     if (command.type === "revert") return handleRevert(command);
     if (command.type === "kernel-interrupt") return handleKernelInterrupt(command);
+    if (command.type === "kernel-stop") return handleKernelStop(command);
     if (command.type === "kernel-restart") return handleKernelRestart(command);
     if (command.type === "kernel-execute") return handleKernelExecute(command);
     if (command.type === "kernel-list") return handleKernelList(command);

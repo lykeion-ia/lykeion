@@ -392,6 +392,7 @@
 .nbp-status-state--running { color: var(--warn); }
 .nbp-status-state--crashed { color: var(--danger); }
 .nbp-status-state--idle { color: var(--success); }
+.nbp-status-state--reclaimed { color: var(--ink-tertiary); }
 
 .nbp-status-action {
   appearance: none;

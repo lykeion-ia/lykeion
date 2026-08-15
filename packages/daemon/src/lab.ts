@@ -63,6 +63,20 @@ export interface DaemonReport {
   daemonVersion: string;
   capabilities: string[];
   clis: ProbedCli[];
+  /** How much machine there is for kernels to fill. Near-static, which is
+   *  why it rides the report rather than the kernel fan-out. */
+  totalMemoryBytes: number;
+  cores: number;
+  /** Whether this machine meets the floor Lykeion's own kernel host needs to
+   *  start at all — see `probeKernelFloor` — and what is missing when it
+   *  does not. Always sent: a daemon new enough to carry this field has
+   *  always checked, so the lab can tell "checked and failed" apart from
+   *  "never asked", which is what an older daemon's report leaves this key
+   *  out entirely to mean. */
+  kernels: { ready: boolean; reason?: string };
+  /** Which process-visibility rule this machine's own platform applies —
+   *  see `processVisibility`. */
+  processVisibility: string;
 }
 
 /**
@@ -216,6 +230,7 @@ export interface RunCommand {
     | "revert"
     | "kernel-execute"
     | "kernel-interrupt"
+    | "kernel-stop"
     | "kernel-restart"
     | "kernel-list"
     | "name-task";
@@ -229,9 +244,13 @@ export interface RunCommand {
   model?: string;
   grants?: StandingGrant[];
   decision?: RunDecision;
-  /** Which kernel a `kernel-execute`, `kernel-interrupt` or `kernel-restart`
-   *  command addresses. */
+  /** Which kernel a `kernel-execute`, `kernel-interrupt`, `kernel-stop` or
+   *  `kernel-restart` command addresses. */
   kernelId?: string;
+  /** What the researcher who asked for a `kernel-stop` said to the cell it
+   *  is about to end. Absent when they said nothing; this machine then ends
+   *  the kernel with no sentence to hand back. */
+  feedback?: string;
   /** The source a `kernel-execute` command asks a kernel to run. */
   code?: string;
   /** The id the lab minted for the cell a `kernel-execute` command is
@@ -242,7 +261,8 @@ export interface RunCommand {
   name?: string;
   /** The kernel language a `kernel-execute` command runs in. */
   language?: Language;
-  /** The member a `kernel-execute` command's cell is recorded as run by. */
+  /** The member a `kernel-execute` command's cell is recorded as run by, and
+   *  the one a `kernel-stop` names to whatever cell was in the kernel. */
   by?: string;
 }
 

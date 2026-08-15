@@ -9,9 +9,9 @@ import type { StandingGrant } from "./store/sessions";
  * kind shares this one shape because they travel the same stream in the same
  * envelope — only `runId` is ever guaranteed present. A command that belongs
  * to no turn carries a `runId` of its own choosing — `kernelExecute` uses the
- * cell id it just minted, `kernelInterrupt`/`kernelRestart` use the kernel
- * id, and `kernel-list` and `name-task` each use a request id nothing else in
- * this relay reuses — rather than leaving the field empty.
+ * cell id it just minted, `kernelInterrupt`/`kernelStop`/`kernelRestart` use
+ * the kernel id, and `kernel-list` and `name-task` each use a request id
+ * nothing else in this relay reuses — rather than leaving the field empty.
  *
  * Every kernel command travels over `deliverNow`, never `enqueue`: it is
  * never queued for a later connection at all, so `publish`'s pruning by
@@ -26,6 +26,7 @@ export interface RunCommand {
     | "revert"
     | "kernel-execute"
     | "kernel-interrupt"
+    | "kernel-stop"
     | "kernel-restart"
     | "kernel-list"
     | "name-task";
@@ -39,9 +40,13 @@ export interface RunCommand {
   model?: string;
   grants?: StandingGrant[];
   decision?: RunDecision;
-  /** Which kernel a `kernel-execute`, `kernel-interrupt` or `kernel-restart`
-   *  command addresses. */
+  /** Which kernel a `kernel-execute`, `kernel-interrupt`, `kernel-stop` or
+   *  `kernel-restart` command addresses. */
   kernelId?: string;
+  /** What the researcher who asked for a `kernel-stop` said to the cell it
+   *  is about to end. Absent when they said nothing; the machine then ends
+   *  the kernel with no sentence to hand back. */
+  feedback?: string;
   /** The source a `kernel-execute` command asks a kernel to run. */
   code?: string;
   /** The id `kernelExecute` minted for the cell it is asking a kernel to
@@ -55,7 +60,8 @@ export interface RunCommand {
   /** The member a `kernel-execute` command's cell is recorded as run by —
    *  `CellOrigin.by` for the `"repl"` surface, since the researcher who
    *  asked for it is this command's own caller, not anyone the kernel host
-   *  could ever be told. */
+   *  could ever be told. Carried by `kernel-stop` for the same reason: the
+   *  member who ended a kernel is named to whatever cell was in it. */
   by?: string;
 }
 

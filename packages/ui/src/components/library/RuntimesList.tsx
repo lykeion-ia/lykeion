@@ -1,12 +1,14 @@
 import { useState, type ReactNode } from "react";
-import type { RunningKernel, Runtime } from "@lykeion/api";
+import type { MachineCompute, RunningKernel, Runtime } from "@lykeion/api";
 import { useApi, useInvalidateData } from "../../api/ApiContext";
 import { ChevronDownIcon, MonitorIcon } from "../icons";
 import { ConfirmModal } from "../ui/ConfirmModal";
 import { CopyButton } from "../tasks/CopyButton";
 import { cn } from "../../lib/utils";
 import { formatAgo } from "../../lib/task-meta";
+import { formatBytes, formatCores, UNREPORTED } from "../../lib/format";
 import { kernelSummary, MachineKernels } from "./KernelTree";
+import { Sparkline } from "./Sparkline";
 
 interface HealthMeta {
   label: string;
@@ -32,7 +34,7 @@ const HEALTH_META: Record<Runtime["health"], HealthMeta> = {
 // columns line up — the trailing slot holds Remove and stays empty wherever
 // that control is not offered.
 const GRID_COLS =
-  "grid-cols-[minmax(0,1.3fr)_100px_90px_120px_minmax(0,1.4fr)_84px]";
+  "grid-cols-[minmax(0,1.3fr)_100px_90px_120px_minmax(0,1.4fr)_130px_110px_84px]";
 
 /**
  * What one machine was found to have. The daemon reports the whole
@@ -100,9 +102,11 @@ function BlockTitle({ id, children }: { id?: string; children: ReactNode }) {
 function RuntimeRow({
   runtime,
   kernels,
+  compute,
   taskLabel,
   now,
   onInterrupt,
+  onStop,
   onRestart,
   onRemove,
 }: {
@@ -111,9 +115,15 @@ function RuntimeRow({
    *  running nothing is still a machine — and the row is then a plain row
    *  with nothing to open. */
   kernels: RunningKernel[];
+  /** What this machine's kernels are using, against what it has. Absent
+   *  when the fan-out never reached it — a machine that has never reported
+   *  its own size, or one that is offline right now — and every figure
+   *  below falls back to an em dash rather than a zero. */
+  compute?: MachineCompute;
   taskLabel: (taskId: string) => string;
   now: number;
   onInterrupt: (kernelId: string) => void;
+  onStop: (kernelId: string, feedback: string) => void;
   onRestart: (kernelId: string) => void;
   /** Present only for a machine the caller owns — the control this renders
    *  must never reach a machine that is not the caller's own. */
@@ -127,6 +137,25 @@ function RuntimeRow({
   // disclosure at all, so this decides nothing for it.
   const [open, setOpen] = useState(true);
   const holding = kernels.length > 0;
+
+  // Absent, not zero, whenever the pair itself was never reported — a
+  // daemon too old to send its own size, or a machine the fan-out could not
+  // reach right now. `formatBytes`/`formatCores` already turn one absent
+  // figure into an em dash; this is what keeps a used/total pair that is
+  // absent on BOTH sides from reading as "— of —" instead of the single
+  // dash every other unreportable figure on this screen renders as.
+  const memoryBytes = compute?.memoryBytes;
+  const totalMemoryBytes = compute?.totalMemoryBytes;
+  const memoryCell =
+    memoryBytes === undefined && totalMemoryBytes === undefined
+      ? UNREPORTED
+      : `${formatBytes(memoryBytes)} of ${formatBytes(totalMemoryBytes)}`;
+  const cpuPercent = compute?.cpuPercent;
+  const cores = compute?.cores;
+  const processorCell =
+    cpuPercent === undefined && cores === undefined
+      ? UNREPORTED
+      : `${formatCores(cpuPercent)} of ${cores ?? UNREPORTED} cores`;
 
   return (
     <li className="border-b border-line-soft">
@@ -183,6 +212,33 @@ function RuntimeRow({
               the header of the old tree carried, in the one place that now
               names this machine. */}
           {summary && <span className="tabular-nums text-fg-muted">{summary}</span>}
+          {/* Present only once something has actually said this machine
+              cannot host a kernel — never on a machine that can, and never
+              on one whose daemon has not checked, which stays silent rather
+              than guessing. */}
+          {runtime.kernelsReason !== undefined && (
+            <span className="text-warn">Cannot host kernels — {runtime.kernelsReason}</span>
+          )}
+        </span>
+        <span className="tabular-nums text-fg-muted">
+          {memoryCell}
+          <span className="ml-1.5">
+            <Sparkline
+              values={compute?.series?.map((s) => s.memoryBytes) ?? []}
+              ceiling={totalMemoryBytes}
+              label="Memory over time"
+            />
+          </span>
+        </span>
+        <span className="tabular-nums text-fg-muted">
+          {processorCell}
+          <span className="ml-1.5">
+            <Sparkline
+              values={compute?.series?.map((s) => s.cpuPercent) ?? []}
+              ceiling={cores === undefined ? undefined : cores * 100}
+              label="Processor over time"
+            />
+          </span>
         </span>
         <span className="flex justify-end">
           {onRemove && (
@@ -208,7 +264,9 @@ function RuntimeRow({
             kernels={kernels}
             taskLabel={taskLabel}
             now={now}
+            compute={compute}
             onInterrupt={onInterrupt}
+            onStop={onStop}
             onRestart={onRestart}
           />
         </ul>
@@ -221,10 +279,12 @@ function RuntimeTable({
   label,
   runtimes,
   kernels,
+  compute,
   taskLabel,
   now,
   meId,
   onInterrupt,
+  onStop,
   onRestart,
   onRemove,
 }: {
@@ -234,6 +294,9 @@ function RuntimeTable({
    *  rather than by the caller, so a machine holding none is not a case
    *  anybody upstream has to remember to pass. */
   kernels: RunningKernel[];
+  /** What every machine in the lab is holding, against what it has — one
+   *  entry matched to its row the same way `kernels` is. */
+  compute: MachineCompute[];
   taskLabel: (taskId: string) => string;
   now: number;
   /** Which of these machines are the caller's own. Not a heading any more —
@@ -242,6 +305,7 @@ function RuntimeTable({
    *  a row happens to sit. */
   meId: string;
   onInterrupt: (kernelId: string) => void;
+  onStop: (kernelId: string, feedback: string) => void;
   onRestart: (kernelId: string) => void;
   onRemove: (runtime: Runtime) => void;
 }) {
@@ -278,6 +342,8 @@ function RuntimeTable({
               see — it would just as well head a column of "web" and "desktop". */}
           <span>OS &amp; arch</span>
           <span>CLIs</span>
+          <span>Memory</span>
+          <span>Processor</span>
           <span />
         </li>
         {runtimes.map((runtime) => (
@@ -285,9 +351,11 @@ function RuntimeTable({
             key={runtime.id}
             runtime={runtime}
             kernels={kernels.filter((k) => k.runtimeId === runtime.id)}
+            compute={compute.find((m) => m.runtimeId === runtime.id)}
             taskLabel={taskLabel}
             now={now}
             onInterrupt={onInterrupt}
+            onStop={onStop}
             onRestart={onRestart}
             // Passed only for a machine the caller owns, so the control
             // cannot be rendered against somebody else's in the first place.
@@ -297,6 +365,25 @@ function RuntimeTable({
       </ul>
     </section>
   );
+}
+
+/**
+ * What this platform can and cannot say about a kernel's own memory and
+ * processor use — the fact that tells a researcher whether an em dash in
+ * those columns means "not measured yet" or "this platform will not say".
+ *
+ * Sourced from the machine that reported it, never inferred here from
+ * `Runtime.platform`: a Linux box mounted with `hidepid=2` and one without
+ * report the same platform string and owe a researcher different answers.
+ * Shown once, beneath the whole roster, for the caller's own machine — the
+ * one whose kernels this screen lets them act on — rather than once per row,
+ * which would repeat the same sentence down every machine a caller happens
+ * to own.
+ */
+function ProcessVisibilityNote({ runtimes, meId }: { runtimes: Runtime[]; meId: string }) {
+  const mine = runtimes.find((r) => r.ownerId === meId && r.processVisibility !== undefined);
+  if (!mine) return null;
+  return <p className="mb-4 text-meta text-fg-subtle">{mine.processVisibility}</p>;
 }
 
 /**
@@ -469,10 +556,12 @@ function Step({
 export function RuntimesList({
   runtimes,
   kernels = [],
+  compute = [],
   taskLabel = () => "",
   now = 0,
   meId,
   onInterrupt = () => {},
+  onStop = () => {},
   onRestart = () => {},
 }: {
   runtimes: Runtime[];
@@ -480,6 +569,11 @@ export function RuntimesList({
    *  a caller that only wants the roster — and every test that predates the
    *  kernels living here — still gets one. */
   kernels?: RunningKernel[];
+  /** What every machine in the lab is holding, against what it has.
+   *  Defaulted for the same reason `kernels` is — a caller, or a test, that
+   *  never mentions a machine's own size still gets a roster, every figure
+   *  on it reading as unreported rather than missing a prop. */
+  compute?: MachineCompute[];
   taskLabel?: (taskId: string) => string;
   now?: number;
   /** `null` while the caller's identity is unknown — not yet answered, or
@@ -487,6 +581,7 @@ export function RuntimesList({
    *  Remove; the onboarding card below does not. */
   meId: string | null;
   onInterrupt?: (kernelId: string) => void;
+  onStop?: (kernelId: string, feedback: string) => void;
   onRestart?: (kernelId: string) => void;
 }) {
   const api = useApi();
@@ -518,14 +613,18 @@ export function RuntimesList({
             ...runtimes.filter((r) => r.ownerId !== meId),
           ]}
           kernels={kernels}
+          compute={compute}
           taskLabel={taskLabel}
           now={now}
           meId={meId}
           onInterrupt={onInterrupt}
+          onStop={onStop}
           onRestart={onRestart}
           onRemove={setPendingRemove}
         />
       )}
+
+      {meId !== null && <ProcessVisibilityNote runtimes={runtimes} meId={meId} />}
 
       <AddAMachine
         // The first machine is onboarding; the second is a chore. Somebody

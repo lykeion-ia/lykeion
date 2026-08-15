@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 # version in uv.lock say the same thing: a re-lock can neither drop to a
 # major this package was never written against nor take the next one
 # unread.
-dependencies = ["mcp>=2,<3"]
+dependencies = ["mcp>=2,<3", "psutil>=6,<8"]
 
 [project.scripts]
 lykeion-kernel-host = "lykeion_kernel.host:main"

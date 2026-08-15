@@ -10,7 +10,7 @@ import {
   readSync,
   watch,
 } from "node:fs";
-import { hostname } from "node:os";
+import { cpus, hostname, totalmem } from "node:os";
 import { join } from "node:path";
 import { DEMOTION_HOLD_SECONDS } from "./agent-demotions";
 import { runBridge } from "./bridge";
@@ -26,6 +26,7 @@ import {
 import { labLabel, readState, revokedStatePath, setAsidePairing, type PairedState } from "./state";
 import { beginPairing, beginSignIn, openBrowser, PairingRefused, type PairingSession } from "./pairing";
 import { cliFingerprint, platformTag, probeAgentClis } from "./probe";
+import { kernelHostDir, probeKernelFloor, processVisibility } from "./kernel-floor";
 import { adapterFor, heldBackReason, rememberAdapters, rememberHeldBack } from "./ready-adapters";
 import { acceptAdapter, revokeAdapter } from "./adapter-consent";
 import type { AdapterLaunch } from "./agent-registry";
@@ -233,17 +234,29 @@ let lastReported = "";
 /**
  * Probes this machine and reports again only when what it found differs, on
  * `(id, version, available)`, from what was last sent.
+ *
+ * Exported for `main.test.ts`, which is the only test in this file: the
+ * cycle it drives — a real probe against this machine's own PATH and a real
+ * POST to a stub lab — has no other seam to enter through, and every other
+ * function here is reached from it, never the other way round.
  */
-async function reportIfChanged(machine: PairedState, dataDir: string): Promise<void> {
+export async function reportIfChanged(machine: PairedState, dataDir: string): Promise<void> {
   const resolved = new Map<string, AdapterLaunch>();
-  const clis = await probeAgentClis({
-    // A probe runs the researcher's own agent CLI and confines it exactly
-    // as a session is confined, and the boundary denies this machine's own
-    // state — so it has to be told where that is.
-    dataDir,
-    signal: inFlight.signal,
-    onAdapterResolved: (agentId, launch) => resolved.set(agentId, launch),
-  });
+  // Run together rather than one after the other: neither asks anything of
+  // the other, and a cycle that ran them in sequence would cost their sum
+  // rather than the slower of the two, every five minutes, forever.
+  const [clis, floor] = await Promise.all([
+    probeAgentClis({
+      // A probe runs the researcher's own agent CLI and confines it exactly
+      // as a session is confined, and the boundary denies this machine's own
+      // state — so it has to be told where that is.
+      dataDir,
+      signal: inFlight.signal,
+      onAdapterResolved: (agentId, launch) => resolved.set(agentId, launch),
+    }),
+    probeKernelFloor({ dataDir, signal: inFlight.signal }),
+  ]);
+  const visibility = processVisibility();
   rememberAdapters(resolved);
   // Beside the map of what may run, the reason each of the rest may not.
   // Written from the same cycle that decided it, so the sentence a refused run
@@ -261,7 +274,18 @@ async function reportIfChanged(machine: PairedState, dataDir: string): Promise<v
         .filter(([, reason]) => reason !== ""),
     ),
   );
-  if (cliFingerprint(clis) === lastReported) return;
+  const totalMemoryBytes = totalmem();
+  const cores = cpus().length;
+  // The CLI catalogue on its own, widened with the figures below: a machine
+  // whose RAM or core count changed — the case that actually happens is a VM
+  // resized, never disk installed anew mid-cycle — must report again, or the
+  // row showing it stays wrong until this daemon restarts. `floor.ready` and
+  // `floor.reason` are in it for the same reason: a machine that installs
+  // `uv` between one cycle and the next has to report again too, or the lab
+  // goes on saying it cannot host a kernel forever, on the strength of a
+  // check this daemon never repeats to anyone.
+  const fingerprint = `${cliFingerprint(clis)}:${totalMemoryBytes}:${cores}:${floor.ready}:${floor.reason ?? ""}:${visibility}`;
+  if (fingerprint === lastReported) return;
   await retries.run(machine.lab, "report", () =>
     report(
       machine.lab,
@@ -273,11 +297,15 @@ async function reportIfChanged(machine: PairedState, dataDir: string): Promise<v
         // to the lab.
         capabilities: [],
         clis,
+        totalMemoryBytes,
+        cores,
+        kernels: { ready: floor.ready, ...(floor.reason === undefined ? {} : { reason: floor.reason }) },
+        processVisibility: visibility,
       },
       inFlight.signal,
     ),
   );
-  lastReported = cliFingerprint(clis);
+  lastReported = fingerprint;
 }
 
 /** `reportIfChanged`, with a failure logged rather than left to reject —
@@ -361,13 +389,13 @@ function describe(config: DaemonConfig, machine: PairedState | undefined): Recor
  *  and lockfile `packages/kernel-host`'s own `pyproject.toml` pins, run
  *  against that package by path rather than against whatever a bare
  *  `python` on this machine's `PATH` happens to be — a pinned lockfile
- *  resolved against an unpinned interpreter is not pinned at all. The path
- *  is built from this file's own location so it holds whether this module is
- *  run from source or from the bundle `build` produces, both of which sit
- *  two directories below `packages`. */
+ *  resolved against an unpinned interpreter is not pinned at all. The
+ *  directory comes from `kernelHostDir()` (`kernel-floor.ts`) rather than a
+ *  second `join()` here — that is the same directory `probeKernelFloor`
+ *  checks exists before this machine claims it can host a kernel at all,
+ *  and one path used by both is what keeps that claim honest. */
 function kernelHostLaunch(): { command: string; args: string[] } {
-  const kernelHostDir = join(import.meta.dirname, "..", "..", "kernel-host");
-  return { command: "uv", args: ["run", "--project", kernelHostDir, "lykeion-kernel-host"] };
+  return { command: "uv", args: ["run", "--project", kernelHostDir(), "lykeion-kernel-host"] };
 }
 
 /**

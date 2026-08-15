@@ -88,6 +88,41 @@ function arrayField(body: unknown, name: string): unknown[] | undefined {
   return Array.isArray(value) ? value : undefined;
 }
 
+/** The raw value of a number-typed field, or `undefined` when it is absent
+ *  or not a finite number. A daemon built before `totalMemoryBytes`/`cores`
+ *  existed sends neither, and `undefined` here is what lets the write path
+ *  store SQL NULL for it rather than inventing a zero nothing measured. */
+function numberField(body: unknown, name: string): number | undefined {
+  const value = (body as Record<string, unknown> | null)?.[name];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** The raw value of a string-typed field, or `undefined` when it is absent
+ *  or not a string — unlike `field`, which answers a required field with the
+ *  empty string. `processVisibility` is optional the same way
+ *  `totalMemoryBytes` is: a daemon built before it existed sends nothing,
+ *  and `undefined` is what lets that read as "never said" rather than as an
+ *  empty sentence. */
+function optionalStringField(body: unknown, name: string): string | undefined {
+  const value = (body as Record<string, unknown> | null)?.[name];
+  return typeof value === "string" ? value : undefined;
+}
+
+/** What a report says about the kernel floor: whether this machine meets it,
+ *  and why not when it does not. `undefined` on BOTH when the field is
+ *  missing or malformed — a daemon too old to probe the floor has said
+ *  nothing, which must read the same as never having asked, not as a claim
+ *  the machine failed a check that never ran. */
+function kernelsField(body: unknown): { ready: boolean | undefined; reason: string | undefined } {
+  const value = (body as Record<string, unknown> | null)?.kernels;
+  if (value === null || typeof value !== "object") return { ready: undefined, reason: undefined };
+  const row = value as Record<string, unknown>;
+  return {
+    ready: typeof row.ready === "boolean" ? row.ready : undefined,
+    reason: typeof row.reason === "string" ? row.reason : undefined,
+  };
+}
+
 /** One CLI as a report's body carries it — the same shape as `AgentCli`,
  *  minus the `runtimeId` a report has no reason to name itself. `sessionReady`
  *  is read leniently, not required: a daemon built before this field existed
@@ -416,9 +451,9 @@ function workspaces(req: DaemonRequest): DaemonResult {
  * delta, so there is nothing to reconcile row by row. A change is recorded
  * only when something an owner would actually see on the Runtimes screen is
  * different from what is already stored: the reported platform, daemon
- * version, or capabilities, or the CLI set compared on `(cli_id, version,
- * available, sessionReady)`. Never more than one entry, whatever combination
- * of those changed.
+ * version, or capabilities, the machine's own memory or core count, or the
+ * CLI set compared on `(cli_id, version, available, sessionReady)`. Never
+ * more than one entry, whatever combination of those changed.
  */
 function report(req: DaemonRequest): DaemonResult {
   const { store, body } = req;
@@ -434,11 +469,29 @@ function report(req: DaemonRequest): DaemonResult {
   const capabilities = stringArrayField(body, "capabilities");
   const clis = parseClis(clisField);
   const capabilitiesJson = JSON.stringify(capabilities);
+  // Absent, not zero, on a report that says nothing about either — a daemon
+  // built before this pair of fields existed sends neither, and writing 0
+  // here would tell `computeSnapshot` a real machine had no memory and no
+  // cores rather than that nobody has said yet.
+  const totalMemoryBytes = numberField(body, "totalMemoryBytes") ?? null;
+  const cores = numberField(body, "cores") ?? null;
+  // NULL on both when the field is missing or malformed, the same "never
+  // asked" the column itself is nullable for — see migration 24.
+  const { ready: kernelsReadyField, reason: kernelsReasonField } = kernelsField(body);
+  const kernelsReady = kernelsReadyField === undefined ? null : kernelsReadyField ? 1 : 0;
+  // Never present when `kernelsReady` is anything but 0 — `probeKernelFloor`
+  // never sets a reason beside `ready: true` — but read leniently rather
+  // than asserted, the same way every other reported reason in this file is.
+  const kernelsReason = kernelsReasonField ?? null;
+  const processVisibility = optionalStringField(body, "processVisibility") ?? null;
 
   store.tx(() => {
-    const current = store.get(`SELECT platform, daemon_version, capabilities FROM runtimes WHERE id = ?`, [
-      machine.runtimeId,
-    ])!;
+    const current = store.get(
+      `SELECT platform, daemon_version, capabilities, total_memory_bytes, cores,
+              kernels_ready, kernels_reason, process_visibility
+         FROM runtimes WHERE id = ?`,
+      [machine.runtimeId],
+    )!;
     const existing = store
       .all(
         `SELECT cli_id, version, available, session_ready, options,
@@ -463,14 +516,37 @@ function report(req: DaemonRequest): DaemonResult {
     const metaChanged =
       current.platform !== platform ||
       current.daemon_version !== daemonVersion ||
-      current.capabilities !== capabilitiesJson;
+      current.capabilities !== capabilitiesJson ||
+      // Memory and Processor are on the Runtimes screen too, same as
+      // platform and daemon version — a machine whose RAM or core count
+      // changed is a change an owner would see there.
+      current.total_memory_bytes !== totalMemoryBytes ||
+      current.cores !== cores ||
+      // Whether this machine can host a kernel is on the same screen, and the
+      // sentence naming what it is missing changes exactly when this does.
+      current.kernels_ready !== kernelsReady ||
+      current.kernels_reason !== kernelsReason ||
+      current.process_visibility !== processVisibility;
     // Read once, before the delete below takes the rows this reads from out.
     const optionsFor = optionsKeeper(existing);
     const changed = metaChanged || cliSetChanged(existing, clis, optionsFor);
 
     store.run(
-      `UPDATE runtimes SET platform = ?, daemon_version = ?, capabilities = ?, last_seen_ts = ? WHERE id = ?`,
-      [platform, daemonVersion, capabilitiesJson, req.now, machine.runtimeId],
+      `UPDATE runtimes SET platform = ?, daemon_version = ?, capabilities = ?, last_seen_ts = ?,
+              total_memory_bytes = ?, cores = ?, kernels_ready = ?, kernels_reason = ?,
+              process_visibility = ? WHERE id = ?`,
+      [
+        platform,
+        daemonVersion,
+        capabilitiesJson,
+        req.now,
+        totalMemoryBytes,
+        cores,
+        kernelsReady,
+        kernelsReason,
+        processVisibility,
+        machine.runtimeId,
+      ],
     );
     store.run(`DELETE FROM runtime_clis WHERE runtime_id = ?`, [machine.runtimeId]);
     for (const cli of clis) {

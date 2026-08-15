@@ -2558,6 +2558,62 @@ it("interrupts a kernel this machine's host is holding when the lab asks it to",
   expect(kernels.calls).toEqual([{ method: "kernel.interrupt", params: { kernel_id: "k_1" } }]);
 });
 
+it("carries what the researcher said down to the kernel it is stopping", async () => {
+  // The whole point of this command, and the one thing `signalKernel` — which
+  // passes `kernel_id` and nothing else — could not carry. A stop that
+  // arrived without the sentence and the member who said it would end the
+  // kernel and leave the agent's tool call failing for no stated reason.
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = recordingKernelHost();
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({
+    type: "kernel-stop",
+    runId: "k_1",
+    kernelId: "k_1",
+    feedback: "redo this using less memory",
+    by: "u_ana",
+  });
+
+  await until(() => kernels.calls.length > 0, "the stop reaching this machine's kernel host");
+  expect(kernels.calls).toEqual([
+    {
+      method: "kernel.stop",
+      params: { kernel_id: "k_1", feedback: "redo this using less memory", by: "u_ana" },
+    },
+  ]);
+});
+
+it("stops a kernel with no sentence attached rather than sending an empty one", async () => {
+  // A researcher who said nothing said nothing. An absent `feedback` must
+  // reach the host as an absent key, not as `undefined` or `""` — the host
+  // reads the reason's presence as the thing that tells a kernel somebody
+  // ended from a kernel that died.
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = recordingKernelHost();
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({ type: "kernel-stop", runId: "k_1", kernelId: "k_1", by: "u_ana" });
+
+  await until(() => kernels.calls.length > 0, "the stop reaching this machine's kernel host");
+  // `toStrictEqual`, not `toEqual`: `toEqual` ignores a key whose value is
+  // `undefined`, and this host is called in-process with no JSON round trip
+  // to drop one on the way — so an unconditional `feedback: command.feedback`
+  // would satisfy `toEqual` while sending the very key this test exists to
+  // say is absent. Only the `""` half was ever really being asserted.
+  expect(kernels.calls).toStrictEqual([
+    { method: "kernel.stop", params: { kernel_id: "k_1", by: "u_ana" } },
+  ]);
+  // And said directly, since that difference is the whole subject.
+  expect("feedback" in (kernels.calls[0]!.params as object)).toBe(false);
+});
+
 it("restarts a kernel this machine's host is holding when the lab asks it to", async () => {
   const lab = await stubLab([]);
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
