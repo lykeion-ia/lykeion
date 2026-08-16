@@ -187,7 +187,7 @@ it("still answers honestly for everything nothing writes to yet", async () => {
   const api = createWorkspaceApi(depsFor(store, "u_ana", "owner"));
 
   expect(await api.listStudies()).toEqual([]);
-  expect(await api.listRuntimes()).toEqual([]);
+  expect(await api.listMachines()).toEqual([]);
   expect(await api.usage()).toEqual({ series: [], agents: [], users: [] });
 
   const err = await api

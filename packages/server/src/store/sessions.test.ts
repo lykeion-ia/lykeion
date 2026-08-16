@@ -18,10 +18,10 @@ import {
   runSnapshot,
   addGrant,
   listGrants,
-  runtimeForTurn,
+  machineForTurn,
   sessionForTurn,
   dropGrantsForStudy,
-  dropGrantsForRuntime,
+  dropGrantsForMachine,
 } from "./sessions";
 import type { ExecutionLogEntry, NotebookCell, RunEventFrame } from "@lykeion/api";
 import type { Store } from "./store";
@@ -47,7 +47,7 @@ function freshTurn(
   store: Store,
   overrides: Partial<{
     studyId: string;
-    runtimeId: string;
+    machineId: string;
     agent: string;
     openedBy: string;
     taskId: string;
@@ -56,7 +56,7 @@ function freshTurn(
 ): { sessionId: string; turnId: string } {
   const sessionId = openSession(store, {
     studyId: overrides.studyId ?? "s_1",
-    runtimeId: overrides.runtimeId ?? "rt_1",
+    machineId: overrides.machineId ?? "rt_1",
     agent: overrides.agent ?? "claude",
     openedBy: overrides.openedBy ?? "u_1",
     openedTs: 1,
@@ -129,7 +129,7 @@ it("persists progressive state, plan, transcript, live, and review snapshots", (
     reviewing: true,
     lastEventSeq: 6,
     sessionId,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     openedBy: "u_1",
   });
 });
@@ -701,18 +701,18 @@ it("preserves outside-workspace provenance in active and settled snapshots", () 
 
 it("reads the Task's active snapshot with its session ownership", () => {
   const store = freshStore();
-  const first = freshTurn(store, { agent: "claude", runtimeId: "rt_1", openedBy: "u_1" });
+  const first = freshTurn(store, { agent: "claude", machineId: "rt_1", openedBy: "u_1" });
   const sibling = freshTurn(store, {
     taskId: "t_2",
     agent: "codex",
-    runtimeId: "rt_2",
+    machineId: "rt_2",
     openedBy: "u_2",
   });
   finishTurn(store, sibling.turnId, { endedTs: 8, status: "ok" });
   const settled = freshTurn(store, {
     taskId: "t_3",
     agent: "claude",
-    runtimeId: "rt_3",
+    machineId: "rt_3",
     openedBy: "u_3",
   });
   finishTurn(store, settled.turnId, { endedTs: 9, status: "ok" });
@@ -721,14 +721,14 @@ it("reads the Task's active snapshot with its session ownership", () => {
     activeRunSnapshotsForTask?: (store: Store, taskId: string) => Array<Record<string, unknown>>;
   }).activeRunSnapshotsForTask;
   const snapshots = read?.(store, "t_1");
-  expect(snapshots?.map(({ runId, agent, sessionId, runtimeId, openedBy }) => ({
-    runId, agent, sessionId, runtimeId, openedBy,
+  expect(snapshots?.map(({ runId, agent, sessionId, machineId, openedBy }) => ({
+    runId, agent, sessionId, machineId, openedBy,
   }))).toEqual([
     {
       runId: first.turnId,
       agent: "claude",
       sessionId: first.sessionId,
-      runtimeId: "rt_1",
+      machineId: "rt_1",
       openedBy: "u_1",
     },
   ]);
@@ -760,7 +760,7 @@ it("returns only settled Task turns with their durable sequence in transcript or
 it("settles a turn's ended_ts and status", () => {
   const store = freshStore();
   const sessionId = openSession(store, {
-    studyId: "s_1", runtimeId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
+    studyId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
   });
   const turnId = recordTurn(store, { sessionId, taskId: "t_1", prompt: "go", startedTs: 1 });
 
@@ -772,21 +772,21 @@ it("settles a turn's ended_ts and status", () => {
   });
 });
 
-it("resolves the runtime a turn's session belongs to, and nothing for an unknown turn", () => {
+it("resolves the machine a turn's session belongs to, and nothing for an unknown turn", () => {
   const store = freshStore();
   const sessionId = openSession(store, {
-    studyId: "s_1", runtimeId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
+    studyId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
   });
   const turnId = recordTurn(store, { sessionId, taskId: "t_1", prompt: "go", startedTs: 1 });
 
-  expect(runtimeForTurn(store, turnId)).toBe("rt_1");
-  expect(runtimeForTurn(store, "run_nonexistent")).toBeUndefined();
+  expect(machineForTurn(store, turnId)).toBe("rt_1");
+  expect(machineForTurn(store, "run_nonexistent")).toBeUndefined();
 });
 
 it("appends a step to a turn's transcript, storing its input as JSON", () => {
   const store = freshStore();
   const sessionId = openSession(store, {
-    studyId: "s_1", runtimeId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
+    studyId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
   });
   const turnId = recordTurn(store, { sessionId, taskId: "t_1", prompt: "go", startedTs: 1 });
 
@@ -801,35 +801,35 @@ it("appends a step to a turn's transcript, storing its input as JSON", () => {
   expect(JSON.parse(row.input as string)).toEqual({ path: "/a" });
 });
 
-it("grants a Study standing access to a folder on one runtime, and lists it back", () => {
+it("grants a Study standing access to a folder on one machine, and lists it back", () => {
   const store = freshStore();
 
   addGrant(store, {
-    studyId: "s_1", runtimeId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
+    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
   });
 
   expect(listGrants(store, "s_1", "rt_1")).toEqual([{ path: "/work/rna-seq", mode: "write" }]);
-  // Scoped to the (study, runtime) pair the grant named — neither a
-  // different Study nor a different runtime sees it.
+  // Scoped to the (study, machine) pair the grant named — neither a
+  // different Study nor a different machine sees it.
   expect(listGrants(store, "s_1", "rt_2")).toEqual([]);
   expect(listGrants(store, "s_2", "rt_1")).toEqual([]);
 });
 
-it("does not duplicate a grant already standing for the same Study, runtime, path, and mode", () => {
+it("does not duplicate a grant already standing for the same Study, machine, path, and mode", () => {
   const store = freshStore();
 
   addGrant(store, {
-    studyId: "s_1", runtimeId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
+    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
   });
   addGrant(store, {
-    studyId: "s_1", runtimeId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 2,
+    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 2,
   });
 
   expect(listGrants(store, "s_1", "rt_1")).toEqual([{ path: "/work/rna-seq", mode: "write" }]);
   // A different mode on the same path is a different grant, not a repeat —
   // read and write are not interchangeable, so both stand.
   addGrant(store, {
-    studyId: "s_1", runtimeId: "rt_1", path: "/work/rna-seq", mode: "read", grantedBy: "u_1", grantedTs: 3,
+    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "read", grantedBy: "u_1", grantedTs: 3,
   });
   expect(listGrants(store, "s_1", "rt_1")).toEqual([
     { path: "/work/rna-seq", mode: "write" },
@@ -837,24 +837,24 @@ it("does not duplicate a grant already standing for the same Study, runtime, pat
   ]);
 });
 
-it("resolves a turn's Study, runtime, and opener through its session, and nothing for an unknown turn", () => {
+it("resolves a turn's Study, machine, and opener through its session, and nothing for an unknown turn", () => {
   const store = freshStore();
   const sessionId = openSession(store, {
-    studyId: "s_1", runtimeId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
+    studyId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
   });
   const turnId = recordTurn(store, { sessionId, taskId: "t_1", prompt: "go", startedTs: 1 });
 
-  expect(sessionForTurn(store, turnId)).toEqual({ studyId: "s_1", runtimeId: "rt_1", openedBy: "u_1" });
+  expect(sessionForTurn(store, turnId)).toEqual({ studyId: "s_1", machineId: "rt_1", openedBy: "u_1" });
   expect(sessionForTurn(store, "run_nonexistent")).toBeUndefined();
 });
 
 it("drops every grant a Study holds, leaving another Study's alone", () => {
   const store = freshStore();
   addGrant(store, {
-    studyId: "s_1", runtimeId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
+    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
   });
   addGrant(store, {
-    studyId: "s_2", runtimeId: "rt_1", path: "/work/other", mode: "read", grantedBy: "u_1", grantedTs: 1,
+    studyId: "s_2", machineId: "rt_1", path: "/work/other", mode: "read", grantedBy: "u_1", grantedTs: 1,
   });
 
   dropGrantsForStudy(store, "s_1");
@@ -863,16 +863,16 @@ it("drops every grant a Study holds, leaving another Study's alone", () => {
   expect(listGrants(store, "s_2", "rt_1")).toEqual([{ path: "/work/other", mode: "read" }]);
 });
 
-it("drops every grant standing on a runtime, leaving another runtime's alone", () => {
+it("drops every grant standing on a machine, leaving another machine's alone", () => {
   const store = freshStore();
   addGrant(store, {
-    studyId: "s_1", runtimeId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
+    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
   });
   addGrant(store, {
-    studyId: "s_1", runtimeId: "rt_2", path: "/work/other", mode: "read", grantedBy: "u_1", grantedTs: 1,
+    studyId: "s_1", machineId: "rt_2", path: "/work/other", mode: "read", grantedBy: "u_1", grantedTs: 1,
   });
 
-  dropGrantsForRuntime(store, "rt_1");
+  dropGrantsForMachine(store, "rt_1");
 
   expect(listGrants(store, "s_1", "rt_1")).toEqual([]);
   expect(listGrants(store, "s_1", "rt_2")).toEqual([{ path: "/work/other", mode: "read" }]);
@@ -1099,7 +1099,7 @@ it("names the session a Task is already working in, so a later turn joins it", (
   // What makes a second send queue rather than run beside the first: it lands
   // on the session that is already open, whatever agent the picker last named.
   const store = freshStore();
-  const first = freshTurn(store, { agent: "claude", runtimeId: "rt_1", prompt: "first" });
+  const first = freshTurn(store, { agent: "claude", machineId: "rt_1", prompt: "first" });
   expect(activeTurnForTask(store, "t_1")).toEqual({
     runId: first.turnId,
     sessionId: first.sessionId,

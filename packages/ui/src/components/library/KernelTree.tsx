@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { MachineCompute, RunningKernel, Runtime, Study, Task } from "@lykeion/api";
+import type { MachineCompute, RunningKernel, Machine, Study, Task } from "@lykeion/api";
 import { cn } from "../../lib/utils";
 import { formatBytes, formatCores, formatSince, UNREPORTED } from "../../lib/format";
 import { ChevronDownIcon } from "../icons";
@@ -13,7 +13,7 @@ import { Sparkline } from "./Sparkline";
  * would put a researcher's own kernel and a colleague's beside each other with
  * nothing between them.
  *
- * The top level is not here. It is the roster row in `RuntimesList`, which a
+ * The top level is not here. It is the roster row in `MachinesList`, which a
  * machine's kernels now open out of — one list on this screen instead of a
  * tree of running machines above a table of all of them, which named every
  * busy machine twice and made a reader match the two by eye. What this module
@@ -46,7 +46,7 @@ interface StateMeta {
  *
  * `unknown` is not a state a machine reports — it is what every one of its
  * kernels becomes when the machine itself stops answering. A kernel whose
- * runtime is offline was last seen running, and going on saying "running"
+ * machine is offline was last seen running, and going on saying "running"
  * would be this lab repeating a fact it can no longer check.
  */
 const STATE_META: Record<RunningKernel["state"] | "unknown", StateMeta> = {
@@ -61,9 +61,9 @@ const STATE_META: Record<RunningKernel["state"] | "unknown", StateMeta> = {
 };
 
 /** One kernel row's live state, which is a function of its machine's health
- *  on read rather than of anything stored — the same rule `Runtime.health`
+ *  on read rather than of anything stored — the same rule `Machine.health`
  *  itself follows. */
-function stateOf(kernel: RunningKernel, health: Runtime["health"]): keyof typeof STATE_META {
+function stateOf(kernel: RunningKernel, health: Machine["health"]): keyof typeof STATE_META {
   return health === "offline" ? "unknown" : kernel.state;
 }
 
@@ -77,7 +77,7 @@ function KernelRow({
   onRestart,
 }: {
   kernel: RunningKernel;
-  health: Runtime["health"];
+  health: Machine["health"];
   now: number;
   /** What the kernel's own machine has, so its sparklines scale against the
    *  machine's capacity rather than against this one kernel's own peak.
@@ -279,7 +279,7 @@ function TaskGroup({
 }: {
   label: string;
   kernels: RunningKernel[];
-  health: Runtime["health"];
+  health: Machine["health"];
   now: number;
   compute?: MachineCompute;
   onInterrupt: (kernelId: string) => void;
@@ -339,7 +339,7 @@ function TaskGroup({
  * beside the name rather than down here.
  */
 export function MachineKernels({
-  runtime,
+  machine,
   kernels,
   taskLabel,
   now,
@@ -348,7 +348,7 @@ export function MachineKernels({
   onStop,
   onRestart,
 }: {
-  runtime: Runtime;
+  machine: Machine;
   kernels: RunningKernel[];
   taskLabel: (taskId: string) => string;
   now: number;
@@ -376,7 +376,7 @@ export function MachineKernels({
           key={taskId}
           label={taskLabel(taskId)}
           kernels={held}
-          health={runtime.health}
+          health={machine.health}
           now={now}
           compute={compute}
           onInterrupt={onInterrupt}
@@ -402,7 +402,7 @@ export function MachineKernels({
  * Empty for a machine holding nothing, so the roster says nothing at all
  * rather than "0 kernels" against every machine that is simply idle.
  */
-export function kernelSummary(kernels: RunningKernel[], health: Runtime["health"]): string {
+export function kernelSummary(kernels: RunningKernel[], health: Machine["health"]): string {
   if (kernels.length === 0) return "";
   const count = kernels.length === 1 ? "1 kernel" : `${kernels.length} kernels`;
   const running = kernels.filter((k) => stateOf(k, health) === "running").length;

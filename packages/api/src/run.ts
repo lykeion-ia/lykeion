@@ -5,7 +5,7 @@
  * is fully interactive.
  */
 
-import type { NotebookCell } from "./runtime";
+import type { NotebookCell } from "./machine";
 import type { Priority, Stage, Task, TaskStatus } from "./types";
 
 /** A plan step's live status. Drives the run strip's

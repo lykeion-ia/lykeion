@@ -282,8 +282,8 @@ export interface Task {
   agent?: string;
   /** Pinned to the top of the Study's Task list. */
   pinned?: boolean;
-  /** Which machine ran it. Absent until a runtime records one. */
-  runtimeId?: string;
+  /** Which machine ran it. Absent until a machine records one. */
+  machineId?: string;
   createdTs: number;
   updatedTs: number;
 }

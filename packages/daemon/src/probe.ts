@@ -26,11 +26,11 @@ export { CATALOGUE } from "./agent-registry";
 
 /**
  * What a probe of this machine can say about a catalogue entry, before it is
- * attached to a particular runtime record. The daemon fills in `runtimeId`
+ * attached to a particular machine record. The daemon fills in `machineId`
  * once it knows which machine it is pairing as; probing itself has no
  * opinion on that.
  */
-export type ProbedCli = Omit<AgentCli, "runtimeId">;
+export type ProbedCli = Omit<AgentCli, "machineId">;
 
 /**
  * How long a command is given to answer `--version`. Ten seconds is far more
@@ -931,7 +931,7 @@ export function cliFingerprint(clis: ProbedCli[]): string {
   );
 }
 
-/** "{os}-{arch}", the form the contract's `Runtime.platform` uses. */
+/** "{os}-{arch}", the form the contract's `Machine.platform` uses. */
 export function platformTag(): string {
   const key = `${process.platform}-${process.arch}`;
   switch (key) {

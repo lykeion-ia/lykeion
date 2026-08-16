@@ -4,24 +4,24 @@ import userEvent from "@testing-library/user-event";
 import {
   createInMemoryApi,
   type LykeionApi,
-  type Runtime,
+  type Machine,
   type RunningKernel,
   type User,
 } from "@lykeion/api";
 import { ApiProvider } from "../api/ApiContext";
 import App from "../App";
-import { RuntimesScreen } from "./RuntimesScreen";
+import { MachinesScreen } from "./MachinesScreen";
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
 });
 
-it("Runtimes renders the always-present onboarding card", async () => {
+it("Machines renders the always-present onboarding card", async () => {
   const user = userEvent.setup();
   render(<App api={createInMemoryApi()} />);
   await user.click(await screen.findByRole("link", { name: /Machines/i }));
-  // listRuntimes() returns nothing yet, so the tables are hidden and the
+  // listMachines() returns nothing yet, so the tables are hidden and the
   // steps are the whole page. `findByRole` throws on a second match, which
   // is the assertion: one heading, and no control beside it offering
   // something it cannot do.
@@ -79,7 +79,7 @@ it("keeps the onboarding card up while identity is unknown, and after it fails t
   ).toBeInTheDocument();
 });
 
-function machine(overrides: Partial<Runtime> = {}): Runtime {
+function machine(overrides: Partial<Machine> = {}): Machine {
   return {
     id: "rt_1",
     name: "ana-macbook",
@@ -96,15 +96,15 @@ function machine(overrides: Partial<Runtime> = {}): Runtime {
 it("removes a machine from the screen once its removal is confirmed", async () => {
   const user = userEvent.setup();
   // A fake lab that actually holds state, rather than the browser core (which
-  // refuses every runtime call outright): the row leaving the screen has to
-  // be the result of `removeRuntime` reaching this list and `listRuntimes`
+  // refuses every machine call outright): the row leaving the screen has to
+  // be the result of `removeMachine` reaching this list and `listMachines`
   // coming back without it, not a client-side trick that only looks that way.
-  let runtimes: Runtime[] = [machine()];
+  let machines: Machine[] = [machine()];
   const api: LykeionApi = {
     ...createInMemoryApi(),
-    listRuntimes: async () => runtimes,
-    removeRuntime: async (runtimeId: string) => {
-      runtimes = runtimes.filter((r) => r.id !== runtimeId);
+    listMachines: async () => machines,
+    removeMachine: async (machineId: string) => {
+      machines = machines.filter((r) => r.id !== machineId);
     },
   };
   render(<App api={api} />);
@@ -120,12 +120,12 @@ it("removes a machine from the screen once its removal is confirmed", async () =
 
 it("re-reads the roster every fifteen seconds while the screen stays mounted", async () => {
   vi.useFakeTimers();
-  const listRuntimes = vi.fn().mockResolvedValue([]);
-  const api: LykeionApi = { ...createInMemoryApi(), listRuntimes };
+  const listMachines = vi.fn().mockResolvedValue([]);
+  const api: LykeionApi = { ...createInMemoryApi(), listMachines };
 
   render(
     <ApiProvider api={api}>
-      <RuntimesScreen />
+      <MachinesScreen />
     </ApiProvider>,
   );
 
@@ -133,7 +133,7 @@ it("re-reads the roster every fifteen seconds while the screen stays mounted", a
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
-  expect(listRuntimes).toHaveBeenCalledTimes(1);
+  expect(listMachines).toHaveBeenCalledTimes(1);
 
   // Health is derived from the last heartbeat on every read; nothing pushes
   // a fresh one, so only this fifteen-second re-read can ever move a row
@@ -141,24 +141,24 @@ it("re-reads the roster every fifteen seconds while the screen stays mounted", a
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000);
   });
-  expect(listRuntimes).toHaveBeenCalledTimes(2);
+  expect(listMachines).toHaveBeenCalledTimes(2);
 
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000);
   });
-  expect(listRuntimes).toHaveBeenCalledTimes(3);
+  expect(listMachines).toHaveBeenCalledTimes(3);
 });
 
 it("clears its interval on unmount, rather than leaking one that fires forever", async () => {
   vi.useFakeTimers();
   const api: LykeionApi = {
     ...createInMemoryApi(),
-    listRuntimes: vi.fn().mockResolvedValue([]),
+    listMachines: vi.fn().mockResolvedValue([]),
   };
 
   const { unmount } = render(
     <ApiProvider api={api}>
-      <RuntimesScreen />
+      <MachinesScreen />
     </ApiProvider>,
   );
   await act(async () => {
@@ -179,7 +179,7 @@ it("clears its interval on unmount, rather than leaking one that fires forever",
 function runningKernel(overrides: Partial<RunningKernel> = {}): RunningKernel {
   return {
     id: "k_1",
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     studyId: "st_1",
     sessionId: "ses_1",
     taskId: "tk_1",
@@ -201,7 +201,7 @@ it("confirming Stop with nothing typed, or only whitespace, sends no feedback ei
   // composer seeds its input at `""` and sends it unconditionally on
   // confirm. This pins the fix at the seam that turns an untyped, or
   // typed-but-blank, reason back into an absent one before it ever reaches
-  // the wire: `RuntimesScreen`'s `onStop`. Two kernels, one Python and one
+  // the wire: `MachinesScreen`'s `onStop`. Two kernels, one Python and one
   // R, so the two Stop composers this test opens in turn have distinct
   // accessible names rather than colliding on the same one.
   const user = userEvent.setup();
@@ -222,7 +222,7 @@ it("confirming Stop with nothing typed, or only whitespace, sends no feedback ei
   });
   const api: LykeionApi = {
     ...createInMemoryApi(),
-    listRuntimes: async () => [machine()],
+    listMachines: async () => [machine()],
     listRunningKernels: async () => kernels,
     kernelStop,
   };
@@ -279,7 +279,7 @@ it("carries a sentence a researcher typed through to the kernel being stopped", 
   });
   const api: LykeionApi = {
     ...createInMemoryApi(),
-    listRuntimes: async () => [machine()],
+    listMachines: async () => [machine()],
     listRunningKernels: async () => kernels,
     kernelStop,
   };

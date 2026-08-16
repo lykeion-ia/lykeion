@@ -18,7 +18,7 @@ const CLIS: AgentCli[] = [
     command: "claude",
     version: "",
     available: true,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: true,
   },
   {
@@ -27,7 +27,7 @@ const CLIS: AgentCli[] = [
     command: "copilot --acp",
     version: "",
     available: true,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: true,
   },
 ];

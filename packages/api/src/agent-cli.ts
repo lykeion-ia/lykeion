@@ -32,7 +32,7 @@ export interface AgentCli {
   /** Whether the CLI is installed and launchable on this machine. */
   available: boolean;
   /** The machine this command was found on. */
-  runtimeId: string;
+  machineId: string;
   /** Whether a run can actually be started against this CLI: its ACP adapter
    *  resolved on PATH and answered `initialize`. A CLI can be `available`
    *  and still not be this — the adapter that speaks ACP for it is a
@@ -70,7 +70,7 @@ export interface AgentCli {
    *
    * This is the researcher's own identity with a third party, and it goes no
    * further than the member who paired the machine — `listAgentClis` and
-   * `listRuntimes` both gate `clis` on `owner_id`, and that gate is what
+   * `listMachines` both gate `clis` on `owner_id`, and that gate is what
    * stands between a colleague and the address somebody signed in with.
    */
   account?: string;

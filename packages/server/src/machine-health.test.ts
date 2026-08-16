@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { healthFor } from "./runtime-health";
+import { healthFor } from "./machine-health";
 
 it("is online within three heartbeats", () => {
   expect(healthFor(1_000, 1_000)).toBe("online");

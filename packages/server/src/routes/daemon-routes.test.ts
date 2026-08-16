@@ -56,20 +56,20 @@ function changeLogEntries(store: Store): Array<{ kind: string; actorId: string |
   }));
 }
 
-function runtimeRow(store: Store, runtimeId: string) {
-  return store.get(`SELECT * FROM runtimes WHERE id = ?`, [runtimeId])!;
+function machineRow(store: Store, machineId: string) {
+  return store.get(`SELECT * FROM runtimes WHERE id = ?`, [machineId])!;
 }
 
-function cliRows(store: Store, runtimeId: string) {
+function cliRows(store: Store, machineId: string) {
   return store.all(
     `SELECT cli_id, name, command, version, available FROM runtime_clis WHERE runtime_id = ? ORDER BY seq ASC`,
-    [runtimeId],
+    [machineId],
   );
 }
 
 /** A member and a paired machine, inserted directly so a test can hand
  *  `resolveMachine` a token whose plaintext it controls. */
-function insertPairedMachine(store: Store, token: string): { runtimeId: string; ownerId: string } {
+function insertPairedMachine(store: Store, token: string): { machineId: string; ownerId: string } {
   const ownerId = `u_${nextSeq(store)}`;
   store.run(
     `INSERT INTO users (id, email, display_name, password, created_ts, seq) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -80,17 +80,17 @@ function insertPairedMachine(store: Store, token: string): { runtimeId: string; 
     NOW,
     nextSeq(store),
   ]);
-  const runtimeId = `rt_${nextSeq(store)}`;
+  const machineId = `rt_${nextSeq(store)}`;
   store.run(
     `INSERT INTO runtimes (id, owner_id, name, platform, daemon_version, capabilities, created_ts, last_seen_ts, seq)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [runtimeId, ownerId, "a-machine", "macos-aarch64", "0.1.0", "[]", NOW, NOW, nextSeq(store)],
+    [machineId, ownerId, "a-machine", "macos-aarch64", "0.1.0", "[]", NOW, NOW, nextSeq(store)],
   );
   store.run(
     `INSERT INTO machine_tokens (token_hash, runtime_id, owner_id, created_ts, seq) VALUES (?, ?, ?, ?, ?)`,
-    [hashSecret(token), runtimeId, ownerId, NOW, nextSeq(store)],
+    [hashSecret(token), machineId, ownerId, NOW, nextSeq(store)],
   );
-  return { runtimeId, ownerId };
+  return { machineId, ownerId };
 }
 
 it("returns undefined for a path it does not own, so routing can fall through", () => {
@@ -116,18 +116,18 @@ it("resolveMachine is undefined for a token nothing issued", () => {
   expect(resolveMachine(store, "Bearer not-a-real-token")).toBeUndefined();
 });
 
-it("resolveMachine names the runtime and owner behind a token that was actually issued", () => {
+it("resolveMachine names the machine and owner behind a token that was actually issued", () => {
   const store = freshStore();
-  const { runtimeId, ownerId } = insertPairedMachine(store, "a-real-token");
-  expect(resolveMachine(store, "Bearer a-real-token")).toEqual({ runtimeId, ownerId });
+  const { machineId, ownerId } = insertPairedMachine(store, "a-real-token");
+  expect(resolveMachine(store, "Bearer a-real-token")).toEqual({ machineId, ownerId });
 });
 
-it("resolveMachine refuses a token whose runtime has been removed, even if the token itself was not revoked", () => {
-  // Belt and suspenders: `removeRuntime` revokes the token too, but this is
+it("resolveMachine refuses a token whose machine has been removed, even if the token itself was not revoked", () => {
+  // Belt and suspenders: `removeMachine` revokes the token too, but this is
   // what still refuses the caller if that second write were ever missed.
   const store = freshStore();
-  const { runtimeId } = insertPairedMachine(store, "a-real-token");
-  store.run(`UPDATE runtimes SET removed_ts = ? WHERE id = ?`, [NOW, runtimeId]);
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  store.run(`UPDATE runtimes SET removed_ts = ? WHERE id = ?`, [NOW, machineId]);
   expect(resolveMachine(store, "Bearer a-real-token")).toBeUndefined();
 });
 
@@ -156,8 +156,8 @@ it("heartbeat accepts a caller with a valid machine token", () => {
 
 it("heartbeat refuses a revoked token", () => {
   const store = freshStore();
-  const { runtimeId } = insertPairedMachine(store, "a-real-token");
-  store.run(`UPDATE machine_tokens SET revoked_ts = ? WHERE runtime_id = ?`, [NOW, runtimeId]);
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  store.run(`UPDATE machine_tokens SET revoked_ts = ? WHERE runtime_id = ?`, [NOW, machineId]);
   const result = post(store, "/daemon/heartbeat", {}, "Bearer a-real-token");
   expect(result).toEqual({ status: 401, json: { error: expect.any(String) } });
 });
@@ -171,14 +171,14 @@ it("exchange refuses a body missing a code or a verifier", () => {
 
 it("heartbeat moves last_seen_ts, and touches nothing else about the machine", () => {
   const store = freshStore();
-  const { runtimeId } = insertPairedMachine(store, "a-real-token");
-  const before = runtimeRow(store, runtimeId);
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  const before = machineRow(store, machineId);
   const later = NOW + 30;
 
   const result = post(store, "/daemon/heartbeat", {}, "Bearer a-real-token", later);
 
   expect(result!.status).toBe(200);
-  const after = runtimeRow(store, runtimeId);
+  const after = machineRow(store, machineId);
   expect(after.last_seen_ts).toBe(later);
   expect(after.platform).toBe(before.platform);
   expect(after.daemon_version).toBe(before.daemon_version);
@@ -217,8 +217,8 @@ it("report refuses a caller with no token", () => {
 
 it("report refuses a body missing platform, daemonVersion, or a clis array", () => {
   const store = freshStore();
-  const { runtimeId } = insertPairedMachine(store, "a-real-token");
-  const before = runtimeRow(store, runtimeId);
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  const before = machineRow(store, machineId);
   const full = { platform: "macos-aarch64", daemonVersion: "0.1.0", capabilities: [], clis: [] };
 
   // A field misnamed the way a build regression would misname it —
@@ -234,13 +234,13 @@ it("report refuses a body missing platform, daemonVersion, or a clis array", () 
   expect(post(store, "/daemon/report", {}, "Bearer a-real-token")!.status).toBe(400);
 
   // None of those refused calls touched the machine at all.
-  expect(runtimeRow(store, runtimeId)).toEqual(before);
+  expect(machineRow(store, machineId)).toEqual(before);
   expect(changeLogCount(store)).toBe(0);
 });
 
 it("a report with a duplicate cli id in one body keeps the first occurrence, rather than failing", () => {
   const store = freshStore();
-  const { runtimeId } = insertPairedMachine(store, "a-real-token");
+  const { machineId } = insertPairedMachine(store, "a-real-token");
   const body = {
     platform: "macos-aarch64",
     daemonVersion: "0.1.0",
@@ -253,14 +253,14 @@ it("a report with a duplicate cli id in one body keeps the first occurrence, rat
 
   expect(post(store, "/daemon/report", body, "Bearer a-real-token")!.status).toBe(200);
 
-  const rows = cliRows(store, runtimeId);
+  const rows = cliRows(store, machineId);
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({ cli_id: "claude", version: "1.0.0" });
 });
 
 it("report replaces the machine's CLI rows wholesale", () => {
   const store = freshStore();
-  const { runtimeId } = insertPairedMachine(store, "a-real-token");
+  const { machineId } = insertPairedMachine(store, "a-real-token");
   const firstBody = {
     platform: "macos-aarch64",
     daemonVersion: "0.1.0",
@@ -271,21 +271,21 @@ it("report replaces the machine's CLI rows wholesale", () => {
     ],
   };
   expect(post(store, "/daemon/report", firstBody, "Bearer a-real-token")!.status).toBe(200);
-  expect(cliRows(store, runtimeId).map((r) => r.cli_id)).toEqual(["claude", "codex"]);
+  expect(cliRows(store, machineId).map((r) => r.cli_id)).toEqual(["claude", "codex"]);
 
   const secondBody = {
     ...firstBody,
     clis: [{ id: "gemini", name: "Gemini", command: "gemini", version: "2.0.0", available: true }],
   };
   expect(post(store, "/daemon/report", secondBody, "Bearer a-real-token")!.status).toBe(200);
-  const rows = cliRows(store, runtimeId);
+  const rows = cliRows(store, machineId);
   expect(rows).toHaveLength(1);
   expect(rows[0]!.cli_id).toBe("gemini");
 });
 
 it("report moves last_seen_ts, the same as a heartbeat does", () => {
   const store = freshStore();
-  const { runtimeId } = insertPairedMachine(store, "a-real-token");
+  const { machineId } = insertPairedMachine(store, "a-real-token");
   const later = NOW + 120;
 
   const result = post(
@@ -297,7 +297,7 @@ it("report moves last_seen_ts, the same as a heartbeat does", () => {
   );
 
   expect(result!.status).toBe(200);
-  expect(runtimeRow(store, runtimeId).last_seen_ts).toBe(later);
+  expect(machineRow(store, machineId).last_seen_ts).toBe(later);
 });
 
 it("a report that changes nothing records no change-log entry, and one that changes the CLI set records exactly one", () => {
@@ -596,16 +596,16 @@ it("a report records the one entry when a machine's own memory or core count cha
 
 it("stores NULL for the kernel floor when a report says nothing about it, never a 0 standing in for unasked", () => {
   const store = freshStore();
-  const { runtimeId } = insertPairedMachine(store, "a-real-token");
+  const { machineId } = insertPairedMachine(store, "a-real-token");
   const body = { platform: "macos-aarch64", daemonVersion: "0.1.0", capabilities: [], clis: [] };
 
   // No `kernels` field at all — the shape of a daemon built before this
   // report existed. NULL, not 0: a 0 here would tell a researcher this
   // machine failed a check that never ran.
   expect(post(store, "/daemon/report", body, "Bearer a-real-token")!.status).toBe(200);
-  expect(runtimeRow(store, runtimeId).kernels_ready).toBeNull();
-  expect(runtimeRow(store, runtimeId).kernels_reason).toBeNull();
-  expect(runtimeRow(store, runtimeId).process_visibility).toBeNull();
+  expect(machineRow(store, machineId).kernels_ready).toBeNull();
+  expect(machineRow(store, machineId).kernels_reason).toBeNull();
+  expect(machineRow(store, machineId).process_visibility).toBeNull();
 
   // Checked and failed: 0, with the reason a person reads.
   expect(
@@ -616,8 +616,8 @@ it("stores NULL for the kernel floor when a report says nothing about it, never 
       "Bearer a-real-token",
     )!.status,
   ).toBe(200);
-  expect(runtimeRow(store, runtimeId).kernels_ready).toBe(0);
-  expect(runtimeRow(store, runtimeId).kernels_reason).toBe(
+  expect(machineRow(store, machineId).kernels_ready).toBe(0);
+  expect(machineRow(store, machineId).kernels_reason).toBe(
     "uv is not installed, and Lykeion starts kernels with it",
   );
 
@@ -625,8 +625,8 @@ it("stores NULL for the kernel floor when a report says nothing about it, never 
   expect(
     post(store, "/daemon/report", { ...body, kernels: { ready: true } }, "Bearer a-real-token")!.status,
   ).toBe(200);
-  expect(runtimeRow(store, runtimeId).kernels_ready).toBe(1);
-  expect(runtimeRow(store, runtimeId).kernels_reason).toBeNull();
+  expect(machineRow(store, machineId).kernels_ready).toBe(1);
+  expect(machineRow(store, machineId).kernels_reason).toBeNull();
 
   // The other half of the same column's rule, and the half nothing asserted:
   // a sentence that was reported is stored as itself. Without this, a report
@@ -646,7 +646,7 @@ it("stores NULL for the kernel floor when a report says nothing about it, never 
       "Bearer a-real-token",
     )!.status,
   ).toBe(200);
-  expect(runtimeRow(store, runtimeId).process_visibility).toBe(
+  expect(machineRow(store, machineId).process_visibility).toBe(
     "macOS reports memory and processor use for a process Lykeion started itself.",
   );
 });

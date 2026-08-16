@@ -9,8 +9,8 @@ import { cliBrand } from "../../lib/cli-brand";
  * per id, but its selected representative still needs a machine-stable key.
  * Exported so callers build and read that identity consistently.
  */
-export function cliIdentity(c: Pick<AgentCli, "id" | "runtimeId">): string {
-  return `${c.runtimeId}:${c.id}`;
+export function cliIdentity(c: Pick<AgentCli, "id" | "machineId">): string {
+  return `${c.machineId}:${c.id}`;
 }
 
 /**
@@ -34,8 +34,8 @@ export function CliDock({
   /** A `cliIdentity()` value, not a bare `AgentCli.id` — see `cliIdentity`. */
   selectedId: string | null;
   onSelect: (id: string) => void;
-  /** Runtime id → the machine's paired name, for the tiles' titles and the
-   *  selected pill. Absent (or missing a given runtime) falls back to
+  /** Machine id → the machine's paired name, for the tiles' titles and the
+   *  selected pill. Absent (or missing a given machine) falls back to
    *  naming the CLI alone — the single-machine case, where no tile needs
    *  to say which machine it is on. */
   machineNames?: Record<string, string>;
@@ -57,9 +57,9 @@ export function CliDock({
     if (!current || rank(cli) > rank(current)) representatives.set(cli.id, cli);
   }
   const visibleClis = [...representatives.values()];
-  const multiMachine = new Set(clis.map((c) => c.runtimeId)).size > 1;
-  const machineNameFor = (runtimeId: string): string | undefined =>
-    multiMachine ? machineNames?.[runtimeId] : undefined;
+  const multiMachine = new Set(clis.map((c) => c.machineId)).size > 1;
+  const machineNameFor = (machineId: string): string | undefined =>
+    multiMachine ? machineNames?.[machineId] : undefined;
 
   const setTile = (id: string) => (el: HTMLElement | null) => {
     if (el) tiles.current.set(id, el);
@@ -114,7 +114,7 @@ export function CliDock({
       <div className="cli-dock" onMouseMove={onMove} onMouseLeave={onLeave}>
         {visibleClis.map((c) => {
           const identity = cliIdentity(c);
-          const machine = machineNameFor(c.runtimeId);
+          const machine = machineNameFor(c.machineId);
           const b = cliBrand(c.id, c.name);
           const Icon = b.icon;
           const glyph = Icon ? <Icon className="cli-tile-icon" /> : b.mono;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react";
-import type { Agent, Runtime } from "@lykeion/api";
+import type { Agent, Machine } from "@lykeion/api";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -110,11 +110,11 @@ function DropdownField({
 // onCreate → upsertAgent. Connectors are REAL — Lykeion's Agent.connectors
 // round-trips, and a subagent's effective connector set is narrowed
 // elsewhere — so this is the one place assignment happens (agent detail is
-// read-only, no edit-in-place). Runtime (real listRuntimes, empty-safe) /
+// read-only, no edit-in-place). Machine (real listMachines, empty-safe) /
 // Skills (real listSkills names) / Visibility remain decorative — Lykeion's
 // Agent has no such fields yet.
 export function CreateAgentModal({
-  runtimes,
+  machines,
   skillNames,
   connectorNames,
   onCreate,
@@ -124,7 +124,7 @@ export function CreateAgentModal({
    *  member who paired it, so offering the lab's roster here — and defaulting
    *  to the first of it — asserts an ownership that may well belong to
    *  somebody else. The mounting screen narrows before it passes. */
-  runtimes: Runtime[];
+  machines: Machine[];
   skillNames: string[];
   connectorNames: string[];
   onCreate: (agent: Agent) => Promise<void>;
@@ -134,7 +134,7 @@ export function CreateAgentModal({
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] =
     useState<(typeof VISIBILITY)[number]["id"]>("workspace");
-  const [runtimeId, setRuntimeId] = useState<string>(runtimes[0]?.id ?? "");
+  const [machineId, setMachineId] = useState<string>(machines[0]?.id ?? "");
   const [model, setModel] = useState(MODEL_OPTIONS[0]);
   const [instrOpen, setInstrOpen] = useState(false);
   const [instructions, setInstructions] = useState("");
@@ -142,7 +142,7 @@ export function CreateAgentModal({
   const [connectors, setConnectors] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
-  const runtime = runtimes.find((r) => r.id === runtimeId);
+  const machine = machines.find((r) => r.id === machineId);
   const canCreate = name.trim().length > 0 && !busy;
 
   useEffect(() => {
@@ -179,12 +179,12 @@ export function CreateAgentModal({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Create agent"
+        aria-label="Create expert"
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[90vh] w-full max-w-[600px] flex-col rounded-xl border border-line bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between px-5 pb-1 pt-4">
-          <h2 className="text-read font-semibold text-fg">Create Agent</h2>
+          <h2 className="text-read font-semibold text-fg">Create Expert</h2>
           <button
             type="button"
             aria-label="Close"
@@ -195,7 +195,7 @@ export function CreateAgentModal({
           </button>
         </div>
         <p className="px-5 text-ui text-fg-subtle">
-          Create a new AI agent for your workspace.
+          Create a new AI expert for your workspace.
         </p>
 
         <div className="space-y-4 overflow-y-auto px-5 py-4">
@@ -203,7 +203,7 @@ export function CreateAgentModal({
           <div className="flex items-start gap-3">
             <button
               type="button"
-              aria-label="Add agent image"
+              aria-label="Add expert image"
               className="grid h-[52px] w-[52px] shrink-0 place-items-center rounded-lg border border-line bg-surface-2 text-fg-subtle hover:bg-surface-3"
             >
               <ImageIcon width={18} height={18} />
@@ -214,7 +214,7 @@ export function CreateAgentModal({
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Deep Research Agent"
+                placeholder="e.g. Deep Research Expert"
                 className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
               />
             </label>
@@ -227,7 +227,7 @@ export function CreateAgentModal({
               value={description}
               maxLength={255}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What does this agent do?"
+              placeholder="What does this expert do?"
               className="w-full rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
             />
             <span className="self-end text-meta text-fg-tertiary">
@@ -276,9 +276,9 @@ export function CreateAgentModal({
             </div>
           </div>
 
-          {/* Runtime (real, empty-safe) */}
+          {/* Machine (real, empty-safe) */}
           <div className="flex flex-col gap-1">
-            <span className={LABEL}>Runtime</span>
+            <span className={LABEL}>Machine</span>
             <DropdownField
               trigger={() => (
                 <>
@@ -287,13 +287,13 @@ export function CreateAgentModal({
                     height={15}
                     className="shrink-0 text-iris"
                   />
-                  {runtime ? (
+                  {machine ? (
                     <span className="flex flex-1 flex-col">
                       <span className="text-ui font-medium text-fg">
-                        {runtime.name}
+                        {machine.name}
                       </span>
                       <span className="text-meta text-fg-subtle">
-                        {runtime.platform}
+                        {machine.platform}
                       </span>
                     </span>
                   ) : (
@@ -305,17 +305,17 @@ export function CreateAgentModal({
               )}
             >
               {(close) =>
-                runtimes.length === 0 ? (
+                machines.length === 0 ? (
                   <div className="px-2 py-1.5 text-sub text-fg-subtle">
                     No machine of yours is paired with this lab yet.
                   </div>
                 ) : (
-                  runtimes.map((r) => (
+                  machines.map((r) => (
                     <button
                       key={r.id}
                       type="button"
                       onClick={() => {
-                        setRuntimeId(r.id);
+                        setMachineId(r.id);
                         close();
                       }}
                       className={MENU_ITEM}
@@ -331,7 +331,7 @@ export function CreateAgentModal({
                           {r.platform}
                         </span>
                       </span>
-                      {r.id === runtimeId && (
+                      {r.id === machineId && (
                         <CheckIcon
                           width={14}
                           height={14}
@@ -393,7 +393,7 @@ export function CreateAgentModal({
                 autoFocus
                 value={instructions}
                 onChange={(e) => setInstructions(e.target.value)}
-                placeholder="Describe how this agent should work…"
+                placeholder="Describe how this expert should work…"
                 rows={4}
                 className="w-full resize-none rounded-md border border-line bg-surface-2 px-2.5 py-2 text-ui text-fg outline-none placeholder:text-fg-subtle focus:border-line-strong"
               />
@@ -556,7 +556,7 @@ export function CreateAgentModal({
               }
             </DropdownField>
             <p className="text-meta leading-snug text-fg-subtle">
-              A specialist sees only the connectors you assign here (intersected
+              An expert sees only the connectors you assign here (intersected
               with what's enabled). Leave empty to inherit all enabled
               connectors.
             </p>

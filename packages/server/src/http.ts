@@ -23,14 +23,14 @@ import { createPendingCells, type PendingCells } from "./kernel-cells";
 import { failDroppedRuns } from "./run-recovery";
 import { readReportedCell, recordCell } from "./store/cells";
 import {
-  activeRunIdsForRuntime,
+  activeRunIdsForMachine,
   addGrant,
   recordRunFrames,
   recordTurnSnapshot,
   RunFrameSequenceGapError,
   runSnapshot,
-  runtimeForTurn,
-  runtimeOwnerForTurn,
+  machineForTurn,
+  machineOwnerForTurn,
   sessionForTurn,
   sessionOwner,
 } from "./store/sessions";
@@ -220,7 +220,7 @@ export function createRequestListener(deps: {
   /** Reverts waiting on the machine holding the files to say whether they
    *  are back, so `/daemon/run/reverted` can settle the one it names. */
   reverts: RevertRegistry;
-  /** `kernel-list` asks waiting on a runtime's own kernel host, so
+  /** `kernel-list` asks waiting on a machine's own kernel host, so
    *  `/daemon/kernel/list` can settle the one it names. */
   kernelLists: KernelListRegistry;
   /** `name-task` asks waiting on a machine to summarize a Task's opening
@@ -309,7 +309,7 @@ export function createRequestListener(deps: {
           if (!res.writableEnded) res.end();
         };
 
-        // `attach` replays every command this runtime has ever been queued —
+        // `attach` replays every command this machine has ever been queued —
         // the cursor is honoured here, by skipping what a reconnecting
         // daemon has already told us it handled, not inside the relay.
         const send = (seq: number, command: RunCommand) => {
@@ -324,7 +324,7 @@ export function createRequestListener(deps: {
 
         openStreams.add(end);
         req.on("close", end);
-        detach = runs.attach(machine.runtimeId, send);
+        detach = runs.attach(machine.machineId, send);
         if (res.writableEnded) return end();
 
         heartbeat = setInterval(() => {
@@ -382,42 +382,42 @@ export function createRequestListener(deps: {
           // workspace-wide counter — so a machine's own valid bearer token
           // proves only that some paired machine is calling, not that every
           // id it reports holding is actually its own. Checked against the
-          // store — the durable record of which runtime a run's session
+          // store — the durable record of which machine a run's session
           // belongs to — before any of it reaches `reconcile`.
           //
           // Two different facts hide behind a run id this store cannot
           // attribute to this machine, and only one of them is an attack.
-          // Belonging to a real, different runtime is the attack this check
+          // Belonging to a real, different machine is the attack this check
           // exists for, and refuses the whole report over. Resolving to no
-          // runtime at all — a typo, or a run id this store never minted —
+          // machine at all — a typo, or a run id this store never minted —
           // is not; refusing the whole report over it would durably wedge
           // an otherwise honest daemon out of every command behind it,
           // since a machine that cannot pass this check never reaches
           // `openCommands` either. Those ids are dropped from what reaches
           // `reconcile` instead: not a member of anyone's `queue.live`,
           // they cannot be reconciled away from it either.
-          const reported = runIds.map((runId) => ({ runId, owner: runtimeForTurn(store, runId) }));
-          if (reported.some(({ owner }) => owner !== undefined && owner !== machine.runtimeId))
+          const reported = runIds.map((runId) => ({ runId, owner: machineForTurn(store, runId) }));
+          if (reported.some(({ owner }) => owner !== undefined && owner !== machine.machineId))
             return sendJson(res, 403, { error: "this machine does not own every run it reported" });
-          const durableActive = activeRunIdsForRuntime(store, machine.runtimeId);
+          const durableActive = activeRunIdsForMachine(store, machine.machineId);
           const durableActiveSet = new Set(durableActive);
           const retireRunIds = reported
             .filter(
               ({ owner, runId }) =>
                 owner === undefined ||
-                (owner === machine.runtimeId && !durableActiveSet.has(runId)),
+                (owner === machine.machineId && !durableActiveSet.has(runId)),
             )
             .map(({ runId }) => runId);
           const ownedActive = reported
             .filter(({ owner, runId }) => owner !== undefined && durableActiveSet.has(runId))
             .map(({ runId }) => runId);
           const dropped = runs.reconcile(
-            machine.runtimeId,
+            machine.machineId,
             ownedActive,
             durableActive,
             acknowledgedCommandSeq,
           );
-          failDroppedRuns(store, runs, machine.runtimeId, dropped, now());
+          failDroppedRuns(store, runs, machine.machineId, dropped, now());
           return sendJson(res, 200, {
             ok: true,
             generation: runs.generation,
@@ -439,7 +439,7 @@ export function createRequestListener(deps: {
           // a forged `completed` would retire someone else's live run, and
           // forged prose or steps would be attributed to a transcript that
           // was never theirs to write.
-          if (runtimeForTurn(store, runId) !== machine.runtimeId)
+          if (machineForTurn(store, runId) !== machine.machineId)
             return sendJson(res, 403, { error: `this machine does not own run ${runId}` });
           const frames = rawFrames.filter(
             (f): f is RunEventFrame =>
@@ -469,7 +469,7 @@ export function createRequestListener(deps: {
           const reason = (body as { reason?: unknown } | null)?.reason;
           if (typeof runId !== "string" || typeof taken !== "boolean")
             return sendJson(res, 400, { error: "a runId and a taken flag are required" });
-          if (runtimeForTurn(store, runId) !== machine.runtimeId)
+          if (machineForTurn(store, runId) !== machine.machineId)
             return sendJson(res, 403, { error: "this machine does not own that run" });
           recordTurnSnapshot(store, runId, {
             taken,
@@ -485,7 +485,7 @@ export function createRequestListener(deps: {
           const error = (body as { error?: unknown } | null)?.error;
           if (typeof runId !== "string" || typeof ok !== "boolean")
             return sendJson(res, 400, { error: "a runId and an ok flag are required" });
-          if (runtimeForTurn(store, runId) !== machine.runtimeId)
+          if (machineForTurn(store, runId) !== machine.machineId)
             return sendJson(res, 403, { error: "this machine does not own that run" });
           // The record is truncated only from here, once the machine has
           // said the files are back: restore first, truncate second.
@@ -516,18 +516,18 @@ export function createRequestListener(deps: {
           // that some paired machine is calling, not that it is the one this
           // run actually belongs to. Resolved through the run's own session
           // rather than trusted from the body, so a grant always lands on
-          // the Study and runtime the run was actually started on. Unlike
+          // the Study and machine the run was actually started on. Unlike
           // that route, this one's own refusal names neither case — "no such
           // run" and "not yours" answer with the exact same body — because a
           // grant is a standing authorization record, not a transcript
           // frame, and this is the one route a caller could use to probe
           // which run ids are real by comparing 403 bodies across guesses.
           const session = sessionForTurn(store, runId);
-          if (!session || session.runtimeId !== machine.runtimeId)
+          if (!session || session.machineId !== machine.machineId)
             return sendJson(res, 403, { error: "this machine does not own that run" });
           addGrant(store, {
             studyId: session.studyId,
-            runtimeId: session.runtimeId,
+            machineId: session.machineId,
             path: grantPath,
             mode,
             grantedBy: session.openedBy,
@@ -547,8 +547,8 @@ export function createRequestListener(deps: {
           // above proves only that some paired machine is calling, not that
           // it is the one this particular ask went to. `settle` itself holds
           // the binding and refuses a mismatch without touching it, so the
-          // runtime this request actually belongs to can still answer it.
-          if (!kernelLists.settle(machine.runtimeId, requestId, rawKernels.filter(isRawKernelReport)))
+          // machine this request actually belongs to can still answer it.
+          if (!kernelLists.settle(machine.machineId, requestId, rawKernels.filter(isRawKernelReport)))
             return sendJson(res, 403, { error: "this machine was not asked for that kernel list" });
           return sendJson(res, 200, { ok: true });
         }
@@ -573,7 +573,7 @@ export function createRequestListener(deps: {
           // Held to the same binding as `/daemon/kernel/list`, for the same
           // reason: the bearer token proves some paired machine is calling,
           // never that it is the one this ask went to.
-          if (!titles.settle(machine.runtimeId, requestId, title))
+          if (!titles.settle(machine.machineId, requestId, title))
             return sendJson(res, 403, { error: "this machine was not asked to name that task" });
           return sendJson(res, 200, { ok: true });
         }
@@ -598,7 +598,7 @@ export function createRequestListener(deps: {
           // a colleague's Task's notebook, attributed to a REPL session it
           // never held.
           const owner = sessionOwner(store, sessionId);
-          if (!owner || owner.runtimeId !== machine.runtimeId)
+          if (!owner || owner.machineId !== machine.machineId)
             return sendJson(res, 403, { error: `this machine does not own session ${sessionId}` });
           // `taskId` is what puts this cell on a Task's own notebook, and
           // nothing above ties it to the session it claims to have run in —
@@ -616,7 +616,7 @@ export function createRequestListener(deps: {
           // member of the lab reads, or a second report of a cell already
           // recorded, which under a PRIMARY KEY would be an insert that
           // throws rather than a route that answers.
-          const by = pendingCells.claim(machine.runtimeId, cellId);
+          const by = pendingCells.claim(machine.machineId, cellId);
           if (by === undefined)
             return sendJson(res, 403, { error: `this lab did not ask this machine to run cell ${cellId}` });
           // `ts` is the moment being recorded rather than a field of the
@@ -716,11 +716,11 @@ export function createRequestListener(deps: {
         const actor = resolveActor(store, readCookie(req.headers.cookie, SESSION_COOKIE), now());
         if (!actor) return sendJson(res, 401, { error: "not signed in" });
         // No user id ever comes from the client: the run id names a turn,
-        // and the turn's session names the runtime it ran on. Whoever paired
-        // that runtime is who may watch it — resolved from the cookie the
+        // and the turn's session names the machine it ran on. Whoever paired
+        // that machine is who may watch it — resolved from the cookie the
         // same way `/daemon/run/events`'s ownership check resolves a machine
         // from its bearer token.
-        if (runtimeOwnerForTurn(store, runId) !== actor.userId)
+        if (machineOwnerForTurn(store, runId) !== actor.userId)
           return sendJson(res, 403, { error: `run ${runId} does not belong to a machine you own` });
 
         res.writeHead(200, {
@@ -792,7 +792,7 @@ export function createRequestListener(deps: {
         }
         const {
           sessionId: _sessionId,
-          runtimeId: _runtimeId,
+          machineId: _machineId,
           openedBy: _openedBy,
           ...publicSnapshot
         } = stored;

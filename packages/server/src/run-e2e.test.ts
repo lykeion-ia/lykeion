@@ -67,7 +67,7 @@ beforeAll(async () => {
   mkdirSync(dirname(shippedBundle), { recursive: true });
   for (const outfile of [daemonBundle, shippedBundle])
     await build({
-      entryPoints: [join(daemonSrc, "main.ts")],
+      entryPoints: [join(daemonSrc, "cli.ts")],
       outfile,
       bundle: true,
       platform: "node",
@@ -459,9 +459,9 @@ async function pairAndServe(
  *  `PATH` and answered `initialize`, not merely that the bare command
  *  answers `--version`. */
 async function machineIsSessionReady(ownerApi: LykeionApi, machineName: string): Promise<boolean> {
-  const runtimes = await ownerApi.listRuntimes();
-  const runtime = runtimes.find((r) => r.name === machineName);
-  return runtime !== undefined && (runtime.clis ?? []).some((cli) => cli.id === "claude" && cli.sessionReady);
+  const machines = await ownerApi.listMachines();
+  const machine = machines.find((r) => r.name === machineName);
+  return machine !== undefined && (machine.clis ?? []).some((cli) => cli.id === "claude" && cli.sessionReady);
 }
 
 it(

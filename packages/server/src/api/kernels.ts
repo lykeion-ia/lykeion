@@ -5,7 +5,7 @@ import {
   type MachineCompute,
   type RunningKernel,
 } from "@lykeion/api";
-import { NO_RUNTIME } from "./absent";
+import { NO_MACHINE } from "./absent";
 import type { Deps } from "./index";
 import type { Actor } from "../auth";
 import type { RunCommand, RunRelay } from "../run-relay";
@@ -14,7 +14,7 @@ import type { Store } from "../store/store";
 import { nextSeq } from "../store/migrations";
 import { notebookFor } from "../store/cells";
 import { sessionOwner } from "../store/sessions";
-import { healthFor } from "../runtime-health";
+import { healthFor } from "../machine-health";
 
 export type KernelsApi = Pick<
   LykeionApi,
@@ -28,8 +28,8 @@ export type KernelsApi = Pick<
   | "kernelEnvSetup"
 >;
 
-interface KernelRuntime {
-  runtimeId: string;
+interface KernelMachine {
+  machineId: string;
   ownerId: string;
   name: string;
   lastSeenTs: number;
@@ -43,17 +43,17 @@ interface KernelRuntime {
 }
 
 /**
- * The runtime holding a kernel, found through the cell it last ran, along
+ * The machine holding a kernel, found through the cell it last ran, along
  * with the rest of its identity — `sessionId`, `taskId`, `kernelName` and
  * `language` — the same row already carries. A kernel id is minted by the
- * host from exactly those four and never carries a runtime of its own, so
+ * host from exactly those four and never carries a machine of its own, so
  * the one durable place this lab can learn either is a cell that machine
- * already reported: `cells.session_id` joins to the session's own runtime
+ * already reported: `cells.session_id` joins to the session's own machine
  * the same way `sessionForTurn` joins a run to one. A kernel that has never
- * finished a cell is answered for by `liveRuntimeForKernel` instead, which
+ * finished a cell is answered for by `liveMachineForKernel` instead, which
  * asks the machines rather than this store.
  */
-function runtimeForKernel(store: Store, kernelId: string): KernelRuntime | undefined {
+function machineForKernel(store: Store, kernelId: string): KernelMachine | undefined {
   const row = store.get(
     `SELECT r.id AS runtime_id, r.owner_id AS owner_id, r.name AS name, r.last_seen_ts AS last_seen_ts,
             c.session_id AS session_id, c.task_id AS task_id, c.name AS kernel_name, c.language AS language
@@ -67,7 +67,7 @@ function runtimeForKernel(store: Store, kernelId: string): KernelRuntime | undef
   );
   if (!row) return undefined;
   return {
-    runtimeId: row.runtime_id as string,
+    machineId: row.runtime_id as string,
     ownerId: row.owner_id as string,
     name: row.name as string,
     lastSeenTs: row.last_seen_ts as number,
@@ -79,7 +79,7 @@ function runtimeForKernel(store: Store, kernelId: string): KernelRuntime | undef
 }
 
 /**
- * The runtime holding a kernel, found by asking every machine in the lab what
+ * The machine holding a kernel, found by asking every machine in the lab what
  * it is holding right now, along with the rest of the kernel's identity.
  *
  * The fallback for a kernel that has no cell of its own. A host mints a
@@ -90,26 +90,26 @@ function runtimeForKernel(store: Store, kernelId: string): KernelRuntime | undef
  * for Restart. Resolving through the live report is what makes the remedy
  * available in the state it exists for.
  *
- * Asked rather than remembered: a runtime a kernel was last seen on is a
+ * Asked rather than remembered: a machine a kernel was last seen on is a
  * fact that goes stale, and a Restart delivered to the wrong machine is
  * worse than one that has to wait for an answer. This is a researcher's own
  * action on one kernel, so it costs one fan-out and only where the durable
  * record has nothing.
  */
-async function liveRuntimeForKernel(
+async function liveMachineForKernel(
   deps: Deps,
   kernelId: string,
-): Promise<KernelRuntime | undefined> {
+): Promise<KernelMachine | undefined> {
   const found = (await liveKernels(deps)).find((kernel) => kernel.id === kernelId);
   if (!found) return undefined;
   const row = deps.store.get(
     `SELECT owner_id AS owner_id, name AS name, last_seen_ts AS last_seen_ts
        FROM runtimes WHERE id = ?`,
-    [found.runtimeId],
+    [found.machineId],
   );
   if (!row) return undefined;
   return {
-    runtimeId: found.runtimeId,
+    machineId: found.machineId,
     ownerId: row.owner_id as string,
     name: row.name as string,
     lastSeenTs: row.last_seen_ts as number,
@@ -121,20 +121,20 @@ async function liveRuntimeForKernel(
 }
 
 /**
- * The runtime a kernel operation may act on, or the refusal that keeps it
+ * The machine a kernel operation may act on, or the refusal that keeps it
  * off one it should not touch. Shared by every method below that reaches a
  * kernel, so the ownership and health checks a researcher's kernel commands
  * are held to are asked once, in one order, rather than copied three times
  * and left free to drift apart.
  */
-async function authorizedKernelRuntime(
+async function authorizedKernelMachine(
   deps: Deps,
   actor: Actor,
   now: number,
   kernelId: string,
-): Promise<KernelRuntime> {
+): Promise<KernelMachine> {
   const resolved =
-    runtimeForKernel(deps.store, kernelId) ?? (await liveRuntimeForKernel(deps, kernelId));
+    machineForKernel(deps.store, kernelId) ?? (await liveMachineForKernel(deps, kernelId));
   if (!resolved)
     throw new LykeionError(
       "unsupported",
@@ -154,7 +154,7 @@ async function authorizedKernelRuntime(
 }
 
 /**
- * Delivers a kernel command to its runtime's live connection, or refuses.
+ * Delivers a kernel command to its machine's live connection, or refuses.
  * Every kernel command travels this way, never `enqueue`: it addresses one
  * live kernel over one live connection, and a copy left queued for whatever
  * connects next would be replayed against whatever kernel holds that id
@@ -163,15 +163,15 @@ async function authorizedKernelRuntime(
  * that is not there to receive a kernel command right now has no kernel to
  * run it, so refusing is the honest answer, not queueing one.
  */
-function deliverOrRefuse(runs: RunRelay, runtime: KernelRuntime, command: RunCommand): void {
-  if (runs.deliverNow(runtime.runtimeId, command)) return;
+function deliverOrRefuse(runs: RunRelay, machine: KernelMachine, command: RunCommand): void {
+  if (runs.deliverNow(machine.machineId, command)) return;
   throw new LykeionError(
     "conflict",
-    `${runtime.name} is not currently connected — reconnect it before running code on its kernels`,
+    `${machine.name} is not currently connected — reconnect it before running code on its kernels`,
   );
 }
 
-/** How long `listRunningKernels` waits on any one runtime's own
+/** How long `listRunningKernels` waits on any one machine's own
  *  `kernel-list` answer. Kept well under the Notebook rail's own 1500ms
  *  poll interval, so a machine that is not answering costs a researcher
  *  watching it at most one visibly slow refresh, never a stuck one. */
@@ -188,15 +188,15 @@ const KERNEL_STATES = new Set([
 ]);
 
 /**
- * One raw report from a runtime's own `kernel.list`, enriched with the two
- * things its host could never know — which runtime this is, carried by the
+ * One raw report from a machine's own `kernel.list`, enriched with the two
+ * things its host could never know — which machine this is, carried by the
  * connection this lab reached it over rather than anything the report
  * itself claims, and which Study its session belongs to, read from this
  * lab's own durable record of that session. `undefined` for a report this
  * lab cannot honestly enrich, or that names something a real kernel could
  * not: a language or state this lab does not recognise; a session id
  * naming a session nothing here ever opened; a session that belongs to a
- * *different* runtime than the one that just reported holding it — a host
+ * *different* machine than the one that just reported holding it — a host
  * only ever holds kernels for sessions opened on its own machine, so this
  * can never happen honestly, only be claimed; or a `taskId` that session
  * has no turn recorded for. That last check is bound to `turns`, not to a
@@ -207,13 +207,13 @@ const KERNEL_STATES = new Set([
  */
 function toRunningKernel(
   store: Store,
-  runtimeId: string,
+  machineId: string,
   raw: RawKernelReport,
 ): RunningKernel | undefined {
   if (raw.language !== "python" && raw.language !== "r") return undefined;
   if (!KERNEL_STATES.has(raw.state)) return undefined;
   const owner = sessionOwner(store, raw.sessionId);
-  if (!owner || owner.runtimeId !== runtimeId) return undefined;
+  if (!owner || owner.machineId !== machineId) return undefined;
   if (!store.get(`SELECT 1 FROM turns WHERE session_id = ? AND task_id = ?`, [raw.sessionId, raw.taskId]))
     return undefined;
   return {
@@ -222,7 +222,7 @@ function toRunningKernel(
     taskId: raw.taskId,
     name: raw.name,
     language: raw.language,
-    runtimeId,
+    machineId,
     studyId: owner.studyId,
     state: raw.state as RunningKernel["state"],
     incarnation: raw.incarnation,
@@ -244,32 +244,32 @@ function toRunningKernel(
  * What every machine in the lab is holding right now, enriched into the
  * kernels this lab can honestly answer for.
  *
- * Every runtime, not only the caller's own — the same lab-wide reach
- * `taskNotebook` gives a Task's cells, and the same reach `listRuntimes`
+ * Every machine, not only the caller's own — the same lab-wide reach
+ * `taskNotebook` gives a Task's cells, and the same reach `listMachines`
  * already gives the machines themselves.
  */
 async function liveKernels(deps: Deps): Promise<RunningKernel[]> {
   const { store, runs, kernelLists } = deps;
-  const runtimeIds = store
+  const machineIds = store
     .all(`SELECT id FROM runtimes WHERE removed_ts IS NULL`)
     .map((row) => row.id as string);
-  const perRuntime = await Promise.all(
-    runtimeIds.map(async (runtimeId): Promise<RunningKernel[]> => {
+  const perMachine = await Promise.all(
+    machineIds.map(async (machineId): Promise<RunningKernel[]> => {
       const requestId = `klreq_${nextSeq(store)}`;
-      // A runtime with no live command stream right now is not asked to
+      // A machine with no live command stream right now is not asked to
       // wait on: nothing is going to answer, and `await` below would
       // just spend its whole timeout finding that out.
-      if (!runs.deliverNow(runtimeId, { type: "kernel-list", runId: requestId })) return [];
-      const reports = await kernelLists.await(runtimeId, requestId, KERNEL_LIST_TIMEOUT_MS);
+      if (!runs.deliverNow(machineId, { type: "kernel-list", runId: requestId })) return [];
+      const reports = await kernelLists.await(machineId, requestId, KERNEL_LIST_TIMEOUT_MS);
       const kernels: RunningKernel[] = [];
       for (const raw of reports) {
-        const kernel = toRunningKernel(store, runtimeId, raw);
+        const kernel = toRunningKernel(store, machineId, raw);
         if (kernel) kernels.push(kernel);
       }
       return kernels;
     }),
   );
-  return perRuntime.flat();
+  return perMachine.flat();
 }
 
 /**
@@ -309,8 +309,8 @@ export function kernelsApi(deps: Deps): KernelsApi {
       );
       const when = now();
       return rows.map((row): MachineCompute => {
-        const runtimeId = row.id as string;
-        const machine: MachineCompute = { runtimeId };
+        const machineId = row.id as string;
+        const machine: MachineCompute = { machineId };
         // An offline machine carries nothing at all — not its counts, and not
         // its own size either. The fan-out reports a machine that did not
         // answer as holding nothing, which is the same shape as a machine
@@ -326,7 +326,7 @@ export function kernelsApi(deps: Deps): KernelsApi {
         if (row.total_memory_bytes !== null)
           machine.totalMemoryBytes = row.total_memory_bytes as number;
         if (row.cores !== null) machine.cores = row.cores as number;
-        const mine = kernels.filter((kernel) => kernel.runtimeId === runtimeId);
+        const mine = kernels.filter((kernel) => kernel.machineId === machineId);
         machine.kernelCount = mine.length;
         machine.runningCount = mine.filter((k) => k.state === "running").length;
         const measured = mine.filter((k) => k.resources?.memoryBytes !== undefined);
@@ -374,13 +374,13 @@ export function kernelsApi(deps: Deps): KernelsApi {
     },
 
     async kernelExecute(kernelId, code) {
-      const resolved = await authorizedKernelRuntime(deps, actor, now(), kernelId);
+      const resolved = await authorizedKernelMachine(deps, actor, now(), kernelId);
       const cellId = `cell_${nextSeq(store)}`;
       // Held before the command goes out, so the cell that comes back can be
       // recognized as the answer to this ask rather than trusted for saying
       // it is one. What the machine reports about who ran it is not read at
       // all: it is remembered here, where the researcher asking is known.
-      pendingCells.mint(resolved.runtimeId, cellId, actor.userId);
+      pendingCells.mint(resolved.machineId, cellId, actor.userId);
       deliverOrRefuse(runs, resolved, {
         type: "kernel-execute",
         runId: cellId,
@@ -397,12 +397,12 @@ export function kernelsApi(deps: Deps): KernelsApi {
     },
 
     async kernelInterrupt(kernelId) {
-      const resolved = await authorizedKernelRuntime(deps, actor, now(), kernelId);
+      const resolved = await authorizedKernelMachine(deps, actor, now(), kernelId);
       deliverOrRefuse(runs, resolved, { type: "kernel-interrupt", runId: kernelId, kernelId });
     },
 
     async kernelStop(kernelId, feedback) {
-      const resolved = await authorizedKernelRuntime(deps, actor, now(), kernelId);
+      const resolved = await authorizedKernelMachine(deps, actor, now(), kernelId);
       deliverOrRefuse(runs, resolved, {
         type: "kernel-stop",
         runId: kernelId,
@@ -413,14 +413,14 @@ export function kernelsApi(deps: Deps): KernelsApi {
     },
 
     async kernelRestart(kernelId) {
-      const resolved = await authorizedKernelRuntime(deps, actor, now(), kernelId);
+      const resolved = await authorizedKernelMachine(deps, actor, now(), kernelId);
       deliverOrRefuse(runs, resolved, { type: "kernel-restart", runId: kernelId, kernelId });
     },
 
     async kernelEnvSetup() {
-      // Two refusals, and the runtimes table decides which is true. With no
-      // machine online the missing thing really is a runtime. With one
-      // right there, "no runtime is connected" would be false and would
+      // Two refusals, and the machines table decides which is true. With no
+      // machine online the missing thing really is a machine. With one
+      // right there, "no machine is connected" would be false and would
       // send the researcher to redo an install they have already done — the
       // missing thing is provisioning itself, which no build of this server
       // performs yet.
@@ -428,7 +428,7 @@ export function kernelsApi(deps: Deps): KernelsApi {
       const online = store
         .all(`SELECT last_seen_ts FROM runtimes WHERE removed_ts IS NULL`)
         .some((row) => healthFor(row.last_seen_ts as number, nowTs) === "online");
-      if (!online) throw new LykeionError("unsupported", NO_RUNTIME);
+      if (!online) throw new LykeionError("unsupported", NO_MACHINE);
       throw new LykeionError(
         "unsupported",
         "this lab cannot set up managed environments yet — kernels run in the machine's own interpreter for now.",

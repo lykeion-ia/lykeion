@@ -51,7 +51,7 @@ export function WorkflowList({
         {/* Focus lights the field box rather than the input: the global ring
             is drawn a pixel inside its own element, so on the input it reads
             as a second box within this one. Same treatment as the Inbox and
-            Agents searches — these are the app's only `outline-none` opt-outs
+            Experts searches — these are the app's only `outline-none` opt-outs
             and must not drift apart. */}
         <div className="flex h-8 w-[220px] items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5 transition-colors duration-[120ms] focus-within:border-accent-focus">
           <SearchIcon

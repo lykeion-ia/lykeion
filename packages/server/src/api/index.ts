@@ -16,7 +16,7 @@ import { settingsApi } from "./settings";
 import { studiesApi } from "./studies";
 import { tasksApi } from "./tasks";
 import { taskNamingApi } from "./task-naming";
-import { runtimesApi } from "./runtimes";
+import { machinesApi } from "./machines";
 import { sessionsApi } from "./sessions";
 import { kernelsApi } from "./kernels";
 
@@ -37,7 +37,7 @@ export interface Deps {
   /** Reverts waiting on the machine that holds the files to say whether
    *  they are back. Held for the process's lifetime, like `runs`. */
   reverts: RevertRegistry;
-  /** `kernel-list` asks waiting on a runtime's own kernel host to say what
+  /** `kernel-list` asks waiting on a machine's own kernel host to say what
    *  it is holding. Held for the process's lifetime, like `runs`. */
   kernelLists: KernelListRegistry;
   /** `name-task` asks waiting on a machine to summarize a Task's opening
@@ -79,7 +79,7 @@ export function createWorkspaceApi(deps: Deps): LykeionApi {
     ...studiesApi(deps),
     ...tasksApi(deps),
     ...taskNamingApi(deps),
-    ...runtimesApi(deps),
+    ...machinesApi(deps),
     ...sessionsApi(deps),
     ...kernelsApi(deps),
     ...settingsApi(deps),

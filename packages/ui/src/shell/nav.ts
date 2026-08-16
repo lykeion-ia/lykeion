@@ -41,7 +41,13 @@ export const laboratoryItems: NavEntry[] = [
     icon: UsersIcon,
     route: { name: "research-groups" },
   },
-  { label: "Agents", icon: SparkleIcon, route: { name: "agents" } },
+  // "Experts", not "Agents": a coding agent is the thing a Task runs ON, and
+  // the Lab already says "agent" for that all over the Task surface. What this
+  // section holds is the specialist you compose — a persona with its own
+  // instructions, tools and connectors — and it needed a word of its own. The
+  // route keeps its name: it is a URL people have bookmarked, and unlike
+  // Machines' there is no alias standing behind a rename here.
+  { label: "Experts", icon: SparkleIcon, route: { name: "agents" } },
   { label: "Workflows", icon: WorkflowIcon, route: { name: "workflows" } },
 ];
 
@@ -50,10 +56,10 @@ export const laboratoryItems: NavEntry[] = [
 // Workspace › Profile tab now.
 export const configureItems: NavEntry[] = [
   // "Machines", not "Runtimes": the screen behind this is a roster of
-  // computers a researcher paired, and a runtime is what runs ON one. The
-  // route keeps its name — it is a URL people have bookmarked, and renaming
-  // the label is the whole of what this changes.
-  { label: "Machines", icon: MonitorIcon, route: { name: "runtimes" } },
+  // computers a researcher paired, and a runtime is what runs ON one. The word
+  // is gone from the route as well now; `#/runtimes` is kept as a parse-only
+  // alias in the router, so the bookmarks that predate this still land.
+  { label: "Machines", icon: MonitorIcon, route: { name: "machines" } },
   { label: "Settings", icon: SettingsIcon, route: { name: "settings" } },
 ];
 

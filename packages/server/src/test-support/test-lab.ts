@@ -73,7 +73,7 @@ export async function makeServerLab(overrides?: Partial<ServerConfig>): Promise<
   };
 }
 
-/** A conformance lab with one real paired runtime reported for its owner.
+/** A conformance lab with one real paired machine reported for its owner.
  *  No daemon is simulated: the decision cases only need a durable live run
  *  to address, not an adapter response. */
 export async function makeRunnableServerLab(): Promise<Lab> {
@@ -113,6 +113,6 @@ export async function makeRunnableServerLab(): Promise<Lab> {
       ],
     }),
   });
-  if (!reported.ok) throw new Error(`runtime report answered ${reported.status}`);
+  if (!reported.ok) throw new Error(`machine report answered ${reported.status}`);
   return lab;
 }

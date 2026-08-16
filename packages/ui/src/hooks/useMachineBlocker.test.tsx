@@ -1,5 +1,5 @@
 /**
- * `useRuntimeBlocker` in isolation: the states it can resolve to, driven
+ * `useMachineBlocker` in isolation: the states it can resolve to, driven
  * directly through `ApiProvider` rather than through a screen. The marker
  * is declared the way the real server stamps the document it serves —
  * `hasWorkspaceServer()` (`../api/select.ts`) is exercised for real, not
@@ -8,9 +8,9 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { createInMemoryApi, type LykeionApi, type Runtime } from "@lykeion/api";
+import { createInMemoryApi, type LykeionApi, type Machine } from "@lykeion/api";
 import { ApiProvider } from "../api/ApiContext";
-import { useRuntimeBlocker } from "./useRuntimeBlocker";
+import { useMachineBlocker } from "./useMachineBlocker";
 
 function declareWorkspaceServer() {
   const meta = document.createElement("meta");
@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 function BlockerProbe() {
-  const { blocker } = useRuntimeBlocker();
+  const { blocker } = useMachineBlocker();
   return <>{blocker ?? "composer is free"}</>;
 }
 
@@ -52,7 +52,7 @@ const you = {
   createdTs: 1,
 };
 
-const runtime = (over: Partial<Runtime>): Runtime => ({
+const machine = (over: Partial<Machine>): Machine => ({
   id: "rt_1",
   name: "bo-workstation",
   ownerId: "u_bo",
@@ -64,7 +64,7 @@ const runtime = (over: Partial<Runtime>): Runtime => ({
   ...over,
 });
 
-describe("useRuntimeBlocker", () => {
+describe("useMachineBlocker", () => {
   it("leaves the composer free in the browser-only demo, where no workspace server is declared", async () => {
     render(
       <ApiProvider api={createInMemoryApi()}>
@@ -77,11 +77,11 @@ describe("useRuntimeBlocker", () => {
 
   it("leaves the composer free while the reads are still in flight, against a declared workspace server", async () => {
     declareWorkspaceServer();
-    const heldRuntimes = new Promise<Runtime[]>(() => {});
+    const heldMachines = new Promise<Machine[]>(() => {});
     const heldUser = new Promise<never>(() => {});
     const api: LykeionApi = {
       ...createInMemoryApi(),
-      listRuntimes: () => heldRuntimes,
+      listMachines: () => heldMachines,
       currentUser: () => heldUser,
     };
     render(
@@ -105,7 +105,7 @@ describe("useRuntimeBlocker", () => {
       currentUser: () => heldUser,
       // Somebody else's, so a hook that read "not yet answered" as either
       // "answered empty" or "failed" would put a notice up here.
-      listRuntimes: async () => [runtime({ ownerId: "u_bo" })],
+      listMachines: async () => [machine({ ownerId: "u_bo" })],
     };
     render(
       <ApiProvider api={api}>
@@ -126,8 +126,8 @@ describe("useRuntimeBlocker", () => {
       // A machine of the caller's own that CAN run sessions: every other
       // branch of this hook leaves the composer free on this roster, so a
       // notice here can only have come from the failed identity.
-      listRuntimes: async () => [
-        runtime({
+      listMachines: async () => [
+        machine({
           id: "rt_2",
           name: "your-laptop",
           ownerId: "u_you",
@@ -153,7 +153,7 @@ describe("useRuntimeBlocker", () => {
     const api: LykeionApi = {
       ...createInMemoryApi(),
       currentUser: async () => you,
-      listRuntimes: async () => [runtime({ ownerId: "u_bo" })],
+      listMachines: async () => [machine({ ownerId: "u_bo" })],
     };
     render(
       <ApiProvider api={api}>
@@ -170,8 +170,8 @@ describe("useRuntimeBlocker", () => {
     const api: LykeionApi = {
       ...createInMemoryApi(),
       currentUser: async () => you,
-      listRuntimes: async () => [
-        runtime({ id: "rt_2", name: "your-laptop", ownerId: "u_you", capabilities: [] }),
+      listMachines: async () => [
+        machine({ id: "rt_2", name: "your-laptop", ownerId: "u_you", capabilities: [] }),
       ],
     };
     render(
@@ -191,9 +191,9 @@ describe("useRuntimeBlocker", () => {
     const api: LykeionApi = {
       ...createInMemoryApi(),
       currentUser: async () => you,
-      listRuntimes: async () => [
-        runtime({ id: "rt_2", name: "your-laptop", ownerId: "u_you", capabilities: [] }),
-        runtime({ id: "rt_1", name: "bo-workstation", ownerId: "u_bo", capabilities: [] }),
+      listMachines: async () => [
+        machine({ id: "rt_2", name: "your-laptop", ownerId: "u_you", capabilities: [] }),
+        machine({ id: "rt_1", name: "bo-workstation", ownerId: "u_bo", capabilities: [] }),
       ],
     };
     render(
@@ -216,9 +216,9 @@ describe("useRuntimeBlocker", () => {
     const api: LykeionApi = {
       ...createInMemoryApi(),
       currentUser: async () => you,
-      listRuntimes: async () => [
-        runtime({ id: "rt_2", name: "your-laptop", ownerId: "u_you", capabilities: [] }),
-        runtime({ id: "rt_3", name: "your-workstation", ownerId: "u_you", capabilities: [] }),
+      listMachines: async () => [
+        machine({ id: "rt_2", name: "your-laptop", ownerId: "u_you", capabilities: [] }),
+        machine({ id: "rt_3", name: "your-workstation", ownerId: "u_you", capabilities: [] }),
       ],
     };
     render(
@@ -236,9 +236,9 @@ describe("useRuntimeBlocker", () => {
     const api: LykeionApi = {
       ...createInMemoryApi(),
       currentUser: async () => you,
-      listRuntimes: async () => [
-        runtime({ id: "rt_2", name: "your-laptop", ownerId: "u_you", capabilities: [] }),
-        runtime({
+      listMachines: async () => [
+        machine({ id: "rt_2", name: "your-laptop", ownerId: "u_you", capabilities: [] }),
+        machine({
           id: "rt_3",
           name: "your-workstation",
           ownerId: "u_you",
@@ -266,7 +266,7 @@ describe("useRuntimeBlocker", () => {
     const api: LykeionApi = {
       ...createInMemoryApi(),
       currentUser: async () => you,
-      listRuntimes: async () => [runtime({ ownerId: "u_bo", capabilities: ["sessions"] })],
+      listMachines: async () => [machine({ ownerId: "u_bo", capabilities: ["sessions"] })],
     };
     render(
       <ApiProvider api={api}>
@@ -283,14 +283,14 @@ describe("useRuntimeBlocker", () => {
     const api: LykeionApi = {
       ...createInMemoryApi(),
       currentUser: async () => you,
-      listRuntimes: async () => [
-        runtime({ id: "rt_2", name: "your-laptop", ownerId: "u_you", capabilities: [] }),
-        runtime({ id: "rt_1", name: "bo-workstation", ownerId: "u_bo", capabilities: [] }),
+      listMachines: async () => [
+        machine({ id: "rt_2", name: "your-laptop", ownerId: "u_you", capabilities: [] }),
+        machine({ id: "rt_1", name: "bo-workstation", ownerId: "u_bo", capabilities: [] }),
       ],
     };
     let seen: Record<string, string> = {};
     function NamesProbe() {
-      seen = useRuntimeBlocker().machineNames;
+      seen = useMachineBlocker().machineNames;
       return null;
     }
     render(

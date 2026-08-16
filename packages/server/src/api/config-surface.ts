@@ -309,7 +309,7 @@ export function configSurfaceApi(deps: Deps): ConfigSurfaceApi {
       // method in `absentApi` answers honestly rather than faking.
       throw new LykeionError(
         "unsupported",
-        "no runtime is connected to this lab — install the Lykeion daemon on a machine that can reach this connector's server.",
+        "no machine is connected to this lab — install the Lykeion daemon on a machine that can reach this connector's server.",
       );
     },
 

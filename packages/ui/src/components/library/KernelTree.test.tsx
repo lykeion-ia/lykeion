@@ -1,16 +1,16 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createInMemoryApi, type RunningKernel, type Runtime, type Study, type Task } from "@lykeion/api";
+import { createInMemoryApi, type RunningKernel, type Machine, type Study, type Task } from "@lykeion/api";
 import { ApiProvider } from "../../api/ApiContext";
 import { taskLabeller } from "./KernelTree";
-import { RuntimesList } from "./RuntimesList";
+import { MachinesList } from "./MachinesList";
 
 afterEach(cleanup);
 
 const NOW = 1_700_000_000;
 
-function machine(overrides: Partial<Runtime> = {}): Runtime {
+function machine(overrides: Partial<Machine> = {}): Machine {
   return {
     id: "rt_1",
     name: "ana-macbook",
@@ -29,7 +29,7 @@ function kernel(overrides: Partial<RunningKernel> = {}): RunningKernel {
   kernelSeq += 1;
   return {
     id: `k_${kernelSeq}`,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     studyId: "st_1",
     sessionId: "ses_1",
     taskId: "tk_1",
@@ -77,11 +77,11 @@ const STUDIES: Study[] = [
  * more, so exercising one through anything but a row would be testing a
  * composition the screen does not use.
  */
-function tree(runtimes: Runtime[], kernels: RunningKernel[], handlers = {}) {
+function tree(machines: Machine[], kernels: RunningKernel[], handlers = {}) {
   return render(
     <ApiProvider api={createInMemoryApi()}>
-      <RuntimesList
-        runtimes={runtimes}
+      <MachinesList
+        machines={machines}
         kernels={kernels}
         taskLabel={taskLabeller(TASKS, STUDIES)}
         now={NOW}
@@ -128,7 +128,7 @@ it("draws a kernel's shape over time against the machine holding it, not against
   // identically. The machine's own compute row carries no series, so the
   // only sparkline on screen is the kernel's.
   tree([machine()], [kernel({ series: [{ memoryBytes: 600_000 }, { memoryBytes: 1_200_000 }] })], {
-    compute: [{ runtimeId: "rt_1", totalMemoryBytes: 8 * 1024 * 1024 * 1024, cores: 8 }],
+    compute: [{ machineId: "rt_1", totalMemoryBytes: 8 * 1024 * 1024 * 1024, cores: 8 }],
   });
 
   expect(screen.getByLabelText("Memory over time").textContent).toBe("▁▁");

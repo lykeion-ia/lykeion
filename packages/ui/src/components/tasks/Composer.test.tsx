@@ -177,26 +177,26 @@ describe("Composer mentions", () => {
 
 /**
  * `blocker` — what a caller sets when it knows a send has nothing to reach
- * (a real lab with no daemon registered; see `useRuntimeBlocker`). The
- * component itself owns no api and no notion of a runtime: it only renders
+ * (a real lab with no daemon registered; see `useMachineBlocker`). The
+ * component itself owns no api and no notion of a machine: it only renders
  * whatever `ReactNode` it is given and stops the send paths while it is set,
  * which is what these three tests are here to pin down.
  */
 describe("Composer blocker", () => {
   const NOTICE =
-    "No runtime is connected to this lab. Install the Lykeion daemon on " +
+    "No machine is connected to this lab. Install the Lykeion daemon on " +
     "the machine you want to run on, and it will appear here.";
 
-  it("says no runtime is connected rather than offering a send that cannot work", () => {
+  it("says no machine is connected rather than offering a send that cannot work", () => {
     render(<Composer variant="docked" onSend={() => {}} blocker={NOTICE} />);
 
-    expect(screen.getByText(/no runtime is connected/i)).toBeInTheDocument();
+    expect(screen.getByText(/no machine is connected/i)).toBeInTheDocument();
     expect(
       screen.getByText(/install the Lykeion daemon/i),
     ).toBeInTheDocument();
   });
 
-  it("does not let a send be submitted while no runtime is connected", async () => {
+  it("does not let a send be submitted while no machine is connected", async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();
     render(<Composer variant="docked" onSend={onSend} blocker={NOTICE} />);
@@ -208,10 +208,10 @@ describe("Composer blocker", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("composes normally once a runtime has registered", async () => {
+  it("composes normally once a machine has registered", async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();
-    // No `blocker` — the shape a caller passes once `listRuntimes()` is no
+    // No `blocker` — the shape a caller passes once `listMachines()` is no
     // longer empty.
     render(<Composer variant="docked" onSend={onSend} />);
 
@@ -222,7 +222,7 @@ describe("Composer blocker", () => {
     expect(onSend).toHaveBeenCalledWith("run the alignment", {
       planMode: false,
     });
-    expect(screen.queryByText(/no runtime is connected/i)).toBeNull();
+    expect(screen.queryByText(/no machine is connected/i)).toBeNull();
   });
 });
 

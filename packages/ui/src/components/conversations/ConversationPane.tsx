@@ -164,11 +164,11 @@ function MessageThread({ messages }: { messages: Message[] }) {
                   <span className="text-sub font-medium text-fg">
                     {displayName(message.author, dir)}
                   </span>
-                  {/* An agent in a thread of people is worth marking. Which
+                  {/* An expert in a thread of people is worth marking. Which
                       one it is, is already in the name beside it. */}
                   {isAgent && (
                     <span className="rounded border border-line px-1 text-micro font-medium uppercase tracking-[0.4px] text-fg-tertiary">
-                      Agent
+                      Expert
                     </span>
                   )}
                   <span className="text-meta text-fg-tertiary">

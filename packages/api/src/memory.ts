@@ -1495,7 +1495,7 @@ export function createInMemoryLab(
       task.updatedTs = tick();
       return title;
     },
-    async listRuntimes() {
+    async listMachines() {
       return [];
     },
     async kernelEnvStatus() {
@@ -1512,7 +1512,7 @@ export function createInMemoryLab(
       };
     },
     async kernelEnvList() {
-      // No filesystem in the browser core to enumerate `runtime/envs` — an
+      // No filesystem in the browser core to enumerate `machine/envs` — an
       // honest empty list; a real env appears only once provisioned.
       return [];
     },
@@ -1523,7 +1523,7 @@ export function createInMemoryLab(
       // same reason — so the two cores stay one contract.
       throw new LykeionError(
         "unsupported",
-        "no runtime is connected to this lab — install the Lykeion daemon on the machine you want to run on.",
+        "no machine is connected to this lab — install the Lykeion daemon on the machine you want to run on.",
       );
     },
     async listRunningKernels() {
@@ -1573,7 +1573,7 @@ export function createInMemoryLab(
         "the browser core has no lab to pair a machine with — pairing needs a real workspace server.",
       );
     },
-    async removeRuntime(_runtimeId: string) {
+    async removeMachine(_machineId: string) {
       throw new LykeionError(
         "unsupported",
         "the browser core has no lab to remove a machine from — removing a machine needs a real workspace server.",

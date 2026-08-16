@@ -45,7 +45,7 @@ export function Leaderboard({ rows }: LeaderboardProps) {
             );
           })}
         </div>
-        <span className="text-sub text-fg-subtle">{rows.length} agents</span>
+        <span className="text-sub text-fg-subtle">{rows.length} experts</span>
       </div>
 
       <div
@@ -54,7 +54,7 @@ export function Leaderboard({ rows }: LeaderboardProps) {
           GRID_COLS,
         )}
       >
-        <span>Agent</span>
+        <span>Expert</span>
         <span />
         <span className="text-right">Tokens</span>
         <span className="text-right">Cost</span>

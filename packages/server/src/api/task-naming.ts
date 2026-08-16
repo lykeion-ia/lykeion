@@ -8,8 +8,8 @@ import {
 import type { Deps } from "./index";
 import type { Store } from "../store/store";
 import { nextSeq } from "../store/migrations";
-import { healthFor } from "../runtime-health";
-import { resolveRuntimeForAgent } from "./sessions";
+import { healthFor } from "../machine-health";
+import { resolveMachineForAgent } from "./sessions";
 
 export type TaskNamingApi = Pick<LykeionApi, "nameTask">;
 
@@ -56,7 +56,7 @@ export function taskNamingApi(deps: Deps): TaskNamingApi {
       if (!promptNeedsSummary(input.prompt)) return null;
       if (before !== derived) return null;
 
-      const resolved = resolveRuntimeForAgent(store, input.agent, actor.userId);
+      const resolved = resolveMachineForAgent(store, input.agent, actor.userId);
       // Three ways there is no machine to ask, and all three are the same
       // answer. Not an error even for the ownership one, which `startRun`
       // does refuse over: a run a colleague's machine could have taken is
@@ -72,7 +72,7 @@ export function taskNamingApi(deps: Deps): TaskNamingApi {
       // connects, the Task has been named — by its prompt, or by a person —
       // and a summary arriving then is at best redundant and at worst a
       // rename nobody asked for, of a chat they have since moved on from.
-      const delivered = runs.deliverNow(resolved.runtimeId, {
+      const delivered = runs.deliverNow(resolved.machineId, {
         type: "name-task",
         runId: requestId,
         taskId: input.taskId,
@@ -81,7 +81,7 @@ export function taskNamingApi(deps: Deps): TaskNamingApi {
       });
       if (!delivered) return null;
 
-      const answered = await titles.await(resolved.runtimeId, requestId);
+      const answered = await titles.await(resolved.machineId, requestId);
       if (answered === null) return null;
       const title = cleanSummaryTitle(answered);
       if (title === null) return null;

@@ -50,7 +50,7 @@ function asCli(agent: DaemonAgent): AgentCli {
     command: agent.agent,
     version: "",
     available: agent.available,
-    runtimeId: "",
+    machineId: "",
     // This step is about what is waiting on the researcher, and being signed
     // in is as far as this route can speak to. A row is never told it can run
     // on the strength of an answer that was not about running.

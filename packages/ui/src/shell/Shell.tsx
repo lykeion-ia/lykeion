@@ -19,7 +19,7 @@ import { AgentsScreen } from "../screens/AgentsScreen";
 import { AgentDetailScreen } from "../screens/AgentDetailScreen";
 import { WorkflowsScreen } from "../screens/WorkflowsScreen";
 import { WorkflowDetailScreen } from "../screens/WorkflowDetailScreen";
-import { RuntimesScreen } from "../screens/RuntimesScreen";
+import { MachinesScreen } from "../screens/MachinesScreen";
 import { MyTasksScreen } from "../screens/MyTasksScreen";
 import { ResearchGroupsScreen } from "../screens/ResearchGroupsScreen";
 import "./shell.css";
@@ -180,8 +180,8 @@ function ScreenSwitch({
       return <WorkflowsScreen />;
     case "workflow":
       return <WorkflowDetailScreen workflowId={route.workflowId} />;
-    case "runtimes":
-      return <RuntimesScreen />;
+    case "machines":
+      return <MachinesScreen />;
     case "my-tasks":
       return <MyTasksScreen />;
     case "research-groups":

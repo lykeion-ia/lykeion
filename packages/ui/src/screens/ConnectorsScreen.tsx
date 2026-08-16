@@ -22,7 +22,7 @@ import { cn } from "../lib/utils";
  *  no machine attached — and neither is a failure to paint in red. */
 const DISCOVERY_UNAVAILABLE = [
   "remote connector tool discovery is not yet supported",
-  "no runtime is connected to this lab",
+  "no machine is connected to this lab",
 ];
 
 /** The MCP server shape, shown compactly: `command args…` or the remote url. */

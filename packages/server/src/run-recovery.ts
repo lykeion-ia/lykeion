@@ -8,11 +8,11 @@ import { recordRunFrames, runSnapshot } from "./store/sessions";
  * the daemon that held it would: durable in `turns` first — through
  * `recordRunFrames`, the same function `/daemon/run/events` itself writes a
  * real ending with — then fanned out through `publish`, the one code path
- * that also retires the run's own commands from its runtime's queue and
+ * that also retires the run's own commands from its machine's queue and
  * makes its buffer eligible to age out. No parallel copy of either half
  * exists here.
  *
- * `reason` names the machine, read off `runtimes` — a status flip with no
+ * `reason` names the machine, read off `machines` — a status flip with no
  * explanation is a shrug; a researcher reading this on a run's own stream
  * needs to know it was the machine reconnecting without this run, not a
  * fault this run's own turn found.
@@ -20,12 +20,12 @@ import { recordRunFrames, runSnapshot } from "./store/sessions";
 export function failDroppedRuns(
   store: Store,
   runs: RunRelay,
-  runtimeId: string,
+  machineId: string,
   dropped: string[],
   nowTs: number,
 ): void {
   if (dropped.length === 0) return;
-  const machineName = store.get(`SELECT name FROM runtimes WHERE id = ?`, [runtimeId])?.name as
+  const machineName = store.get(`SELECT name FROM runtimes WHERE id = ?`, [machineId])?.name as
     | string
     | undefined;
   const reason =

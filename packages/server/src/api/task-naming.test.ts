@@ -125,7 +125,7 @@ async function pairClaudeMachine(
   base: string,
   api: LykeionApi,
   machineName: string,
-): Promise<{ runtimeId: string; token: string }> {
+): Promise<{ machineId: string; token: string }> {
   const { verifier, challenge } = secretPair();
   const { code } = await api.pairMachine({
     name: machineName,
@@ -139,7 +139,12 @@ async function pairClaudeMachine(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code, verifier }),
   });
-  const { token, runtimeId } = (await exchanged.json()) as { token: string; runtimeId: string };
+  const { token, runtimeId: machineId } = (await exchanged.json()) as {
+    token: string;
+    /** The key this response actually carries. The daemon parses it, so it
+     *  is the one name the runtimes → machines rename had to leave alone. */
+    runtimeId: string;
+  };
   await fetch(`${base}/daemon/report`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -150,7 +155,7 @@ async function pairClaudeMachine(
       clis: [{ id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true }],
     }),
   });
-  return { runtimeId, token };
+  return { machineId, token };
 }
 
 interface NamingLab {
@@ -159,7 +164,7 @@ interface NamingLab {
   relay: RunRelay;
   ownerApi: LykeionApi;
   memberApi: LykeionApi;
-  runtimeId: string;
+  machineId: string;
   token: string;
   studyId: string;
   advanceClock(seconds: number): void;
@@ -176,7 +181,7 @@ async function freshLab(): Promise<NamingLab> {
   const memberCookie = await redeemInvite(server.base, invite.code, "member@lab.example", "Member");
   const memberApi = apiFor(server.base, memberCookie);
 
-  const { runtimeId, token } = await pairClaudeMachine(server.base, ownerApi, "ana-macbook");
+  const { machineId, token } = await pairClaudeMachine(server.base, ownerApi, "ana-macbook");
   const study = await ownerApi.createStudy({ key: "NAM", title: "Naming" });
 
   return {
@@ -185,7 +190,7 @@ async function freshLab(): Promise<NamingLab> {
     relay: server.relay,
     ownerApi,
     memberApi,
-    runtimeId,
+    machineId,
     token,
     studyId: study.id,
     advanceClock: server.advanceClock,
@@ -203,7 +208,7 @@ function attachNamingDaemon(
   answer: (command: RunCommand) => string | null,
 ): { taken: RunCommand[] } {
   const taken: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, command) => {
+  lab.relay.attach(lab.machineId, (_seq, command) => {
     taken.push(command);
     if (command.type !== "name-task") return;
     void fetch(`${lab.base}/daemon/task/title`, {
@@ -314,7 +319,7 @@ it("drops a summary that lands after the researcher has renamed the chat", async
   const lab = await freshLab();
   const taskId = await taskNamedByPrompt(lab, LONG_PROMPT);
 
-  lab.relay.attach(lab.runtimeId, (_seq, command) => {
+  lab.relay.attach(lab.machineId, (_seq, command) => {
     if (command.type !== "name-task") return;
     void (async () => {
       await lab.ownerApi.updateTask(taskId, { title: "Mine, thanks" });
@@ -382,7 +387,7 @@ it("refuses another machine's answer to a request that is genuinely in flight", 
   const taskId = await taskNamedByPrompt(lab, LONG_PROMPT);
 
   let forgedStatus = 0;
-  lab.relay.attach(lab.runtimeId, (_seq, command) => {
+  lab.relay.attach(lab.machineId, (_seq, command) => {
     if (command.type !== "name-task") return;
     void (async () => {
       const forged = await fetch(`${lab.base}/daemon/task/title`, {

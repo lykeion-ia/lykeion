@@ -6,7 +6,7 @@ import {
 } from "@lykeion/api";
 import type { Deps } from "./index";
 import type { Store } from "../store/store";
-import { healthFor } from "../runtime-health";
+import { healthFor } from "../machine-health";
 import {
   openSession,
   activeTurnForTask,
@@ -15,8 +15,8 @@ import {
   liveSessionFor,
   recordTurn,
   listGrants,
-  runtimeForTurn,
-  runtimeOwnerForTurn,
+  machineForTurn,
+  machineOwnerForTurn,
   runSnapshot,
   newestTurnForTask,
   sessionForTurn,
@@ -30,8 +30,8 @@ export type SessionsApi = Pick<
   "startRun" | "resumeRuns" | "submitRunDecision" | "runHistory" | "revertTurn"
 >;
 
-export interface ResolvedRuntime {
-  runtimeId: string;
+export interface ResolvedMachine {
+  machineId: string;
   ownerId: string;
   name: string;
   lastSeenTs: number;
@@ -43,7 +43,7 @@ function turnIsActive(store: Store, runId: string): boolean {
 }
 
 /**
- * The runtime a run against `agent` would land on. A machine the caller owns
+ * The machine a run against `agent` would land on. A machine the caller owns
  * is always preferred over one that merely has a lower-`seq` matching CLI
  * row — two members can each have `claude` on their own machine, and
  * resolving to a colleague's rather than the caller's own would refuse a run
@@ -59,11 +59,11 @@ function turnIsActive(store: Store, runId: string): boolean {
  * resolves the same way, over every available CLI rather than one named
  * CLI.
  */
-export function resolveRuntimeForAgent(
+export function resolveMachineForAgent(
   store: Store,
   agent: string | undefined,
   callerId: string,
-): ResolvedRuntime | undefined {
+): ResolvedMachine | undefined {
   const row = store.get(
     `SELECT r.id AS runtime_id, r.owner_id AS owner_id, r.name AS name,
             r.last_seen_ts AS last_seen_ts, c.cli_id AS cli_id
@@ -76,7 +76,7 @@ export function resolveRuntimeForAgent(
   );
   if (!row) return undefined;
   return {
-    runtimeId: row.runtime_id as string,
+    machineId: row.runtime_id as string,
     ownerId: row.owner_id as string,
     name: row.name as string,
     lastSeenTs: row.last_seen_ts as number,
@@ -88,7 +88,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
   const { store, actor, now, runs, reverts, changes } = deps;
   return {
     async startRun(input) {
-      const resolved = resolveRuntimeForAgent(store, input.options.agent, actor.userId);
+      const resolved = resolveMachineForAgent(store, input.options.agent, actor.userId);
       if (!resolved)
         throw new LykeionError(
           "unsupported",
@@ -136,10 +136,10 @@ export function sessionsApi(deps: Deps): SessionsApi {
         const ts = now();
         const sessionId =
           working?.sessionId ??
-          liveSessionFor(store, input.taskId, resolved.runtimeId, resolved.agent) ??
+          liveSessionFor(store, input.taskId, resolved.machineId, resolved.agent) ??
           openSession(store, {
             studyId: input.studyId,
-            runtimeId: resolved.runtimeId,
+            machineId: resolved.machineId,
             agent: resolved.agent,
             openedBy: actor.userId,
             openedTs: ts,
@@ -162,7 +162,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
         return { runId, sessionId };
       });
 
-      const grants = listGrants(store, input.studyId, resolved.runtimeId);
+      const grants = listGrants(store, input.studyId, resolved.machineId);
       const command: RunCommand = {
         type: "start-run",
         runId,
@@ -174,7 +174,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
         ...(input.options.model === undefined ? {} : { model: input.options.model }),
         ...(grants.length > 0 ? { grants } : {}),
       };
-      runs.enqueue(resolved.runtimeId, command);
+      runs.enqueue(resolved.machineId, command);
       const subscriptions = new Set<() => void>();
       let closed = false;
       let terminal = false;
@@ -198,7 +198,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
           if (!stored) throw new LykeionError("not-found", `no such run: ${runId}`);
           const {
             sessionId: _sessionId,
-            runtimeId: _runtimeId,
+            machineId: _machineId,
             openedBy: _openedBy,
             ...snapshot
           } = stored;
@@ -237,7 +237,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
         },
         submit(decision) {
           if (closed || terminal || !turnIsActive(store, runId)) return;
-          runs.enqueue(resolved.runtimeId, { type: "decision", runId, decision });
+          runs.enqueue(resolved.machineId, { type: "decision", runId, decision });
         },
         detach,
         close() {
@@ -245,7 +245,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
           closed = true;
           detach();
           if (!terminal && turnIsActive(store, runId))
-            runs.enqueue(resolved.runtimeId, { type: "cancel", runId });
+            runs.enqueue(resolved.machineId, { type: "cancel", runId });
         },
       };
     },
@@ -266,7 +266,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
       if (!session) throw new LykeionError("not-found", `no such run: ${runId}`);
       // Resolved from the caller rather than taken from the client: the turn
       // ran on their machine, in a directory only they can run in.
-      const owner = runtimeOwnerForTurn(store, runId);
+      const owner = machineOwnerForTurn(store, runId);
       if (owner !== actor.userId)
         throw new LykeionError(
           "forbidden",
@@ -282,7 +282,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
       // once: an agent going on working through a restore would write into
       // a directory being replaced underneath it.
       if (turnIsActive(store, runId))
-        runs.enqueue(session.runtimeId, { type: "cancel", runId });
+        runs.enqueue(session.machineId, { type: "cancel", runId });
 
       const command: RunCommand = {
         type: "revert",
@@ -291,7 +291,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
         taskId,
         sessionId: turn.session_id as string,
       };
-      runs.enqueue(session.runtimeId, command);
+      runs.enqueue(session.machineId, command);
       // Restore first, truncate second. A machine that could not put the
       // files back leaves the turn in the record — never a truncated record
       // standing over files that were not restored — and its own account of
@@ -327,9 +327,9 @@ export function sessionsApi(deps: Deps): SessionsApi {
 
     async resumeRuns(taskId) {
       return activeRunSnapshotsForTask(store, taskId)
-        .filter((stored) => runtimeOwnerForTurn(store, stored.runId) === actor.userId)
+        .filter((stored) => machineOwnerForTurn(store, stored.runId) === actor.userId)
         .map((stored) => {
-          const { sessionId: _sessionId, runtimeId, openedBy: _openedBy, ...publicSnapshot } = stored;
+          const { sessionId: _sessionId, machineId, openedBy: _openedBy, ...publicSnapshot } = stored;
           const snapshot: ActiveRunSnapshot = publicSnapshot;
           const subscriptions = new Set<() => void>();
           let cursor = snapshot.lastEventSeq;
@@ -376,7 +376,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
             },
             submit(decision) {
               if (closed || terminal || !turnIsActive(store, snapshot.runId)) return;
-              runs.enqueue(runtimeId, { type: "decision", runId: snapshot.runId, decision });
+              runs.enqueue(machineId, { type: "decision", runId: snapshot.runId, decision });
             },
             detach,
             close() {
@@ -384,7 +384,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
               closed = true;
               detach();
               if (!terminal && turnIsActive(store, snapshot.runId))
-                runs.enqueue(runtimeId, { type: "cancel", runId: snapshot.runId });
+                runs.enqueue(machineId, { type: "cancel", runId: snapshot.runId });
             },
           };
         });
@@ -396,7 +396,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
       // are sequential and guessable — `run_<seq>` off one workspace-wide
       // counter — so a caller must never learn which of the two is true from
       // this response, the same reasoning `/runs/<id>/events` is held to.
-      if (runtimeOwnerForTurn(store, runId) !== actor.userId)
+      if (machineOwnerForTurn(store, runId) !== actor.userId)
         throw new LykeionError(
           "forbidden",
           `run ${runId} does not belong to a machine you own`,
@@ -416,7 +416,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
           "invalid",
           `a "global" grant would reach every Study in this lab — grant one Study at a time instead`,
         );
-      runs.enqueue(runtimeForTurn(store, runId)!, { type: "decision", runId, decision });
+      runs.enqueue(machineForTurn(store, runId)!, { type: "decision", runId, decision });
     },
   };
 }

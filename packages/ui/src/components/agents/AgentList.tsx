@@ -43,7 +43,7 @@ export function AgentList({ agents, loading = false }: AgentListProps) {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search agents…"
+            placeholder="Search experts…"
             className="h-full w-full bg-transparent text-ui text-fg placeholder:text-fg-subtle focus:outline-none"
           />
         </div>
@@ -54,8 +54,8 @@ export function AgentList({ agents, loading = false }: AgentListProps) {
           {agents.length === 0
             ? loading
               ? ""
-              : "No agents yet — create one to start."
-            : "No agents match your search"}
+              : "No experts yet — create one to start."
+            : "No experts match your search"}
         </div>
       ) : (
         <div className="flex-1 overflow-auto px-5 pb-5">
@@ -65,7 +65,7 @@ export function AgentList({ agents, loading = false }: AgentListProps) {
               GRID_COLS,
             )}
           >
-            <span>Agent</span>
+            <span>Expert</span>
             <span>Model</span>
             <span>Tools</span>
           </div>

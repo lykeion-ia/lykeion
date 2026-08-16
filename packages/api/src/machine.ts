@@ -1,10 +1,10 @@
 import type { AgentCli } from "./agent-cli";
 
 /** What a paired machine can do. Empty until a daemon says otherwise. */
-export type RuntimeCapability = "sessions" | "kernels";
+export type MachineCapability = "sessions" | "kernels";
 
 /** A machine a researcher has paired with this lab. */
-export interface Runtime {
+export interface Machine {
   id: string;
   /** Chosen when the machine was paired. Not unique: a member may
    *  reasonably have two machines called "laptop". */
@@ -18,7 +18,7 @@ export interface Runtime {
    *  is killed must not be able to leave "online" behind it. */
   health: "online" | "unstable" | "offline";
   lastSeenTs: number;
-  capabilities: RuntimeCapability[];
+  capabilities: MachineCapability[];
   /** Why `capabilities` carries no `"kernels"`, on a machine where it does
    *  not. Absent both on a machine that CAN host kernels and on one whose
    *  daemon has never checked — the same "absent is not zero" rule
@@ -51,7 +51,7 @@ export type Language = "python" | "r";
 export type KernelEnvState = "absent" | "ready" | "broken";
 
 /**
- * A snapshot of one managed kernel environment, surfaced on the Runtimes
+ * A snapshot of one managed kernel environment, surfaced on the Machines
  * screen. Cheap to compute (a couple of `stat`s) — safe to poll on render.
  * camelCase on the wire.
  */
@@ -131,7 +131,7 @@ export interface KernelResources {
 export interface RunningKernel extends KernelIdentity {
   /** Minted by the machine from the identity above; every call names this. */
   id: string;
-  runtimeId: string;
+  machineId: string;
   studyId: string;
   state: KernelState;
   /** Which incarnation of the process is behind this identity. A kernel
@@ -176,14 +176,14 @@ export interface RunningKernel extends KernelIdentity {
 /**
  * What one machine's kernels are using, against what that machine has.
  *
- * One entry per runtime, never one for the lab: a figure summed across
+ * One entry per machine, never one for the lab: a figure summed across
  * several researchers' laptops would describe nowhere. Every field but the
  * id is optional, and an offline machine carries none of them — a machine
  * that answered "no kernels" and a machine nobody could reach must not
  * render alike.
  */
 export interface MachineCompute {
-  runtimeId: string;
+  machineId: string;
   memoryBytes?: number;
   totalMemoryBytes?: number;
   cpuPercent?: number;

@@ -93,7 +93,7 @@ export function AssigneePicker({ value, onChange }: AssigneePickerProps) {
       (err: unknown) => {
         if (cancelled) return;
         console.error("[AssigneePicker] failed to load agents:", err);
-        // An empty Agents group is an honest answer to a failed read; a
+        // An empty Experts group is an honest answer to a failed read; a
         // rejection nobody handles is not.
         setAgents([]);
       },
@@ -152,7 +152,7 @@ export function AssigneePicker({ value, onChange }: AssigneePickerProps) {
               onToggle={toggle}
             />
           ))}
-          <GroupLabel spaced>Agents</GroupLabel>
+          <GroupLabel spaced>Experts</GroupLabel>
           {agents.map((a) => (
             <Option
               key={assigneeKey({ kind: "agent", name: a.name })}

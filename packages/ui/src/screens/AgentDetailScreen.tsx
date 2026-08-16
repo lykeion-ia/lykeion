@@ -2,7 +2,7 @@ import { useApi } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
 import { AgentDetail } from "../components/agents/AgentDetail";
 
-/** Agent detail (#/agents/:name) — the persona's properties + instructions/tools. */
+/** Expert detail (#/agents/:name) — the persona's properties + instructions/tools. */
 export function AgentDetailScreen({ agentId }: { agentId: string }) {
   const api = useApi();
   const q = usePromise(() => api.listAgents(), [api]);
@@ -18,7 +18,7 @@ export function AgentDetailScreen({ agentId }: { agentId: string }) {
   if (!q.loading && !agent) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center text-ui text-fg-subtle">
-        Agent not found
+        Expert not found
       </div>
     );
   }

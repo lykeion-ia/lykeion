@@ -119,7 +119,7 @@ describe("parseHash", () => {
       { name: "agent", agentId: "statistician" },
       { name: "workflows" },
       { name: "workflow", workflowId: "diffexpr" },
-      { name: "runtimes" },
+      { name: "machines" },
       { name: "settings" },
       { name: "settings", tab: "skills" },
       { name: "settings", tab: "connectors" },

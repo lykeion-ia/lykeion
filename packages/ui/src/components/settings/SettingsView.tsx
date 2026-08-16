@@ -39,7 +39,7 @@ const SETTINGS_NAV: { group: string; items: SettingsNavItem[] }[] = [
   {
     group: "Capabilities",
     // Skills and Connectors lead: they are the ones researchers actually
-    // manage, ahead of the built-in runtime capabilities.
+    // manage, ahead of the built-in machine capabilities.
     items: [
       { key: "skills", label: "Skills" },
       { key: "connectors", label: "Connectors" },

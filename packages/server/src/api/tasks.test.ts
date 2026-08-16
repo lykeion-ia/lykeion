@@ -22,7 +22,7 @@ import type { Store } from "../store/store";
 // `lastRunStatus` are actually asserted, stays unwired because its prompt-
 // driven test needs `startRun`, which this server still answers
 // `unsupported`. That leaves `toTask`'s handling of `pinned`, `lastRunStatus`
-// and `runtimeId` unreached by anything that runs against a live server —
+// and `machineId` unreached by anything that runs against a live server —
 // these tests close that gap directly against `tasksApi`.
 
 const dirs: string[] = [];
@@ -101,14 +101,14 @@ it("a Task's pinned flag reads back true when set, and is absent — not false �
   expect("pinned" in unpinned).toBe(false);
 });
 
-it("lastRunStatus and runtimeId are absent on a Task nothing has run yet, and read back once a column holds a value", async () => {
+it("lastRunStatus and machineId are absent on a Task nothing has run yet, and read back once a column holds a value", async () => {
   const store = freshStore();
   addOwner(store, "u_owner");
   const tasks = tasksApi(depsFor(store));
 
   const created = await tasks.createTask({ stage: "background", title: "Untouched" });
   expect("lastRunStatus" in created).toBe(false);
-  expect("runtimeId" in created).toBe(false);
+  expect("machineId" in created).toBe(false);
 
   // No handler writes these two columns — recording a run needs a machine
   // this server does not have — so the write is seeded directly, the way a
@@ -119,7 +119,7 @@ it("lastRunStatus and runtimeId are absent on a Task nothing has run yet, and re
 
   const after = await tasks.getTask(created.id);
   expect(after.task.lastRunStatus).toBe("ok");
-  expect(after.task.runtimeId).toBe("rt_1");
+  expect(after.task.machineId).toBe("rt_1");
 });
 
 it("a Task names the agent of its newest turn, so a list can say what each is talking to", async () => {

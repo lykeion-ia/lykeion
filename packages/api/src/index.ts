@@ -18,7 +18,7 @@ export * from "./method-skills";
 export * from "./workflow-catalogue";
 export * from "./workflow-catalogue";
 export * from "./artifact";
-export * from "./runtime";
+export * from "./machine";
 export * from "./agent-cli";
 export * from "./research-group";
 export * from "./account";
@@ -86,9 +86,9 @@ export const Commands = {
   connectorCatalog: "connector_catalog",
   listConnectorTools: "list_connector_tools",
   readArtifact: "read_artifact",
-  listRuntimes: "list_runtimes",
+  listMachines: "list_machines",
   pairMachine: "pair_machine",
-  removeRuntime: "remove_runtime",
+  removeMachine: "remove_machine",
   kernelEnvStatus: "kernel_env_status",
   kernelEnvList: "kernel_env_list",
   kernelEnvSetup: "kernel_env_setup",

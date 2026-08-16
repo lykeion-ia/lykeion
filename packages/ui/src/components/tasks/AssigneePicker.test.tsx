@@ -42,11 +42,11 @@ function placeTrigger(top: number): HTMLElement {
 }
 
 describe("AssigneePicker", () => {
-  it("offers members and agents in separate groups", async () => {
+  it("offers members and experts in separate groups", async () => {
     mount([]);
     await userEvent.click(screen.getByRole("button", { name: /assignees/i }));
     expect(await screen.findByText("People")).toBeInTheDocument();
-    expect(screen.getByText("Agents")).toBeInTheDocument();
+    expect(screen.getByText("Experts")).toBeInTheDocument();
   });
 
   it("adds a person", async () => {
@@ -74,7 +74,7 @@ describe("AssigneePicker", () => {
       </ApiProvider>,
     );
     await userEvent.click(screen.getByRole("button", { name: /assignees/i }));
-    await screen.findByText("Agents");
+    await screen.findByText("Experts");
     expect(screen.queryByRole("option", { name: "Amara" })).toBeNull();
   });
 
@@ -94,7 +94,7 @@ describe("AssigneePicker", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it("shows an empty Agents group when the agent read fails", async () => {
+  it("shows an empty Experts group when the expert read fails", async () => {
     const api = createInMemoryApi();
     vi.spyOn(api, "listAgents").mockRejectedValue(new Error("network down"));
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -106,10 +106,10 @@ describe("AssigneePicker", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: /assignees/i }));
 
-    // People still render; the Agents group is present and empty, and the
+    // People still render; the Experts group is present and empty, and the
     // rejection was reported rather than left unhandled.
     expect(await screen.findByRole("option", { name: "Amara" })).toBeInTheDocument();
-    expect(screen.getByText("Agents")).toBeInTheDocument();
+    expect(screen.getByText("Experts")).toBeInTheDocument();
     expect(
       screen.queryByRole("option", { name: "Statistician" }),
     ).toBeNull();

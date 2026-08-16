@@ -100,7 +100,7 @@ async function redeemInvite(base: string, code: string, email: string, displayNa
 }
 
 /** Pairs a machine for the owner and reports it as offering the `claude`
- *  CLI, the way `runtimes.test.ts` pairs one — but through this file's own
+ *  CLI, the way `machines.test.ts` pairs one — but through this file's own
  *  harness rather than `makeServerLab`, since a session test needs the raw
  *  store and relay that harness does not expose. */
 async function pairClaudeMachine(
@@ -108,7 +108,7 @@ async function pairClaudeMachine(
   ownerApi: LykeionApi,
   machineName: string,
   cliId = "claude",
-): Promise<{ runtimeId: string; token: string }> {
+): Promise<{ machineId: string; token: string }> {
   const { verifier, challenge } = secretPair();
   const { code } = await ownerApi.pairMachine({
     name: machineName,
@@ -122,7 +122,12 @@ async function pairClaudeMachine(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code, verifier }),
   });
-  const { token, runtimeId } = (await exchanged.json()) as { token: string; runtimeId: string };
+  const { token, runtimeId: machineId } = (await exchanged.json()) as {
+    token: string;
+    /** The key this response actually carries. The daemon parses it, so it
+     *  is the one name the runtimes → machines rename had to leave alone. */
+    runtimeId: string;
+  };
   await fetch(`${base}/daemon/report`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -133,7 +138,7 @@ async function pairClaudeMachine(
       clis: [{ id: cliId, name: cliId, command: cliId, version: "2.1.220", available: true }],
     }),
   });
-  return { runtimeId, token };
+  return { machineId, token };
 }
 
 /** Reads whole `{ seq, command }` blocks off `/daemon/commands` as they
@@ -180,7 +185,7 @@ interface SessionsLab {
   ownerApi: LykeionApi;
   memberApi: LykeionApi;
   ownerId: string;
-  runtimeId: string;
+  machineId: string;
   machineName: string;
   /** The paired machine's own bearer token, for a test that speaks to
    *  `/daemon/...` routes directly rather than through `startRun`. */
@@ -207,7 +212,7 @@ async function labWithPairedMachine(): Promise<SessionsLab> {
   const memberApi = apiFor(server.base, memberCookie);
 
   const machineName = "ana-macbook";
-  const { runtimeId, token } = await pairClaudeMachine(server.base, ownerApi, machineName);
+  const { machineId, token } = await pairClaudeMachine(server.base, ownerApi, machineName);
 
   const study = await ownerApi.createStudy({ key: "CMP", title: "Comparative" });
   const task = await ownerApi.createTask({ studyId: study.id, stage: "background", title: "run me" });
@@ -219,7 +224,7 @@ async function labWithPairedMachine(): Promise<SessionsLab> {
     ownerApi,
     memberApi,
     ownerId,
-    runtimeId,
+    machineId,
     machineName,
     token,
     studyId: study.id,
@@ -254,7 +259,7 @@ async function completeRun(lab: SessionsLab, runId: string): Promise<Response> {
 it("opens a session, records a turn, and hands the machine a start-run", async () => {
   const lab = await labWithPairedMachine();
   const taken: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => taken.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => taken.push(c));
 
   const { runId } = await lab.ownerApi.startRun({
     studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
@@ -400,10 +405,10 @@ it("carries the Study's standing folder grants in the command", async () => {
   lab.store.run(
     `INSERT INTO folder_grants (id, study_id, runtime_id, path, mode, granted_by, granted_ts, seq)
      VALUES ('fg_1', ?, ?, '/work/rna-seq', 'write', ?, 1, 1)`,
-    [lab.studyId, lab.runtimeId, lab.ownerId],
+    [lab.studyId, lab.machineId, lab.ownerId],
   );
   const taken: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => taken.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => taken.push(c));
   await lab.ownerApi.startRun({
     studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
@@ -462,7 +467,7 @@ it("reconciles what a machine reports live on /daemon/run/live, requiring its ow
   // A run only counts as live once a connected daemon has actually been
   // handed its start-run — attached here the way a real daemon's own
   // command stream is already open before a researcher ever starts a run.
-  lab.relay.attach(lab.runtimeId, () => {});
+  lab.relay.attach(lab.machineId, () => {});
 
   const unauthorized = await fetch(`${lab.base}/daemon/run/live`, {
     method: "POST",
@@ -475,7 +480,7 @@ it("reconciles what a machine reports live on /daemon/run/live, requiring its ow
     studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
-  expect(lab.relay.liveFor(lab.runtimeId)).toEqual([runId]);
+  expect(lab.relay.liveFor(lab.machineId)).toEqual([runId]);
 
   const res = await fetch(`${lab.base}/daemon/run/live`, {
     method: "POST",
@@ -484,8 +489,8 @@ it("reconciles what a machine reports live on /daemon/run/live, requiring its ow
   });
   expect(res.status).toBe(200);
   // The route actually reached `reconcile`, not merely answered `ok` — the
-  // relay's own belief about what this runtime holds moved with it.
-  expect(lab.relay.liveFor(lab.runtimeId)).toEqual([]);
+  // relay's own belief about what this machine holds moved with it.
+  expect(lab.relay.liveFor(lab.machineId)).toEqual([]);
 });
 
 it("refuses to publish run events for a run the calling machine does not own", async () => {
@@ -840,7 +845,7 @@ it("wires the returned handle's onEvent/submit/close to the relay for an in-proc
   // `attach` replays the start-run this same `startRun` call already
   // queued, so only what `submit`/`close` add afterward is asserted on.
   const commands: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => commands.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => commands.push(c));
   handle.submit({ action: "cancel" });
   handle.close();
   expect(
@@ -889,7 +894,7 @@ it("stops a fresh handle's queued replay when its callback detaches", async () =
   ]);
 });
 
-it("resumed in-process handles use their durable cursor, route decisions per runtime, detach, and cancel on close", async () => {
+it("resumed in-process handles use their durable cursor, route decisions per machine, detach, and cancel on close", async () => {
   const lab = await labWithPairedMachine();
   const codex = await pairClaudeMachine(lab.base, lab.ownerApi, "ana-codex", "codex");
   const sibling = await lab.ownerApi.createTask({
@@ -954,8 +959,8 @@ it("resumed in-process handles use their durable cursor, route decisions per run
 
   const claudeCommands: RunCommand[] = [];
   const codexCommands: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, command) => claudeCommands.push(command));
-  lab.relay.attach(codex.runtimeId, (_seq, command) => codexCommands.push(command));
+  lab.relay.attach(lab.machineId, (_seq, command) => claudeCommands.push(command));
+  lab.relay.attach(codex.machineId, (_seq, command) => codexCommands.push(command));
   claudeCommands.length = 0;
   codexCommands.length = 0;
   resumed[0]!.submit({ action: "approve-plan" });
@@ -1015,14 +1020,14 @@ it("stops synchronous replay when a resumed handle closes from its first frame",
 // its bare id rather than through the handle `startRun` returned, since a
 // handle's methods never survive the trip across the wire.
 
-it("delivers a decision submitted through submitRunDecision to the run's runtime", async () => {
+it("delivers a decision submitted through submitRunDecision to the run's machine", async () => {
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
     studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
   const commands: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => commands.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => commands.push(c));
 
   await lab.ownerApi.submitRunDecision(runId, { action: "cancel" });
 
@@ -1060,7 +1065,7 @@ it("does not queue handle or RPC commands after a run is already terminal", asyn
   expect(posted.status).toBe(200);
 
   const commands: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, command) => commands.push(command));
+  lab.relay.attach(lab.machineId, (_seq, command) => commands.push(command));
   handle.submit({ action: "cancel" });
   handle.close();
   handle.close();
@@ -1135,7 +1140,7 @@ it("discards the newest turn once the machine says the files are back", async ()
   const newest = await settledRunWithSnapshot(lab, "second");
 
   const taken: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => taken.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => taken.push(c));
   const reverting = lab.ownerApi.revertTurn(newest);
   await until(() => taken.some((c) => c.type === "revert"));
   expect(taken.find((c) => c.type === "revert")).toMatchObject({
@@ -1155,7 +1160,7 @@ it("keeps the turn in the record when the machine could not put the files back",
   const lab = await labWithPairedMachine();
   const newest = await settledRunWithSnapshot(lab, "only");
 
-  lab.relay.attach(lab.runtimeId, () => {});
+  lab.relay.attach(lab.machineId, () => {});
   const reverting = lab.ownerApi
     .revertTurn(newest)
     .then(() => undefined, (err: unknown) => err);

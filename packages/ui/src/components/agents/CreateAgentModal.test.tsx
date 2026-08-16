@@ -9,10 +9,10 @@ it("is empty-safe, disables Create until a name is typed, and creates", async ()
   const user = userEvent.setup();
   const onCreate = vi.fn().mockResolvedValue(undefined);
   const onClose = vi.fn();
-  // Empty runtimes/connectors must not crash (fresh install).
+  // Empty machines/connectors must not crash (fresh install).
   render(
     <CreateAgentModal
-      runtimes={[]}
+      machines={[]}
       skillNames={["rnaseq"]}
       connectorNames={[]}
       onCreate={onCreate}
@@ -24,7 +24,7 @@ it("is empty-safe, disables Create until a name is typed, and creates", async ()
   expect(create).toBeDisabled();
 
   await user.type(
-    screen.getByPlaceholderText(/Deep Research Agent/i),
+    screen.getByPlaceholderText(/Deep Research Expert/i),
     "Deep Research",
   );
   expect(create).toBeEnabled();
@@ -44,7 +44,7 @@ it("closes on Escape", async () => {
   const onClose = vi.fn();
   render(
     <CreateAgentModal
-      runtimes={[]}
+      machines={[]}
       skillNames={[]}
       connectorNames={[]}
       onCreate={vi.fn()}
@@ -59,7 +59,7 @@ it("shows the narrowing-semantics helper copy and an empty-state nudge to Settin
   const user = userEvent.setup();
   render(
     <CreateAgentModal
-      runtimes={[]}
+      machines={[]}
       skillNames={[]}
       connectorNames={[]}
       onCreate={vi.fn()}
@@ -70,7 +70,7 @@ it("shows the narrowing-semantics helper copy and an empty-state nudge to Settin
   // Explicit about the ∩ (not ∪) semantics, so the misconception can't reappear here.
   expect(
     screen.getByText(
-      /A specialist sees only the connectors you assign here \(intersected with what's enabled\)\. Leave empty to inherit all enabled connectors\./i,
+      /An expert sees only the connectors you assign here \(intersected with what's enabled\)\. Leave empty to inherit all enabled connectors\./i,
     ),
   ).toBeInTheDocument();
 
@@ -86,7 +86,7 @@ it("selecting a connector and creating sends connectors: [name] — a REAL Agent
   const onClose = vi.fn();
   render(
     <CreateAgentModal
-      runtimes={[]}
+      machines={[]}
       skillNames={[]}
       connectorNames={["pubmed", "uniprot"]}
       onCreate={onCreate}
@@ -95,7 +95,7 @@ it("selecting a connector and creating sends connectors: [name] — a REAL Agent
   );
 
   await user.type(
-    screen.getByPlaceholderText(/Deep Research Agent/i),
+    screen.getByPlaceholderText(/Deep Research Expert/i),
     "Deep Research",
   );
   await user.click(screen.getByRole("button", { name: /Add connectors/i }));

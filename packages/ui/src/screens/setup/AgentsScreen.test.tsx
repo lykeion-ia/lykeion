@@ -20,7 +20,7 @@ const clis: AgentCli[] = [
     command: "claude",
     version: "2.1.231",
     available: true,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: true,
     signedIn: true,
     account: "ana@uni.edu",
@@ -32,7 +32,7 @@ const clis: AgentCli[] = [
     command: "codex",
     version: "0.58.0",
     available: true,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: false,
     sessionReadyReason: "sign in to Codex to run it",
     signedIn: false,
@@ -44,7 +44,7 @@ const clis: AgentCli[] = [
     command: "pi",
     version: "0.4.0",
     available: true,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: false,
     sessionReadyReason: "pi-acp is published by neither Pi's vendor nor the ACP project",
     adapterProvenance: "community",
@@ -55,7 +55,7 @@ const clis: AgentCli[] = [
     command: "qoder",
     version: "1.0.0",
     available: true,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: false,
     sessionReadyReason: "QODER_HOME is not redirecting it",
     heldBackReason:
@@ -67,7 +67,7 @@ const clis: AgentCli[] = [
     command: "kiro",
     version: "",
     available: false,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: false,
     sessionReadyReason: "Lykeion cannot run Kiro yet",
   },
@@ -147,7 +147,7 @@ it("lets a researcher leave with nothing signed in, as D-5 requires", async () =
 
 it("offers no sign-in at all where nothing could start one", () => {
   // The lab DISPLAYS this list; only the machine's own front door can spawn a
-  // CLI login. Mounted in Runtimes there is no `onSignIn`, and a button that
+  // CLI login. Mounted in Machines there is no `onSignIn`, and a button that
   // called nothing would be the worst of both — it looks like the way out and
   // does not work.
   render(<AgentsScreen clis={clis} onReview={vi.fn()} />);
@@ -174,7 +174,7 @@ it("says what a not-installed row would take, since that half is a shopping list
     command: "vendory",
     version: "",
     available: false,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: false,
     adapterProvenance: "vendor",
   };

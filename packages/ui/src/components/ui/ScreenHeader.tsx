@@ -15,7 +15,7 @@ export const screenTitleClass = "text-title font-semibold text-fg";
 
 /**
  * The fixed title row every section screen uses — Studies, Research Groups,
- * Agents, Skills, Workflows, Connectors, My Tasks, Runtimes, Usage, Settings.
+ * Experts, Skills, Workflows, Connectors, My Tasks, Machines, Usage, Settings.
  *
  * This is the single definition of the header's geometry (padding, height,
  * title size) and of where the primary action sits: hard right, on the title
@@ -23,7 +23,7 @@ export const screenTitleClass = "text-title font-semibold text-fg";
  * so every section lines up exactly.
  *
  * The row height is pinned to `min-h-[52px]` — the `h-8` (32px) CTA button
- * plus this row's `pt-3` + `pb-2` — so a section WITHOUT an action (Runtimes,
+ * plus this row's `pt-3` + `pb-2` — so a section WITHOUT an action (Machines,
  * Settings) centres its title on exactly the same baseline as one WITH a
  * "New …" button. Otherwise the actionless row collapses to the title's own
  * line-height and the title rides ~7px higher than every CTA section.

@@ -2,14 +2,14 @@ import { LykeionError, type LykeionApi } from "@lykeion/api";
 import type { Deps } from "./index";
 
 
-/** What every kernel and run method answers with until a runtime is
+/** What every kernel and run method answers with until a machine is
  *  actually connected to a machine — the one failure no request to this
  *  server, on its own, can ever work around. Exported for the one family
  *  that has to choose between this reason and a truer one: `kernelsApi`
- *  gives `kernelEnvSetup` this refusal only after looking at the runtimes
+ *  gives `kernelEnvSetup` this refusal only after looking at the machines
  *  table and finding nothing online. */
-export const NO_RUNTIME =
-  "no runtime is connected to this lab — install the Lykeion daemon on the machine you want to run on.";
+export const NO_MACHINE =
+  "no machine is connected to this lab — install the Lykeion daemon on the machine you want to run on.";
 
 /**
  * Every method `LykeionApi` declares that nothing yet writes to or reads
@@ -22,7 +22,7 @@ export const NO_RUNTIME =
  * so are the invite, offboarding and settings methods — `accountApi` and
  * `settingsApi` own those — and so are the customization-engine and
  * research-group methods, which `configSurfaceApi` owns, and so are pairing
- * and the runtime list, which `runtimesApi` owns, and so are `startRun`,
+ * and the machine list, which `machinesApi` owns, and so are `startRun`,
  * `submitRunDecision` and `runHistory`, which `sessionsApi` owns, and so are
  * the kernel and notebook methods, which `kernelsApi` owns. The conversation
  * methods are the ones in that neighbourhood answered here: nothing yet
@@ -52,7 +52,7 @@ export function absentApi(
   | "listConnectors" | "addConnector" | "setConnectorEnabled" | "setConnectorSkipApprovals"
   | "connectorCatalog" | "listConnectorTools"
   | "listResearchGroups" | "createResearchGroup"
-  | "listRuntimes" | "listAgentClis" | "pairMachine" | "removeRuntime"
+  | "listMachines" | "listAgentClis" | "pairMachine" | "removeMachine"
   | "startRun" | "submitRunDecision" | "runHistory" | "revertTurn"
   | "listRunningKernels" | "computeSnapshot" | "taskNotebook" | "kernelExecute" | "kernelInterrupt" | "kernelStop" | "kernelRestart"
   | "kernelEnvSetup"
@@ -101,7 +101,7 @@ export function absentApi(
     },
 
     async delegateSubagent(_input) {
-      throw new LykeionError("unsupported", NO_RUNTIME);
+      throw new LykeionError("unsupported", NO_MACHINE);
     },
     async resumeRuns(_taskId) {
       return [];
@@ -109,7 +109,7 @@ export function absentApi(
     async readArtifact(_studyId, _path) {
       throw new LykeionError(
         "unsupported",
-        "no runtime is connected to this lab — install the Lykeion daemon on the machine that ran this study, so its artifacts can be read.",
+        "no machine is connected to this lab — install the Lykeion daemon on the machine that ran this study, so its artifacts can be read.",
       );
     },
 

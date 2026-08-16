@@ -5,11 +5,11 @@ import {
   createInMemoryApi,
   type Connector,
   type LykeionApi,
-  type Runtime,
+  type Machine,
 } from "@lykeion/api";
 import App from "../App";
 
-function runtime(id: string, name: string, ownerId: string): Runtime {
+function machine(id: string, name: string, ownerId: string): Machine {
   return {
     id,
     name,
@@ -34,12 +34,12 @@ function connector(name: string, enabled: boolean): Connector {
 
 afterEach(cleanup);
 
-it("lists agents, opens a detail with instructions + tools, and opens the create modal", async () => {
+it("lists experts, opens a detail with instructions + tools, and opens the create modal", async () => {
   const user = userEvent.setup();
   render(<App api={createInMemoryApi()} />);
-  await user.click(await screen.findByRole("link", { name: /^Agents$/i }));
+  await user.click(await screen.findByRole("link", { name: /^Experts$/i }));
 
-  // Seeded agent row.
+  // Seeded expert row.
   expect(await screen.findByText("statistician")).toBeInTheDocument();
 
   // Open its detail → Instructions tab shows the real systemPrompt; Tools tab lists tools.
@@ -51,17 +51,17 @@ it("lists agents, opens a detail with instructions + tools, and opens the create
   expect(screen.getByText("Bash")).toBeInTheDocument();
 });
 
-it("opens the Create Agent modal from the Agents list", async () => {
+it("opens the Create Expert modal from the Experts list", async () => {
   const user = userEvent.setup();
   render(<App api={createInMemoryApi()} />);
-  await user.click(await screen.findByRole("link", { name: /^Agents$/i }));
-  await user.click(await screen.findByRole("button", { name: /New agent/i }));
+  await user.click(await screen.findByRole("link", { name: /^Experts$/i }));
+  await user.click(await screen.findByRole("button", { name: /New expert/i }));
   expect(
-    await screen.findByRole("dialog", { name: /Create agent/i }),
+    await screen.findByRole("dialog", { name: /Create expert/i }),
   ).toBeInTheDocument();
 });
 
-it("offers the caller's own machines in the runtime picker and never defaults to a colleague's", async () => {
+it("offers the caller's own machines in the machine picker and never defaults to a colleague's", async () => {
   const user = userEvent.setup();
   const api = createInMemoryApi();
   const me = await api.currentUser();
@@ -71,16 +71,16 @@ it("offers the caller's own machines in the runtime picker and never defaults to
     // first machine in it belongs to somebody else — which is exactly what a
     // picker defaulting to the head of the list would assert as the
     // caller's.
-    listRuntimes: async () => [
-      runtime("rt_a", "alpha-workstation", "u_somebody_else"),
-      runtime("rt_z", "zoe-macbook", me.id),
+    listMachines: async () => [
+      machine("rt_a", "alpha-workstation", "u_somebody_else"),
+      machine("rt_z", "zoe-macbook", me.id),
     ],
   };
   render(<App api={spied} />);
-  await user.click(await screen.findByRole("link", { name: /^Agents$/i }));
-  await user.click(await screen.findByRole("button", { name: /New agent/i }));
+  await user.click(await screen.findByRole("link", { name: /^Experts$/i }));
+  await user.click(await screen.findByRole("button", { name: /New expert/i }));
 
-  const dialog = await screen.findByRole("dialog", { name: /Create agent/i });
+  const dialog = await screen.findByRole("dialog", { name: /Create expert/i });
   // The default reads off the caller's own machines, not the lab's.
   const picker = await within(dialog).findByRole("button", {
     name: /zoe-macbook/i,
@@ -98,7 +98,7 @@ it("offers the caller's own machines in the runtime picker and never defaults to
   expect(within(dialog).queryByText("alpha-workstation")).toBeNull();
 });
 
-it("passes only the Lab's ENABLED connectors into the Create Agent modal, and a selected connector really persists onto the created Agent", async () => {
+it("passes only the Lab's ENABLED connectors into the Create Expert modal, and a selected connector really persists onto the created Expert", async () => {
   const user = userEvent.setup();
   const api = createInMemoryApi();
   const spied: LykeionApi = {
@@ -109,11 +109,11 @@ it("passes only the Lab's ENABLED connectors into the Create Agent modal, and a 
     ],
   };
   render(<App api={spied} />);
-  await user.click(await screen.findByRole("link", { name: /^Agents$/i }));
-  await user.click(await screen.findByRole("button", { name: /New agent/i }));
+  await user.click(await screen.findByRole("link", { name: /^Experts$/i }));
+  await user.click(await screen.findByRole("button", { name: /New expert/i }));
 
   await user.type(
-    screen.getByPlaceholderText(/Deep Research Agent/i),
+    screen.getByPlaceholderText(/Deep Research Expert/i),
     "Curator",
   );
   await user.click(screen.getByRole("button", { name: /Add connectors/i }));
@@ -125,7 +125,7 @@ it("passes only the Lab's ENABLED connectors into the Create Agent modal, and a 
   await user.click(screen.getByRole("button", { name: "pubmed" }));
   await user.click(screen.getByRole("button", { name: "Create" }));
 
-  // Real persistence (not the decorative skills drop): re-open the new agent
+  // Real persistence (not the decorative skills drop): re-open the new expert
   // and its Connectors tab shows the assignment came back from the store.
   await user.click(await screen.findByText("Curator"));
   await user.click(screen.getByRole("button", { name: "Connectors" }));

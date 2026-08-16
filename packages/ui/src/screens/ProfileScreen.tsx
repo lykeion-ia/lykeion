@@ -182,7 +182,7 @@ export function ProfileScreen({
           <StatCard
             label={`Tasks · ${range}`}
             value={String(totalTasks)}
-            sub={`Across ${usage.agents.length} agents`}
+            sub={`Across ${usage.agents.length} experts`}
           />
         </div>
 

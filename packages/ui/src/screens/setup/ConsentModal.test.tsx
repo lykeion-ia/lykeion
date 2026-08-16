@@ -13,7 +13,7 @@ const pi: AgentCli = {
   command: "pi",
   version: "0.4.0",
   available: true,
-  runtimeId: "rt_1",
+  machineId: "rt_1",
   sessionReady: false,
   sessionReadyReason: "pi-acp is published by neither Pi's vendor nor the ACP project",
   adapterProvenance: "community",

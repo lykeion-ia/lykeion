@@ -23,7 +23,7 @@ import { cn } from "../../lib/utils";
  * mints is a thread ABOUT that work, which is what the Inbox lists.
  *
  * Deliberately not built on [`Composer`]. That control's affordances — "Plan
- * first", the `@`/`#`/`/` triggers, the runtime blocker, the CLI switcher —
+ * first", the `@`/`#`/`/` triggers, the machine blocker, the CLI switcher —
  * exist to start agent runs, and every one of them would be a lie over a box
  * that posts a message to a colleague. A plain textarea is the honest control.
  */

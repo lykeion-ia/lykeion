@@ -7,7 +7,7 @@ import { nextSeq } from "../store/migrations";
 
 /** The machine a bearer token names. */
 export interface Machine {
-  runtimeId: string;
+  machineId: string;
   ownerId: string;
 }
 
@@ -40,7 +40,7 @@ const BEARER_PREFIX = "Bearer ";
 /**
  * The machine a bearer token names, or undefined. Mirrors `resolveActor` in
  * what it refuses: a revoked token is not a machine, neither is one whose
- * runtime has since been removed, and neither is one whose owner has since
+ * machine has since been removed, and neither is one whose owner has since
  * left the lab — the membership join is what makes offboarding immediate
  * for a machine token the same way it already is for a session.
  */
@@ -60,7 +60,7 @@ export function resolveMachine(store: Store, authorization: string | undefined):
     [hashSecret(token)],
   );
   if (!row) return undefined;
-  return { runtimeId: row.runtime_id as string, ownerId: row.owner_id as string };
+  return { machineId: row.runtime_id as string, ownerId: row.owner_id as string };
 }
 
 const OWNED_ROUTES = new Set([
@@ -124,7 +124,7 @@ function kernelsField(body: unknown): { ready: boolean | undefined; reason: stri
 }
 
 /** One CLI as a report's body carries it — the same shape as `AgentCli`,
- *  minus the `runtimeId` a report has no reason to name itself. `sessionReady`
+ *  minus the `machineId` a report has no reason to name itself. `sessionReady`
  *  is read leniently, not required: a daemon built before this field existed
  *  says nothing about it, and silence is read as "not session-ready" rather
  *  than trusted as a claim nobody actually made. */
@@ -368,12 +368,12 @@ function exchange(req: DaemonRequest): DaemonResult {
     }
 
     const seq = nextSeq(store);
-    const runtimeId = `rt_${seq}`;
+    const machineId = `rt_${seq}`;
     store.run(
       `INSERT INTO runtimes (id, owner_id, name, platform, daemon_version, capabilities, created_ts, last_seen_ts, seq)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        runtimeId,
+        machineId,
         request.owner_id,
         request.name,
         request.platform,
@@ -387,13 +387,17 @@ function exchange(req: DaemonRequest): DaemonResult {
     const token = newToken();
     store.run(
       `INSERT INTO machine_tokens (token_hash, runtime_id, owner_id, created_ts, seq) VALUES (?, ?, ?, ?, ?)`,
-      [hashSecret(token), runtimeId, request.owner_id, now, nextSeq(store)],
+      [hashSecret(token), machineId, request.owner_id, now, nextSeq(store)],
     );
     changes.record("runtime-paired", {}, request.owner_id as string);
     const lab = store.get(`SELECT org_name FROM lab_settings WHERE id = 1`);
     success = {
       token,
-      runtimeId,
+      // The key the daemon reads off this response, and the one thing here
+      // that could not be renamed with the rest: `lab.ts` on the machine
+      // parses `body.runtimeId`, and a daemon already paired is not upgraded
+      // in step with the lab it is paired to.
+      runtimeId: machineId,
       machineName: request.name as string,
       labName: (lab?.org_name as string | undefined) ?? "",
     };
@@ -406,14 +410,14 @@ function exchange(req: DaemonRequest): DaemonResult {
 /** A report is contact with the machine the same way a heartbeat is — a
  *  daemon that reported a second ago is plainly not offline — so both move
  *  `last_seen_ts`, and this is the one place either does it. */
-function touchLastSeen(store: Store, runtimeId: string, ts: number): void {
-  store.run(`UPDATE runtimes SET last_seen_ts = ? WHERE id = ?`, [ts, runtimeId]);
+function touchLastSeen(store: Store, machineId: string, ts: number): void {
+  store.run(`UPDATE runtimes SET last_seen_ts = ? WHERE id = ?`, [ts, machineId]);
 }
 
 function heartbeat(req: DaemonRequest): DaemonResult {
   const machine = resolveMachine(req.store, req.authorization);
   if (!machine) return { status: 401, json: { error: "no such machine" } };
-  touchLastSeen(req.store, machine.runtimeId, req.now);
+  touchLastSeen(req.store, machine.machineId, req.now);
   return { status: 200, json: { ok: true } };
 }
 
@@ -449,7 +453,7 @@ function workspaces(req: DaemonRequest): DaemonResult {
  * strength of a guess. The CLI rows are replaced wholesale inside one
  * transaction — a daemon always reports the whole set it found, never a
  * delta, so there is nothing to reconcile row by row. A change is recorded
- * only when something an owner would actually see on the Runtimes screen is
+ * only when something an owner would actually see on the Machines screen is
  * different from what is already stored: the reported platform, daemon
  * version, or capabilities, the machine's own memory or core count, or the
  * CLI set compared on `(cli_id, version, available, sessionReady)`. Never
@@ -490,14 +494,14 @@ function report(req: DaemonRequest): DaemonResult {
       `SELECT platform, daemon_version, capabilities, total_memory_bytes, cores,
               kernels_ready, kernels_reason, process_visibility
          FROM runtimes WHERE id = ?`,
-      [machine.runtimeId],
+      [machine.machineId],
     )!;
     const existing = store
       .all(
         `SELECT cli_id, version, available, session_ready, options,
                 signed_in, account, held_back_reason, adapter_provenance
            FROM runtime_clis WHERE runtime_id = ?`,
-        [machine.runtimeId],
+        [machine.machineId],
       )
       .map((row) => ({
         cliId: row.cli_id as string,
@@ -517,7 +521,7 @@ function report(req: DaemonRequest): DaemonResult {
       current.platform !== platform ||
       current.daemon_version !== daemonVersion ||
       current.capabilities !== capabilitiesJson ||
-      // Memory and Processor are on the Runtimes screen too, same as
+      // Memory and Processor are on the Machines screen too, same as
       // platform and daemon version — a machine whose RAM or core count
       // changed is a change an owner would see there.
       current.total_memory_bytes !== totalMemoryBytes ||
@@ -545,10 +549,10 @@ function report(req: DaemonRequest): DaemonResult {
         kernelsReady,
         kernelsReason,
         processVisibility,
-        machine.runtimeId,
+        machine.machineId,
       ],
     );
-    store.run(`DELETE FROM runtime_clis WHERE runtime_id = ?`, [machine.runtimeId]);
+    store.run(`DELETE FROM runtime_clis WHERE runtime_id = ?`, [machine.machineId]);
     for (const cli of clis) {
       store.run(
         `INSERT INTO runtime_clis
@@ -557,7 +561,7 @@ function report(req: DaemonRequest): DaemonResult {
             adapter_provenance, seq)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          machine.runtimeId,
+          machine.machineId,
           cli.id,
           cli.name,
           cli.command,

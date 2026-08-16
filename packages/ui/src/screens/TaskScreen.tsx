@@ -12,7 +12,7 @@ import {
 } from "@lykeion/api";
 import { useApi, useInvalidateData } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
-import { useRuntimeBlocker } from "../hooks/useRuntimeBlocker";
+import { useMachineBlocker } from "../hooks/useMachineBlocker";
 import { useStickToBottom } from "../hooks/useStickToBottom";
 import { useTaskRun } from "../hooks/useTaskRun";
 import type { ManagedRun } from "../hooks/useRun";
@@ -272,7 +272,7 @@ export function TaskScreen({
   const clis = clisQuery.data ?? [];
   // Only the blocker: `machineNames` names machines on the CLI dock's tiles,
   // and this surface no longer carries one.
-  const { blocker } = useRuntimeBlocker();
+  const { blocker } = useMachineBlocker();
 
   // The Study's Tasks — the sidebar list. Held here rather than read off
   // `studyQuery` so a rename, a pin or a landed turn can refresh it without
@@ -487,7 +487,7 @@ export function TaskScreen({
   // whose machine has gone offline is still the one this Task is mid-
   // conversation with, and quietly resolving to a different one would put
   // another agent's models on screen — the exact defect this resolution
-  // exists to prevent. The composer's runtime blocker is what reports a
+  // exists to prevent. The composer's machine blocker is what reports a
   // machine that is not there.
   const effectiveCli =
     clis.find((c) => c.id === lastAgent) ??

@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import type { Runtime } from "@lykeion/api";
+import type { Machine } from "@lykeion/api";
 import { useApi } from "../api/ApiContext";
 import { hasWorkspaceServer } from "../api/select";
 import { usePromise } from "./usePromise";
 
 const NO_MACHINE =
-  "No machine of yours is connected to this lab. Install the local runtime " +
+  "No machine of yours is connected to this lab. Install the local machine " +
   "daemon on a machine you want to run on, and it will appear here.";
 
 /** What the composer says when the lab would not say who is asking. Not
@@ -20,20 +20,20 @@ const NO_IDENTITY =
  *  can run a session yet — every machine a daemon reports today lands here,
  *  since nothing it can do is a capability yet. Names the one machine there
  *  is; with several, none of them is singled out. */
-function cannotRunYet(mine: Runtime[]): string {
+function cannotRunYet(mine: Machine[]): string {
   if (mine.length === 1) {
     return `${mine[0].name} is connected, but it cannot run sessions yet.`;
   }
   return "None of your machines can run sessions yet.";
 }
 
-/** What `useRuntimeBlocker` resolves to: the notice `Composer`'s `blocker`
+/** What `useMachineBlocker` resolves to: the notice `Composer`'s `blocker`
  *  prop should read (or `undefined` to leave it free), and the machine names
  *  a caller who names machines on screen — `CliDock`'s tiles — needs and
- *  would otherwise have to read `listRuntimes()` a second time to get. */
-export interface RuntimeBlocker {
+ *  would otherwise have to read `listMachines()` a second time to get. */
+export interface MachineBlocker {
   blocker: ReactNode | undefined;
-  /** Runtime id → the machine's paired name, for the caller's own machines
+  /** Machine id → the machine's paired name, for the caller's own machines
    *  and no others. Nothing downstream can name a colleague's machine even
    *  from the full list, because `listAgentClis()` never answers with a
    *  colleague's CLI and there would be nothing to attach the name to — but
@@ -49,7 +49,7 @@ export interface RuntimeBlocker {
  * What `Composer`'s `blocker` prop should read on a screen that hosts it —
  * the one place the copy and the condition exist, so `StudyScreen` and
  * `TaskScreen` cannot drift apart on either — bundled with the machine names
- * both screens also need for `CliDock`, so `listRuntimes()` is read once
+ * both screens also need for `CliDock`, so `listMachines()` is read once
  * here rather than once more per screen. `ApiContext.tsx`'s `DirectoryContext`
  * is this repo's own precedent for not re-reading the same list per
  * consumer; this stays a plain return value rather than a second context
@@ -58,22 +58,22 @@ export interface RuntimeBlocker {
  * The question is whether THE CALLER has something to run on, not whether
  * the lab does — a colleague's paired machine is real, but a send from
  * someone else's composer has no way to reach it, since a machine only ever
- * runs for the member who paired it. So this reads `listRuntimes()` against
+ * runs for the member who paired it. So this reads `listMachines()` against
  * `currentUser()` and narrows to the caller's own before deciding anything.
  *
- * `listRuntimes()` answers empty both against a real workspace server with
+ * `listMachines()` answers empty both against a real workspace server with
  * no daemon registered AND in the browser-only demo, where nothing is
- * meant to register one — the browser tab is the runtime there, and a send
+ * meant to register one — the browser tab is the machine there, and a send
  * is simulated rather than dispatched anywhere. So an empty list only means
  * "nothing to run on" when `hasWorkspaceServer()` says a real lab is behind
  * the page; without that, `undefined` leaves the composer free to send.
  */
-export function useRuntimeBlocker(): RuntimeBlocker {
+export function useMachineBlocker(): MachineBlocker {
   const api = useApi();
-  const runtimes = usePromise(() => api.listRuntimes(), [api]);
+  const machines = usePromise(() => api.listMachines(), [api]);
   const me = usePromise(() => api.currentUser(), [api]);
   const machineNames = Object.fromEntries(
-    (runtimes.data ?? [])
+    (machines.data ?? [])
       .filter((r) => me.data !== null && r.ownerId === me.data.id)
       .map((r) => [r.id, r.name]),
   );
@@ -94,11 +94,11 @@ export function useRuntimeBlocker(): RuntimeBlocker {
   // put the notice up on every page load and swallow anything typed before
   // the answers arrived — the send would return with the text still in the
   // box and nothing said about why.
-  if (runtimes.loading || runtimes.data === null || me.data === null) {
+  if (machines.loading || machines.data === null || me.data === null) {
     return { blocker: undefined, machineNames };
   }
   const meId = me.data.id;
-  const mine = runtimes.data.filter((r) => r.ownerId === meId);
+  const mine = machines.data.filter((r) => r.ownerId === meId);
   if (mine.length === 0) return { blocker: NO_MACHINE, machineNames };
   const runnable = mine.find((r) => r.capabilities.includes("sessions"));
   if (!runnable) return { blocker: cannotRunYet(mine), machineNames };

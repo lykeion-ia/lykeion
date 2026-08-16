@@ -98,7 +98,7 @@ async function pairClaudeMachine(
   base: string,
   ownerApi: LykeionApi,
   machineName: string,
-): Promise<{ runtimeId: string; token: string }> {
+): Promise<{ machineId: string; token: string }> {
   const { verifier, challenge } = secretPair();
   const { code } = await ownerApi.pairMachine({
     name: machineName,
@@ -112,7 +112,12 @@ async function pairClaudeMachine(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code, verifier }),
   });
-  const { token, runtimeId } = (await exchanged.json()) as { token: string; runtimeId: string };
+  const { token, runtimeId: machineId } = (await exchanged.json()) as {
+    token: string;
+    /** The key this response actually carries. The daemon parses it, so it
+     *  is the one name the runtimes → machines rename had to leave alone. */
+    runtimeId: string;
+  };
   await fetch(`${base}/daemon/report`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -123,7 +128,7 @@ async function pairClaudeMachine(
       clis: [{ id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true }],
     }),
   });
-  return { runtimeId, token };
+  return { machineId, token };
 }
 
 interface RecoveryLab {
@@ -132,7 +137,7 @@ interface RecoveryLab {
   store: Store;
   relay: RunRelay;
   ownerApi: LykeionApi;
-  runtimeId: string;
+  machineId: string;
   machineName: string;
   token: string;
   taskId: string;
@@ -155,8 +160,8 @@ async function labWithRunInFlight(): Promise<RecoveryLab> {
   const ownerApi = apiFor(server.base, ownerCookie);
 
   const machineName = "ana-macbook";
-  const { runtimeId, token } = await pairClaudeMachine(server.base, ownerApi, machineName);
-  server.relay.attach(runtimeId, () => {});
+  const { machineId, token } = await pairClaudeMachine(server.base, ownerApi, machineName);
+  server.relay.attach(machineId, () => {});
 
   const study = await ownerApi.createStudy({ key: "CMP", title: "Comparative" });
   const task = await ownerApi.createTask({ studyId: study.id, stage: "background", title: "run me" });
@@ -172,7 +177,7 @@ async function labWithRunInFlight(): Promise<RecoveryLab> {
     store: server.store,
     relay: server.relay,
     ownerApi,
-    runtimeId,
+    machineId,
     machineName,
     token,
     taskId: task.id,
@@ -202,7 +207,7 @@ it("fails nothing when a command stream reconnects with its runs intact", async 
   const res = await postLive(lab, [lab.runId]);
   expect(res.status).toBe(200);
   expect(lab.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status).toBe("running");
-  expect(lab.relay.liveFor(lab.runtimeId)).toEqual([lab.runId]);
+  expect(lab.relay.liveFor(lab.machineId)).toEqual([lab.runId]);
 });
 
 it("does not fail a start command written to a dropped stream before the daemon acknowledged it", async () => {
@@ -233,7 +238,7 @@ it("fails a delivered run when a restarted daemon has no matching generation or 
     [lab.runId],
   )).toMatchObject({ status: "failed", ended_ts: expect.any(Number) });
   const replayed: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, command) => replayed.push(command));
+  lab.relay.attach(lab.machineId, (_seq, command) => replayed.push(command));
   expect(replayed).toEqual([]);
 });
 
@@ -245,7 +250,7 @@ it("fails a run the machine no longer holds after a restart, and runHistory repo
   const turn = lab.store.get(`SELECT status, ended_ts FROM turns WHERE id = ?`, [lab.runId])!;
   expect(turn.status).toBe("failed");
   expect(turn.ended_ts).not.toBeNull();
-  expect(lab.relay.liveFor(lab.runtimeId)).toEqual([]);
+  expect(lab.relay.liveFor(lab.machineId)).toEqual([]);
 
   const history = await lab.ownerApi.runHistory(lab.taskId);
   expect(history.find((h) => h.runId === lab.runId)?.status).toBe("failed");
@@ -271,7 +276,7 @@ it("fails a durable active run missing after both the daemon and server relay re
     `SELECT status, ended_ts FROM turns WHERE id = ?`,
     [lab.runId],
   )).toMatchObject({ status: "failed", ended_ts: expect.any(Number) });
-  expect(rebuilt.relay.liveFor(lab.runtimeId)).toEqual([]);
+  expect(rebuilt.relay.liveFor(lab.machineId)).toEqual([]);
 });
 
 it("seeds a rebuilt relay from a retained durable active run in the daemon report", async () => {
@@ -293,7 +298,7 @@ it("seeds a rebuilt relay from a retained durable active run in the daemon repor
   expect(await res.json()).toEqual({ ok: true, generation: rebuilt.relay.generation });
   expect(rebuilt.relay.generation).not.toBe(lab.relay.generation);
   expect(rebuilt.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status).toBe("running");
-  expect(rebuilt.relay.liveFor(lab.runtimeId)).toEqual([lab.runId]);
+  expect(rebuilt.relay.liveFor(lab.machineId)).toEqual([lab.runId]);
 });
 
 it("does not seed a rebuilt relay with a terminal run the daemon reports stale", async () => {
@@ -327,7 +332,7 @@ it("does not seed a rebuilt relay with a terminal run the daemon reports stale",
     retireRunIds: [lab.runId],
   });
   expect(rebuilt.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status).toBe("ok");
-  expect(rebuilt.relay.liveFor(lab.runtimeId)).toEqual([]);
+  expect(rebuilt.relay.liveFor(lab.machineId)).toEqual([]);
 });
 
 it("continues the durable frame sequence when a rebuilt relay fails a dropped run", async () => {
@@ -345,7 +350,7 @@ it("continues the durable frame sequence when a rebuilt relay fails a dropped ru
   const rebuiltRelay = createRunRelay();
   const seen: RunEventFrame[] = [];
   rebuiltRelay.subscribe(lab.runId, undefined, (frame) => seen.push(frame));
-  failDroppedRuns(lab.store, rebuiltRelay, lab.runtimeId, [lab.runId], 1_800_000_010);
+  failDroppedRuns(lab.store, rebuiltRelay, lab.machineId, [lab.runId], 1_800_000_010);
 
   expect(lab.store.get(`SELECT status, last_frame_seq FROM turns WHERE id = ?`, [lab.runId])).toEqual({
     status: "failed",
@@ -373,7 +378,7 @@ it("drops the failed run's own command, the same as a normal completion would", 
   await postLive(lab, []);
 
   const replayed: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => replayed.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => replayed.push(c));
   expect(replayed).toEqual([]);
 });
 
@@ -414,20 +419,20 @@ it("refuses a machine that names a run it does not own, before any of it reaches
   // read off the wire or guessed (`run_<seq>`, sequential across the whole
   // lab). Reporting Alice's run as "held" would, without a check, land in
   // Bob's own `queue.live`; reporting it missing on the very next call would
-  // then durably fail it and drop it from Alice's actual runtime's queue.
+  // then durably fail it and drop it from Alice's actual machine's queue.
   const lab = await labWithRunInFlight();
   const bob = await pairClaudeMachine(lab.base, lab.ownerApi, "bobs-desktop");
 
   const res = await postLive(lab, [lab.runId], bob.token);
   expect(res.status).toBe(403);
 
-  // Alice's run is untouched: still running, and her runtime's queue still
+  // Alice's run is untouched: still running, and her machine's queue still
   // holds the command that would run it — neither the status flip nor the
   // second-order damage (the run silently vanishing from her own queue)
   // ever happened.
   expect(lab.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status).toBe("running");
   const replayed: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => replayed.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => replayed.push(c));
   expect(replayed.some((c) => c.runId === lab.runId)).toBe(true);
 });
 
@@ -435,7 +440,7 @@ it("does not lock a machine out of its command stream over a reported run id tha
   // A run id whose turn does not exist in this store — nothing ever
   // minted it, or (should a future path ever remove a turn) it once did
   // and no longer does — is a different fact from one that resolves to
-  // another machine's runtime. Only the second is an attack. Naming an id
+  // another machine's machine. Only the second is an attack. Naming an id
   // that resolves to nobody at all must not refuse the whole report and
   // wedge an otherwise honest daemon out of every command behind it,
   // including a decision its own turn is waiting on.
@@ -445,9 +450,9 @@ it("does not lock a machine out of its command stream over a reported run id tha
   expect(await res.json()).toMatchObject({ retireRunIds: ["run_does_not_exist"] });
   expect(lab.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status).toBe("running");
   // The nonexistent id never reaches the relay's own belief of what this
-  // runtime holds — dropped before `reconcile` sees it, not merely ignored
+  // machine holds — dropped before `reconcile` sees it, not merely ignored
   // once inside it.
-  expect(lab.relay.liveFor(lab.runtimeId)).toEqual([lab.runId]);
+  expect(lab.relay.liveFor(lab.machineId)).toEqual([lab.runId]);
 
   // The machine's command stream still works: a decision for a different,
   // still-real run reaches it over a fresh attach, exactly as it would
@@ -461,7 +466,7 @@ it("does not lock a machine out of its command stream over a reported run id tha
     options: { planMode: false, agent: "claude" },
   });
   const replayed: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => replayed.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => replayed.push(c));
   expect(replayed.some((c) => c.runId === second.runId)).toBe(true);
 });
 

@@ -33,7 +33,7 @@ export type Route =
   | { name: "agent"; agentId: string }
   | { name: "workflows" }
   | { name: "workflow"; workflowId: string }
-  | { name: "runtimes" }
+  | { name: "machines" }
   /**
    * Settings, optionally deep-linked to one of its nav tabs
    * (`#/settings/skills`). `tab` is absent for the default General tab, so
@@ -157,8 +157,14 @@ export function parseHash(hash: string): Route {
       if (a !== undefined)
         return { name: "workflow", workflowId: decodeURIComponent(a) };
       return { name: "workflows" };
+    case "machines":
+      return { name: "machines" };
+    // What this screen was addressed as for as long as it was called Runtimes.
+    // Parse-only, like the three below: the mirror rewrites it to `#/machines`,
+    // so a bookmark still lands and the address bar stops saying the old word
+    // the moment it does.
     case "runtimes":
-      return { name: "runtimes" };
+      return { name: "machines" };
     // Skills, Connectors and Usage live in Settings now. These three stay as
     // parse-only aliases so old links and bookmarks keep working; the
     // provider's state→URL mirror rewrites them to `#/settings/<tab>`.
@@ -232,8 +238,8 @@ export function routeHash(route: Route): string {
       return "#/workflows";
     case "workflow":
       return `#/workflows/${encodeURIComponent(route.workflowId)}`;
-    case "runtimes":
-      return "#/runtimes";
+    case "machines":
+      return "#/machines";
     case "settings":
       return route.tab ? `#/settings/${route.tab}` : "#/settings";
     case "my-tasks":

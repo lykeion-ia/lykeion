@@ -13,7 +13,7 @@ const cli = (over: Partial<AgentCli>): AgentCli => ({
   command: "x",
   version: "",
   available: true,
-  runtimeId: "rt_1",
+  machineId: "rt_1",
   sessionReady: true,
   ...over,
 });
@@ -55,7 +55,7 @@ describe("CliDock", () => {
           cli({ id: "claude", name: "Claude Code" }),
           cli({ id: "copilot", name: "GitHub Copilot CLI" }),
         ]}
-        selectedId={cliIdentity({ id: "claude", runtimeId: "rt_1" })}
+        selectedId={cliIdentity({ id: "claude", machineId: "rt_1" })}
         onSelect={() => {}}
       />,
     );
@@ -67,8 +67,8 @@ describe("CliDock", () => {
   it("renders one tile per CLI id across paired machines", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const onSelect = vi.fn();
-    const laptopClaude = cli({ id: "claude", name: "Claude Code", runtimeId: "rt_laptop" });
-    const workClaude = cli({ id: "claude", name: "Claude Code", runtimeId: "rt_work" });
+    const laptopClaude = cli({ id: "claude", name: "Claude Code", machineId: "rt_laptop" });
+    const workClaude = cli({ id: "claude", name: "Claude Code", machineId: "rt_work" });
 
     render(
       <CliDock
@@ -97,7 +97,7 @@ describe("CliDock", () => {
     const laptopClaude = cli({
       id: "claude",
       name: "Claude Code",
-      runtimeId: "rt_laptop",
+      machineId: "rt_laptop",
       available: true,
       sessionReady: false,
       sessionReadyReason: "adapter is unavailable",
@@ -105,7 +105,7 @@ describe("CliDock", () => {
     const workClaude = cli({
       id: "claude",
       name: "Claude Code",
-      runtimeId: "rt_work",
+      machineId: "rt_work",
       sessionReady: true,
     });
 
@@ -129,16 +129,16 @@ describe("CliDock", () => {
     const laptopClaude = cli({
       id: "claude",
       name: "Claude Code",
-      runtimeId: "rt_laptop",
+      machineId: "rt_laptop",
       sessionReady: false,
     });
     const workClaude = cli({
       id: "claude",
       name: "Claude Code",
-      runtimeId: "rt_work",
+      machineId: "rt_work",
       sessionReady: true,
     });
-    const codex = cli({ id: "codex", name: "Codex", runtimeId: "rt_work" });
+    const codex = cli({ id: "codex", name: "Codex", machineId: "rt_work" });
 
     render(
       <CliDock
@@ -154,12 +154,12 @@ describe("CliDock", () => {
     );
   });
 
-  it("names the machine on each tile once the CLIs span more than one runtime, and says why an unready one cannot run", () => {
-    const laptopClaude = cli({ id: "claude", name: "Claude Code", runtimeId: "rt_laptop" });
+  it("names the machine on each tile once the CLIs span more than one machine, and says why an unready one cannot run", () => {
+    const laptopClaude = cli({ id: "claude", name: "Claude Code", machineId: "rt_laptop" });
     const workCopilot = cli({
       id: "copilot",
       name: "GitHub Copilot CLI",
-      runtimeId: "rt_work",
+      machineId: "rt_work",
       sessionReady: false,
       sessionReadyReason: "no ACP adapter is known for copilot yet",
     });
@@ -194,10 +194,10 @@ describe("CliDock", () => {
     render(
       <CliDock
         clis={[
-          cli({ id: "claude", name: "Claude Code", runtimeId: "rt_laptop" }),
-          cli({ id: "copilot", name: "GitHub Copilot CLI", runtimeId: "rt_gpu" }),
+          cli({ id: "claude", name: "Claude Code", machineId: "rt_laptop" }),
+          cli({ id: "copilot", name: "GitHub Copilot CLI", machineId: "rt_gpu" }),
         ]}
-        selectedId={cliIdentity({ id: "claude", runtimeId: "rt_laptop" })}
+        selectedId={cliIdentity({ id: "claude", machineId: "rt_laptop" })}
         onSelect={() => {}}
         machineNames={{ rt_laptop: "laptop", rt_gpu: "gpubox" }}
       />,
@@ -227,10 +227,10 @@ describe("CliDock", () => {
     render(
       <CliDock
         clis={[
-          cli({ id: "claude", name: "Claude Code", runtimeId: "rt_1" }),
-          cli({ id: "copilot", name: "GitHub Copilot CLI", runtimeId: "rt_1" }),
+          cli({ id: "claude", name: "Claude Code", machineId: "rt_1" }),
+          cli({ id: "copilot", name: "GitHub Copilot CLI", machineId: "rt_1" }),
         ]}
-        selectedId={cliIdentity({ id: "claude", runtimeId: "rt_1" })}
+        selectedId={cliIdentity({ id: "claude", machineId: "rt_1" })}
         onSelect={() => {}}
         machineNames={{ rt_1: "laptop" }}
       />,
@@ -316,14 +316,14 @@ describe("CliDock", () => {
           cli({
             id: "claude",
             name: "Claude Code",
-            runtimeId: "rt_a",
+            machineId: "rt_a",
             available: true,
             sessionReady: false,
           }),
           cli({
             id: "claude",
             name: "Claude Code",
-            runtimeId: "rt_b",
+            machineId: "rt_b",
             available: false,
             sessionReady: true,
           }),

@@ -10,7 +10,7 @@ import {
 } from "@lykeion/api";
 import { useApi, useDataVersion, useInvalidateData } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
-import { useRuntimeBlocker } from "../hooks/useRuntimeBlocker";
+import { useMachineBlocker } from "../hooks/useMachineBlocker";
 import { useListNav } from "../hooks/useListNav";
 import { useRouter } from "../router";
 import { Composer } from "../components/tasks/Composer";
@@ -71,10 +71,10 @@ export function StudyScreen({ studyId }: { studyId: string }) {
   const detail = usePromise(() => api.getStudy(studyId), [api, studyId, version]);
   const clisQuery = usePromise(() => api.listAgentClis(), [api]);
   const clis = clisQuery.data ?? [];
-  // `machineNames` rides along on the same `listRuntimes()` read the blocker
+  // `machineNames` rides along on the same `listMachines()` read the blocker
   // itself needs — a second, separate read here would fire on every mount
   // and every `invalidate()` for data this hook already has.
-  const { blocker, machineNames } = useRuntimeBlocker();
+  const { blocker, machineNames } = useMachineBlocker();
   // Held as a `cliIdentity()` value, not a bare CLI id — a member can pair
   // more than one machine, so `clis` can hold "claude" twice, once per
   // machine, and only the composite says which one this is.

@@ -9,7 +9,7 @@ import {
 function kernel(overrides: Partial<RunningKernel>): RunningKernel {
   return {
     id: "kernel-1",
-    runtimeId: "runtime-1",
+    machineId: "machine-1",
     studyId: "study-1",
     sessionId: "session-1",
     taskId: "task-1",

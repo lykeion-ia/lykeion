@@ -73,7 +73,7 @@ export function toTask(
     ...(row.last_run_status === null ? {} : { lastRunStatus: row.last_run_status as "ok" | "failed" }),
     ...(agent === undefined ? {} : { agent }),
     ...(row.pinned === 1 ? { pinned: true } : {}),
-    ...(row.runtime_id === null ? {} : { runtimeId: row.runtime_id as string }),
+    ...(row.runtime_id === null ? {} : { machineId: row.runtime_id as string }),
     createdTs: row.created_ts as number,
     updatedTs: row.updated_ts as number,
   };

@@ -115,7 +115,7 @@ async function pairClaudeMachine(
   base: string,
   api: LykeionApi,
   machineName: string,
-): Promise<{ runtimeId: string; token: string }> {
+): Promise<{ machineId: string; token: string }> {
   const { verifier, challenge } = secretPair();
   const { code } = await api.pairMachine({
     name: machineName,
@@ -129,7 +129,12 @@ async function pairClaudeMachine(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code, verifier }),
   });
-  const { token, runtimeId } = (await exchanged.json()) as { token: string; runtimeId: string };
+  const { token, runtimeId: machineId } = (await exchanged.json()) as {
+    token: string;
+    /** The key this response actually carries. The daemon parses it, so it
+     *  is the one name the runtimes → machines rename had to leave alone. */
+    runtimeId: string;
+  };
   await fetch(`${base}/daemon/report`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -140,7 +145,7 @@ async function pairClaudeMachine(
       clis: [{ id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true }],
     }),
   });
-  return { runtimeId, token };
+  return { machineId, token };
 }
 
 /** Reports the two figures Task 2 adds to `/daemon/report` — a machine's own
@@ -176,7 +181,7 @@ interface KernelsLab {
   ownerApi: LykeionApi;
   memberApi: LykeionApi;
   ownerId: string;
-  runtimeId: string;
+  machineId: string;
   token: string;
   studyId: string;
   advanceClock(seconds: number): void;
@@ -198,7 +203,7 @@ async function freshLab(): Promise<KernelsLab> {
   const memberCookie = await redeemInvite(server.base, invite.code, "member@lab.example", "Member");
   const memberApi = apiFor(server.base, memberCookie);
 
-  const { runtimeId, token } = await pairClaudeMachine(server.base, ownerApi, "ana-macbook");
+  const { machineId, token } = await pairClaudeMachine(server.base, ownerApi, "ana-macbook");
   const study = await ownerApi.createStudy({ key: "KRN", title: "Kernels" });
 
   return {
@@ -208,7 +213,7 @@ async function freshLab(): Promise<KernelsLab> {
     ownerApi,
     memberApi,
     ownerId,
-    runtimeId,
+    machineId,
     token,
     studyId: study.id,
     advanceClock: server.advanceClock,
@@ -274,7 +279,7 @@ async function recordCellVia(
   return { taskId: task.id, kernelId, runId, sessionId: turn!.session_id as string };
 }
 
-/** Attaches to the runtime's command stream the way a real daemon's own
+/** Attaches to the machine's command stream the way a real daemon's own
  *  `openCommands` loop does, and answers every kernel command with a canned,
  *  successful reply the way that daemon's `handleKernelExecute`/
  *  `handleKernelList` would — enough for a test that needs a live connection
@@ -301,7 +306,7 @@ function attachStubDaemon(
       body: JSON.stringify(body),
     }).catch(() => {});
   };
-  const detach = lab.relay.attach(lab.runtimeId, (_seq, command) => {
+  const detach = lab.relay.attach(lab.machineId, (_seq, command) => {
     taken.push(command);
     if (command.type === "kernel-list") post("/daemon/kernel/list", { requestId: command.runId, kernels });
     if (command.type === "kernel-execute")
@@ -425,7 +430,7 @@ it("keeps a kernel nobody is reporting out of reach even while other machines an
   await expectRejection(lab.ownerApi.kernelRestart("k_nobody_holds"), "unsupported", /./);
 });
 
-it("refuses to run a cell when the runtime's command stream is not currently connected", async () => {
+it("refuses to run a cell when the machine's command stream is not currently connected", async () => {
   // `healthFor` alone is too coarse a signal — a heartbeat can be fresh
   // while the SSE command stream it does not cover has already dropped.
   // Nothing here attaches to the relay at all, so this is that case.
@@ -481,7 +486,7 @@ it("delivers the REPL's own cell to the Task's notebook, under the id kernelExec
   });
 });
 
-it("interrupts a kernel by delivering a real command to its runtime", async () => {
+it("interrupts a kernel by delivering a real command to its machine", async () => {
   const lab = await freshLab();
   const { kernelId } = await recordCellVia(lab, { source: "x = 1" });
   const stub = attachStubDaemon(lab);
@@ -495,7 +500,7 @@ it("refuses to interrupt a kernel on a machine that is not yours", async () => {
   await expectRejection(lab.memberApi.kernelInterrupt(kernelId), "forbidden", /./);
 });
 
-it("stops a kernel by delivering what the researcher said to its runtime", async () => {
+it("stops a kernel by delivering what the researcher said to its machine", async () => {
   const lab = await freshLab();
   const { kernelId } = await recordCellVia(lab, { source: "x = 1" });
   const stub = attachStubDaemon(lab);
@@ -519,7 +524,7 @@ it("refuses to stop a kernel on a machine that is not yours", async () => {
   await expectRejection(lab.memberApi.kernelStop(kernelId, "stop that"), "forbidden", /./);
 });
 
-it("restarts a kernel by delivering a real command to its runtime", async () => {
+it("restarts a kernel by delivering a real command to its machine", async () => {
   const lab = await freshLab();
   const { kernelId } = await recordCellVia(lab, { source: "x = 1" });
   const stub = attachStubDaemon(lab);
@@ -532,9 +537,9 @@ it("refuses to restart a kernel it has never seen", async () => {
   await expectRejection(lab.ownerApi.kernelRestart("k_never_seen"), "unsupported", /./);
 });
 
-it("does not replay a kernel command after the runtime reconnects", async () => {
+it("does not replay a kernel command after the machine reconnects", async () => {
   // A command enqueued the way `start-run` is sits in the relay's
-  // per-runtime queue until the run it belongs to completes — which a kernel
+  // per-machine queue until the run it belongs to completes — which a kernel
   // command never does, because it belongs to no run at all. Enqueued that
   // way it would be replayed in full on every later `attach`, including the
   // same daemon's very next process after a restart, silently re-firing a
@@ -547,13 +552,13 @@ it("does not replay a kernel command after the runtime reconnects", async () => 
   first.detach();
 
   // A fresh connection, with no memory of what the first one carried —
-  // exactly what this runtime's next daemon process opens with.
+  // exactly what this machine's next daemon process opens with.
   const secondTaken: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => secondTaken.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => secondTaken.push(c));
   expect(secondTaken.some((c) => c.type === "kernel-interrupt")).toBe(false);
 });
 
-it("reports nothing for a runtime whose command stream is not connected, without waiting out the timeout", async () => {
+it("reports nothing for a machine whose command stream is not connected, without waiting out the timeout", async () => {
   const lab = await freshLab();
   await recordCellVia(lab, { source: "x = 1" });
   const started = Date.now();
@@ -563,7 +568,7 @@ it("reports nothing for a runtime whose command stream is not connected, without
   expect(Date.now() - started).toBeLessThan(500);
 });
 
-it("reaches a paired machine's kernel.list and enriches it with the runtime and the Study its session belongs to", async () => {
+it("reaches a paired machine's kernel.list and enriches it with the machine and the Study its session belongs to", async () => {
   const lab = await freshLab();
   const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
   attachStubDaemon(lab, [
@@ -587,7 +592,7 @@ it("reaches a paired machine's kernel.list and enriches it with the runtime and 
       taskId,
       name: "main",
       language: "python",
-      runtimeId: lab.runtimeId,
+      machineId: lab.machineId,
       studyId: lab.studyId,
       state: "idle",
       incarnation: 1,
@@ -771,7 +776,7 @@ it("sums a machine's kernels against what that machine has", async () => {
   const lab = await freshLab();
   await reportMachineFacts(lab.base, lab.token, 8 * 1024 * 1024 * 1024, 8);
   const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
-  // Two kernels on one runtime, 1 MB and 3 MB.
+  // Two kernels on one machine, 1 MB and 3 MB.
   attachStubDaemon(lab, [
     {
       id: "k_1",
@@ -802,7 +807,7 @@ it("sums a machine's kernels against what that machine has", async () => {
   ]);
 
   const snapshot = await lab.ownerApi.computeSnapshot();
-  const machine = snapshot.find((m) => m.runtimeId === lab.runtimeId)!;
+  const machine = snapshot.find((m) => m.machineId === lab.machineId)!;
   expect(machine.memoryBytes).toBe(4 * 1024 * 1024);
   expect(machine.totalMemoryBytes).toBe(8 * 1024 * 1024 * 1024);
   expect(machine.kernelCount).toBe(2);
@@ -850,7 +855,7 @@ it("aligns two kernels' series from the newest reading rather than the oldest", 
   ]);
 
   const snapshot = await lab.ownerApi.computeSnapshot();
-  const machine = snapshot.find((m) => m.runtimeId === lab.runtimeId)!;
+  const machine = snapshot.find((m) => m.machineId === lab.machineId)!;
 
   // The shorter of the two. Eight slots would be six of them describing one
   // kernel and calling the figure the machine's.
@@ -865,7 +870,7 @@ it("aligns two kernels' series from the newest reading rather than the oldest", 
 
 it("says nothing at all about a machine that is not answering", async () => {
   const lab = await freshLab();
-  const offlineRuntimeId = lab.runtimeId;
+  const offlineMachineId = lab.machineId;
   // A machine that does not answer the fan-out reports no kernels, which is
   // indistinguishable from answering "none" — so an offline machine must
   // carry no counts either, or the screen reads it as idle.
@@ -880,7 +885,7 @@ it("says nothing at all about a machine that is not answering", async () => {
   lab.advanceClock(301);
 
   const snapshot = await lab.ownerApi.computeSnapshot();
-  const machine = snapshot.find((m) => m.runtimeId === offlineRuntimeId)!;
+  const machine = snapshot.find((m) => m.machineId === offlineMachineId)!;
   expect(machine.kernelCount).toBeUndefined();
   expect(machine.memoryBytes).toBeUndefined();
   expect(machine.totalMemoryBytes).toBeUndefined();
@@ -889,7 +894,7 @@ it("says nothing at all about a machine that is not answering", async () => {
 
 it("serves one fan-out to both readers of it", async () => {
   const lab = await freshLab();
-  const runtimeId = lab.runtimeId;
+  const machineId = lab.machineId;
   const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
 
   // Attached by hand rather than through `attachStubDaemon`, which answers a
@@ -900,7 +905,7 @@ it("serves one fan-out to both readers of it", async () => {
   // to ask is what makes "only one kernel-list went out" a fact about the
   // sweep rather than a race this test happened to win.
   const deliveries: RunCommand[] = [];
-  const detach = lab.relay.attach(runtimeId, (_seq, command) => deliveries.push(command));
+  const detach = lab.relay.attach(machineId, (_seq, command) => deliveries.push(command));
 
   const listing = lab.ownerApi.listRunningKernels();
   const snapshotting = lab.ownerApi.computeSnapshot();
@@ -934,17 +939,17 @@ it("serves one fan-out to both readers of it", async () => {
 
   const [kernels, snapshot] = await Promise.all([listing, snapshotting]);
   const summed = kernels
-    .filter((k) => k.runtimeId === runtimeId)
+    .filter((k) => k.machineId === machineId)
     .reduce((n, k) => n + (k.resources?.memoryBytes ?? 0), 0);
-  expect(snapshot.find((m) => m.runtimeId === runtimeId)!.memoryBytes).toBe(summed);
+  expect(snapshot.find((m) => m.machineId === machineId)!.memoryBytes).toBe(summed);
 });
 
 it("refuses a kernel-list reply from a machine the request was never sent to, and still accepts the real one", async () => {
   // `requestId` is minted off the same globally-sequential counter session
   // ids are, so it is exactly as guessable. A second paired machine — any
-  // member's, not only a stranger's — could otherwise race the real runtime
+  // member's, not only a stranger's — could otherwise race the real machine
   // to answer first,
-  // stamping fabricated kernels with the *targeted* runtime and Study, or
+  // stamping fabricated kernels with the *targeted* machine and Study, or
   // permanently displacing the real answer since a settled request is
   // removed from the wait list on the first reply.
   const lab = await freshLab();
@@ -957,7 +962,7 @@ it("refuses a kernel-list reply from a machine the request was never sent to, an
   const { token: strangerToken } = await pairClaudeMachine(lab.base, lab.memberApi, "bobs-desktop");
 
   const seen: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, command) => seen.push(command));
+  lab.relay.attach(lab.machineId, (_seq, command) => seen.push(command));
   const listing = lab.ownerApi.listRunningKernels();
   await until(async () => seen.some((c) => c.type === "kernel-list"));
   const requestId = seen.find((c) => c.type === "kernel-list")!.runId;
@@ -985,7 +990,7 @@ it("refuses a kernel-list reply from a machine the request was never sent to, an
   });
   expect(forged.status).toBe(403);
 
-  // The real runtime's own answer, for the exact same request, still lands
+  // The real machine's own answer, for the exact same request, still lands
   // — refusing the forgery must not have consumed the wait.
   const real = await fetch(`${lab.base}/daemon/kernel/list`, {
     method: "POST",
@@ -1010,7 +1015,7 @@ it("refuses a kernel-list reply from a machine the request was never sent to, an
   });
   expect(real.status).toBe(200);
   await expect(listing).resolves.toEqual([
-    expect.objectContaining({ id: "k_real", runtimeId: lab.runtimeId, studyId: lab.studyId }),
+    expect.objectContaining({ id: "k_real", machineId: lab.machineId, studyId: lab.studyId }),
   ]);
 });
 
@@ -1058,7 +1063,7 @@ it("drops a kernel report naming a session this lab never opened", async () => {
   await expect(lab.ownerApi.listRunningKernels()).resolves.toEqual([]);
 });
 
-it("drops a kernel report naming a session that belongs to a different runtime than the one reporting it, but keeps that runtime's own honest report in the same reply", async () => {
+it("drops a kernel report naming a session that belongs to a different machine than the one reporting it, but keeps that machine's own honest report in the same reply", async () => {
   // No requestId guessing needed for this one: a machine answers its own,
   // legitimately-addressed kernel-list ask with a report naming a session
   // it does not hold — a real session, opened on a different machine
@@ -1068,11 +1073,11 @@ it("drops a kernel report naming a session that belongs to a different runtime t
   const lab = await freshLab();
   const { sessionId: sessionOnA, taskId: taskOnA } = await recordCellVia(lab, { source: "x = 1" });
 
-  const { runtimeId: runtimeB, token: tokenB } = await pairClaudeMachine(lab.base, lab.memberApi, "bobs-desktop");
+  const { machineId: machineB, token: tokenB } = await pairClaudeMachine(lab.base, lab.memberApi, "bobs-desktop");
   const taskOnB = await lab.memberApi.createTask({
     studyId: lab.studyId,
     stage: "background",
-    title: "runtime B's own task",
+    title: "machine B's own task",
   });
   const { runId: runOnB } = await lab.memberApi.startRun({
     studyId: lab.studyId,
@@ -1084,7 +1089,7 @@ it("drops a kernel report naming a session that belongs to a different runtime t
   const sessionOnB = turnOnB!.session_id as string;
 
   const seen: RunCommand[] = [];
-  lab.relay.attach(runtimeB, (_seq, command) => seen.push(command));
+  lab.relay.attach(machineB, (_seq, command) => seen.push(command));
   const listing = lab.ownerApi.listRunningKernels();
   await until(async () => seen.some((c) => c.type === "kernel-list"));
   const requestId = seen.find((c) => c.type === "kernel-list")!.runId;
@@ -1253,7 +1258,7 @@ function postCell(lab: KernelsLab, body: Record<string, unknown>): Promise<Respo
  *  so the test itself decides what gets reported back and what it claims. */
 function attachSilentDaemon(lab: KernelsLab): { taken: RunCommand[] } {
   const taken: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, command) => taken.push(command));
+  lab.relay.attach(lab.machineId, (_seq, command) => taken.push(command));
   return { taken };
 }
 
@@ -1374,16 +1379,16 @@ it("refuses a cell report whose taskId names a Task the session never ran a turn
 
 it("refuses environment setup honestly while a machine is online", async () => {
   const lab = await freshLab();
-  // A paired machine is right there, Online — "no runtime is connected"
+  // A paired machine is right there, Online — "no machine is connected"
   // would be false, and the remediation it names is one the researcher has
   // already done. What is actually missing is the capability itself.
   const setup = lab.ownerApi.kernelEnvSetup();
   await expectRejection(setup, "unsupported", /cannot set up managed environments yet/);
-  await expect(setup).rejects.not.toThrow(/no runtime is connected/);
+  await expect(setup).rejects.not.toThrow(/no machine is connected/);
 });
 
-it("falls back to the no-runtime refusal once every machine has gone silent", async () => {
+it("falls back to the no-machine refusal once every machine has gone silent", async () => {
   const lab = await freshLab();
   lab.advanceClock(46);
-  await expectRejection(lab.ownerApi.kernelEnvSetup(), "unsupported", /no runtime is connected/);
+  await expectRejection(lab.ownerApi.kernelEnvSetup(), "unsupported", /no machine is connected/);
 });

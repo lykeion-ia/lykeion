@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { expect, it } from "vitest";
 import { expectRejection } from "@lykeion/api/conformance";
 import { makeServerLab } from "../test-support/test-lab";
-import { isLoopbackRedirect } from "./runtimes";
+import { isLoopbackRedirect } from "./machines";
 
 function secretPair(): { verifier: string; challenge: string } {
   const verifier = randomBytes(32).toString("base64url");
@@ -63,7 +63,7 @@ it("mints a code an owner can approve, and the machine appears once exchanged", 
   const body = (await res.json()) as { token: string; runtimeId: string; machineName: string };
   expect(body.token).toMatch(/\S/);
 
-  const [machine] = await lab.ownerApi.listRuntimes();
+  const [machine] = await lab.ownerApi.listMachines();
   expect(machine.name).toBe("ana-macbook");
   expect(machine.platform).toBe("macos-aarch64");
   expect(machine.health).toBe("online");
@@ -78,7 +78,7 @@ it("refuses a redirect that is not loopback", async () => {
     "invalid",
     /loopback/,
   );
-  expect(await lab.ownerApi.listRuntimes()).toEqual([]);
+  expect(await lab.ownerApi.listMachines()).toEqual([]);
 });
 
 it("isLoopbackRedirect accepts only http on 127.0.0.1, localhost or [::1]", () => {
@@ -129,7 +129,7 @@ it("refuses a code redeemed without the verifier, and spends it anyway", async (
   const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
 
   expect((await exchange(lab.base, code, "not-the-verifier")).status).toBe(400);
-  expect(await lab.ownerApi.listRuntimes()).toEqual([]);
+  expect(await lab.ownerApi.listMachines()).toEqual([]);
 
   // The verifier that actually matches this code's challenge, retried
   // against the same code a second time. It is refused too — not because
@@ -147,7 +147,7 @@ it("refuses a code the second time it is used", async () => {
 
   expect((await exchange(lab.base, code, verifier)).status).toBe(200);
   expect((await exchange(lab.base, code, verifier)).status).toBe(400);
-  expect(await lab.ownerApi.listRuntimes()).toHaveLength(1);
+  expect(await lab.ownerApi.listMachines()).toHaveLength(1);
 });
 
 it("refuses to mint a second code for a request that has already been redeemed", async () => {
@@ -163,7 +163,7 @@ it("refuses to mint a second code for a request that has already been redeemed",
   await expectRejection(lab.ownerApi.pairMachine(pairInput(challenge)), "conflict", /one approval/);
   // Nothing was minted, so nothing is out there to redeem into a second
   // machine standing for the same computer.
-  expect(await lab.ownerApi.listRuntimes()).toHaveLength(1);
+  expect(await lab.ownerApi.listMachines()).toHaveLength(1);
 });
 
 it("refuses a redeemed request whoever is approving it the second time", async () => {
@@ -176,7 +176,7 @@ it("refuses a redeemed request whoever is approving it the second time", async (
   expect((await exchange(lab.base, code, verifier)).status).toBe(200);
 
   await expectRejection(lab.ownerApi.pairMachine(pairInput(challenge)), "conflict", /one approval/);
-  expect(await lab.ownerApi.listRuntimes()).toHaveLength(1);
+  expect(await lab.ownerApi.listMachines()).toHaveLength(1);
 });
 
 it("still approves a request whose earlier code was never redeemed", async () => {
@@ -191,7 +191,7 @@ it("still approves a request whose earlier code was never redeemed", async () =>
   const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
   // Minted, and good for the pairing the first attempt never finished.
   expect((await exchange(lab.base, code, verifier)).status).toBe(200);
-  const [machine] = await lab.ownerApi.listRuntimes();
+  const [machine] = await lab.ownerApi.listMachines();
   expect(machine.name).toBe("ana-macbook");
 });
 
@@ -201,7 +201,7 @@ it("refuses a code after five minutes", async () => {
   const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
   lab.advanceClock(301);
   expect((await exchange(lab.base, code, verifier)).status).toBe(400);
-  expect(await lab.ownerApi.listRuntimes()).toEqual([]);
+  expect(await lab.ownerApi.listMachines()).toEqual([]);
 });
 
 it("binds the machine to whoever approved it, not to the lab's owner", async () => {
@@ -210,7 +210,7 @@ it("binds the machine to whoever approved it, not to the lab's owner", async () 
   const { code } = await lab.memberApi.pairMachine(pairInput(challenge));
   await exchange(lab.base, code, verifier);
 
-  const [mine] = await lab.memberApi.listRuntimes();
+  const [mine] = await lab.memberApi.listMachines();
   expect(mine.ownerId).toBe(lab.memberId);
 });
 
@@ -227,7 +227,7 @@ it("shows a colleague's machine without saying what is installed on it", async (
     { id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true },
   ]);
 
-  const [fromOwnersView] = await lab.ownerApi.listRuntimes();
+  const [fromOwnersView] = await lab.ownerApi.listMachines();
   expect(fromOwnersView.name).toBe("ana-macbook");
   // Absent, not empty: an empty list would read as "nothing installed".
   expect("clis" in fromOwnersView).toBe(false);
@@ -243,11 +243,11 @@ it("lets the owning member remove their machine, and nobody else", async () => {
   const { verifier, challenge } = secretPair();
   const { code } = await lab.memberApi.pairMachine(pairInput(challenge));
   await exchange(lab.base, code, verifier);
-  const [mine] = await lab.memberApi.listRuntimes();
+  const [mine] = await lab.memberApi.listMachines();
 
-  await expectRejection(lab.ownerApi.removeRuntime(mine.id), "forbidden", /.+/);
-  await lab.memberApi.removeRuntime(mine.id);
-  expect(await lab.memberApi.listRuntimes()).toEqual([]);
+  await expectRejection(lab.ownerApi.removeMachine(mine.id), "forbidden", /.+/);
+  await lab.memberApi.removeMachine(mine.id);
+  expect(await lab.memberApi.listMachines()).toEqual([]);
 });
 
 it("revokes the token when the machine is removed", async () => {
@@ -255,9 +255,9 @@ it("revokes the token when the machine is removed", async () => {
   const { verifier, challenge } = secretPair();
   const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
   const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
-  const [machine] = await lab.ownerApi.listRuntimes();
+  const [machine] = await lab.ownerApi.listMachines();
 
-  await lab.ownerApi.removeRuntime(machine.id);
+  await lab.ownerApi.removeMachine(machine.id);
 
   const beat = await fetch(`${lab.base}/daemon/heartbeat`, {
     method: "POST",
@@ -275,7 +275,7 @@ it("revokes every machine a member owned when they are offboarded", async () => 
 
   await lab.ownerApi.removeMember(lab.memberId);
 
-  expect(await lab.ownerApi.listRuntimes()).toEqual([]);
+  expect(await lab.ownerApi.listMachines()).toEqual([]);
   const beat = await fetch(`${lab.base}/daemon/heartbeat`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -286,7 +286,7 @@ it("revokes every machine a member owned when they are offboarded", async () => 
 
 it("refuses a still-outstanding code once the member who minted it is offboarded", async () => {
   // A code nobody has redeemed yet is not a machine `removeMember` can find
-  // by walking `runtimes` — it names no runtime until it is exchanged. The
+  // by walking `machines` — it names no machine until it is exchanged. The
   // sweep has to reach `pair_requests` directly, or the code outlives the
   // membership that was ever going to vouch for it.
   const lab = await makeServerLab();
@@ -296,7 +296,7 @@ it("refuses a still-outstanding code once the member who minted it is offboarded
   await lab.ownerApi.removeMember(lab.memberId);
 
   expect((await exchange(lab.base, code, verifier)).status).toBe(400);
-  expect(await lab.ownerApi.listRuntimes()).toEqual([]);
+  expect(await lab.ownerApi.listMachines()).toEqual([]);
 });
 
 it("carries a CLI's sessionReady through the report, with the reason absent once it is ready", async () => {
@@ -335,19 +335,19 @@ it("puts sessions in a machine's capabilities once one of its CLIs is session-re
   const { code } = await lab.ownerApi.pairMachine(pairInput(challenge));
   const { token } = (await (await exchange(lab.base, code, verifier)).json()) as { token: string };
 
-  const [before] = await lab.ownerApi.listRuntimes();
+  const [before] = await lab.ownerApi.listMachines();
   expect(before!.capabilities).toEqual([]);
 
   await report(lab.base, token, [
     { id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true, sessionReady: false },
   ]);
-  const [stillBlocked] = await lab.ownerApi.listRuntimes();
+  const [stillBlocked] = await lab.ownerApi.listMachines();
   expect(stillBlocked!.capabilities).toEqual([]);
 
   await report(lab.base, token, [
     { id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true, sessionReady: true },
   ]);
-  const [after] = await lab.ownerApi.listRuntimes();
+  const [after] = await lab.ownerApi.listMachines();
   expect(after!.capabilities).toEqual(["sessions"]);
 });
 
@@ -367,7 +367,7 @@ it("stays paired and keeps running sessions on a machine that fails the kernel f
     { kernels: { ready: false, reason: "uv is not installed, and Lykeion starts kernels with it" } },
   );
 
-  const [machine] = await lab.ownerApi.listRuntimes();
+  const [machine] = await lab.ownerApi.listMachines();
   expect(machine!.capabilities).toContain("sessions");
   expect(machine!.capabilities).not.toContain("kernels");
   expect(machine!.kernelsReason).toBe("uv is not installed, and Lykeion starts kernels with it");
@@ -381,7 +381,7 @@ it("puts kernels in a machine's capabilities once it reports meeting the floor, 
 
   await report(lab.base, token, [], { kernels: { ready: true } });
 
-  const [machine] = await lab.ownerApi.listRuntimes();
+  const [machine] = await lab.ownerApi.listMachines();
   expect(machine!.capabilities).toContain("kernels");
   expect("kernelsReason" in machine!).toBe(false);
 });
@@ -401,7 +401,7 @@ it("never prints a reason beside a machine reporting it can host kernels, even a
     kernels: { ready: true, reason: "uv is not installed, and Lykeion starts kernels with it" },
   });
 
-  const [machine] = await lab.ownerApi.listRuntimes();
+  const [machine] = await lab.ownerApi.listMachines();
   expect(machine!.capabilities).toContain("kernels");
   expect("kernelsReason" in machine!).toBe(false);
 });
@@ -417,7 +417,7 @@ it("says nothing about the kernel floor for a machine whose daemon has never che
 
   await report(lab.base, token, []);
 
-  const [machine] = await lab.ownerApi.listRuntimes();
+  const [machine] = await lab.ownerApi.listMachines();
   expect(machine!.capabilities).not.toContain("kernels");
   expect("kernelsReason" in machine!).toBe(false);
 });
@@ -425,7 +425,7 @@ it("says nothing about the kernel floor for a machine whose daemon has never che
 it("carries this machine's own process-visibility rule out to whoever can see it", async () => {
   // The one field `report`'s own `extra` could send that no test sent, so
   // nothing said whether it survived the round trip at all. It is what
-  // separates the two readings of an em dash on the Runtimes screen —
+  // separates the two readings of an em dash on the Machines screen —
   // nothing measured yet, versus this platform will not say — and a Linux
   // box with `hidepid` and one without report the same `platform`, so the
   // browser cannot infer it.
@@ -438,7 +438,7 @@ it("carries this machine's own process-visibility rule out to whoever can see it
     processVisibility: "macOS reports memory and processor use for a process Lykeion started itself.",
   });
 
-  const [machine] = await lab.ownerApi.listRuntimes();
+  const [machine] = await lab.ownerApi.listMachines();
   expect(machine!.processVisibility).toBe(
     "macOS reports memory and processor use for a process Lykeion started itself.",
   );
@@ -455,7 +455,7 @@ it("says nothing about process visibility for a machine whose daemon has never r
 
   await report(lab.base, token, []);
 
-  const [machine] = await lab.ownerApi.listRuntimes();
+  const [machine] = await lab.ownerApi.listMachines();
   expect("processVisibility" in machine!).toBe(false);
 });
 
@@ -472,7 +472,7 @@ it("tells a colleague which requirement a machine is missing, the same as it tel
     kernels: { ready: false, reason: "uv is not installed, and Lykeion starts kernels with it" },
   });
 
-  const [fromOwnersView] = await lab.ownerApi.listRuntimes();
+  const [fromOwnersView] = await lab.ownerApi.listMachines();
   expect(fromOwnersView!.kernelsReason).toBe("uv is not installed, and Lykeion starts kernels with it");
 });
 
@@ -486,7 +486,7 @@ it("shows a colleague's capabilities without showing which CLI produced them", a
     { id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true, sessionReady: true },
   ]);
 
-  const [fromOwnersView] = await lab.ownerApi.listRuntimes();
+  const [fromOwnersView] = await lab.ownerApi.listMachines();
   expect(fromOwnersView!.capabilities).toEqual(["sessions"]);
   expect("clis" in fromOwnersView!).toBe(false);
 });
@@ -603,11 +603,11 @@ it("announces a sign-in even when nothing else about the agent changed", async (
     sessionReady: true,
   };
   await report(lab.base, token, [{ ...base, signedIn: false }]);
-  const before = await lab.ownerApi.listRuntimes();
+  const before = await lab.ownerApi.listMachines();
 
   await report(lab.base, token, [{ ...base, signedIn: true, account: "ana@uni.edu" }]);
 
-  const [after] = await lab.ownerApi.listRuntimes();
+  const [after] = await lab.ownerApi.listMachines();
   expect(after.clis?.find((c) => c.id === "claude")).toMatchObject({
     signedIn: true,
     account: "ana@uni.edu",

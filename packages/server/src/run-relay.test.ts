@@ -113,7 +113,7 @@ it("bounds empty buffers ended by durable terminal snapshots after a relay resta
   ]);
 });
 
-it("retires a completed run from its runtime's live set", () => {
+it("retires a completed run from its machine's live set", () => {
   const relay = createRunRelay();
   relay.attach("rt_1", () => {});
   relay.enqueue("rt_1", { type: "start-run", runId: "run_1" });
@@ -148,7 +148,7 @@ it("counts a run as live immediately when a subscriber is already attached to re
   expect(relay.liveFor("rt_1")).toEqual(["run_1"]);
 });
 
-it("binds reconciled live runs to their runtime so completion clears resumed controls", () => {
+it("binds reconciled live runs to their machine so completion clears resumed controls", () => {
   const relay = createRunRelay();
   relay.reconcile("rt_1", ["run_1"]);
   relay.enqueue("rt_1", {
@@ -219,7 +219,7 @@ it("never leaves a delivered command behind for a later attach to replay", () =>
   expect(second).toEqual([]);
 });
 
-it("assigns a delivered command the next seq in its runtime's own sequence, so a later real command cannot collide with it", () => {
+it("assigns a delivered command the next seq in its machine's own sequence, so a later real command cannot collide with it", () => {
   const relay = createRunRelay();
   relay.attach("rt_1", () => {});
   relay.deliverNow("rt_1", { type: "kernel-interrupt", runId: "k_1", kernelId: "k_1" });

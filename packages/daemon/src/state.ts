@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 /** What this machine knows once a lab has vouched for it: the bearer token
  *  that authenticates every call after pairing, and enough about the lab
- *  and the runtime record it was given to report on itself sensibly. */
+ *  and the machine record it was given to report on itself sensibly. */
 export interface PairedState {
   lab: string;
   token: string;
@@ -88,9 +88,9 @@ export function writeState(dir: string, state: PairedState): void {
  * renamed rather than read past, which is what makes the next start an
  * unpaired one that prints a link.
  *
- * Renamed rather than deleted. What is in it — which lab, which runtime
+ * Renamed rather than deleted. What is in it — which lab, which machine
  * record, what the machine was called — is the whole of what a person has to
- * go on when a machine drops off the Runtimes screen and nobody knows why,
+ * go on when a machine drops off the Machines screen and nobody knows why,
  * and a rename is the version of this that answers that question without
  * ever leaving a live pairing where a stale one is being read. The token
  * inside is spent: the lab refusing it is the reason this is being called at

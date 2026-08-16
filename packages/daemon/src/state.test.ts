@@ -67,9 +67,9 @@ it("leaves a machine unpaired once its pairing has been set aside", () => {
 });
 
 it("keeps the pairing it set aside where somebody can read it", () => {
-  // Renamed rather than deleted. Which lab, which runtime record, what the
+  // Renamed rather than deleted. Which lab, which machine record, what the
   // machine was called: the whole of what a person has to go on when a
-  // machine disappears from a lab's Runtimes screen and nobody remembers
+  // machine disappears from a lab's Machines screen and nobody remembers
   // doing it. The token in it is spent — the lab refusing it is why this
   // happened — and it is still a credential, so the mode travels with it.
   const dir = freshDir();

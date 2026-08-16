@@ -20,8 +20,8 @@ it("renders the usage dashboard with zeroed stats and both panels on a fresh cor
   // Page title + both panel headings render even with no data.
   expect(await screen.findByText("Daily tokens")).toBeInTheDocument();
   expect(screen.getByText("Leaderboard")).toBeInTheDocument();
-  // Empty leaderboard reports zero agents.
-  expect(screen.getByText("0 agents")).toBeInTheDocument();
+  // Empty leaderboard reports zero experts.
+  expect(screen.getByText("0 experts")).toBeInTheDocument();
   // Zero figures come from real (empty) data, not invented content. The Cost
   // card sub-line is unambiguous; the "0.00M" token figure appears in several
   // places, so match it with getAllByText rather than getByText.

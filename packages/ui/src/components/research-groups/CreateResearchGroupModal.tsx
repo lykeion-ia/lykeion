@@ -98,15 +98,15 @@ function AgentSelect({
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search agents and members…"
+            placeholder="Search experts and members…"
             className="mb-1 w-full rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-ui text-fg outline-none placeholder:text-fg-subtle"
           />
           <div className="px-1.5 pb-1 pt-0.5 text-micro font-semibold uppercase tracking-[0.5px] text-fg-tertiary">
-            My agents
+            My experts
           </div>
           {visible.length === 0 && (
             <div className="px-2 py-1.5 text-ui text-fg-subtle">
-              No agents yet
+              No experts yet
             </div>
           )}
           {visible.map((a) => {
@@ -209,7 +209,7 @@ export function CreateResearchGroupModal({
           </button>
         </div>
         <p className="px-5 text-ui text-fg-subtle">
-          Create a collaborative research group with a lead agent and optional
+          Create a collaborative research group with a lead expert and optional
           additional members.
         </p>
 
@@ -255,7 +255,7 @@ export function CreateResearchGroupModal({
 
           <div className="flex flex-col gap-1">
             <span className="text-sub font-medium text-fg-muted">
-              Lead Agent
+              Lead Expert
             </span>
             <span className="mb-1 text-sub text-fg-subtle">
               The lead receives all tasks assigned to this group and coordinates
@@ -267,7 +267,7 @@ export function CreateResearchGroupModal({
               onToggle={(name) =>
                 setLeadId((cur) => (cur[0] === name ? [] : [name]))
               }
-              placeholder="Select a lead agent"
+              placeholder="Select a lead expert"
             />
           </div>
 
@@ -290,7 +290,7 @@ export function CreateResearchGroupModal({
                     : [...cur, name],
                 )
               }
-              placeholder="Add agents or workspace members"
+              placeholder="Add experts or workspace members"
             />
           </div>
         </div>

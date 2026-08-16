@@ -5,10 +5,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createInMemoryApi, type LykeionApi, type Runtime } from "@lykeion/api";
+import { createInMemoryApi, type LykeionApi, type Machine } from "@lykeion/api";
 import { hasDestination, landingHash } from "./landing";
 
-const machine = (ownerId: string): Runtime => ({
+const machine = (ownerId: string): Machine => ({
   id: `rt_${ownerId}`,
   name: "Mac.lan",
   platform: "macos-aarch64",
@@ -20,14 +20,14 @@ const machine = (ownerId: string): Runtime => ({
 });
 
 /** The in-memory core with a roster this test controls. */
-function apiWith(runtimes: Runtime[]): LykeionApi {
+function apiWith(machines: Machine[]): LykeionApi {
   const base = createInMemoryApi();
-  return { ...base, async listRuntimes() { return runtimes; } };
+  return { ...base, async listMachines() { return machines; } };
 }
 
 describe("landingHash", () => {
-  it("sends a member with no machine to Runtimes", async () => {
-    expect(await landingHash(apiWith([]))).toBe("#/runtimes");
+  it("sends a member with no machine to Machines", async () => {
+    expect(await landingHash(apiWith([]))).toBe("#/machines");
   });
 
   it("leaves a member who has a machine where they were going", async () => {
@@ -37,10 +37,10 @@ describe("landingHash", () => {
   });
 
   it("counts only your own machines, not the lab's", async () => {
-    // Runtimes are owned: only the member who paired one can run on it. A
+    // Machines are owned: only the member who paired one can run on it. A
     // colleague's laptop is no reason to stop telling this person how to
     // add theirs.
-    expect(await landingHash(apiWith([machine("u_someone_else")]))).toBe("#/runtimes");
+    expect(await landingHash(apiWith([machine("u_someone_else")]))).toBe("#/machines");
   });
 
   it("stays out of the way when the lab cannot be asked", async () => {
@@ -49,7 +49,7 @@ describe("landingHash", () => {
     const base = createInMemoryApi();
     const failing: LykeionApi = {
       ...base,
-      async listRuntimes(): Promise<Runtime[]> {
+      async listMachines(): Promise<Machine[]> {
         throw new Error("the lab is not answering");
       },
     };
@@ -68,7 +68,7 @@ describe("hasDestination", () => {
     // Signing in is also what happens when somebody opens a link to a Task
     // and turns out not to be signed in. That link is a choice already made.
     expect(hasDestination("#/studies/s_1/tasks/t_2")).toBe(true);
-    expect(hasDestination("#/runtimes")).toBe(true);
+    expect(hasDestination("#/machines")).toBe(true);
     expect(hasDestination("#/studies")).toBe(true);
   });
 });

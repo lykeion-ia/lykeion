@@ -31,7 +31,7 @@ describe("buildCommands", () => {
       "Go to Research Groups",
       "Go to Tasks",
       "Go to Studies",
-      "Go to Agents",
+      "Go to Experts",
       "Go to Skills",
       "Go to Workflows",
       "Go to Connectors",

@@ -45,7 +45,7 @@ export async function exchangeCode(
 /**
  * What a 401 from the lab means on a route that requires a bearer token: not
  * a transient failure to retry, but the lab's own record of this machine
- * having gone away — a revoked token, a removed runtime, or an owner who has
+ * having gone away — a revoked token, a removed machine, or an owner who has
  * left. Its own class so a caller can tell it apart from an ordinary
  * failure without parsing a message.
  */
@@ -477,7 +477,7 @@ export async function postKernelCell(
 
 /** Answers the lab's `kernel-list` command with what this machine's kernel
  *  host says it is holding — every field `kernel.list` reports, none of
- *  which name a runtime or a Study: this machine's own bearer token is what
+ *  which name a machine or a Study: this machine's own bearer token is what
  *  the lab already knows it by, and a Study is resolved from a kernel's own
  *  session, which the lab already holds durably. */
 export async function postKernelList(

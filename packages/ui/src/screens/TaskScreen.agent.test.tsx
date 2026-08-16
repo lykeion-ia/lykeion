@@ -31,7 +31,7 @@ function cli(id: string, name: string): AgentCli {
     command: id,
     version: "1",
     available: true,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: true,
   };
 }

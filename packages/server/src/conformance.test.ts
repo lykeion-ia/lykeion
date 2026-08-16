@@ -62,7 +62,7 @@ afterEach(async () => {
  * every implementation refuses: this server is the implementation that
  * capability exists for, so holding it to an area written for one that
  * categorically lacks a lab would assert the opposite of what it does.
- * `runtimes.test.ts` holds the real behavior to account instead.
+ * `machines.test.ts` holds the real behavior to account instead.
  */
 runContractConformance("workspace server", makeApi, {
   skip: [

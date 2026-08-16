@@ -2,13 +2,13 @@ import type { ReactElement } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { render as rtlRender, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createInMemoryApi, type LykeionApi, type Runtime, type RunningKernel } from "@lykeion/api";
+import { createInMemoryApi, type LykeionApi, type Machine, type RunningKernel } from "@lykeion/api";
 import { ApiProvider } from "../../api/ApiContext";
-import { RuntimesList } from "./RuntimesList";
+import { MachinesList } from "./MachinesList";
 
 afterEach(cleanup);
 
-function machine(overrides: Partial<Runtime> = {}): Runtime {
+function machine(overrides: Partial<Machine> = {}): Machine {
   return {
     id: "rt_1",
     name: "ana-macbook",
@@ -23,7 +23,7 @@ function machine(overrides: Partial<Runtime> = {}): Runtime {
 }
 
 /** Every test below renders through this rather than `@testing-library/react`'s
- *  own `render` directly: `RuntimesList` calls `useApi()` unconditionally, so
+ *  own `render` directly: `MachinesList` calls `useApi()` unconditionally, so
  *  a tree with no `ApiProvider` above it throws before anything renders,
  *  whether or not a given test ever exercises a control that reaches the
  *  api. */
@@ -33,14 +33,14 @@ function render(ui: ReactElement) {
 }
 
 function renderList(
-  runtimes: Runtime[],
+  machines: Machine[],
   meId: string | null,
   apiOverrides: Partial<LykeionApi> = {},
 ) {
   const api: LykeionApi = { ...createInMemoryApi(), ...apiOverrides };
   return rtlRender(
     <ApiProvider api={api}>
-      <RuntimesList runtimes={runtimes} meId={meId} />
+      <MachinesList machines={machines} meId={meId} />
     </ApiProvider>,
   );
 }
@@ -48,7 +48,7 @@ function renderList(
 /** The baseline props every new test below starts from: one machine, owned
  *  by the caller, so `compute`'s `rt_1` entries land on a row that is
  *  actually on screen. */
-const props = { runtimes: [machine()], meId: "u_you" };
+const props = { machines: [machine()], meId: "u_you" };
 
 /** A minimal, valid `RunningKernel` to spread and override — everything
  *  `toRunningKernel` requires, none of what a particular test cares about. */
@@ -58,7 +58,7 @@ const kernel: RunningKernel = {
   taskId: "t_1",
   name: "main",
   language: "python",
-  runtimeId: "rt_1",
+  machineId: "rt_1",
   studyId: "study_1",
   state: "idle",
   incarnation: 1,
@@ -72,75 +72,6 @@ it("names the machine, its platform and its health", () => {
   expect(screen.getByText("ana-macbook")).toBeInTheDocument();
   expect(screen.getByText("macos-aarch64")).toBeInTheDocument();
   expect(screen.getByText(/online/i)).toBeInTheDocument();
-});
-
-function cli(over: Partial<import("@lykeion/api").AgentCli> = {}) {
-  return {
-    id: "claude",
-    name: "Claude Code",
-    command: "claude",
-    version: "1.2.3",
-    available: true,
-    runtimeId: "rt_1",
-    sessionReady: true,
-    ...over,
-  };
-}
-
-it("lists the commands found on your own machine", () => {
-  renderList([machine({ clis: [cli()] })], "u_you");
-  expect(screen.getByText(/claude/i)).toBeInTheDocument();
-  expect(screen.getByText("1.2.3")).toBeInTheDocument();
-});
-
-it("counts the catalogue's misses instead of naming them one by one", () => {
-  // The daemon reports the whole catalogue so the lab knows what was looked
-  // for, but a machine with four tools on it would otherwise spend nine
-  // rows saying what is not there — and a capability list reads as things
-  // the machine can do, not things it cannot.
-  renderList(
-    [
-      machine({
-        clis: [
-          cli(),
-          cli({ id: "codex", name: "Codex", command: "codex", version: "0.5.0" }),
-          cli({ id: "cursor", name: "Cursor", command: "cursor", version: "", available: false }),
-          cli({ id: "kimi", name: "Kimi", command: "kimi", version: "", available: false }),
-          cli({ id: "pi", name: "Pi", command: "pi", version: "", available: false }),
-        ],
-      }),
-    ],
-    "u_you",
-  );
-  expect(screen.getByText(/claude/i)).toBeInTheDocument();
-  expect(screen.getByText(/codex/i)).toBeInTheDocument();
-  expect(screen.getByText("3 others not installed")).toBeInTheDocument();
-  expect(screen.queryByText(/cursor/i)).toBeNull();
-  expect(screen.queryByText(/kimi/i)).toBeNull();
-});
-
-it("says nothing about misses on a machine where everything was found", () => {
-  renderList([machine({ clis: [cli()] })], "u_you");
-  expect(screen.queryByText(/not installed/i)).toBeNull();
-});
-
-it("says a machine has nothing installed rather than counting silently to itself", () => {
-  // Every catalogued command missing is the ordinary state of a machine
-  // that has none of these tools, and a bare count with no names above it
-  // reads as a rendering fault rather than as the answer.
-  renderList(
-    [
-      machine({
-        clis: [
-          cli({ version: "", available: false }),
-          cli({ id: "codex", name: "Codex", command: "codex", version: "", available: false }),
-        ],
-      }),
-    ],
-    "u_you",
-  );
-  expect(screen.getByText(/no agent CLIs found/i)).toBeInTheDocument();
-  expect(screen.queryByText(/claude/i)).toBeNull();
 });
 
 it("lists every machine in the lab on one roster, the caller's own first", () => {
@@ -164,13 +95,6 @@ it("lists every machine in the lab on one roster, the caller's own first", () =>
   );
 });
 
-it("says nothing about what is installed on somebody else's machine", () => {
-  // `clis` is absent rather than empty on a machine that is not yours, and
-  // the row has to read as "not shown" rather than "nothing installed".
-  renderList([machine({ id: "rt_2", ownerId: "u_bo" })], "u_you");
-  expect(screen.queryByText(/not installed/i)).toBeNull();
-});
-
 it("carries no heading over the roster, and still announces the list as one of machines", () => {
   renderList(
     [machine(), machine({ id: "rt_2", name: "bo-workstation", ownerId: "u_bo" })],
@@ -188,44 +112,6 @@ it("carries no heading over the roster, and still announces the list as one of m
   const roster = screen.getByRole("list", { name: "Lab's machines" });
   expect(roster.getAttribute("aria-label")).toBe("Lab's machines");
   expect(roster.getAttribute("aria-labelledby")).toBeNull();
-});
-
-it("says a colleague's tools are withheld rather than leaving the column blank", () => {
-  // Absent, not empty — the lab never sends somebody else's CLI list at all,
-  // and a blank cell reads as "this machine has nothing installed".
-  const theirs = machine({ id: "rt_2", name: "bo-workstation", ownerId: "u_bo" });
-  expect("clis" in theirs).toBe(false);
-  renderList([theirs], "u_you");
-
-  expect(
-    screen.getByText(/only the member who paired this machine sees its tools/i),
-  ).toBeInTheDocument();
-});
-
-it("says the version is unknown for an installed command that would not name its build", () => {
-  // Available and versionless is neither "Name <version>" nor "Name — not
-  // installed"; rendered as a bare word it reads as a rendering fault.
-  renderList(
-    [
-      machine({
-        clis: [
-          {
-            id: "openclaw",
-            name: "OpenClaw",
-            command: "openclaw",
-            version: "",
-            available: true,
-            runtimeId: "rt_1",
-            sessionReady: true,
-          },
-        ],
-      }),
-    ],
-    "u_you",
-  );
-
-  expect(screen.getByText(/version unknown/i)).toBeInTheDocument();
-  expect(screen.queryByText(/not installed/i)).toBeNull();
 });
 
 it("carries the command itself, addressed to this lab, and promises nothing it cannot do", () => {
@@ -291,7 +177,7 @@ it("reopens the steps on request, for a second machine", async () => {
 });
 
 it("keeps asking a member whose colleagues have machines but who has none", () => {
-  // Runtimes are owned, and only the member who paired one can run on it.
+  // Machines are owned, and only the member who paired one can run on it.
   renderList([machine({ ownerId: "u_them" })], "u_you");
 
   expect(screen.getByText("Add your first machine")).toBeInTheDocument();
@@ -314,37 +200,37 @@ it("offers Remove on your own machine and on none of the lab's others", () => {
   ).toBeNull();
 });
 
-it("asks for confirmation before calling removeRuntime, and stays quiet on Cancel", async () => {
+it("asks for confirmation before calling removeMachine, and stays quiet on Cancel", async () => {
   const user = userEvent.setup();
-  const removeRuntime = vi.fn().mockResolvedValue(undefined);
-  renderList([machine()], "u_you", { removeRuntime });
+  const removeMachine = vi.fn().mockResolvedValue(undefined);
+  renderList([machine()], "u_you", { removeMachine });
 
   await user.click(screen.getByRole("button", { name: /Remove ana-macbook/i }));
   const dialog = await screen.findByRole("dialog", { name: /remove machine/i });
-  expect(removeRuntime).not.toHaveBeenCalled();
+  expect(removeMachine).not.toHaveBeenCalled();
 
   await user.click(within(dialog).getByRole("button", { name: /cancel/i }));
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(removeRuntime).not.toHaveBeenCalled();
+  expect(removeMachine).not.toHaveBeenCalled();
 });
 
-it("calls removeRuntime with the machine's id once the confirmation is confirmed", async () => {
+it("calls removeMachine with the machine's id once the confirmation is confirmed", async () => {
   const user = userEvent.setup();
-  const removeRuntime = vi.fn().mockResolvedValue(undefined);
-  renderList([machine()], "u_you", { removeRuntime });
+  const removeMachine = vi.fn().mockResolvedValue(undefined);
+  renderList([machine()], "u_you", { removeMachine });
 
   await user.click(screen.getByRole("button", { name: /Remove ana-macbook/i }));
   const dialog = await screen.findByRole("dialog", { name: /remove machine/i });
   await user.click(within(dialog).getByRole("button", { name: /^remove$/i }));
 
-  expect(removeRuntime).toHaveBeenCalledWith("rt_1");
+  expect(removeMachine).toHaveBeenCalledWith("rt_1");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-it("keeps the confirmation open and shows the failure when removeRuntime rejects", async () => {
+it("keeps the confirmation open and shows the failure when removeMachine rejects", async () => {
   const user = userEvent.setup();
-  const removeRuntime = vi.fn().mockRejectedValue(new Error("machine already gone"));
-  renderList([machine()], "u_you", { removeRuntime });
+  const removeMachine = vi.fn().mockRejectedValue(new Error("machine already gone"));
+  renderList([machine()], "u_you", { removeMachine });
 
   await user.click(screen.getByRole("button", { name: /Remove ana-macbook/i }));
   const dialog = await screen.findByRole("dialog", { name: /remove machine/i });
@@ -355,8 +241,8 @@ it("keeps the confirmation open and shows the failure when removeRuntime rejects
 });
 
 it("shows what a machine's kernels are holding, against what it has", () => {
-  render(<RuntimesList {...props} compute={[{
-    runtimeId: "rt_1",
+  render(<MachinesList {...props} compute={[{
+    machineId: "rt_1",
     memoryBytes: 15_728_640,
     totalMemoryBytes: 8 * 1024 * 1024 * 1024,
     cpuPercent: 0,
@@ -367,7 +253,7 @@ it("shows what a machine's kernels are holding, against what it has", () => {
 });
 
 it("renders an em dash on both figures for a machine that reported none, and a zero on neither", () => {
-  render(<RuntimesList {...props} compute={[{ runtimeId: "rt_1" }]} />);
+  render(<MachinesList {...props} compute={[{ machineId: "rt_1" }]} />);
   // Both cells, counted rather than merely non-empty: a machine row has two
   // figures on it, and `getAllByText("—").length > 0` was satisfied by
   // either one of them alone — so it passed with the other rendering
@@ -387,11 +273,11 @@ it("draws a machine's shape over time against the machine, never against its own
   // component exists to refuse — would draw these three readings as
   // "▁▄█" and tell a researcher a machine holding 4 MB of 8 GB is full.
   render(
-    <RuntimesList
+    <MachinesList
       {...props}
       compute={[
         {
-          runtimeId: "rt_1",
+          machineId: "rt_1",
           totalMemoryBytes: 8 * 1024 * 1024 * 1024,
           cores: 8,
           series: [
@@ -422,43 +308,80 @@ it("says nothing about the kernel floor for a machine that can host one", () => 
   expect(screen.queryByText(/cannot host kernels/i)).toBeNull();
 });
 
-it("names this platform's own process-visibility rule once, beneath the roster", () => {
-  renderList(
-    [
-      machine({
-        processVisibility:
-          "macOS reports memory and processor use for a process Lykeion started itself.",
-      }),
-    ],
-    "u_you",
-  );
-  expect(
-    screen.getAllByText(
-      /macOS reports memory and processor use for a process Lykeion started itself\./,
-    ),
-  ).toHaveLength(1);
+it("carries no column of its own for what is installed on a machine", () => {
+  // The per-machine agent list below this roster answers it in full —
+  // installed and not, with versions and sign-in state — and a cell here said
+  // a worse version of the same thing beside it. Asserted on the column head
+  // rather than on a row, because a header is what makes a column a column.
+  const roster = () => screen.getByRole("list", { name: "Lab's machines" });
+  renderList([machine()], "u_you");
+  expect(within(roster()).queryByText("CLIs")).toBeNull();
 });
 
-it("says nothing about process visibility when the caller's own machine has never reported it", () => {
-  renderList([machine()], "u_you");
+it("keeps what a machine is holding, and what stops it holding anything, under its name", () => {
+  // Both used to ride along in the CLIs cell without being about its subject,
+  // so taking that column out is exactly where they could have been lost.
+  // Asserted against the name cell rather than the document: the summary is
+  // also rendered inside the kernel tree a row opens onto, and a bare
+  // `getByText` would pass on that copy alone with this cell empty.
+  renderList(
+    [machine({ kernelsReason: "uv is not installed, and Lykeion starts kernels with it" })],
+    "u_you",
+  );
+  const idle = screen.getByText("ana-macbook").parentElement!;
+  expect(within(idle).getByText(/cannot host kernels/i)).toBeInTheDocument();
+
+  cleanup();
+  render(
+    <MachinesList
+      {...props}
+      kernels={[
+        { ...kernel, id: "k_1", machineId: "rt_1", state: "running" },
+        { ...kernel, id: "k_2", machineId: "rt_1" },
+      ]}
+    />,
+  );
+  const holding = screen.getByRole("button", { name: /^ana-macbook —/ }).parentElement!;
+  expect(within(holding).getByText("2 kernels · 1 running")).toBeInTheDocument();
+});
+
+it("puts what a screen hands it between the roster and the way to add to it", () => {
+  // Ordering is the whole reason this is a slot: adding a machine is the last
+  // thing on the page, under everything that says what the machines already
+  // on it are. A caller rendering its own blocks after the list could not get
+  // beneath that card at all.
+  render(
+    <MachinesList {...props}>
+      <p>Agents on ana-macbook</p>
+    </MachinesList>,
+  );
+
+  const order = ["ana-macbook", "Agents on ana-macbook", "Add a machine"].map((text) =>
+    screen.getByText(text).compareDocumentPosition(screen.getByText("Add a machine")),
+  );
+  // The roster's own row and the handed-in block both precede the card; the
+  // card does not precede itself.
+  expect(order[0] & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(order[1] & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(
-    screen.queryByText(
-      /reports memory and processor use|reports these through \/proc|has not been checked for process visibility/,
-    ),
-  ).toBeNull();
+    screen
+      .getByText("Agents on ana-macbook")
+      .compareDocumentPosition(screen.getByText("ana-macbook")) &
+      Node.DOCUMENT_POSITION_PRECEDING,
+  ).toBeTruthy();
 });
 
 it("shows a header figure that is the sum of the rows under it", () => {
   // The reason `computeSnapshot` shares one fan-out. If these ever disagree
   // on screen, the two calls came from different sweeps.
   render(
-    <RuntimesList
+    <MachinesList
       {...props}
       kernels={[
-        { ...kernel, id: "k_1", runtimeId: "rt_1", resources: { memoryBytes: 4_194_304 } },
-        { ...kernel, id: "k_2", runtimeId: "rt_1", resources: { memoryBytes: 2_097_152 } },
+        { ...kernel, id: "k_1", machineId: "rt_1", resources: { memoryBytes: 4_194_304 } },
+        { ...kernel, id: "k_2", machineId: "rt_1", resources: { memoryBytes: 2_097_152 } },
       ]}
-      compute={[{ runtimeId: "rt_1", memoryBytes: 6_291_456, totalMemoryBytes: 8 * 1024 ** 3 }]}
+      compute={[{ machineId: "rt_1", memoryBytes: 6_291_456, totalMemoryBytes: 8 * 1024 ** 3 }]}
     />,
   );
   expect(screen.getByText("6.0 MB of 8.0 GB")).toBeInTheDocument();

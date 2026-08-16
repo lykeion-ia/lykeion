@@ -29,7 +29,7 @@ const CLIS: AgentCli[] = [
     command: "claude",
     version: "1",
     available: true,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: true,
   },
   {
@@ -38,7 +38,7 @@ const CLIS: AgentCli[] = [
     command: "codex",
     version: "1",
     available: true,
-    runtimeId: "rt_1",
+    machineId: "rt_1",
     sessionReady: true,
   },
 ];
@@ -159,7 +159,7 @@ describe("the Task page with recovered live turns", () => {
       resumeRuns: async () => [],
       startRun: async () => {
         attempts += 1;
-        if (attempts === 1) throw new Error("runtime unavailable");
+        if (attempts === 1) throw new Error("machine unavailable");
         return successful;
       },
     };
@@ -172,7 +172,7 @@ describe("the Task page with recovered live turns", () => {
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "runtime unavailable",
+      "machine unavailable",
     );
     expect(composer).toHaveValue("preserve this prompt");
     expect(screen.queryByTestId("live-turn")).not.toBeInTheDocument();

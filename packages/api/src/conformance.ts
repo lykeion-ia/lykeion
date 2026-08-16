@@ -36,8 +36,8 @@
  * areas it satisfies instead of all-or-nothing. `runContractConformance`
  * runs all of them, less whatever a caller names in `skip`.
  *
- * Two of the areas assert the *absence* of a machine — that runtimes list
- * empty and a kernel is not ready. An implementation with a real runtime
+ * Two of the areas assert the *absence* of a machine — that machines list
+ * empty and a kernel is not ready. An implementation with a real machine
  * behind it fails those, and belongs in a suite of its own rather than this
  * one. The axis these areas divide on is not how much an implementation can
  * do; it is what a lab with storage and nothing else must answer.
@@ -1771,10 +1771,10 @@ export function researchGroupsConformance(makeApi: () => Promise<LykeionApi>): v
 }
 
 export function absentCapabilityConformance(makeApi: () => Promise<LykeionApi>): void {
-  describe("Runtimes and kernel reads answer honestly when nothing is configured", () => {
-    it("listRuntimes returns empty on a fresh core", async () => {
+  describe("Machines and kernel reads answer honestly when nothing is configured", () => {
+    it("listMachines returns empty on a fresh core", async () => {
       const api = await makeApi();
-      expect(await api.listRuntimes()).toEqual([]);
+      expect(await api.listMachines()).toEqual([]);
     });
 
     it("listAgentClis returns empty on a fresh core", async () => {
@@ -1795,14 +1795,14 @@ export function absentCapabilityConformance(makeApi: () => Promise<LykeionApi>):
       await expect(api.kernelEnvList()).resolves.toEqual([]);
     });
 
-    it("kernelEnvSetup refuses when no runtime is online", async () => {
+    it("kernelEnvSetup refuses when no machine is online", async () => {
       // A refusal, not a resolved no-op: a Setup that "succeeds" while
       // provisioning nothing leaves the surface reporting an install that
       // never happened. With no machine online the honest reason is that
       // one — a core with a machine in reach answers differently, and that
       // behaviour belongs to its own suite.
       const api = await makeApi();
-      await expectRejection(api.kernelEnvSetup(), "unsupported", /no runtime is connected/);
+      await expectRejection(api.kernelEnvSetup(), "unsupported", /no machine is connected/);
     });
   });
 }
@@ -1834,9 +1834,9 @@ export function pairingUnsupportedConformance(makeApi: () => Promise<LykeionApi>
       );
     });
 
-    it("removeRuntime refuses — there is nothing paired to remove", async () => {
+    it("removeMachine refuses — there is nothing paired to remove", async () => {
       const api = await makeApi();
-      await expectRejection(api.removeRuntime("rt_1"), "unsupported", /.+/);
+      await expectRejection(api.removeMachine("rt_1"), "unsupported", /.+/);
     });
   });
 }
@@ -2094,7 +2094,7 @@ export function rolesConformance(makeLab: () => Promise<ConformanceLab>): void {
  * below — needs no live turn at all: an implementation with no machine
  * behind it can refuse an id it never held exactly as readily as one that
  * can actually run a turn, since the refusal depends on nothing a turn ever
- * produced. Always run, never gated on the runtime skip.
+ * produced. Always run, never gated on the machine skip.
  */
 export function unknownRunConformance(makeLab: () => Promise<ConformanceLab>): void {
   describe("submitRunDecision needs no live turn to refuse an id nobody holds", () => {
@@ -2169,7 +2169,7 @@ export function runDecisionConformance(makeLab: () => Promise<ConformanceLab>): 
   });
 }
 
-/** Active runs are discoverable only to the actor whose runtime owns them.
+/** Active runs are discoverable only to the actor whose machine owns them.
  *  A Task may hold several at once — one working and the rest waiting behind
  *  it — and a Task's runs are its own. */
 export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): void {
@@ -2308,7 +2308,7 @@ export function runContractConformance(
      *  expressed without it, and making it optional would let an
      *  implementation quietly stop being held to them. */
     makeLab: () => Promise<ConformanceLab>;
-    /** A lab with enough real runtime state to start a turn. Defaults to
+    /** A lab with enough real machine state to start a turn. Defaults to
      *  `makeLab` for implementations whose ordinary conformance lab can run. */
     makeRunLab?: () => Promise<ConformanceLab>;
   },

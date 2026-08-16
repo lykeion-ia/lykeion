@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApi } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
-import { RuntimesList } from "../components/library/RuntimesList";
+import { MachinesList } from "../components/library/MachinesList";
 import { AgentsScreen } from "./setup/AgentsScreen";
 import { taskLabeller } from "../components/library/KernelTree";
 import { ScreenHeader } from "../components/ui/ScreenHeader";
@@ -13,7 +13,7 @@ import { ScreenHeader } from "../components/ui/ScreenHeader";
  * the only thing that moves a dead machine's row from Online to Offline on a
  * page somebody is already looking at.
  */
-const RUNTIME_REFRESH_MS = 15_000;
+const MACHINE_REFRESH_MS = 15_000;
 
 /**
  * How often the kernel tree re-reads. Faster than the roster, because what it
@@ -24,16 +24,16 @@ const RUNTIME_REFRESH_MS = 15_000;
  */
 const KERNEL_REFRESH_MS = 4_000;
 
-/** Machines (#/runtimes) — the machines Tasks execute on, what each one is
- *  holding, and the environments those kernels run in. The route keeps the
- *  old word: it is in links people already have, and what a screen calls
- *  itself is not a reason to break them. */
-export function RuntimesScreen() {
+/** Machines (#/machines) — the machines Tasks execute on, what each one is
+ *  holding, and the environments those kernels run in. `#/runtimes` still
+ *  parses to here: it is in links people already have, and a screen changing
+ *  what it calls itself is not a reason to break them. */
+export function MachinesScreen() {
   const api = useApi();
   const [tick, setTick] = useState(0);
   const [kernelTick, setKernelTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setTick((n) => n + 1), RUNTIME_REFRESH_MS);
+    const id = setInterval(() => setTick((n) => n + 1), MACHINE_REFRESH_MS);
     return () => clearInterval(id);
   }, []);
   useEffect(() => {
@@ -41,7 +41,7 @@ export function RuntimesScreen() {
     return () => clearInterval(id);
   }, []);
 
-  const q = usePromise(() => api.listRuntimes(), [api, tick]);
+  const q = usePromise(() => api.listMachines(), [api, tick]);
   const me = usePromise(() => api.currentUser(), [api]);
   const kernels = usePromise(() => api.listRunningKernels(), [api, kernelTick]);
   // Read on the same tick `kernels` is: the server shares one fan-out
@@ -55,7 +55,7 @@ export function RuntimesScreen() {
   const tasks = usePromise(() => api.listTasks({ includeDone: true }), [api, tick]);
   const studies = usePromise(() => api.listStudies({ includeArchived: true }), [api, tick]);
 
-  const runtimes = q.data ?? [];
+  const machines = q.data ?? [];
   const taskLabel = useMemo(
     () => taskLabeller(tasks.data ?? [], studies.data ?? []),
     [tasks.data, studies.data],
@@ -98,8 +98,8 @@ export function RuntimesScreen() {
             fact about a machine on it, so it opens out of that machine's own
             row — the tree that used to sit above named every busy machine a
             second time and left a reader matching the two lists by eye. */}
-        <RuntimesList
-          runtimes={runtimes}
+        <MachinesList
+          machines={machines}
           kernels={kernels.data ?? []}
           compute={compute.data ?? []}
           taskLabel={taskLabel}
@@ -108,31 +108,37 @@ export function RuntimesScreen() {
           onInterrupt={onInterrupt}
           onStop={onStop}
           onRestart={onRestart}
-        />
+        >
+          {/* The same list the first run ends on, for every later visit — this
+              is where somebody comes back to when an agent stops working or
+              when they finally install one they skipped. Only for machines
+              whose `clis` this member may see, which is the ownership rule
+              already deciding whether the key is there at all.
 
-        {/* The same list the first run ends on, for every later visit — this
-            is where somebody comes back to when an agent stops working or
-            when they finally install one they skipped. Only for machines
-            whose `clis` this member may see, which is the ownership rule
-            already deciding whether the key is there at all.
+              Passed as the roster's children rather than rendered after it, so
+              this lands between the roster and the card for adding a machine:
+              what is on the machines already here reads before the way to add
+              another. It is also why the roster's own CLIs column is gone —
+              this says the same thing in full, and said it twice.
 
-            No `onSignIn`: a sign-in opens a browser flow against a vendor and
-            writes a credential into a home the daemon owns, and this page is
-            served by a lab that may be on another computer entirely. The
-            machine's own front door is the only thing that can start one. */}
-        {runtimes
-          .filter((runtime) => runtime.clis !== undefined)
-          .map((runtime) => (
-            <section key={runtime.id} className="mt-8">
-              <h2 className="mb-2 text-ui font-semibold text-fg">
-                Agents on {runtime.name}
-              </h2>
-              <AgentsScreen clis={runtime.clis ?? []} compact />
-            </section>
-          ))}
+              No `onSignIn`: a sign-in opens a browser flow against a vendor and
+              writes a credential into a home the daemon owns, and this page is
+              served by a lab that may be on another computer entirely. The
+              machine's own front door is the only thing that can start one. */}
+          {machines
+            .filter((machine) => machine.clis !== undefined)
+            .map((machine) => (
+              <section key={machine.id} className="mb-4 mt-8">
+                <h2 className="mb-2 text-ui font-semibold text-fg">
+                  Agents on {machine.name}
+                </h2>
+                <AgentsScreen clis={machine.clis ?? []} compact />
+              </section>
+            ))}
+        </MachinesList>
       </div>
     </div>
   );
 }
 
-export default RuntimesScreen;
+export default MachinesScreen;

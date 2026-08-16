@@ -1135,7 +1135,7 @@ export function startRuns(options: {
   /**
    * Signals a kernel this machine's host may be holding, by the bare id the
    * host itself minted for it — the one thing `kernel.interrupt` and
-   * `kernel.restart` need, and the same id the lab resolved a runtime from
+   * `kernel.restart` need, and the same id the lab resolved a machine from
    * to address this machine at all. Neither command carries a reply: a
    * researcher watching a Stop control is better served by nothing
    * happening than by an error this machine has nowhere to show them, so a

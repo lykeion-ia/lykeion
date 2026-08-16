@@ -56,7 +56,7 @@ export function buildCommands(
     },
     {
       id: "nav-agents",
-      label: "Go to Agents",
+      label: "Go to Experts",
       hint: "Screen",
       route: { name: "agents" },
     },
@@ -79,10 +79,10 @@ export function buildCommands(
       route: { name: "settings", tab: "connectors" },
     },
     {
-      id: "nav-runtimes",
+      id: "nav-machines",
       label: "Go to Machines",
       hint: "Screen",
-      route: { name: "runtimes" },
+      route: { name: "machines" },
     },
     {
       id: "nav-profile",

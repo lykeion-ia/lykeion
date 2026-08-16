@@ -34,9 +34,9 @@ it("lists conversations and opens one into a readable thread", async () => {
     within(thread).getByText(/512 is pre-filter/i),
   ).toBeInTheDocument();
   expect(within(thread).getByText(/re-run the filter/i)).toBeInTheDocument();
-  // An agent speaks here alongside the people, and is marked as one.
+  // An expert speaks here alongside the people, and is marked as one.
   expect(within(thread).getByText("Reviewer")).toBeInTheDocument();
-  expect(within(thread).getAllByText("Agent").length).toBeGreaterThan(0);
+  expect(within(thread).getAllByText("Expert").length).toBeGreaterThan(0);
 });
 
 it("sets the reader's own messages against the trailing edge", async () => {

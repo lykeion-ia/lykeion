@@ -108,7 +108,7 @@ function scriptValue(value: string): string {
 export function renderSetupPage(input: SetupPageInput): string {
   const form = `<form id="connect" class="setup-form">
     <div class="field"><label for="lab">Lykeion lab address</label><input id="lab" name="lab" type="url" value="${escapeHtml(input.lab)}" placeholder="http://127.0.0.1:1421" autocomplete="url" aria-describedby="lab-help" required><p id="lab-help" class="field-help">The address you use to open this Lykeion lab.</p></div>
-    <div class="field"><label for="name">Machine name</label><input id="name" name="name" value="${escapeHtml(input.machineName)}" autocomplete="off" aria-describedby="name-help" required><p id="name-help" class="field-help">This is how the machine will appear in Runtimes.</p></div>
+    <div class="field"><label for="name">Machine name</label><input id="name" name="name" value="${escapeHtml(input.machineName)}" autocomplete="off" aria-describedby="name-help" required><p id="name-help" class="field-help">This is how the machine will appear in Machines.</p></div>
     <p id="form-error" role="alert" aria-live="polite" class="form-error" tabindex="-1"></p>
     <button id="submit" type="submit">Continue to approval</button>
   </form>`;

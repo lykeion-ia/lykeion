@@ -97,7 +97,7 @@ async function pairClaudeMachine(
   base: string,
   api: LykeionApi,
   machineName: string,
-): Promise<{ runtimeId: string; token: string }> {
+): Promise<{ machineId: string; token: string }> {
   const { verifier, challenge } = secretPair();
   const { code } = await api.pairMachine({
     name: machineName,
@@ -111,7 +111,12 @@ async function pairClaudeMachine(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code, verifier }),
   });
-  const { token, runtimeId } = (await exchanged.json()) as { token: string; runtimeId: string };
+  const { token, runtimeId: machineId } = (await exchanged.json()) as {
+    token: string;
+    /** The key this response actually carries. The daemon parses it, so it
+     *  is the one name the runtimes → machines rename had to leave alone. */
+    runtimeId: string;
+  };
   await fetch(`${base}/daemon/report`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -122,7 +127,7 @@ async function pairClaudeMachine(
       clis: [{ id: "claude", name: "Claude Code", command: "claude", version: "2.1.220", available: true }],
     }),
   });
-  return { runtimeId, token };
+  return { machineId, token };
 }
 
 interface GrantsLab {
@@ -132,7 +137,7 @@ interface GrantsLab {
   ownerApi: LykeionApi;
   ownerCookie: string;
   memberCookie: string;
-  runtimeId: string;
+  machineId: string;
   /** The paired machine's own bearer token, for posting frames and grants
    *  the way its daemon would. */
   token: string;
@@ -155,7 +160,7 @@ async function labWithRunInFlight(): Promise<GrantsLab> {
   const invite = await ownerApi.createInvite("member");
   const memberCookie = await redeemInvite(server.base, invite.code, "member@lab.example", "Member");
 
-  const { runtimeId, token } = await pairClaudeMachine(server.base, ownerApi, "ana-macbook");
+  const { machineId, token } = await pairClaudeMachine(server.base, ownerApi, "ana-macbook");
 
   const study = await ownerApi.createStudy({ key: "CMP", title: "Comparative" });
   const task = await ownerApi.createTask({ studyId: study.id, stage: "background", title: "run me" });
@@ -172,7 +177,7 @@ async function labWithRunInFlight(): Promise<GrantsLab> {
     ownerApi,
     ownerCookie,
     memberCookie,
-    runtimeId,
+    machineId,
     token,
     studyId: study.id,
     taskId: task.id,
@@ -191,7 +196,7 @@ async function labWithTwoPairedMachines(): Promise<GrantsLab & { memberToken: st
 }
 
 /** A lab that already carries one standing grant for its Study and
- *  runtime — what the two cascade tests start from. */
+ *  machine — what the two cascade tests start from. */
 async function labWithGrant(): Promise<GrantsLab> {
   const lab = await labWithRunInFlight();
   await postGrant(lab, { path: "/work/rna-seq", mode: "write" });
@@ -303,7 +308,7 @@ it("carries a card to the browser and the answer back to the machine", async () 
   await until(() => seen.some((f) => f.event.event === "permission-card"));
 
   const taken: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => taken.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => taken.push(c));
   await lab.ownerApi.submitRunDecision(lab.runId, {
     action: "permission",
     requestId: "pr_1",
@@ -325,7 +330,7 @@ it("never raises the card a second time for that Study", async () => {
   await postGrant(lab, { path: "/work/rna-seq", mode: "write" });
   await postFrames(lab, [{ seq: 1, event: { event: "completed", state: { state: "completed" } } }]);
   const taken: RunCommand[] = [];
-  lab.relay.attach(lab.runtimeId, (_seq, c) => taken.push(c));
+  lab.relay.attach(lab.machineId, (_seq, c) => taken.push(c));
   await lab.ownerApi.startRun({
     studyId: lab.studyId, taskId: lab.taskId, prompt: "again",
     options: { planMode: false, agent: "claude" },
@@ -384,7 +389,7 @@ it("drops a Study's grants when the Study is deleted", async () => {
 
 it("drops a machine's grants when the machine is removed", async () => {
   const lab = await labWithGrant();
-  await lab.ownerApi.removeRuntime(lab.runtimeId);
+  await lab.ownerApi.removeMachine(lab.machineId);
   expect(lab.store.all(`SELECT id FROM folder_grants`)).toEqual([]);
 });
 

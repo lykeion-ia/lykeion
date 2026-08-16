@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,7 +48,7 @@ function built(): void {
     rebuilt = true;
     return;
   }
-  execFileSync("pnpm", ["exec", "esbuild", "src/main.ts", "--bundle", "--platform=node", "--format=esm", `--outfile=${bundle}`], {
+  execFileSync("pnpm", ["exec", "esbuild", "src/cli.ts", "--bundle", "--platform=node", "--format=esm", `--outfile=${bundle}`], {
     cwd: join(here, ".."),
     stdio: "pipe",
   });
@@ -72,6 +73,53 @@ it("calls itself by the name it is installed under", () => {
   const help = execFileSync(process.execPath, [binary, "--help"], { encoding: "utf8" });
   expect(help).toContain("lykeion —");
   expect(help).not.toContain("lykeion-daemon");
+}, 60_000);
+
+it("does nothing at all when something merely imports the program", () => {
+  // `main.ts` used to call itself on the way in, so importing ANY part of it
+  // ran the whole command line. Under vitest that reached the last branch —
+  // vitest's own argv names no command — and `serve` bound this machine's
+  // ports and claimed the researcher's real data directory. `main.test.ts`
+  // imports one function for one assertion and was silently doing all of it.
+  //
+  // Run rather than inspected: a grep for `main()` at the end of a file is a
+  // fact about the text, and what matters is that the module can be loaded
+  // without the program happening.
+  built();
+  const module = join(here, "..", "dist", "importable.mjs");
+  execFileSync(
+    "pnpm",
+    ["exec", "esbuild", "src/main.ts", "--bundle", "--platform=node", "--format=esm", `--outfile=${module}`],
+    { cwd: join(here, ".."), stdio: "pipe" },
+  );
+
+  // Pointed at a directory of this test's own, so that a regression here
+  // fails rather than doing to the researcher's real data directory exactly
+  // what this test exists to prevent.
+  const dataDir = mkdtempSync(join(tmpdir(), "lykeion-import-"));
+  try {
+    const said = execFileSync(process.execPath, [module], {
+      encoding: "utf8",
+      stdio: "pipe",
+      // A serve that got through would never return on its own; this is what
+      // turns "hangs forever" into a failing test.
+      timeout: 20_000,
+      env: {
+        ...process.env,
+        LYKEION_DAEMON_DATA_DIR: dataDir,
+        LYKEION_DAEMON_WORK_DIR: join(dataDir, "work"),
+        LYKEION_DAEMON_PORT: "0",
+      },
+    });
+    expect(said).toBe("");
+    // Nothing claimed the directory it was pointed at either — the module
+    // exited because it had nothing to do, not because a port was taken.
+    expect(existsSync(dataDir)).toBe(true);
+    expect(readdirSync(dataDir)).toEqual([]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(module, { force: true });
+  }
 }, 60_000);
 
 it("refuses an unknown command by name rather than serving", () => {

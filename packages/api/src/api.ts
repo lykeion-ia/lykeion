@@ -36,12 +36,12 @@ import type {
 import type { Finding } from "./review";
 import type { ArtifactBlob } from "./artifact";
 import type {
-  Runtime,
+  Machine,
   KernelEnvStatus,
   NotebookCell,
   RunningKernel,
   MachineCompute,
-} from "./runtime";
+} from "./machine";
 import type { AgentCli } from "./agent-cli";
 import type {
   Agent,
@@ -274,8 +274,8 @@ export interface LykeionApi {
    */
   myWork(): Promise<Task[]>;
 
-  /** Compute runtimes registered with the core (empty on a fresh install). */
-  listRuntimes(): Promise<Runtime[]>;
+  /** Compute machines registered with the core (empty on a fresh install). */
+  listMachines(): Promise<Machine[]>;
 
   /**
    * Approve a machine, on behalf of the member calling. Returns a one-time
@@ -286,18 +286,18 @@ export interface LykeionApi {
   pairMachine(input: PairMachineInput): Promise<{ code: string }>;
 
   /** Unpair a machine and revoke its token. The owning member only. */
-  removeRuntime(runtimeId: string): Promise<void>;
+  removeMachine(machineId: string): Promise<void>;
 
   /**
    * Provisioning status of Lykeion's own managed Python environment. `absent`
    * on a fresh install (nothing is faked); a real implementation would report
-   * the actual on-disk state. Surfaced on the Runtimes screen.
+   * the actual on-disk state. Surfaced on the Machines screen.
    */
   kernelEnvStatus(): Promise<KernelEnvStatus>;
 
   /**
-   * Every managed Python environment under `runtime/envs` (empty on a fresh
-   * install — nothing is faked). Surfaced on the Runtimes screen alongside
+   * Every managed Python environment under `machine/envs` (empty on a fresh
+   * install — nothing is faked). Surfaced on the Machines screen alongside
    * the single-env `kernelEnvStatus`.
    */
   kernelEnvList(): Promise<KernelEnvStatus[]>;
@@ -388,7 +388,7 @@ export interface LykeionApi {
    */
   startRun(input: StartRunInput): Promise<RunHandle>;
 
-  /** Reconstruct every active turn on a Task owned by one of my runtimes. */
+  /** Reconstruct every active turn on a Task owned by one of my machines. */
   resumeRuns(taskId: string): Promise<ResumedRun[]>;
 
   /**

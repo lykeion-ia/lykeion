@@ -45,7 +45,7 @@ describe("Lykeion shell", () => {
     // Remaining Laboratory + Configure nav.
     for (const label of [
       "Research Groups",
-      "Agents",
+      "Experts",
       "Workflows",
       "Machines",
     ]) {

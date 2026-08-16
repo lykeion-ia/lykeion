@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Agent, Connector, Runtime, SkillEntry } from "@lykeion/api";
+import type { Agent, Connector, Machine, SkillEntry } from "@lykeion/api";
 import { useApi } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
 import { AgentList } from "../components/agents/AgentList";
@@ -11,21 +11,21 @@ import { PlusIcon } from "../components/icons";
 interface AgentsData {
   agents: Agent[];
   /** The caller's own machines, already narrowed — see the read below. */
-  runtimes: Runtime[];
+  machines: Machine[];
   skillNames: string[];
   connectorNames: string[];
 }
 
-/** Agents (#/agents) — specialist personas the workbench can run a task as. */
+/** Experts (#/agents) — specialist personas the workbench can run a task as. */
 export function AgentsScreen() {
   const api = useApi();
   const [nonce, setNonce] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
 
   const q = usePromise<AgentsData>(async () => {
-    const [agents, runtimes, skills, connectors, me] = await Promise.all([
+    const [agents, machines, skills, connectors, me] = await Promise.all([
       api.listAgents(),
-      api.listRuntimes(),
+      api.listMachines(),
       api.listSkills(),
       api.listConnectors(),
       api.currentUser(),
@@ -37,7 +37,7 @@ export function AgentsScreen() {
       // alongside the rest rather than on its own: everything here settles
       // together, which leaves no moment where the picker is offering the
       // lab's machines because the identity has not landed.
-      runtimes: runtimes.filter((r: Runtime) => r.ownerId === me.id),
+      machines: machines.filter((r: Machine) => r.ownerId === me.id),
       skillNames: skills.map((s: SkillEntry) => s.name),
       // Only the Lab's ENABLED connectors are offered for assignment.
       connectorNames: connectors
@@ -48,7 +48,7 @@ export function AgentsScreen() {
 
   const data = q.data ?? {
     agents: [],
-    runtimes: [],
+    machines: [],
     skillNames: [],
     connectorNames: [],
   };
@@ -56,11 +56,11 @@ export function AgentsScreen() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <ScreenHeader
-        title="Agents"
+        title="Experts"
         action={
           <PrimaryButton onClick={() => setCreateOpen(true)}>
             <PlusIcon width={14} height={14} />
-            New agent
+            New expert
           </PrimaryButton>
         }
       />
@@ -69,7 +69,7 @@ export function AgentsScreen() {
 
       {createOpen && (
         <CreateAgentModal
-          runtimes={data.runtimes}
+          machines={data.machines}
           skillNames={data.skillNames}
           connectorNames={data.connectorNames}
           onCreate={async (agent) => {

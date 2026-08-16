@@ -14,7 +14,7 @@ import { runConfined } from "./probe";
 export interface KernelFloor {
   ready: boolean;
   /** Written for a person, the way `rememberHeldBack` writes one: this is
-   *  the sentence a researcher reads on the Runtimes screen. */
+   *  the sentence a researcher reads on the Machines screen. */
   reason?: string;
 }
 
@@ -64,7 +64,7 @@ export async function probeKernelFloor(opts: KernelFloorOptions): Promise<Kernel
   //
   // `reason`, below and two lines further down, is daemon-authored free
   // text that the lab now shows to every member who can see this machine —
-  // not merely its owner (see `runtimes.ts`'s `kernelsReason`). Its
+  // not merely its owner (see `machines.ts`'s `kernelsReason`). Its
   // vocabulary has to stay closed and path-free: never something like
   // "uv not found in /Users/ana/…", which would leak a colleague's own
   // filesystem to the rest of the lab. Both reasons below honour that;
@@ -91,7 +91,7 @@ export async function probeKernelFloor(opts: KernelFloorOptions): Promise<Kernel
  * Which process-visibility rule this machine applies, as one sentence.
  *
  * Sourced from the machine rather than inferred in the browser from
- * `Runtime.platform`: a Linux box with `hidepid=2` and one without report the
+ * `Machine.platform`: a Linux box with `hidepid=2` and one without report the
  * same platform string and owe a researcher different answers. This is what
  * separates the two readings of an em dash — nothing measured yet, versus
  * this platform will not say.

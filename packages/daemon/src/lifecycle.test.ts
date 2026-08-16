@@ -56,7 +56,7 @@ beforeAll(async () => {
   claimWriter = join(dir, "claim-writer.mjs");
   releaseChild = join(dir, "released.mjs");
   await build({
-    entryPoints: [join(src, "main.ts")],
+    entryPoints: [join(src, "cli.ts")],
     outfile: daemonBundle,
     bundle: true,
     platform: "node",
@@ -76,7 +76,7 @@ beforeAll(async () => {
   // is when `beginSignIn` is allowed to finish, and it moves to a file the
   // test writes when it is done looking.
   await build({
-    entryPoints: [join(src, "main.ts")],
+    entryPoints: [join(src, "cli.ts")],
     outfile: heldBundle,
     bundle: true,
     platform: "node",
@@ -250,7 +250,7 @@ async function waitFor(what: string, predicate: () => boolean | Promise<boolean>
 }
 
 /** A lab that no longer knows this machine, which is what a member removing
- *  it from the Runtimes screen leaves behind: the token is revoked, so every
+ *  it from the Machines screen leaves behind: the token is revoked, so every
  *  authenticated call it carries comes back 401. */
 async function labThatRefuses(): Promise<{ base: string }> {
   const server: Server = createServer((_req, res) => {

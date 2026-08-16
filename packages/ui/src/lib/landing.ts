@@ -5,7 +5,7 @@ import type { LykeionApi } from "@lykeion/api";
  *
  * A member with no machine of their own cannot run anything, and Studies does
  * not say so — it shows the work and lets them find out at the first send. So
- * they land on Runtimes instead, which is where the one thing they still have
+ * they land on Machines instead, which is where the one thing they still have
  * to do is explained. Once a machine is paired the rule stops applying and
  * sign-in goes where it always did.
  *
@@ -18,8 +18,8 @@ import type { LykeionApi } from "@lykeion/api";
  */
 export async function landingHash(api: LykeionApi): Promise<string | null> {
   try {
-    const [me, runtimes] = await Promise.all([api.currentUser(), api.listRuntimes()]);
-    return runtimes.some((r) => r.ownerId === me.id) ? null : "#/runtimes";
+    const [me, machines] = await Promise.all([api.currentUser(), api.listMachines()]);
+    return machines.some((r) => r.ownerId === me.id) ? null : "#/machines";
   } catch {
     return null;
   }
@@ -30,7 +30,7 @@ export async function landingHash(api: LykeionApi): Promise<string | null> {
  *
  * Signing in is not always the start of a visit — it is also what happens
  * when somebody opens a link to a Task and turns out not to be signed in.
- * Sending them to Runtimes instead of the thing they clicked would be the
+ * Sending them to Machines instead of the thing they clicked would be the
  * onboarding rule eating a destination they had already chosen, so the
  * redirect only applies when nothing else has been asked for.
  */

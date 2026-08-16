@@ -251,7 +251,7 @@ it("does not open a second stream for a second onEvent subscriber", async () => 
 });
 
 it("implements every method the contract declares", () => {
-  // The compile-time guarantee has a runtime shadow worth keeping: a method
+  // The compile-time guarantee has a machine shadow worth keeping: a method
   // left out is `undefined` here, and `undefined` is not callable.
   const api = createHttpApi(transportReturning(null));
   const missing = Object.entries(api).filter(([, v]) => typeof v !== "function");

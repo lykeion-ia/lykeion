@@ -49,7 +49,7 @@ beforeAll(() => {
   const made = spawnSync(
     join(PACKAGE, "node_modules", ".bin", "esbuild"),
     [
-      join(PACKAGE, "src", "main.ts"),
+      join(PACKAGE, "src", "cli.ts"),
       "--bundle",
       "--platform=node",
       "--format=esm",

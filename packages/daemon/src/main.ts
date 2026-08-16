@@ -834,7 +834,7 @@ async function waitForClaim(
  *
  * Its output goes to a file rather than nowhere. A background daemon that
  * cannot reach its lab prints a retry line every few seconds, and a
- * researcher whose Runtimes screen says offline needs those lines to be
+ * researcher whose Machines screen says offline needs those lines to be
  * somewhere — discarding them would leave the one process that knows what
  * is wrong as the only thing that cannot say so.
  */
@@ -1098,7 +1098,7 @@ async function runPair(config: DaemonConfig): Promise<void> {
 }
 
 /** The newest log in the data directory. A daemon that cannot reach its lab
- *  prints a retry line every few seconds, and when Runtimes says offline
+ *  prints a retry line every few seconds, and when Machines says offline
  *  those lines are the only thing that knows why. */
 function runLogs(config: DaemonConfig, tail: boolean): void {
   const file = join(config.dataDir, LOG_FILE);
@@ -1223,7 +1223,18 @@ async function runStop(config: DaemonConfig): Promise<void> {
 /** The word that says this process is a relay rather than this machine. */
 const BRIDGE = "bridge";
 
-async function main(): Promise<void> {
+/**
+ * The whole command line, as one call.
+ *
+ * Exported and NOT invoked here. This module is imported for its parts —
+ * `reportIfChanged` has a test of its own — and a module that ran the program
+ * on the way in ran `serve` for every one of those importers: vitest's argv
+ * names no command, so it fell past every branch below to the last one and
+ * bound this machine's real ports against this researcher's real data
+ * directory. `cli.ts` is the one place that calls this, and it is the only
+ * thing the bundle is built from.
+ */
+export async function main(): Promise<void> {
   // Answered before this program's own command line is read at all. A relay
   // is not this machine — it pairs with nothing, claims no directory and
   // holds no identity — and the arguments that address one are not arguments
@@ -1248,13 +1259,18 @@ async function main(): Promise<void> {
   return runServe(config);
 }
 
-main().catch(async (err: unknown) => {
+/**
+ * What `cli.ts` does when {@link main} throws. Here rather than there because
+ * it reaches `shutdown`, which is this module's and stays this module's.
+ *
+ * A failure on the way up can happen with the control endpoint already bound
+ * and this directory already claimed — a pairing port that is in use is
+ * enough. Without this the process would sit there on that one handle: never
+ * paired, never heartbeating, holding a claim, and answering `status` as a
+ * healthy daemon that offers no way to pair it.
+ */
+export async function failed(err: unknown): Promise<void> {
   console.error(err instanceof Error ? err.message : String(err));
-  // A failure on the way up can happen with the control endpoint already
-  // bound and this directory already claimed — a pairing port that is in
-  // use is enough. Without this the process would sit there on that one
-  // handle: never paired, never heartbeating, holding a claim, and
-  // answering `status` as a healthy daemon that offers no way to pair it.
   await shutdown();
   process.exitCode = 1;
-});
+}

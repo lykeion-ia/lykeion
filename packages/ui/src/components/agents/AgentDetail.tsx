@@ -152,7 +152,7 @@ export function AgentDetail({ agent }: AgentDetailProps) {
               <EmptyPanel
                 icon={SparkleIcon}
                 title="No tools"
-                description="This agent has no tool allowlist — it uses the workspace default."
+                description="This expert has no tool allowlist — it uses the workspace default."
               />
             ))}
           {tab === "connectors" &&
