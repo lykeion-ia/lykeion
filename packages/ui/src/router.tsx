@@ -14,6 +14,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { adoptRoute, navigate as navigateActive, useTabs } from "./lib/tabs";
 
 export type Route =
   | { name: "studies" }
@@ -264,31 +265,139 @@ interface RouterValue {
 
 const RouterContext = createContext<RouterValue | null>(null);
 
-export function RouterProvider({ children }: { children: ReactNode }) {
-  const [route, setRoute] = useState<Route>(() =>
-    parseHash(window.location.hash),
+/**
+ * Routes that are not the workbench's to hold.
+ *
+ * `join` carries an invite code and `pair` a machine's challenge — working
+ * credentials whose only copy is the fragment somebody was handed. `setup`
+ * addresses a first run that has no lab yet. None of them is a place the
+ * Shell can draw, so none may become a tab, and none of their fragments is
+ * this router's to own or to wipe.
+ */
+export function handedLink(route: Route): boolean {
+  return (
+    route.name === "join" || route.name === "pair" || route.name === "setup"
   );
-  const firstSync = useRef(true);
+}
+
+export function RouterProvider({ children }: { children: ReactNode }) {
+  /**
+   * Take the incoming address into the strip — during the first render of each
+   * mount, before the store is read below.
+   *
+   * Three constraints meet here, and only this position satisfies all of them.
+   *
+   * Not an effect: the mirror effect further down runs in the same commit and
+   * would `replaceState` the already-active tab's route over the incoming
+   * address before the adopt landed, so a reload at that instant would lose the
+   * link. Adopting during render means the snapshot `useTabs` reads immediately
+   * below is already the adopted one, and the first paint is the right screen.
+   *
+   * Not one level up in `App`, though that render also precedes this one. On a
+   * lab build this provider sits inside `AuthGate`'s children, unmounted while
+   * the gate resolves or shows sign-in; when the gate opens it re-renders the
+   * same `children` element, so `App`'s body does not run again and a link
+   * pasted at the sign-in screen would be adopted by nobody. This provider
+   * renders on every mount, which is exactly the moment that needs covering.
+   *
+   * And once per mount, not once per render: after the first commit the address
+   * bar LAGS the store, because the mirror effect below writes it afterwards.
+   * Re-reading it mid-life would adopt the route the reader just left and yank
+   * them back to it. While this provider is mounted an external address change
+   * arrives as `hashchange` instead, which `sync` handles.
+   *
+   * A handed link — `join`, `pair`, `setup` — is never adopted: none is a tab
+   * this Shell can draw, each is read straight off the hash by whoever answers
+   * it, and adopting one would hand `persistTabs` a working credential nothing
+   * ever clears. An empty hash adopts nothing, which means "stay on whatever
+   * tab was already active".
+   */
+  const adopted = useRef(false);
+  if (!adopted.current) {
+    adopted.current = true;
+    const incoming = window.location.hash;
+    if (incoming !== "") {
+      const initial = parseHash(incoming);
+      if (!handedLink(initial)) adoptRoute(initial);
+    }
+  }
+
+  const tabs = useTabs();
+  const activeTab =
+    tabs.tabs.find((t) => t.id === tabs.activeId) ?? tabs.tabs[0];
+  const tabRoute = activeTab.stack[activeTab.index].route;
+
+  /**
+   * `pair` is served by `Workbench` — inside this provider, outside the Shell —
+   * so it is the one route that is not a tab. It arrives from a link the daemon
+   * composed and is never navigated to from within the app.
+   */
+  const [standalone, setStandalone] = useState<Route | null>(() => {
+    const initial = parseHash(window.location.hash);
+    return initial.name === "pair" ? initial : null;
+  });
+  const route = standalone ?? tabRoute;
+
   /** The fragment this router is answerable for, or null when the one in the
    *  address bar belongs to somebody else. */
   const ownHash = useRef<string | null>(null);
 
-  // External hash edits (URL bar, anchors) and back/forward.
+  // External hash edits (URL bar, anchors) and the browser's own history.
   useEffect(() => {
-    const sync = () => setRoute(parseHash(window.location.hash));
+    const sync = () => {
+      const next = parseHash(window.location.hash);
+      if (next.name === "pair") {
+        setStandalone(next);
+        return;
+      }
+      // `join` and `setup` reaching here the same way `pair` does — a
+      // colleague's invite link, or a first-run redirect, pasted into an
+      // already-open workbench — are handled the way a cold load handles
+      // them: not at all. Neither is a tab `Shell` can draw, so pushing one
+      // into the strip via `navigateActive` would hand `persistTabs` a
+      // working credential nothing ever clears, and leave `ScreenSwitch`
+      // with nothing to draw for it. Ignored outright, rather than routed
+      // through `setStandalone(next)` the way `pair` is: `Workbench` only
+      // reads `standalone` for `pair`, so parking either there would just
+      // move the same blank-main-area failure one step over.
+      //
+      // Returning early also leaves `standalone` alone, so a reader already on
+      // `#/pair?…` who is then handed a `#/join/…` address keeps the pairing
+      // screen they were using while the address bar shows the invite. That is
+      // not right either, but it is better than the alternatives available
+      // here: clearing `standalone` would blank the main area, and drawing the
+      // invite needs a screen the workbench does not have. Left as is,
+      // deliberately, rather than papered over.
+      if (handedLink(next)) return;
+      setStandalone(null);
+      navigateActive(next);
+    };
     window.addEventListener("hashchange", sync);
     window.addEventListener("popstate", sync);
+    // Once, now that the listeners are attached: adoption read the address
+    // during render, and an address that changed between then and this commit's
+    // effect phase — the post-sign-in landing redirect is the real candidate —
+    // fired its `hashchange` into a window where nothing was listening yet, and
+    // would then be overwritten by the mirror effect below. Re-reading here
+    // costs nothing when the address has not moved: `navigateActive` no-ops on
+    // the route the active tab is already showing.
+    //
+    // Only for an address that says something, though. An empty fragment is
+    // "wherever you were", but `parseHash("")` answers with the Studies
+    // fallback, so syncing on one would navigate the active tab there. That is
+    // not hypothetical: the cleanup below wipes the fragment on unmount, and
+    // StrictMode's mount/unmount/mount leaves the second mount reading exactly
+    // that empty value — which sent two hand-off tests back to Studies
+    // mid-flow.
+    if (window.location.hash !== "") sync();
     return () => {
       window.removeEventListener("hashchange", sync);
       window.removeEventListener("popstate", sync);
-      // The app owns the fragment only while mounted — leave none behind.
-      //
-      // Only its own, though. Unmounting is how the workbench gives way when
-      // the session behind it turns out to be gone, and what replaces it may
-      // be reading a fragment this router never owned: an invite link most
-      // of all, which is a working credential and the only copy of it the
-      // person has. Wiping that on the way out throws it away.
-      if (ownHash.current === null || window.location.hash !== ownHash.current) return;
+      // The app owns the fragment only while mounted — leave none behind, and
+      // only its own. See the note on `ownHash` below for which fragments
+      // that excludes and why.
+      if (ownHash.current === null || window.location.hash !== ownHash.current)
+        return;
       window.history.replaceState(
         null,
         "",
@@ -297,25 +406,42 @@ export function RouterProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Mirror state into the URL: replace on first sync, push afterwards.
+  /**
+   * Mirror the active tab into the URL — always `replaceState`.
+   *
+   * History belongs to the tabs now. A `pushState` here would build a second,
+   * flat history alongside the per-tab stacks, and the browser's back button
+   * would walk it through places the strip has no record of.
+   */
   useEffect(() => {
     const hash = routeHash(route);
-    // `join` and `pair` are both links somebody was handed rather than
-    // somewhere this router ever sent them by its own navigation: `join`'s
-    // code redeems an invite, `pair`'s parameters are the one copy of a
-    // machine's pairing request. Owning either fragment would mean wiping
-    // it out from under a screen that unmounted for an unrelated reason —
-    // a session found to be gone mid-visit — leaving nothing to come back
-    // to once that reason resolves.
-    ownHash.current = route.name === "join" || route.name === "pair" ? null : hash;
-    if (window.location.hash !== hash) {
-      if (firstSync.current) window.history.replaceState(null, "", hash);
-      else window.history.pushState(null, "", hash);
-    }
-    firstSync.current = false;
+    // A `join` code and a `pair` challenge are working credentials whose only
+    // copy is the fragment somebody was handed; a `setup` fragment was
+    // composed outside this app, by a daemon or a redirect it sent someone on.
+    // None of the three is this router's to own — claiming it as the fragment
+    // to restore, or wiping it on the way out (see the cleanup above), would
+    // treat somebody else's link as if it were a place the workbench put them.
+    ownHash.current = handedLink(route) ? null : hash;
+    if (window.location.hash !== hash)
+      window.history.replaceState(null, "", hash);
   }, [route]);
 
-  const navigate = useCallback((next: Route) => setRoute(next), []);
+  const navigate = useCallback((next: Route) => {
+    // Only `pair` is `Workbench`'s to serve as the standalone route — the
+    // same one `Workbench` reads off `route.name === "pair"`. `join` and
+    // `setup` render nothing there, so parking either in `standalone` would
+    // leave the main area blank while the mirror effect wrote a working
+    // credential's hash out to the address bar. Nothing calls `navigate`
+    // with either today; a silent no-op is the right outcome anyway, since
+    // the Shell cannot draw them. See `handedLink`.
+    if (next.name === "pair") {
+      setStandalone(next);
+      return;
+    }
+    if (handedLink(next)) return;
+    setStandalone(null);
+    navigateActive(next);
+  }, []);
   const value = useMemo(() => ({ route, navigate }), [route, navigate]);
 
   return (

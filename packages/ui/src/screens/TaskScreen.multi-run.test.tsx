@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createInMemoryApi,
   type ActiveRunSnapshot,
@@ -14,9 +14,18 @@ import {
   type TaskTurn,
 } from "@lykeion/api";
 import App from "../App";
+import { resetPageLoad } from "../lib/tabs-storage";
+import { resetTabs } from "../lib/tabs";
 import { stashRun } from "../lib/pending-run";
 import { currentTaskStatus } from "../test/task-row-menu";
 
+beforeEach(() => {
+  // The strip is a module store, and `App` restores/adopts once per module
+  // lifetime — both would otherwise leak into this file's later tests, which
+  // mount `<App>` fresh on a different hash than the ones before them.
+  resetTabs();
+  resetPageLoad();
+});
 afterEach(cleanup);
 
 const ROUTE = "#/studies/s_cmp/tasks/t_3";

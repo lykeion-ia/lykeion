@@ -14,6 +14,8 @@ import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi, type LykeionApi } from "@lykeion/api";
 import App from "../App";
+import { resetPageLoad } from "../lib/tabs-storage";
+import { resetTabs } from "../lib/tabs";
 
 // t_13 is seeded unfiled — it belongs to no Study, which is the whole premise.
 const UNFILED = "t_13";
@@ -33,7 +35,19 @@ function countingApi(): { api: LykeionApi; starts: () => number } {
   return { api, starts: () => starts };
 }
 
-beforeEach(cleanup);
+beforeEach(() => {
+  cleanup();
+  // The strip is a module store now, so a test would otherwise inherit
+  // whichever route (and whichever tab) the previous test's navigation and
+  // filing left behind, rather than starting from a single Studies tab the
+  // way each of these assumes.
+  resetTabs();
+  window.location.hash = "";
+  // `App` reads the stored strip once per page; this file mounts it fresh per
+  // test. Adopting the incoming hash needs no reset — that is per-mount, in
+  // `RouterProvider`.
+  resetPageLoad();
+});
 
 describe("the first send on an unfiled Task", () => {
   it("asks which Study, files the Task, and runs the prompt there", async () => {

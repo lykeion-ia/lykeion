@@ -13,12 +13,19 @@ import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
+import { resetPageLoad } from "../lib/tabs-storage";
 
 const STUDY = "s_cmp";
 // A seeded Task with no transcript, so the surface opens on the chat entry.
 const FILED = "t_5";
 
-beforeEach(cleanup);
+beforeEach(() => {
+  cleanup();
+  // `App` reads the stored strip once per page; this file mounts it fresh per
+  // test. Adopting the incoming hash needs no reset — that is per-mount, in
+  // `RouterProvider`.
+  resetPageLoad();
+});
 
 describe("a chat's title", () => {
   it("takes the first message, replacing the placeholder New mints", async () => {

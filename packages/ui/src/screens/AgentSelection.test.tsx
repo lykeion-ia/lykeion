@@ -10,6 +10,7 @@ import {
   type TaskTurn,
 } from "@lykeion/api";
 import App from "../App";
+import { resetPageLoad } from "../lib/tabs-storage";
 
 const CLIS: AgentCli[] = [
   {
@@ -59,7 +60,13 @@ const modelOption = (current: string, choices: [string, string][]): AgentOption 
   choices: choices.map(([value, label]) => ({ value, label })),
 });
 
-beforeEach(cleanup);
+beforeEach(() => {
+  cleanup();
+  // `App` reads the stored strip once per page; this file mounts it fresh per
+  // test. Adopting the incoming hash needs no reset — that is per-mount, in
+  // `RouterProvider`.
+  resetPageLoad();
+});
 
 describe("Agent selection", () => {
   /**

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import {
   FINDING_CLASS_LABELS,
   SEVERITY_LABELS,
+  taskCode,
   titleFromPrompt,
   type Finding,
   type Severity,
@@ -55,6 +56,7 @@ import {
   taskTabsFor,
   useTaskTabs,
 } from "../lib/task-tabs";
+import { closeTabsForRoute, reconcileLabel } from "../lib/tabs";
 import {
   closeNotebookTab,
   openNotebookTab,
@@ -636,6 +638,20 @@ export function TaskScreen({
     openTaskTab({ studyId, taskId, title: taskTitle });
   }, [studyId, taskId, taskTitle]);
 
+  // Name this Task's tab in the app strip the way the old single pill named it:
+  // code first, so a researcher who knows "CMP-7" recognises the tab without
+  // reading the title. The strip stores labels rather than resolving them, so
+  // without this the tab would keep the generic "Task" a cold entry starts with
+  // — and unlike the pill, it would keep it for as long as the tab is open.
+  useEffect(() => {
+    if (studyId === undefined || study === undefined || task === undefined)
+      return;
+    reconcileLabel(
+      { name: "task", studyId, taskId },
+      `${taskCode(study, task)}: ${taskTitle}`,
+    );
+  }, [studyId, taskId, study, task, taskTitle]);
+
   const resolveFinding = useCallback(
     (findingId: string) => {
       if (studyId === undefined) return;
@@ -855,6 +871,11 @@ export function TaskScreen({
     await api.deleteTask(id);
     closeTaskTab(id);
     dropNotebookTab(id);
+    // Both spellings of the address: a Task filed after a tab was opened on it
+    // left that tab under the unfiled route, and only one of the two matches.
+    if (studyId !== undefined)
+      closeTabsForRoute({ name: "task", studyId, taskId: id });
+    closeTabsForRoute({ name: "unfiled-task", taskId: id });
     refreshTasks();
     invalidate();
     if (id === taskId) {

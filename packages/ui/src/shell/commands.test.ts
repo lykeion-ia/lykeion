@@ -22,26 +22,26 @@ const studies: Study[] = [
 ];
 
 describe("buildCommands", () => {
-  it("has all thirteen navigation commands plus one per study", () => {
+  it("offers the Studies and nothing else when there are no Tasks", () => {
     const commands = buildCommands(studies);
-    expect(commands).toHaveLength(15);
-    for (const label of [
-      "Go to Inbox",
-      "Go to My Tasks",
-      "Go to Research Groups",
-      "Go to Tasks",
-      "Go to Studies",
-      "Go to Experts",
-      "Go to Skills",
-      "Go to Workflows",
-      "Go to Connectors",
-      "Go to Machines",
-      "Go to Profile",
-      "Go to Appearance",
-      "Go to Settings",
+    expect(commands.map((c) => c.label)).toEqual([
       "Go to Cross-modal plasticity in the brain",
-    ]) {
-      expect(commands.some((c) => c.label === label)).toBe(true);
+      "Go to Minimum-wage effects on regional employment",
+    ]);
+  });
+
+  /**
+   * Screens are not in the palette. Thirteen "Go to <section>" rows used to be,
+   * and they crowded out what it is actually reached for — the rail is how you
+   * get to a screen, and it is always on the page.
+   */
+  it("offers no screens", () => {
+    const commands = buildCommands(studies);
+    expect(commands.every((c) => c.kind === "study" || c.kind === "task")).toBe(
+      true,
+    );
+    for (const gone of ["Go to Inbox", "Go to Settings", "Go to Machines"]) {
+      expect(commands.some((c) => c.label === gone)).toBe(false);
     }
   });
 });
@@ -71,7 +71,7 @@ describe("buildCommands, indexing Tasks", () => {
 
   it("emits one command per Task, coded and titled, routed to the Task", () => {
     const commands = buildCommands(studies, tasksByStudy);
-    const tasks = commands.filter((c) => c.hint === "Task");
+    const tasks = commands.filter((c) => c.kind === "task");
     expect(tasks.map((c) => c.label)).toEqual([
       "CMP-3 · Preprocess two-photon calcium traces",
       "CMP-7 · Draft a chemogenetic follow-up",
@@ -105,7 +105,7 @@ describe("buildCommands, indexing Tasks", () => {
   });
 
   it("emits no Task commands when it is given none", () => {
-    expect(buildCommands(studies).some((c) => c.hint === "Task")).toBe(false);
+    expect(buildCommands(studies).some((c) => c.kind === "task")).toBe(false);
   });
 });
 
@@ -116,11 +116,6 @@ describe("filterCommands", () => {
     expect(filterCommands(commands, "")).toHaveLength(commands.length);
   });
 
-  it("ranks 'Go to My Tasks' first for 'My Tasks'", () => {
-    const results = filterCommands(commands, "My Tasks");
-    expect(results[0]?.label).toBe("Go to My Tasks");
-  });
-
   it("finds studies by title fragment, case-insensitively", () => {
     const results = filterCommands(commands, "cross-modal");
     expect(results[0]?.label).toBe("Go to Cross-modal plasticity in the brain");
@@ -128,5 +123,83 @@ describe("filterCommands", () => {
 
   it("returns nothing for garbage", () => {
     expect(filterCommands(commands, "zzzz qqqq")).toHaveLength(0);
+  });
+});
+
+/**
+ * What the palette shows beside the highlighted row.
+ *
+ * Built here rather than in the component, so what a preview SAYS is covered by
+ * a plain test instead of a rendered one — and so this module stays the only one
+ * that knows what a Task is.
+ */
+describe("command previews", () => {
+  const study: Study = {
+    id: "s_1",
+    key: "CHE",
+    title: "Covalent inhibitor scaffolds",
+    createdBy: "u_you",
+    createdTs: 0,
+    updatedTs: 1000,
+  };
+  const task: Task = {
+    id: "t_2",
+    number: 2,
+    studyId: "s_1",
+    stage: "methods",
+    title: "KRAS G12C binding assay",
+    status: "in-progress",
+    priority: "high",
+    createdBy: "u_you",
+    runCount: 0,
+    createdTs: 0,
+    updatedTs: 940,
+  };
+  // A fixed clock. A preview reading "2d" today and "3d" tomorrow would make
+  // this suite fail on a Tuesday for a reason nobody could act on, which is why
+  // `buildCommands` takes `now` rather than reading it.
+  const NOW = 1000 + 60 * 60 * 24 * 2;
+
+  const find = (id: string) =>
+    buildCommands([study], { s_1: [task] }, NOW).find((c) => c.id === id)!;
+
+  it("describes a Task by what a researcher needs to recognise it", () => {
+    const preview = find("task-t_2").preview;
+    expect(preview.title).toBe("CHE-2");
+    expect(preview.subtitle).toBe("KRAS G12C binding assay");
+    expect(preview.rows).toEqual([
+      { label: "Study", value: "Covalent inhibitor scaffolds" },
+      { label: "Status", value: "In Progress" },
+      { label: "Priority", value: "High" },
+      { label: "Updated", value: "2d" },
+    ]);
+  });
+
+  it("describes a Study by its key and when it last moved", () => {
+    const preview = find("study-s_1").preview;
+    expect(preview.title).toBe("Covalent inhibitor scaffolds");
+    expect(preview.subtitle).toBe("CHE");
+    expect(preview.rows).toEqual([{ label: "Updated", value: "2d" }]);
+  });
+
+  it("gives every command a preview, so no row faces an empty panel", () => {
+    for (const command of buildCommands([study], { s_1: [task] }, NOW)) {
+      expect(command.preview.title.length).toBeGreaterThan(0);
+      expect(command.preview.subtitle?.length ?? 0).toBeGreaterThan(0);
+    }
+  });
+
+  it("tags each command with its kind", () => {
+    expect(find("study-s_1").kind).toBe("study");
+    expect(find("task-t_2").kind).toBe("task");
+  });
+
+  it("reads the clock only when nobody says what time it is", () => {
+    // The default exists so callers that do not care need not pass one; the
+    // parameter exists so this file can.
+    const withoutNow = buildCommands([study], { s_1: [task] });
+    expect(
+      withoutNow.find((c) => c.id === "study-s_1")!.preview.rows,
+    ).toHaveLength(1);
   });
 });

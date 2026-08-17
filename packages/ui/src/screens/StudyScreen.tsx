@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   STAGES,
   STAGE_LABELS,
@@ -42,6 +42,7 @@ import {
   closeTaskTabsForStudy,
   renameTaskTab,
 } from "../lib/task-tabs";
+import { closeTabsForRoute, reconcileLabel } from "../lib/tabs";
 import {
   closeNotebookTab,
   closeNotebookTabsForStudy,
@@ -95,6 +96,15 @@ export function StudyScreen({ studyId }: { studyId: string }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
 
   const study = detail.data?.study;
+
+  // Name this Study's tab in the app strip. The strip stores labels rather than
+  // resolving them, so without this the tab keeps the generic "Study" that a
+  // cold entry starts with, for as long as it stays open.
+  useEffect(() => {
+    if (study === undefined) return;
+    reconcileLabel({ name: "study", studyId: study.id }, study.title);
+  }, [study]);
+
   // Pinned Tasks read first. The sort key is the pin and nothing else, and
   // `sort` is stable, so number order survives inside both groups — this list
   // reads by number on purpose (see `listTasks`), and re-sorting it by
@@ -262,6 +272,10 @@ export function StudyScreen({ studyId }: { studyId: string }) {
     await api.deleteTask(taskId);
     closeTaskTab(taskId);
     closeNotebookTab(taskId);
+    // Both spellings of the address: a Task filed after a tab was opened on it
+    // left that tab under the unfiled route, and only one of the two matches.
+    closeTabsForRoute({ name: "task", studyId, taskId });
+    closeTabsForRoute({ name: "unfiled-task", taskId });
     invalidate();
   };
 

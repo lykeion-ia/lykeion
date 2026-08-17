@@ -63,8 +63,27 @@ export function Shell() {
     () => buildCommands(snapshot.studies, snapshot.tasksByStudy),
     [snapshot],
   );
+  /**
+   * Where a chosen command lands. Search and ⌘K take you somewhere, so they move
+   * the tab you are in; the strip's `+` is asking for another place to be open,
+   * so what it finds opens beside the current one.
+   */
+  const [paletteOpensTab, setPaletteOpensTab] = useState(false);
   const openPalette = () => {
     setPaletteNonce((n) => n + 1);
+    setPaletteOpensTab(false);
+    setPaletteOpen(true);
+  };
+  /**
+   * The strip's `+`. It opens the palette rather than a tab on some arbitrary
+   * screen: "new tab" is a question about where to go, and answering it with
+   * Studies made the button read as a duplicate-the-current-screen control. The
+   * palette is also what the button in this position did before the strip
+   * existed, so the gesture is unchanged from the outside.
+   */
+  const openPaletteForNewTab = () => {
+    setPaletteNonce((n) => n + 1);
+    setPaletteOpensTab(true);
     setPaletteOpen(true);
   };
 
@@ -105,7 +124,7 @@ export function Shell() {
         <div className="flex w-56 shrink-0" ref={setTaskRailEl} />
       )}
       <div className="flex min-w-0 flex-1 flex-col">
-        <TabBar />
+        <TabBar onNewTab={openPaletteForNewTab} />
         <div className="min-h-0 flex-1 p-2 pl-0">
           <div className="flex h-full flex-col overflow-hidden rounded-xl border border-line bg-canvas">
             <ScreenSwitch
@@ -120,6 +139,7 @@ export function Shell() {
       {paletteOpen && (
         <CommandPalette
           commands={commands}
+          inNewTab={paletteOpensTab}
           onClose={() => setPaletteOpen(false)}
         />
       )}

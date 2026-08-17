@@ -16,6 +16,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { createInMemoryApi, type LykeionApi, type Machine } from "@lykeion/api";
 import App from "../App";
+import { resetPageLoad } from "../lib/tabs-storage";
+import { resetTabs } from "../lib/tabs";
 
 const ROUTE = "#/studies/s_cmp/tasks/t_3";
 
@@ -30,6 +32,14 @@ afterEach(() => {
   cleanup();
   document.querySelector('meta[name="lykeion-workspace"]')?.remove();
   window.history.replaceState({}, "", "/");
+  // The strip is a module store now, so the next test's fresh `<App>` would
+  // otherwise still find the active tab on whatever route this one left it
+  // at, and briefly render that surface before its own hash gets adopted.
+  resetTabs();
+  // `App` reads the stored strip once per page; this file mounts it fresh per
+  // test. Adopting the incoming hash needs no reset — that is per-mount, in
+  // `RouterProvider`.
+  resetPageLoad();
 });
 
 describe("the composer's machine notice", () => {

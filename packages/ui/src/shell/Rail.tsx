@@ -20,6 +20,10 @@ function NavLink({
   return (
     <RowLink
       to={route}
+      // Each section keeps a tab of its own: clicking Inbox goes to the Inbox
+      // tab if it is open, and opens one if it is not, rather than spending the
+      // tab you are reading.
+      ownTab
       ariaCurrent={active ? "page" : undefined}
       className={railRow(active)}
     >

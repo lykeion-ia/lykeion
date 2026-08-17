@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { isLykeionError, type User } from "@lykeion/api";
 import { postAuth } from "../lib/auth-request";
+import { clearStoredTabs } from "../lib/tabs-storage";
 import { SessionProvider } from "../api/SessionContext";
 import { SignInScreen } from "../screens/SignInScreen";
 import { SetupScreen } from "../screens/SetupScreen";
@@ -154,6 +155,11 @@ export function AuthGate({
     // trips, and the middle one remounts the data layer under it, so they
     // watch their own work fail to reload on the way out.
     setGate("resolving");
+    // The strip goes with them. A tab's label is a Task's title, and it is
+    // written to this machine's storage — so leaving it would hand the next
+    // person to sign in here a list of the last one's work, and a reload would
+    // bring it back even after the session was gone.
+    clearStoredTabs();
     postAuth("/auth/signout")
       .finally(() => {
         onSignedOut?.();

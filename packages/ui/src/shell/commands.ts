@@ -1,112 +1,105 @@
 import { taskCode, type Study, type Task } from "@lykeion/api";
+import { PRIORITY_META, TASK_STATUS_META, formatAgo } from "../lib/task-meta";
 import type { Route } from "../router";
+
+export interface PreviewRow {
+  label: string;
+  value: string;
+}
+
+/**
+ * What the palette shows beside the highlighted row — enough to recognise a
+ * result before opening it, rather than opening it to find out.
+ *
+ * Built here rather than in the component, for two reasons. This module is the
+ * only place that knows what a Task is, and it is pure — so what a preview says
+ * is covered by a plain test instead of a rendered one.
+ */
+export interface Preview {
+  title: string;
+  subtitle?: string;
+  rows: PreviewRow[];
+}
+
+export type CommandKind = "study" | "task";
 
 export interface Command {
   id: string;
   label: string;
-  /** Right-aligned annotation in the palette (what kind of thing this is,
-   *  or which Study it belongs to). */
-  hint: string;
+  /** Which preview shape was built, and which mark the row draws on the right. */
+  kind: CommandKind;
+  /**
+   * The CLI a Task last ran on, when it has run at all — an `AgentCli.id`, read
+   * off its newest turn. The palette draws that CLI's own brand mark for it, and
+   * a chat mark for a Task nobody has run, which is the difference between work
+   * an agent has touched and a conversation a person started.
+   *
+   * Absent on a Study, which is not a thing that runs.
+   */
+  agent?: string;
+  preview: Preview;
   route: Route;
 }
 
 /** A Study's Tasks, keyed by Study id. */
 export type TasksByStudy = Record<string, Task[]>;
 
+function studyPreview(study: Study, now: number): Preview {
+  return {
+    title: study.title,
+    subtitle: study.key,
+    rows: [{ label: "Updated", value: formatAgo(study.updatedTs, now) }],
+  };
+}
+
 /**
- * Navigation commands, one "Go to <study>" per study, and one per Task.
+ * A Task, described by what tells two of them apart: which Study it belongs to,
+ * where it has got to, and when it last moved.
  *
- * The Task commands find a Task by code or title without first choosing where
- * it lives, so a Task is one keystroke away from anywhere in the app.
+ * No assignee row, though it would belong here: naming one needs a directory of
+ * lab members that the palette's index does not read, and adding that read for
+ * one line of a preview would cost a round trip on every open.
+ */
+function taskPreview(study: Study, task: Task, now: number): Preview {
+  return {
+    title: taskCode(study, task),
+    subtitle: task.title,
+    rows: [
+      { label: "Study", value: study.title },
+      { label: "Status", value: TASK_STATUS_META[task.status].label },
+      { label: "Priority", value: PRIORITY_META[task.priority].label },
+      { label: "Updated", value: formatAgo(task.updatedTs, now) },
+    ],
+  };
+}
+
+/**
+ * What the palette can find: every Study, and every Task in them.
+ *
+ * Screens are deliberately absent. They used to be here as "Go to <section>"
+ * rows, thirteen of them, and they crowded out the thing the palette is actually
+ * reached for — a Task or a Study by name. The rail is how you get to a screen,
+ * and it is always on the page; nobody opens a search box to find the Inbox.
+ *
+ * A Task's row leads with its code, so a researcher who knows "CMP-7" types it
+ * and lands on a prefix match, and finds it without first choosing the Study
+ * that holds it.
  */
 export function buildCommands(
   studies: Study[],
   tasksByStudy: TasksByStudy = {},
+  /**
+   * Passed in rather than read off the clock. A preview that says "2d" is a
+   * function of when it was asked, and a builder that reads the time itself
+   * cannot be tested for what it says.
+   */
+  now: number = Date.now() / 1000,
 ): Command[] {
-  const nav: Command[] = [
-    {
-      id: "nav-inbox",
-      label: "Go to Inbox",
-      hint: "Screen",
-      route: { name: "inbox" },
-    },
-    {
-      id: "nav-my-tasks",
-      label: "Go to My Tasks",
-      hint: "Screen",
-      route: { name: "my-tasks" },
-    },
-    {
-      id: "nav-research-groups",
-      label: "Go to Research Groups",
-      hint: "Screen",
-      route: { name: "research-groups" },
-    },
-    {
-      id: "nav-tasks",
-      label: "Go to Tasks",
-      hint: "Screen",
-      route: { name: "tasks" },
-    },
-    {
-      id: "nav-studies",
-      label: "Go to Studies",
-      hint: "Screen",
-      route: { name: "studies" },
-    },
-    {
-      id: "nav-agents",
-      label: "Go to Experts",
-      hint: "Screen",
-      route: { name: "agents" },
-    },
-    {
-      id: "nav-skills",
-      label: "Go to Skills",
-      hint: "Screen",
-      route: { name: "settings", tab: "skills" },
-    },
-    {
-      id: "nav-workflows",
-      label: "Go to Workflows",
-      hint: "Screen",
-      route: { name: "workflows" },
-    },
-    {
-      id: "nav-connectors",
-      label: "Go to Connectors",
-      hint: "Screen",
-      route: { name: "settings", tab: "connectors" },
-    },
-    {
-      id: "nav-machines",
-      label: "Go to Machines",
-      hint: "Screen",
-      route: { name: "machines" },
-    },
-    {
-      id: "nav-profile",
-      label: "Go to Profile",
-      hint: "Screen",
-      route: { name: "settings", tab: "profile" },
-    },
-    {
-      id: "nav-appearance",
-      label: "Go to Appearance",
-      hint: "Screen",
-      route: { name: "settings", tab: "appearance" },
-    },
-    {
-      id: "nav-settings",
-      label: "Go to Settings",
-      hint: "Screen",
-      route: { name: "settings" },
-    },
-  ];
   const perStudy: Command[] = studies.map((study) => ({
     id: `study-${study.id}`,
     label: `Go to ${study.title}`,
-    hint: study.key,
+    kind: "study",
+    preview: studyPreview(study, now),
     route: { name: "study", studyId: study.id },
   }));
   // Code first so a researcher who knows "CMP-7" types it and lands on a
@@ -115,11 +108,13 @@ export function buildCommands(
     (tasksByStudy[study.id] ?? []).map((task) => ({
       id: `task-${task.id}`,
       label: `${taskCode(study, task)} · ${task.title}`,
-      hint: "Task",
+      kind: "task" as const,
+      agent: task.agent,
+      preview: taskPreview(study, task, now),
       route: { name: "task" as const, studyId: study.id, taskId: task.id },
     })),
   );
-  return [...nav, ...perStudy, ...perTask];
+  return [...perStudy, ...perTask];
 }
 
 /**

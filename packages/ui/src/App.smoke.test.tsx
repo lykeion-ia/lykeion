@@ -18,12 +18,28 @@ import {
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import App from "./App";
+import { resetPageLoad } from "./lib/tabs-storage";
+import { resetTabs } from "./lib/tabs";
 
 function renderApp() {
   return render(<App api={createInMemoryApi()} />);
 }
 
-beforeEach(cleanup);
+beforeEach(() => {
+  cleanup();
+  // The tab strip is a module store, not component state — it outlives any
+  // one test's render the way it is meant to outlive a screen. Left alone
+  // here, a test that does not set its own hash would inherit whichever
+  // route the previous test's navigation happened to leave the active tab
+  // on, rather than the blank-hash default every one of these otherwise
+  // assumes it starts from.
+  resetTabs();
+  window.location.hash = "";
+  // `App` reads the stored strip once per page, which this file's repeated
+  // `<App>` mounts would otherwise only get on the very first test. Adopting
+  // the incoming hash needs no reset: that is per-mount, in `RouterProvider`.
+  resetPageLoad();
+});
 
 describe("Lykeion shell", () => {
   it("Projects screen: the Rail and every project line", async () => {
@@ -104,13 +120,15 @@ describe("Lykeion shell", () => {
     const palette = await screen.findByRole("dialog", { name: /command/i });
     const input = within(palette).getByRole("combobox");
 
-    // Jump to My Tasks through the palette.
-    await user.type(input, "My Tasks");
+    // Jump to a Task through the palette, by its code. Screens are not in here
+    // — the rail is how you reach those — so what the palette navigates to is a
+    // Study or a Task.
+    await user.type(input, "CMP-7");
     await user.keyboard("{Enter}");
 
-    // My Tasks now renders the real board of assigned work.
+    expect(await screen.findByTestId("task-surface")).toBeInTheDocument();
     expect(
-      await screen.findByText("Quantify tuning drift after deprivation"),
+      await screen.findByText(/CMP-7: Draft a chemogenetic follow-up/i),
     ).toBeInTheDocument();
   });
 

@@ -11,11 +11,18 @@ import { render, screen, within, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
+import { resetPageLoad } from "../lib/tabs-storage";
 
 const CMP = "Cross-modal plasticity in the brain";
 const ECO = "Minimum-wage effects on regional employment";
 
-beforeEach(cleanup);
+beforeEach(() => {
+  cleanup();
+  // `App` reads the stored strip once per page; this file mounts it fresh per
+  // test. Adopting the incoming hash needs no reset — that is per-mount, in
+  // `RouterProvider`.
+  resetPageLoad();
+});
 
 describe("Studies list → Study", () => {
   it("opens the Study of a research line that has already been worked in", async () => {

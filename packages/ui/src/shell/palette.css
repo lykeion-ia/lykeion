@@ -11,7 +11,7 @@
 }
 
 .palette {
-  width: min(560px, calc(100vw - 32px));
+  width: min(720px, calc(100vw - 32px));
   margin-top: 12vh;
   background: var(--surface-2);
   border: 1px solid var(--hairline-strong);
@@ -37,11 +37,70 @@
   color: var(--ink-tertiary);
 }
 
+.palette-split {
+  display: flex;
+  align-items: stretch;
+}
+
 .palette-list {
   list-style: none;
   max-height: 320px;
   overflow-y: auto;
   padding: 6px;
+}
+
+.palette-split .palette-list {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.palette-preview {
+  flex: 0 0 280px;
+  border-left: 1px solid var(--hairline);
+  padding: 12px 14px;
+}
+
+.palette-preview-title {
+  font-size: var(--type-sub);
+  color: var(--ink);
+}
+
+.palette-preview-subtitle {
+  margin-top: 2px;
+  font-size: var(--type-micro);
+  color: var(--ink-subtle);
+}
+
+.palette-preview-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: var(--type-micro);
+}
+
+.palette-preview-row span:first-child {
+  color: var(--ink-tertiary);
+}
+
+.palette-preview-row span:last-child {
+  color: var(--ink-muted);
+  text-align: right;
+}
+
+/* The part of a label the query matched. */
+.palette-hit {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Below this the two panes would each be too narrow to read. The list is what
+   answers the question; the preview only confirms it, so the preview is what
+   goes. */
+@media (max-width: 600px) {
+  .palette-preview {
+    display: none;
+  }
 }
 
 .palette-option {
@@ -68,13 +127,20 @@
   white-space: nowrap;
 }
 
-.palette-hint {
-  font-family: var(--font-mono);
-  font-size: var(--type-micro);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ink-tertiary);
+/* The kind mark at the right of a row — a CLI's brand, a chat glyph, or the
+   Study mark. Dimmed until the row is the active one, so a column of marks does
+   not compete with the titles it annotates. */
+.palette-mark {
+  display: grid;
+  place-items: center;
   flex-shrink: 0;
+  color: var(--ink-tertiary);
+  opacity: 0.75;
+}
+
+.palette-option[aria-selected="true"] .palette-mark {
+  color: var(--ink-muted);
+  opacity: 1;
 }
 
 .palette-empty {

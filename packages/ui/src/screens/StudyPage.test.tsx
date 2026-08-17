@@ -18,17 +18,34 @@ import {
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi, type LykeionApi } from "@lykeion/api";
 import App from "../App";
+import { resetTabs } from "../lib/tabs";
+import { resetPageLoad } from "../lib/tabs-storage";
 
 const CMP = "s_cmp";
 const ECO = "s_eco";
 
 const RAIL_CARDS = ["Instructions", "Memory", "Scientific stages", "Files"];
 
-beforeEach(cleanup);
+beforeEach(() => {
+  cleanup();
+  // `App` reads the stored strip once per page; this file mounts it fresh per
+  // test. Adopting the incoming hash needs no reset — that is per-mount, in
+  // `RouterProvider`.
+  resetPageLoad();
+  // And the strip itself starts empty each time. The store is module state,
+  // which in production is one page load; this file is 37 of them, and without
+  // this the tabs every earlier test opened are still in the strip — enough of
+  // them carrying a Task label that a later `findByText` matches more than one.
+  resetTabs();
+});
 
-/** Open a Study directly, the way the URL bar does. */
+/** Open a Study directly, the way the URL bar does — including for a second
+ *  call within the same test (some of these re-open after a `cleanup()` to
+ *  simulate landing fresh on another Study), which is why this resets the
+ *  once-per-load adopt flag itself rather than leaving that to `beforeEach`. */
 function openStudy(studyId: string, api = createInMemoryApi()) {
   window.location.hash = `#/studies/${studyId}`;
+  resetPageLoad();
   render(<App api={api} />);
   return api;
 }

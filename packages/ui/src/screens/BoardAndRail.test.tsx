@@ -10,6 +10,7 @@ import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
+import { resetPageLoad } from "../lib/tabs-storage";
 
 beforeEach(() => {
   cleanup();
@@ -18,6 +19,10 @@ beforeEach(() => {
   } catch {
     /* ignore */
   }
+  // `App` reads the stored strip once per page; this file mounts it fresh per
+  // test. Adopting the incoming hash needs no reset — that is per-mount, in
+  // `RouterProvider`.
+  resetPageLoad();
 });
 
 async function openStudy(user: ReturnType<typeof userEvent.setup>) {

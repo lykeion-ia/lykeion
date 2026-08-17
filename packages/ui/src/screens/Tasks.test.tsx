@@ -3,6 +3,8 @@ import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi, emptySeed } from "@lykeion/api";
 import App from "../App";
+import { resetPageLoad } from "../lib/tabs-storage";
+import { resetTabs } from "../lib/tabs";
 import { captureDownload } from "../test/download";
 
 // Seeded work, by whose it is: t_4 is Amara's, everything else in CMP is
@@ -20,6 +22,12 @@ beforeEach(() => {
   } catch {
     /* ignore */
   }
+  window.location.hash = "";
+  resetTabs();
+  // `App` reads the stored strip once per page; this file mounts it fresh per
+  // test. Adopting the incoming hash needs no reset — that is per-mount, in
+  // `RouterProvider`.
+  resetPageLoad();
 });
 afterEach(cleanup);
 

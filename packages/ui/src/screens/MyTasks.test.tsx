@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { createInMemoryApi, emptySeed } from "@lykeion/api";
 import App from "../App";
 import { captureDownload } from "../test/download";
+import { resetTabs } from "../lib/tabs";
 
 beforeEach(() => {
   cleanup();
@@ -12,6 +13,11 @@ beforeEach(() => {
   } catch {
     /* ignore */
   }
+  // The strip is a module store now, so a test that renders `<App>` without
+  // setting its own hash would otherwise inherit whichever route the last
+  // test's navigation left the active tab on.
+  resetTabs();
+  window.location.hash = "";
 });
 afterEach(cleanup);
 

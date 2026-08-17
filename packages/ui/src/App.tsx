@@ -5,6 +5,7 @@ import { ApiProvider } from "./api/ApiContext";
 import { hasWorkspaceServer, selectApi } from "./api/select";
 import { useChangeChannel } from "./hooks/useChangeChannel";
 import { hasDestination, landingHash } from "./lib/landing";
+import { restoreTabsOnce } from "./lib/tabs-storage";
 import { AuthGate } from "./shell/AuthGate";
 import { parseHash, RouterProvider, useRoute } from "./router";
 import { drawsSetupStep, SetupFlow } from "./screens/setup/SetupFlow";
@@ -151,6 +152,21 @@ export default function App({ api }: { api?: LykeionApi }) {
         window.location.hash = hash;
     });
   }, [identityChanged, resolved]);
+
+  // Read the stored strip here, in the render body, and exactly once per page.
+  //
+  // Not an effect: effects run child-first, so an effect here would land AFTER
+  // `RouterProvider`'s own first render — which would already have painted, and
+  // mirrored into the address bar, whatever tab the restore had not yet put
+  // there. Running it during this render is before `RouterProvider` renders at
+  // all and before anything has subscribed to the store, so mutating the store
+  // from here is safe.
+  //
+  // Adopting the incoming hash is the other half of that ordering, and it
+  // deliberately does NOT live here — it lives in `RouterProvider`'s render
+  // body, which runs immediately after this one and, unlike this one, runs on
+  // every mount of the workbench. See the note there.
+  restoreTabsOnce();
 
   const shell = (
     <ApiProvider api={resolved.api} key={identityGeneration}>

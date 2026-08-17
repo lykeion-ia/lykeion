@@ -11,6 +11,7 @@ import { PrimaryButton } from "../components/ui/PrimaryButton";
 import { ScreenHeader } from "../components/ui/ScreenHeader";
 import { PlusIcon } from "../components/icons";
 import { closeTaskTabsForStudy } from "../lib/task-tabs";
+import { closeTabsForStudy } from "../lib/tabs";
 import { closeNotebookTabsForStudy } from "../lib/notebook-tabs";
 import { createStudyFromInput } from "../lib/study-meta";
 import {
@@ -107,6 +108,9 @@ export function StudiesScreen() {
     await api.deleteStudy(studyId);
     closeTaskTabsForStudy(studyId);
     closeNotebookTabsForStudy(studyId);
+    // And the app strip, which holds the Study itself as well as its Tasks —
+    // both are places that no longer open.
+    closeTabsForStudy(studyId);
     setPendingDelete(null);
     invalidate();
   };

@@ -26,6 +26,8 @@ import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import type { LykeionApi, NotebookCell } from "@lykeion/api";
 import App from "../App";
+import { resetPageLoad } from "../lib/tabs-storage";
+import { resetTabs } from "../lib/tabs";
 import { closeNotebookTab } from "../lib/notebook-tabs";
 import { closeTaskTab } from "../lib/task-tabs";
 
@@ -86,6 +88,11 @@ const currentConversation = () =>
 
 beforeEach(() => {
   window.location.hash = `#/studies/s_cmp/tasks/${TASK_A.id}`;
+  // The strip is a module store, and `App` restores/adopts once per module
+  // lifetime — both would otherwise leave a later test wherever an earlier
+  // one's navigation left the active tab, rather than back on Task A.
+  resetTabs();
+  resetPageLoad();
 });
 
 afterEach(() => {
