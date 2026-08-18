@@ -138,34 +138,33 @@ export function MachinesScreen() {
           declarations={declarations.data ?? []}
           onReclaim={onReclaim}
           onDelete={onDelete}
-        >
-          {/* The same list the first run ends on, for every later visit — this
-              is where somebody comes back to when an agent stops working or
-              when they finally install one they skipped. Only for machines
-              whose `clis` this member may see, which is the ownership rule
-              already deciding whether the key is there at all.
+        />
 
-              Passed as the roster's children rather than rendered after it, so
-              this lands between the roster and the card for adding a machine:
-              what is on the machines already here reads before the way to add
-              another. It is also why the roster's own CLIs column is gone —
-              this says the same thing in full, and said it twice.
+        {/* The same list the first run ends on, for every later visit — this
+            is where somebody comes back to when an agent stops working or
+            when they finally install one they skipped. Only for machines
+            whose `clis` this member may see, which is the ownership rule
+            already deciding whether the key is there at all.
 
-              No `onSignIn`: a sign-in opens a browser flow against a vendor and
-              writes a credential into a home the daemon owns, and this page is
-              served by a lab that may be on another computer entirely. The
-              machine's own front door is the only thing that can start one. */}
-          {machines
-            .filter((machine) => machine.clis !== undefined)
-            .map((machine) => (
-              <section key={machine.id} className="mb-4 mt-8">
-                <h2 className="mb-2 text-ui font-semibold text-fg">
-                  Agents on {machine.name}
-                </h2>
-                <AgentsScreen clis={machine.clis ?? []} compact />
-              </section>
-            ))}
-        </MachinesList>
+            Under the roster, which is the order this page reads in: what the
+            lab has, and then what is on each of them. It is also why the
+            roster's own CLIs column is gone — this says the same thing in
+            full, and said it twice.
+
+            No `onSignIn`: a sign-in opens a browser flow against a vendor and
+            writes a credential into a home the daemon owns, and this page is
+            served by a lab that may be on another computer entirely. The
+            machine's own front door is the only thing that can start one. */}
+        {machines
+          .filter((machine) => machine.clis !== undefined)
+          .map((machine) => (
+            <section key={machine.id} className="mb-4 mt-8">
+              <h2 className="mb-2 text-ui font-semibold text-fg">
+                Agents on {machine.name}
+              </h2>
+              <AgentsScreen clis={machine.clis ?? []} compact />
+            </section>
+          ))}
       </div>
     </div>
   );

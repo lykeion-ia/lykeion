@@ -89,9 +89,16 @@ export function TaskSidebar({
         />
       ) : (
         <>
+          {/* The row is marked twice over: `is-active` paints it, and
+              `aria-current` says it. Both are needed — the paint is the only
+              thing that ever said which conversation was on screen once the
+              breadcrumb's tabs (which said it with `aria-pressed`) came off
+              the strip, and a colour is not something a screen reader can
+              read. */}
           <button
             type="button"
             className="tsb-task-open"
+            aria-current={t.id === activeTaskId ? "page" : undefined}
             onClick={() => onOpenTask?.(t.id)}
           >
             <span className="tsb-task-dot" aria-hidden="true" />

@@ -1,35 +1,28 @@
 import { CrumbStrip } from "../ScreenCrumb";
 import { AgentLabel } from "./AgentLabel";
-import { TaskTabStrip } from "./TaskTabStrip";
 import { cn } from "../../lib/utils";
 import type { Route } from "../../router";
-
-export type { TaskTab } from "./TaskTabStrip";
-import type { TaskTab } from "./TaskTabStrip";
 
 /**
  * The full-chat breadcrumb strip. Its geometry is `CrumbStrip`'s, shared with
  * the Study page this surface is opened from, so the trail does not move under
- * the click; what this adds is the load the strip carries — the conversation
- * tabs (+ a Files tab when open), the agent the Task is talking to, and the
- * top-right menu button that toggles the Files right pane.
+ * the click; what this adds is the load the strip carries — the agent the Task
+ * is talking to, and the top-right menu button that toggles the Files right
+ * pane.
  *
  * The strip names rather than acts. Which agent a Task is on holds for the
  * whole page, which is what earns a place at its head; the Task's own actions
  * are per-Task and live in the row menu that already holds the rest of them.
  *
- * The tabs ride in `CrumbStrip`'s band rather than beside the trail, because
- * they name the conversation directly below them and so sit on ITS column.
- * `TaskTabStrip` is the band's content; `.crumb-strip--banded` in
- * screens/task.css is what puts it on the column.
+ * Which Task is on screen is the sidebar's to say, and only its. The strip used
+ * to carry the open ones as tabs as well, on a track of their own cut to the
+ * conversation's measure — but they named the Tasks the sidebar already lists a
+ * few pixels to their left, so the row is down to the trail and the two
+ * controls that have nowhere else to be.
  */
 export function TaskTabs({
   crumb,
   crumbTo,
-  tabs,
-  activeId,
-  onSelect,
-  onClose,
   agent,
   agentName,
   statusError,
@@ -41,10 +34,6 @@ export function TaskTabs({
   /** Where the crumb names — the surface this Task was opened from, which the
    *  trail links back to. */
   crumbTo?: Route;
-  tabs: TaskTab[];
-  activeId: string;
-  onSelect: (id: string) => void;
-  onClose: (id: string) => void;
   /** The `AgentCli.id` this Task ran on, absent until a turn has run. */
   agent?: string;
   /** What detection calls that CLI, when this machine detected it. */
@@ -64,18 +53,7 @@ export function TaskTabs({
 }) {
   return (
     <div className={cn("shrink-0", divider && "border-b border-line")}>
-      <CrumbStrip
-        page={crumb}
-        to={crumbTo}
-        band={
-          <TaskTabStrip
-            tabs={tabs}
-            activeId={activeId}
-            onSelect={onSelect}
-            onClose={onClose}
-          />
-        }
-      >
+      <CrumbStrip page={crumb} to={crumbTo}>
         <AgentLabel agent={agent} name={agentName} />
 
         {onToggleRightPane && (

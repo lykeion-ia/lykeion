@@ -1,12 +1,28 @@
 /**
- * The inspector's tab strip. Its scrolling and its faded edges are
- * `useTabBand`'s and are covered where that behaviour is stated outright
- * (`TaskTabStrip.test.tsx`); what is tested here is the load this strip
- * carries — which tabs it draws, which of them can be closed, and that closing
- * one is not also selecting it.
+ * The inspector's tab strip — now the only strip `useTabBand` drives, so the
+ * hook's behaviour is stated here rather than deferred. The breadcrumb used to
+ * carry a band of open-Task tabs and `TaskTabStrip.test.tsx` was where the
+ * clipping was pinned; the tabs came off the breadcrumb and the coverage moved
+ * here with the last caller.
+ *
+ * Two things, then. The load this strip carries — which tabs it draws, which of
+ * them can be closed, and that closing one is not also selecting it. And the
+ * behaviour clipping introduces: an edge with more beyond it reads as soft
+ * rather than as the end of the list, and a tab activated from outside the clip
+ * is brought back inside it.
+ *
+ * What is NOT here is where the band comes to rest on the row. That is layout,
+ * and jsdom performs none — a test asserting it would be asserting its own
+ * arithmetic.
  */
-import { beforeEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   RightPaneTabs,
@@ -159,4 +175,140 @@ it("names which Task each notebook belongs to, in its tooltip", () => {
     "title",
     "Notebook — Preprocess the traces",
   );
+});
+
+/**
+ * State the geometry jsdom will not compute: how wide the clip is, how wide the
+ * tabs are together, and a `scrollLeft` that actually holds what is written to
+ * it.
+ */
+function stateGeometry(
+  band: HTMLElement,
+  { clip, content }: { clip: number; content: number },
+) {
+  Object.defineProperty(band, "clientWidth", {
+    value: clip,
+    configurable: true,
+  });
+  Object.defineProperty(band, "scrollWidth", {
+    value: content,
+    configurable: true,
+  });
+  let scrollLeft = 0;
+  Object.defineProperty(band, "scrollLeft", {
+    configurable: true,
+    get: () => scrollLeft,
+    set: (next: number) => {
+      scrollLeft = next;
+    },
+  });
+}
+
+/** Lay the tabs out end to end, each `width` wide. */
+function layOutTabs(band: HTMLElement, width: number) {
+  Array.from(band.children).forEach((child, i) => {
+    Object.defineProperty(child, "offsetLeft", {
+      value: i * width,
+      configurable: true,
+    });
+    Object.defineProperty(child, "offsetWidth", {
+      value: width,
+      configurable: true,
+    });
+  });
+}
+
+/** The band itself, plus a way to move the active tab under it. The handlers
+ *  are beside the point here — what is under test is the hook. */
+function renderBand(activeId = "files") {
+  const noop = vi.fn();
+  const props = (id: string) => ({
+    tabs: TABS,
+    activeId: id,
+    onSelect: noop,
+    onCloseTab: noop,
+    paneMode: "split" as const,
+    onToggleFocus: noop,
+    onClosePane: noop,
+  });
+  const view = render(<RightPaneTabs {...props(activeId)} />);
+  return {
+    band: screen.getByTestId("rightpane-tab-band"),
+    show: (id: string) => view.rerender(<RightPaneTabs {...props(id)} />),
+  };
+}
+
+describe("the faded edges", () => {
+  it("softens only the end while the band sits at its start", () => {
+    const { band } = renderBand();
+    stateGeometry(band, { clip: 300, content: 900 });
+
+    fireEvent.scroll(band);
+
+    expect(band.dataset.overflow).toBe("end");
+  });
+
+  it("softens both edges once there are tabs either side of the clip", () => {
+    const { band } = renderBand();
+    stateGeometry(band, { clip: 300, content: 900 });
+
+    band.scrollLeft = 300;
+    fireEvent.scroll(band);
+
+    expect(band.dataset.overflow).toBe("both");
+  });
+
+  it("softens only the start once the last tab is reached", () => {
+    const { band } = renderBand();
+    stateGeometry(band, { clip: 300, content: 900 });
+
+    band.scrollLeft = 600;
+    fireEvent.scroll(band);
+
+    expect(band.dataset.overflow).toBe("start");
+  });
+
+  it("leaves both edges hard when every tab fits", () => {
+    const { band } = renderBand();
+    stateGeometry(band, { clip: 900, content: 900 });
+
+    fireEvent.scroll(band);
+
+    expect(band.dataset.overflow).toBe("none");
+  });
+});
+
+describe("following the active tab", () => {
+  it("brings a tab past the right edge just inside it", () => {
+    const { band, show } = renderBand("files");
+    stateGeometry(band, { clip: 300, content: 900 });
+    layOutTabs(band, 300);
+
+    show("notebook:t_2");
+
+    // The third tab ends at 900; the clip is 300 wide, so it lands flush at
+    // the right rather than being centred.
+    expect(band.scrollLeft).toBe(600);
+  });
+
+  it("moves by the shortest distance rather than centring the tab", () => {
+    const { band, show } = renderBand("files");
+    stateGeometry(band, { clip: 300, content: 900 });
+    layOutTabs(band, 300);
+
+    show("notebook:t_1");
+
+    expect(band.scrollLeft).toBe(300);
+  });
+
+  it("brings a tab past the left edge back to it", () => {
+    const { band, show } = renderBand("notebook:t_2");
+    stateGeometry(band, { clip: 300, content: 900 });
+    layOutTabs(band, 300);
+    band.scrollLeft = 600;
+
+    show("files");
+
+    expect(band.scrollLeft).toBe(0);
+  });
 });

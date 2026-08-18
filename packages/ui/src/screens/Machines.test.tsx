@@ -17,17 +17,20 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("Machines renders the always-present onboarding card", async () => {
+it("Machines with nothing on it says nothing about how to add one", async () => {
   const user = userEvent.setup();
   render(<App api={createInMemoryApi()} />);
   await user.click(await screen.findByRole("link", { name: /Machines/i }));
-  // listMachines() returns nothing yet, so the tables are hidden and the
-  // steps are the whole page. `findByRole` throws on a second match, which
-  // is the assertion: one heading, and no control beside it offering
-  // something it cannot do.
+  // listMachines() returns nothing yet, so the roster is hidden and this
+  // screen is its title and nothing else. The card of pairing steps that
+  // used to fill it is gone: the daemon is started on the machine being
+  // added, against a page the lab cannot link to, and the lab was spending
+  // its emptiest screen on a command to run somewhere else.
   expect(
-    await screen.findByRole("heading", { name: "Add your first machine" }),
+    await screen.findByRole("heading", { name: "Machines" }),
   ).toBeInTheDocument();
+  expect(screen.queryByText(/pnpm daemon --lab/)).toBeNull();
+  expect(screen.queryByRole("button", { name: /add a machine/i })).toBeNull();
 });
 
 it("keeps this screen about machines, and does not inventory their environments", async () => {
@@ -38,13 +41,13 @@ it("keeps this screen about machines, and does not inventory their environments"
   const user = userEvent.setup();
   render(<App api={createInMemoryApi()} />);
   await user.click(await screen.findByRole("link", { name: /Machines/i }));
-  await screen.findByRole("heading", { name: /Add your first machine/i });
+  await screen.findByRole("heading", { name: "Machines" });
 
   expect(screen.queryByText("Environments")).toBeNull();
   expect(screen.queryByText("Python · uv")).toBeNull();
 });
 
-it("keeps the onboarding card up while identity is unknown, and after it fails to resolve", async () => {
+it("stays up while identity is unknown, and reports it when that fails to resolve", async () => {
   const user = userEvent.setup();
   let reject: (err: Error) => void = () => {};
   const held = new Promise<User>((_resolve, r) => {
@@ -57,26 +60,45 @@ it("keeps the onboarding card up while identity is unknown, and after it fails t
   render(<App api={api} />);
   await user.click(await screen.findByRole("link", { name: /Machines/i }));
 
-  // currentUser() has not answered yet — the card needs no identity at all,
-  // so it must not wait on one either. An unknown identity owns no machine,
-  // which is the same state as having none, and it resolves to the steps
-  // rather than to the collapsed line: hiding them from somebody who may
-  // have no machine takes away the one thing this screen is for.
+  // currentUser() has not answered yet. The roster is the only thing on this
+  // screen that needs an identity — it decides which rows may offer Remove —
+  // and the screen itself must render rather than wait on one.
   expect(
-    await screen.findByRole("heading", { name: "Add your first machine" }),
+    await screen.findByRole("heading", { name: "Machines" }),
   ).toBeInTheDocument();
 
-  // The identity question then fails outright. The error is now visible,
-  // and — this is the regression under test — the card is still there
-  // rather than having vanished along with the grouped lists it never
-  // depended on.
+  // The identity question then fails outright. The error is said out loud,
+  // and the screen is still standing under it rather than having gone blank
+  // along with the roster it could no longer draw.
   reject(new Error("session expired"));
   await waitFor(() =>
     expect(screen.getByText(/session expired/i)).toBeInTheDocument(),
   );
   expect(
-    screen.getByRole("heading", { name: "Add your first machine" }),
+    screen.getByRole("heading", { name: "Machines" }),
   ).toBeInTheDocument();
+});
+
+it("lists each machine's agents under the roster, never over it", async () => {
+  // Ordering, pinned where it is now decided: the roster says what the lab
+  // has, and what is installed on one machine reads beneath it. This used to
+  // be held by `MachinesList`'s children slot, which existed only to get
+  // these blocks above the card that is gone.
+  const user = userEvent.setup();
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    listMachines: async () => [machine({ clis: [] })],
+  };
+  render(<App api={api} />);
+  await user.click(await screen.findByRole("link", { name: /Machines/i }));
+
+  const agents = await screen.findByRole("heading", {
+    name: "Agents on ana-macbook",
+  });
+  const roster = screen.getByRole("list", { name: "Lab's machines" });
+  expect(
+    roster.compareDocumentPosition(agents) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
 });
 
 function machine(overrides: Partial<Machine> = {}): Machine {

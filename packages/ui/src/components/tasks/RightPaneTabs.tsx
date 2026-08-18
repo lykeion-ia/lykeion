@@ -11,10 +11,9 @@ export interface RightPaneTab {
   title?: string;
   closable?: boolean;
   /** What the close button says it closes. Worth stating rather than deriving
-   *  from `label`: a notebook tab is named after the Task that ran it, and the
-   *  conversation's own strip has a close button named after that same Task —
-   *  two controls reading `Close <task>` on one screen, doing different things
-   *  to different surfaces. */
+   *  from `label`: every notebook tab reads `Notebook`, so a strip of them
+   *  would offer several buttons all saying `Close Notebook` and nothing to
+   *  tell them apart. The Task the notebook belongs to is what names it. */
   closeLabel?: string;
 }
 
@@ -48,17 +47,20 @@ export function tabAfterClose(
  *
  * The notebooks are why this scrolls. Files and the artifact are one slot each,
  * but a Study holds any number of Tasks and each has a notebook, so the row has
- * to be able to outrun its own width — the same problem the breadcrumb's tab
- * band solves, and it is solved the same way, by `useTabBand` and `.tab-band`.
+ * to be able to outrun its own width. Clipping it, fading the edge it clips at,
+ * and scrolling an off-clip tab back into view are `useTabBand` and `.tab-band`
+ * — kept apart from this component because the breadcrumb once carried a band
+ * of its own, and worth keeping apart still: none of it is about what a tab
+ * names.
  *
  * The pane's own controls do NOT ride in the band. Left inside it they would
  * scroll away with the tabs, and the band's measure of what still fits would be
  * counting them as tabs; they sit in a fixed region beside it. That also keeps
  * the `tablist` honest.
  *
- * A `tablist` rather than the breadcrumb's row of pressed buttons because what
- * these name is the panel below them. Selecting one may also move the Task
- * surface underneath — another Task's notebook is read beside that Task's
+ * A `tablist` rather than a row of pressed buttons because what these name is
+ * the panel below them. Selecting one may also move the Task surface
+ * underneath — another Task's notebook is read beside that Task's
  * conversation, never on top of this one's — but where the reader lands, this
  * strip is still naming the pane, and the tab that ends up marked is the one
  * whose surface is showing.

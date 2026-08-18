@@ -57,102 +57,18 @@
 }
 
 /* ------------------------------------------------------------
-   The breadcrumb's tab band
+   The inspector's tab band
    ------------------------------------------------------------ */
 
-/* The strip carries three things — the trail back up, the open-Task tabs, and
-   this Task's actions — and the tabs are not merely the next item after the
-   trail: they name the conversation directly below them, so they sit on ITS
-   column. That is a job for tracks, not for a flex row.
-
-   The middle track is non-flexible, so the sizing algorithm maximises it into
-   the free space up to `--conv-measure` while the side tracks rest on their
-   floors; the two `1fr` tracks then split what is left EQUALLY, which centres
-   the band on the strip. `.conv-column` is centred on the same axis — the
-   strip's 20px padding and the stream's 18px + scrollbar-gutter inset are both
-   symmetric, so the two boxes share the pane's centre line — so wherever the
-   column is at its measure, the band lands exactly on it.
-
-   Equally, though, only while neither side track outgrows its share, and the
-   two sides are not alike in what can make them. The actions are the app's own
-   words — a CLI's brand name, a pane toggle — so `min-content` there is a
-   bound. A Study's title is the user's, of no length in particular, and a track
-   floored on it is a track the data sizes: past about half the row the trail
-   stopped truncating and started pushing, and the tabs came to rest well right
-   of the column they name, the Study's name running into the Task's. Hence the
-   cap on the trail itself below — a stated width the name truncates into, which
-   is also the ceiling on this track's floor. The name yields; the band does not
-   move.
-
-   Now the other end of that. Open the inspector, or pull the window in, and
-   there is no longer room for the measure: the band takes all the free space
-   there is and still falls short of the column, so the alignment this layout
-   exists for is already lost. What used to be left behind was a stated floor's
-   worth of empty track between `Studies › {Study}` and the first tab — a gap
-   answering to nothing, widest exactly when the row could least afford it.
-   Flooring the trail on its OWN width instead is what closes it: while the
-   measure fits, the floor is under the equal share and the band is centred as
-   before; once it does not, the trail is the width of its name, the tabs follow
-   straight on from it, and the band takes the rest. One track sizing, both
-   states, and no breakpoint between them — the switch is the sizing algorithm
-   running out of room, which is the very thing that used to open the gap.
-
-   And where even that is too narrow, the band is the track that yields first:
-   it is the only one whose floor is 0, and the only one whose content already
-   scrolls. The actions keep their width, the trail keeps its name, and the tabs
-   clip and fade at their own edge. */
-.crumb-strip--banded {
-  display: grid;
-  grid-template-columns:
-    minmax(min-content, 1fr)
-    minmax(0, var(--conv-measure))
-    minmax(min-content, 1fr);
-  /* The most of a Study's name the trail may spend. Applied to the nav rather
-     than to the track — see below, including the ceiling this value sits
-     under. */
-  --crumb-trail-cap: 32ch;
-}
-
-/* The two things the trail's track needs, neither of which is a track sizing.
-
-   `max-width` is the cap. `min-content` above resolves to the trail's own
-   width, and the nav is where that width can be bounded: a box's min-content
-   contribution is clamped by its own max-width, so capping the element caps the
-   track's floor with it, and a Study titled like a paragraph truncates instead
-   of pushing the band along. In `ch` for the same reason `--conv-measure` is:
-   it is a length of text. Unlike `--conv-measure` it is read at the trail's own
-   `--type-read` rather than at the strip's `--type-ui`, and here that is the
-   point — the cap bounds a length of the user's own words, so it is measured in
-   the size those words are set in.
-
-   The value has a ceiling it must stay under, and it is not a matter of taste:
-   the equal share the trail gets while the measure fits. Above that share the
-   floor stops being slack and becomes a demand — a long name would prise the
-   two `1fr` tracks apart and shift the band off the column in the very state
-   this layout centres it for. At 1920px the share is 339px, and the cap holds
-   the band still up to 33ch; 34ch is the first stop that moves it, by 4px, and
-   40ch moves it by 64. 32ch is under that ceiling with room to spare and well
-   above the 24ch the old floor guaranteed, so the band never comes to rest
-   right of where it used to, and the only names set any differently are ones
-   that were already truncating, which now do so a character or two sooner.
-   Bounded from both sides: enough of the name to know which Study you are in,
-   never enough to move the band.
-
-   The padding is the gutter. With the measure in place it is the margin a
-   truncated name stops short of its track's edge by; with the inspector open
-   and the tabs following straight on, it is (with the strip's own `gap`) the
-   whole of what separates them — so a name is never set flush against a tab,
-   where the two would read as one run of text that happened to change colour. */
-.crumb-strip--banded > nav {
-  max-width: var(--crumb-trail-cap);
-  padding-inline-end: 16px;
-}
-
 /* A row of tabs that runs past its own width and scrolls rather than squeezing.
-   Shared by the breadcrumb's open-Task tabs and the inspector's open-Notebook
-   tabs — the two agree on this and on nothing else, so what they share is this
-   class and the `useTabBand` hook, never a component. The hook sets
-   `data-overflow`; everything below is what that attribute means. */
+   The inspector's open-Notebook tabs are the only row left that needs it. The
+   breadcrumb used to carry the open-Task tabs the same way, on a track of its
+   own cut to the conversation's measure; the track and the tabs are both gone,
+   and the sidebar is where the open Tasks are named now.
+
+   Still stated apart from `.rightpane-tabs` because none of it is that strip's:
+   the scrolling and the clipping are `useTabBand`'s, and the hook is what sets
+   `data-overflow`. Everything below is what that attribute means. */
 .tab-band {
   min-width: 0;
   display: flex;
@@ -212,17 +128,6 @@
     #000 calc(100% - 24px),
     transparent
   );
-}
-
-/* The open-Task tabs, clipped to the band's track and pulled onto the column
-   they name. A tab is drawn as ink, not as a box — no fill, no border — so the
-   only thing the eye can align is the LABEL. Its button pads the text by
-   `--crumb-tab-pad`, so the band starts that much left of its track and the
-   first tab's first letter lands on the column's edge. The track's right edge
-   is untouched, which is where the tabs are asked to stop. */
-.crumb-band {
-  --crumb-tab-pad: 10px;
-  margin-inline-start: calc(-1 * var(--crumb-tab-pad));
 }
 
 .task-main-body {

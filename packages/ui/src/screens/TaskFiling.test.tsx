@@ -174,12 +174,14 @@ describe("the first send on an unfiled Task", () => {
     );
     await waitFor(() => expect(starts()).toBe(1));
 
-    // The breadcrumb follows the Task across the move. Filing changes which
-    // Study's tab strip this conversation belongs to, and a tab left on the
-    // unfiled strip would vanish the moment the address caught up.
+    // The surface follows the Task across the move. Filing changes which Study
+    // this conversation belongs to, so it has to turn up in THAT Study's list —
+    // and marked, since it is the one on screen. The open-tab store is moved
+    // over with it by the same stroke; that half is `openTaskTab`'s and is
+    // pinned in lib/task-tabs.test.ts.
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: title, pressed: true }),
+        screen.getByRole("button", { name: title, current: "page" }),
       ).toBeInTheDocument(),
     );
   });

@@ -121,73 +121,20 @@ it("carries no heading over the roster, and still announces the list as one of m
   expect(roster.getAttribute("aria-labelledby")).toBeNull();
 });
 
-it("carries the command itself, addressed to this lab, and promises nothing it cannot do", () => {
+it("offers no way to add a machine — that flow starts on the machine itself", () => {
+  // The card of steps that used to close this list is gone. Pairing begins by
+  // running the daemon on the machine being added, on a page that machine
+  // serves and this lab cannot link to — so the longest block on the screen
+  // was instructions for somewhere else, standing under a roster whose whole
+  // subject is the machines already here.
   renderList([], "u_you");
 
-  const card = screen.getByRole("heading", { name: "Add your first machine" }).closest("section");
-  expect(card).not.toBeNull();
-  // A file name is not somewhere a browser can go, so the card has to carry
-  // the command itself — filled in with this lab's own address, which is the
-  // one part a researcher could not supply from where they are standing.
-  expect(card).toHaveTextContent(`pnpm daemon --lab ${window.location.origin}`);
-  // Nothing can pick up a task on this build, and the composer says so on
-  // the screens that host it. This card says nothing about it either way,
-  // which is the one thing it must not get wrong in the other direction.
-  expect(card).not.toHaveTextContent(/queued task/i);
-});
-
-it("offers the command to be taken, not only to be read", () => {
-  // It is meant to be run on the machine being added, which is often not the
-  // one reading this — so it is copied far more often than typed.
-  renderList([], "u_you");
-
-  expect(
-    screen.getByRole("button", { name: "Copy the command" }),
-  ).toBeInTheDocument();
-});
-
-it("says a browser tab is coming, because nothing else will", () => {
-  // The step the flow was missing. Pairing hands off to a page the daemon
-  // serves on the machine itself, and the lab cannot link to it — the port
-  // is whatever was free and the link carries a single-use nonce. So the
-  // one thing the lab can do is say it is about to happen; otherwise a tab
-  // opens, from a command typed in a terminal, and reads as unrelated.
-  renderList([], "u_you");
-
-  const card = screen.getByRole("heading", { name: "Add your first machine" }).closest("section");
-  expect(card).toHaveTextContent(/setup page opens in your browser/i);
-  expect(card).toHaveTextContent(/approve the request back here/i);
-});
-
-it("steps out of the way once the member has a machine of their own", () => {
-  // Someone with a machine came for the roster. The same card left open is
-  // the loudest thing on a page whose subject is now the table above it.
-  renderList([machine({ ownerId: "u_you" })], "u_you");
-
-  expect(screen.queryByText("Add your first machine")).toBeNull();
+  expect(screen.queryByText(/pnpm daemon --lab/)).toBeNull();
   expect(screen.queryByText(/setup page opens in your browser/i)).toBeNull();
-  // Still reachable — a second machine is a real thing to want.
-  expect(screen.getByRole("button", { name: "Add a machine" })).toBeInTheDocument();
-});
-
-it("reopens the steps on request, for a second machine", async () => {
-  const user = userEvent.setup();
-  renderList([machine({ ownerId: "u_you" })], "u_you");
-
-  await user.click(screen.getByRole("button", { name: "Add a machine" }));
-
-  // Not "your first" this time: the wording follows what is actually true.
+  expect(screen.queryByRole("button", { name: /add a machine/i })).toBeNull();
   expect(
-    screen.getByRole("heading", { name: "Add a machine" }),
-  ).toBeInTheDocument();
-  expect(screen.getByText(/setup page opens in your browser/i)).toBeInTheDocument();
-});
-
-it("keeps asking a member whose colleagues have machines but who has none", () => {
-  // Machines are owned, and only the member who paired one can run on it.
-  renderList([machine({ ownerId: "u_them" })], "u_you");
-
-  expect(screen.getByText("Add your first machine")).toBeInTheDocument();
+    screen.queryByRole("heading", { name: /add (a|your first) machine/i }),
+  ).toBeNull();
 });
 
 it("offers Remove on your own machine and on none of the lab's others", () => {
@@ -350,32 +297,6 @@ it("keeps what a machine is holding, and what stops it holding anything, under i
   );
   const holding = screen.getByRole("button", { name: /^ana-macbook —/ }).parentElement!;
   expect(within(holding).getByText("2 kernels · 1 running")).toBeInTheDocument();
-});
-
-it("puts what a screen hands it between the roster and the way to add to it", () => {
-  // Ordering is the whole reason this is a slot: adding a machine is the last
-  // thing on the page, under everything that says what the machines already
-  // on it are. A caller rendering its own blocks after the list could not get
-  // beneath that card at all.
-  render(
-    <MachinesList {...props}>
-      <p>Agents on ana-macbook</p>
-    </MachinesList>,
-  );
-
-  const order = ["ana-macbook", "Agents on ana-macbook", "Add a machine"].map((text) =>
-    screen.getByText(text).compareDocumentPosition(screen.getByText("Add a machine")),
-  );
-  // The roster's own row and the handed-in block both precede the card; the
-  // card does not precede itself.
-  expect(order[0] & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(order[1] & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(
-    screen
-      .getByText("Agents on ana-macbook")
-      .compareDocumentPosition(screen.getByText("ana-macbook")) &
-      Node.DOCUMENT_POSITION_PRECEDING,
-  ).toBeTruthy();
 });
 
 it("shows a header figure that is the sum of the rows under it", () => {

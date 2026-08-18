@@ -24,7 +24,7 @@ import { QuestionCard } from "../components/tasks/QuestionCard";
 import { PlanCard } from "../components/tasks/PlanCard";
 import { TaskSidebar } from "../components/tasks/TaskSidebar";
 import { DeleteTaskModal } from "../components/tasks/DeleteTaskModal";
-import { TaskTabs, type TaskTab } from "../components/tasks/TaskTabs";
+import { TaskTabs } from "../components/tasks/TaskTabs";
 import { RunStrip } from "../components/tasks/RunStrip";
 import {
   ArtifactsPanel,
@@ -219,9 +219,9 @@ function LiveRunBlock({
 
 /**
  * The Task surface — one Task, which is one chat. The left pane lists the
- * Study's Tasks, the breadcrumb carries the open ones as tabs, and the middle
- * column is the conversation: the persisted transcript, the live turn, and the
- * composer that appends the next one.
+ * Study's Tasks and marks the one on screen, and the middle column is the
+ * conversation: the persisted transcript, the live turn, and the composer that
+ * appends the next one.
  *
  * There is one surface, and every Task opens on it. A Task nobody has spoken
  * in yet draws the same conversation with an empty transcript — no entry
@@ -838,16 +838,6 @@ export function TaskScreen({
     if (id !== taskId) navigate(routeToTask(id));
   };
 
-  const closeTab = (id: string) => {
-    const remaining = taskTabsFor(studyId).filter((t) => t.taskId !== id);
-    closeTaskTab(id);
-    if (id === taskId) {
-      if (remaining.length > 0)
-        navigate(routeToTask(remaining[remaining.length - 1].taskId));
-      else navigate(routeUp());
-    }
-  };
-
   /**
    * Take a Task's notebook off the inspector's strip, for a Task that has gone
    * — deleted, or moved to another Study. Distinct from closing a conversation
@@ -973,12 +963,6 @@ export function TaskScreen({
       ),
     [tasks],
   );
-
-  const tabs: TaskTab[] = openTabs.map((t) => ({
-    id: t.taskId,
-    label: t.title,
-    closable: openTabs.length > 1,
-  }));
 
   /**
    * What to call a Task whose notebook is on the inspector's strip.
@@ -1377,13 +1361,9 @@ export function TaskScreen({
           <TaskTabs
             // An unfiled Task's breadcrumb names the Lab's Task list, which is
             // the surface it belongs to until it is filed. Either way the name
-            // is the way back to it — the same place closing the last tab goes.
+            // is the way back to it.
             crumb={study?.title ?? "Tasks"}
             crumbTo={routeUp()}
-            tabs={tabs}
-            activeId={taskId}
-            onSelect={openTask}
-            onClose={closeTab}
             // The agent the Task ran on, or — before it has run at all — the
             // one its first turn is about to go to. See `taskAgent`: history
             // outranks the prospect, so this names a past run correctly or
@@ -1397,6 +1377,7 @@ export function TaskScreen({
             // edge. That is this bar only while the conversation is alone; the
             // moment the inspector is on screen it owns that edge and carries
             // the control itself, beside the tabs it acts on.
+            //
             // Opening the inspector means opening something INTO it, now that
             // it has no home surface of its own to land on: this is the Files
             // tab's other way in, beside the sidebar's row.

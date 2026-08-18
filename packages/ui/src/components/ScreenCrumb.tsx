@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronRightIcon, FlaskIcon } from "./icons";
 import { RowLink } from "./RowLink";
-import { cn } from "../lib/utils";
 import type { Route } from "../router";
 
 /**
@@ -58,44 +57,30 @@ export function CrumbTrail({ page, to }: { page: string; to?: Route }) {
  * the trail lands, so a Study page and the run opened from it put it in exactly
  * the same place.
  *
- * The height is pinned to `min-h-[56px]` — this row's `pt-3` + `pb-2.5` plus
- * the 34px of the Task surface's tab control (an `h-7` button inside a bordered
- * `p-0.5` box). Without it a strip carrying nothing but the trail collapses to
- * the trail's own line-height and the crumb rides ~7px higher than the same
- * crumb one click away. Screens hang their own controls off `children`; the
- * trail's position is not theirs to move.
- *
- * `band` opts the row into three tracks instead of a flex line — see
- * `.crumb-strip--banded` in screens/task.css for why the middle one is the
- * conversation's own measure. Padding and height are stated once, above both
- * layouts, so opting in cannot move the trail.
+ * The height is pinned to `min-h-[56px]` rather than left to the content. This
+ * row's `pt-3` + `pb-2.5` bound it from below, but what fills the middle
+ * differs by screen — a bare trail sets it at the trail's own line-height, and
+ * a strip carrying the `h-[30px]` pane toggle stands taller. Stating one height
+ * above all of them is what stops the crumb riding a few pixels higher on the
+ * screen that happens to carry less. Screens hang their own controls off
+ * `children`; the trail's position is not theirs to move.
  */
 export function CrumbStrip({
   page,
   to,
-  band,
   children,
 }: {
   page: string;
   /** Where the named page is, when it is not this one. See `CrumbTrail`. */
   to?: Route;
-  /** Content that must sit on the reading column below the strip rather than
-   *  merely after the trail. Given, the row lays out as three tracks. */
-  band?: ReactNode;
   /** Controls that ride at the strip's right edge — actions, a pane toggle. */
   children?: ReactNode;
 }) {
   return (
-    <div
-      className={cn(
-        "min-h-[56px] items-center gap-3 px-5 pb-2.5 pt-3",
-        band === undefined ? "flex" : "crumb-strip--banded",
-      )}
-    >
+    <div className="flex min-h-[56px] items-center gap-3 px-5 pb-2.5 pt-3">
       <CrumbTrail page={page} to={to} />
-      {band}
       {children !== undefined && (
-        <div className="flex items-center gap-3 justify-self-end ml-auto">
+        <div className="ml-auto flex items-center gap-3">
           {children}
         </div>
       )}

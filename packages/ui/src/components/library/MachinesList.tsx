@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import type {
   KernelEnvDeclaration,
   MachineCompute,
@@ -6,9 +6,8 @@ import type {
   Machine,
 } from "@lykeion/api";
 import { useApi, useInvalidateData } from "../../api/ApiContext";
-import { ChevronDownIcon, MonitorIcon } from "../icons";
+import { ChevronDownIcon } from "../icons";
 import { ConfirmModal } from "../ui/ConfirmModal";
-import { CopyButton } from "../tasks/CopyButton";
 import { cn } from "../../lib/utils";
 import { formatAgo } from "../../lib/task-meta";
 import { formatBytes, formatCores, UNREPORTED } from "../../lib/format";
@@ -45,29 +44,6 @@ const HEALTH_META: Record<Machine["health"], HealthMeta> = {
 // cell was a worse second copy of it.
 const GRID_COLS =
   "grid-cols-[minmax(0,1.3fr)_100px_90px_120px_130px_110px_84px]";
-
-/**
- * What one block on this screen calls itself.
- *
- * Deliberately not `SectionTitle`, which is the size a SCREEN titles a section
- * in: this screen's own h1 already says Machines, and three more headings at
- * that size under it left the page reading as a stack of equal shouts with no
- * top to it. These name which half of one roster a reader is looking at —
- * captions on a table, not sections of the app — so they take a caption's
- * weight, one clear step under the title and one clear step over the column
- * headers they sit on.
- *
- * `id` is for a block whose content carries its own role: point the content's
- * `aria-labelledby` here and the group is announced once, by this heading,
- * rather than by a second copy of the same words beside it.
- */
-function BlockTitle({ id, children }: { id?: string; children: ReactNode }) {
-  return (
-    <h3 id={id} className="mb-2 text-ui font-semibold text-fg">
-      {children}
-    </h3>
-  );
-}
 
 function MachineRow({
   machine,
@@ -426,143 +402,6 @@ function RemoveMachineModal({
   );
 }
 
-/**
- * How a machine gets into this lab, written as the three things a person
- * actually does.
- *
- * The middle one is the point. Pairing hands off to a page the daemon serves
- * on the machine itself, and until now nothing said so — a browser tab
- * appeared, from a command typed in a terminal, and whoever it happened to
- * had to work out that it was part of this. Saying it first turns a jump cut
- * into a handoff. The lab cannot link to that page: the port is whatever was
- * free, and the link carries a single-use nonce the daemon mints, which is
- * what stops any other page on this machine from driving pairing.
- *
- * Collapsed once the member has a machine, because then it is a chore rather
- * than the reason they are here.
- */
-function AddAMachine({ firstMachine }: { firstMachine: boolean }) {
-  const [open, setOpen] = useState(firstMachine);
-  const command = `pnpm daemon --lab ${window.location.origin}`;
-
-  // A member who already has a machine came for the roster, and a second
-  // machine is a chore rather than the reason they are here — so it waits
-  // behind one quiet line instead of holding a section of its own.
-  if (!open)
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="mb-4 flex items-center gap-2 rounded-md px-2 py-1.5 text-sub text-fg-muted hover:bg-surface-2 hover:text-fg"
-      >
-        <MonitorIcon width={14} height={14} />
-        Add a machine
-      </button>
-    );
-
-  return (
-    <section className="mb-4">
-      <BlockTitle>
-        {firstMachine ? "Add your first machine" : "Add a machine"}
-      </BlockTitle>
-      <div className="rounded-lg border border-dashed border-line bg-surface p-5">
-        {/* Three steps and nothing else. What a daemon is for is answered by
-            the roster above once one is running, and a card that explained
-            itself first put a paragraph between somebody and the command
-            they came here to run. */}
-        <ol className="flex flex-col">
-          <Step n={1}>
-            {/* The command, not a path — a researcher reading this has a
-                browser open and nothing else, and a file name they cannot
-                click is somewhere they still have to be told how to get to.
-                The lab's own address is filled in because it is the one
-                part of this they would otherwise have to go and find. */}
-            <span className="text-fg">
-              In a checkout of this workspace, on the machine you want to add:
-            </span>
-            <CopyCommand command={command} />
-          </Step>
-          <Step n={2}>
-            <span className="text-fg">
-              A setup page opens in your browser, served by that machine
-            </span>
-            <span className="mt-0.5 block text-fg-subtle">
-              Name the machine there. The page is the daemon's own, on this
-              side of the network — the lab cannot link to it.
-            </span>
-          </Step>
-          <Step n={3} last>
-            <span className="text-fg">Approve the request back here</span>
-            <span className="mt-0.5 block text-fg-subtle">
-              The machine then appears above, and stays until you remove it.
-            </span>
-          </Step>
-        </ol>
-      </div>
-    </section>
-  );
-}
-
-/**
- * The command, with a way to take it.
- *
- * It is meant to be run somewhere else — on the machine being added, which is
- * often not the one reading this — so it is copied far more often than it is
- * typed, and selecting monospace text by hand across a line break is the kind
- * of small failure that ends an onboarding.
- *
- * The control is the transcript's own `CopyButton`, not a second one shaped
- * like it: one drawing of Copy across the app, and its "Copied" is already the
- * right answer to "did that do anything" — said once and then dropped, because
- * nothing was lost and nothing needs confirming. Bare rather than bordered,
- * which is what taking that control brings with it: the field it sits in is
- * already a box, and a pill inside it drew a second one.
- */
-function CopyCommand({ command }: { command: string }) {
-  return (
-    <span className="mt-1.5 flex items-center gap-2 rounded-md border border-line bg-surface-2 px-3 py-2">
-      <code className="min-w-0 flex-1 select-all break-all font-mono text-meta leading-relaxed text-fg-tertiary">
-        {command}
-      </code>
-      {/* Named, unlike the transcript's: there the message above answers "copy
-          what", and here the word alone would not. */}
-      <span className="shrink-0">
-        <CopyButton text={command} label="Copy the command" />
-      </span>
-    </span>
-  );
-}
-
-/** One numbered line of the three, ruled off from the next the way the rows
- *  above it are. The number is decorative — the list is already ordered, and
- *  a screen reader counting it aloud a second time is noise. */
-function Step({
-  n,
-  last,
-  children,
-}: {
-  n: number;
-  last?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <li
-      className={cn(
-        "flex items-start gap-3 py-2.5 text-sub leading-relaxed",
-        !last && "border-b border-line-soft",
-      )}
-    >
-      <span
-        aria-hidden="true"
-        className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-line bg-surface-2 text-meta font-medium text-fg-tertiary"
-      >
-        {n}
-      </span>
-      <span className="min-w-0 flex-1">{children}</span>
-    </li>
-  );
-}
-
 export function MachinesList({
   machines,
   kernels = [],
@@ -576,7 +415,6 @@ export function MachinesList({
   declarations = [],
   onReclaim = () => {},
   onDelete = () => {},
-  children,
 }: {
   machines: Machine[];
   /** What the lab can see running, for the rows to open onto. Defaulted, so
@@ -592,7 +430,7 @@ export function MachinesList({
   now?: number;
   /** `null` while the caller's identity is unknown — not yet answered, or
    *  the answer failed. The roster needs it to decide which rows may offer
-   *  Remove; the onboarding card below does not. */
+   *  Remove, and holds off drawing itself until it knows. */
   meId: string | null;
   onInterrupt?: (kernelId: string) => void;
   onStop?: (kernelId: string, feedback: string) => void;
@@ -611,17 +449,6 @@ export function MachinesList({
    *  `onReclaim` entirely, which is why they are two props and not one with
    *  a flag. */
   onDelete?: (name: string) => void;
-  /**
-   * Whatever the screen wants between the roster and the way to add to it.
-   *
-   * A slot rather than a second render in the screen, because the ordering is
-   * the point: adding a machine is the last thing on this page, under
-   * everything that says what the machines already here are. A caller that
-   * renders its own blocks after `MachinesList` cannot get under that card
-   * without it being lifted out — and the card is this component's, along with
-   * the roster it is the counterpart to.
-   */
-  children?: ReactNode;
 }) {
   const api = useApi();
   const invalidate = useInvalidateData();
@@ -665,22 +492,6 @@ export function MachinesList({
           onRemove={setPendingRemove}
         />
       )}
-
-      {children}
-
-      <AddAMachine
-        // The first machine is onboarding; the second is a chore. Somebody
-        // with none is on this screen to be told what to do, so the steps
-        // are the page. Somebody who already has one came for the roster,
-        // and the same card left open would be the loudest thing on it.
-        //
-        // An unknown `meId` matches no machine, so it resolves to onboarding
-        // — which is the right way round: the steps are safe to show someone
-        // who turns out to have a machine already, and hiding them from
-        // someone who has none because their identity failed to resolve
-        // would take away the one thing this screen is for.
-        firstMachine={!machines.some((r) => r.ownerId === meId)}
-      />
 
       {pendingRemove && (
         <RemoveMachineModal

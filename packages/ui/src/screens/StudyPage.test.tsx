@@ -90,17 +90,12 @@ describe("the Study page", () => {
     // below: a second strip built by hand on one side of the hand-off is how
     // the crumb ends up a few pixels off.
     //
-    // Everything BUT the layout mode, which the two surfaces are entitled to
-    // differ on: the Task surface lays its strip out in three tracks so the
-    // open-Task tabs can sit on the conversation's own column, where the Study
-    // page needs no more than a flex line. That choice moves the tabs. What it
-    // must not move is the trail, and the classes compared here are the ones
-    // that decide.
-    const geometry = (el: Element) =>
-      el.className
-        .split(" ")
-        .filter((c) => c !== "flex" && c !== "crumb-strip--banded")
-        .join(" ");
+    // Compared whole, class string for class string. The Task surface used to
+    // lay its strip out in three grid tracks so the open-Task tabs could sit on
+    // the conversation's own column, and the layout mode had to be excused from
+    // this comparison; the tabs came off the strip and both surfaces draw the
+    // one flex line, so there is nothing left to excuse.
+    const geometry = (el: Element) => el.className;
     const strip = geometry(crumb().parentElement!);
 
     // The trail is the same one the Task surface shows, so the strip reads

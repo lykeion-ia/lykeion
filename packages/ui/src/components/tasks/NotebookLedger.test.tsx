@@ -142,8 +142,8 @@ it("shows loading, refresh warnings, and the selected context terminal row", asy
 /**
  * A cell is one record with two halves, and the output half is drawn on the
  * same material as the source that produced it. Asserted against the stylesheet
- * rather than a computed style, the way the crumb band's geometry is
- * (`TaskTabStrip.test.tsx`): jsdom resolves neither `color-mix()` nor the
+ * rather than a computed style, the way the design tokens are
+ * (`styles/tokens.test.ts`): jsdom resolves neither `color-mix()` nor the
  * cascade that puts these tokens in reach.
  */
 const notebookCss = readFileSync(

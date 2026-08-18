@@ -80,11 +80,13 @@ const notebookOrder = () =>
     .map((t) => t.getAttribute("title"))
     .filter((t): t is string => t !== null);
 
-/** Which conversation the surface is on — the marked tab of the crumb strip. */
+/** Which conversation the surface is on — the marked row of the Task list.
+ *  `getByRole` rather than `getAll`: exactly one row may claim to be current,
+ *  and a second one would be the bug this is here to catch. */
 const currentConversation = () =>
-  within(screen.getByTestId("task-tab-band"))
-    .getAllByRole("button", { pressed: true })[0]
-    ?.textContent;
+  within(screen.getByTestId("context-rail")).getByRole("button", {
+    current: "page",
+  }).textContent;
 
 beforeEach(() => {
   window.location.hash = `#/studies/s_cmp/tasks/${TASK_A.id}`;
@@ -229,23 +231,22 @@ it("carries the inspector into a Task you opened, landing it on Files", async ()
   expect(notebookTab(TASK_A.title)).toBeInTheDocument();
 });
 
-it("keeps the inspector open when the breadcrumb moves the screen", async () => {
-  // The crumb strip and the sidebar are two ways of saying the same thing, and
-  // the pane answers to both alike.
+it("moves the conversation under an open inspector, and marks the Task", async () => {
+  // Moving the screen with the pane open has to land both halves: the pane
+  // stays, AND the conversation beneath it is the one that was asked for. The
+  // sidebar is the only thing that moves the screen now, and the only thing
+  // that says where it landed.
   const user = userEvent.setup();
   render(<App api={apiWithNotebooks()} />);
 
-  // Visit B so it has a crumb of its own, then come back and open the pane.
+  // Visit B so it is a Task the reader has been to, then come back and open
+  // the pane on A.
   await screen.findByTestId("context-rail");
   await goToTask(user, TASK_B.title);
   await goToTask(user, TASK_A.title);
   await openPane(user);
 
-  await user.click(
-    await within(screen.getByTestId("task-tab-band")).findByRole("button", {
-      name: TASK_B.title,
-    }),
-  );
+  await goToTask(user, TASK_B.title);
 
   await waitFor(() => expect(window.location.hash).toContain(TASK_B.id));
   expect(currentConversation()).toBe(TASK_B.title);

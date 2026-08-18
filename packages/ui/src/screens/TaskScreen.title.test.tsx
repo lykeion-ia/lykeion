@@ -62,11 +62,13 @@ describe("a chat's title", () => {
         "quantify the tuning drift after deprivation",
       ),
     );
-    // And the surface the researcher is looking at says so too.
+    // And the surface the researcher is looking at says so too — the Study's
+    // own list, which is what names the open conversation now that the
+    // breadcrumb no longer carries it as a tab.
     expect(
       await screen.findByRole("button", {
         name: "quantify the tuning drift after deprivation",
-        pressed: true,
+        current: "page",
       }),
     ).toBeInTheDocument();
   });

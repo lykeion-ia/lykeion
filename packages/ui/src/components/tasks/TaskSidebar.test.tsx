@@ -304,3 +304,38 @@ describe("TaskSidebar row actions", () => {
     expect(within(list).getByText("First task")).toBeTruthy();
   });
 });
+
+describe("the row for the Task on screen", () => {
+  /**
+   * The list is the only thing left that says which conversation is open. The
+   * breadcrumb used to carry the open Tasks as tabs and marked the current one
+   * with `aria-pressed`; that strip is gone, so this mark is not decoration any
+   * more — it is the answer, and it has to be one a screen reader can reach.
+   */
+  it("marks it, and marks no other", () => {
+    renderSidebar();
+
+    const current = screen.getByRole("button", { current: "page" });
+    expect(current).toHaveTextContent("First task");
+    expect(
+      screen.getByRole("button", { name: /Second task/ }),
+    ).not.toHaveAttribute("aria-current");
+  });
+
+  it("moves the mark when another Task is the one on screen", () => {
+    renderSidebar({ activeTaskId: "t_b" });
+
+    expect(screen.getByRole("button", { current: "page" })).toHaveTextContent(
+      "Second task",
+    );
+  });
+
+  it("marks nothing at all when no Task is open", () => {
+    // The sidebar is drawn on surfaces that are not a Task — an absent
+    // `activeTaskId` must leave the list unmarked rather than defaulting the
+    // mark onto the first row.
+    renderSidebar({ activeTaskId: undefined });
+
+    expect(screen.queryByRole("button", { current: "page" })).toBeNull();
+  });
+});
