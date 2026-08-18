@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { Language, NotebookCell, RunEvent } from "@lykeion/api";
 import { allAgentHomes } from "./agent-home";
 import type { KernelHost } from "./kernel-host";
@@ -192,8 +192,39 @@ export function daemonProgram(): { command: string; args: string[] } {
   return { command: process.execPath, args: [process.argv[1] ?? ""] };
 }
 
+/**
+ * The paths a boundary has to carry for `program` to be able to run inside it.
+ *
+ * Split out from `daemonProgramPaths` so a test can hand it a program of its
+ * own: this machine's real one is read off `process.argv`, which under a test
+ * runner names the runner.
+ */
+export function programPathsFor(program: { command: string; args: string[] }): string[] {
+  const paths = programLocation(program);
+  // `programLocation` grants an ARGUMENT its own file and its own directory,
+  // and goes no further; the three-level grant that reaches a whole
+  // installation is the COMMAND's. For an interpreted program the two are not
+  // the same thing: the command is the interpreter, and the program itself
+  // arrives as the first argument. This daemon is one of those — `node
+  // bin/lykeion.js` — and its loader imports the bundle from a `dist` BESIDE
+  // `bin`, which is outside both grants. A boundary rendered from those alone
+  // carries the half of the relay that cannot run: it dies on its first
+  // import with EPERM, and an agent's CLI reports that as a server holding no
+  // tools rather than as a failure, so nothing anywhere says a word.
+  //
+  // So the first argument is asked the same question the command was, and
+  // gets the same answer: it IS a program, and `programLocation` already
+  // knows what a program needs — including the guard against a path so
+  // shallow it would swallow the boundary, which is why this reuses the rule
+  // rather than restating it.
+  const program0 = program.args[0];
+  if (program0 !== undefined && program0.includes(sep))
+    paths.push(...programLocation({ command: program0, args: [] }));
+  return paths;
+}
+
 export function daemonProgramPaths(): string[] {
-  return programLocation(daemonProgram());
+  return programPathsFor(daemonProgram());
 }
 
 /**

@@ -21,7 +21,7 @@ import {
 import { createServer } from "node:net";
 import { confinementFor } from "./agent-home";
 import { envRoot } from "./environments";
-import { kernelConfinementFor } from "./kernels";
+import { kernelConfinementFor, programPathsFor } from "./kernels";
 import { SCRATCH_DIR } from "./scratch";
 import { snapshotPathFor, takeSnapshot } from "./snapshot";
 import { ensureTaskDir } from "./workspace";
@@ -637,5 +637,50 @@ onDarwin("a boundary around something that declared no home", () => {
     );
     expect(pythons.stdout).not.toContain("Package: somepkg");
     expect(pythons.code).not.toBe(0);
+  });
+  /**
+   * The relay is a TWO-file program, and that is the whole of this test.
+   *
+   * `bin/lykeion.js` is a loader and nothing else: it imports the bundle
+   * beside it in `dist/`. So a boundary that carries the loader alone carries
+   * half a program — the half that cannot run. The relay dies on its first
+   * import with EPERM, before it has read one byte of protocol, and the
+   * agent's own CLI reports that as a server holding no tools rather than as
+   * a fault. Nothing logs anything, on either side.
+   *
+   * That is not hypothetical: it is how every kernel tool — `manage_environments`,
+   * `manage_packages`, `execute_python_cell` — went missing from a real run
+   * while the daemon reported the server published and healthy.
+   *
+   * The existing conformance behaviour ("reaches a tool through an MCP server
+   * named on session/new") cannot catch it, because its probe is a single
+   * file: one file is exactly the case the grant already covered. So the probe
+   * here is two, arranged the way the real one is, and it is run rather than
+   * inspected — the loader has to actually import the bundle inside the
+   * boundary and say so.
+   */
+  it("lets a two-file program read the bundle its loader imports", async () => {
+    const root = fresh();
+    const workspace = join(root, "task");
+    mkdirSync(workspace);
+
+    // The relay's own shape: a loader in `bin`, the bundle it imports in a
+    // `dist` beside it — siblings, not one inside the other.
+    const program = join(root, "relay");
+    mkdirSync(join(program, "bin"), { recursive: true });
+    mkdirSync(join(program, "dist"), { recursive: true });
+    writeFileSync(join(program, "dist", "bundle.mjs"), `process.stdout.write("RELAY SPOKE");\n`);
+    const loader = join(program, "bin", "loader.mjs");
+    writeFileSync(loader, `await import(new URL("../dist/bundle.mjs", import.meta.url).href);\n`);
+
+    // Exactly what the daemon carries for its own relay. The loader is named
+    // only here: inside the script it is one `-c` argument the boundary
+    // cannot resolve to a file, so nothing but this makes it readable.
+    const readable = programPathsFor({ command: process.execPath, args: [loader] });
+
+    const ran = await inside({ workspace, readable }, `${process.execPath} ${loader}`);
+    expect(ran.stderr).not.toContain("EPERM");
+    expect(ran.stdout).toContain("RELAY SPOKE");
+    expect(ran.code).toBe(0);
   });
 });
