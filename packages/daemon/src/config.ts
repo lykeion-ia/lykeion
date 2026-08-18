@@ -162,6 +162,12 @@ export interface DaemonConfig {
    * it off disk can impersonate the machine — and a deny is rendered after
    * the allows so it wins on conflict. A workspace inside the denied tree
    * would therefore be a workspace the run cannot write.
+   *
+   * Always absolute, whatever was typed. Everything downstream concatenates
+   * onto this — the sandbox profile's subpaths, and an environment's
+   * `interpreter`, which the kernel host refuses outright unless it is
+   * absolute — so a relative one here is a machine that starts no kernels at
+   * all. See `readDaemonConfig`.
    */
   workDir: string;
 }
@@ -402,10 +408,24 @@ export function readDaemonConfig(
     nonEmpty(line.values.get("--data-dir")) ??
     nonEmpty(env.LYKEION_DAEMON_DATA_DIR) ??
     defaultDataDir(env);
-  const workDir =
+  // Made absolute HERE, once, rather than left as whatever was typed. This is
+  // not tidiness: `<workDir>/envs/<name>/bin/python3` becomes an environment
+  // entry's `interpreter` on the wire to the kernel host, and
+  // `_environments_from` refuses a relative one — for its own good reason,
+  // since a relative interpreter would be resolved against the HOST's working
+  // directory and put a directory of its choosing in front of every cell's
+  // `PATH`. It refuses the WHOLE confinement on the first bad entry, floor
+  // included, so `configure_session` fails and the session gets no kernel
+  // tools at all. One `lykeion --work-dir ./work` therefore costs a machine
+  // every kernel it has, with one line on stderr as the only trace — the
+  // exact failure `runs.ts`'s per-entry guards exist to prevent, arriving
+  // through the door beside them. `resolve` against this process's own cwd is
+  // what the person typing a relative path already meant.
+  const workDir = resolve(
     nonEmpty(line.values.get("--work-dir")) ??
-    nonEmpty(env.LYKEION_DAEMON_WORK_DIR) ??
-    defaultWorkDir(dataDir);
+      nonEmpty(env.LYKEION_DAEMON_WORK_DIR) ??
+      defaultWorkDir(dataDir),
+  );
   // Refused here rather than started in a shape whose sandbox cannot be
   // rendered: the boundary denies the data directory, and a workspace
   // inside it is a workspace the agent would be denied every write to.

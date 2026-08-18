@@ -26,6 +26,7 @@ this host had not been told about yet.
 
 from __future__ import annotations
 
+import queue
 import sys
 import threading
 import time
@@ -33,7 +34,7 @@ from typing import Any, Callable, IO, NamedTuple
 
 from .kernels import KernelIdentity
 from .mcp.endpoint import Endpoints
-from .protocol import PROTOCOL_VERSION, read_messages, write_message
+from .protocol import PROTOCOL_VERSION, is_reply, read_messages, write_message
 from .registry import Place, Registry
 from .sampler import total_memory
 
@@ -64,6 +65,7 @@ def _hello(holding: Holding, _params: dict[str, Any], _place: Place | None) -> d
             {
                 "language": runnable.language,
                 "environment": runnable.environment,
+                "interpreter": runnable.interpreter,
                 "reads": list(runnable.reads),
             }
             for runnable in holding.registry.runnables
@@ -77,7 +79,9 @@ class Cell(NamedTuple):
     Read out of a message in one place, because two readings of it could
     disagree about whether a message is a cell at all — and this machine
     decides that twice: once where the cell takes its place in a kernel's
-    queue, and once where it is run.
+    queue, and once where it is run. The identity is the one field those two
+    readings must not decide independently — see `_cell`'s own `identity`
+    argument.
     """
 
     identity: KernelIdentity
@@ -86,13 +90,26 @@ class Cell(NamedTuple):
     tool_use_id: str | None
 
 
-def _cell(params: dict[str, Any]) -> Cell:
+def _cell(
+    holding: Holding, params: dict[str, Any], identity: KernelIdentity | None = None
+) -> Cell:
+    """A cell as this message asks for one, resolving its identity only when
+    none is already known.
+
+    `identity_for` reads live session state, so calling it here a second
+    time for a cell whose place was already taken is not "the same answer,
+    computed again" — a session reconfigured in between can make it a
+    different one. The caller that already has the answer, from the `Place`
+    its own earlier call to this took, passes it forward; only a caller with
+    no place at all — a cell this host is about to refuse either way — asks
+    this to resolve one.
+    """
     source = params.get("source")
     if not isinstance(source, str):
         raise ValueError("a cell has a source, even an empty one")
     tool_use_id = params.get("tool_use_id")
     return Cell(
-        identity=_identity(params),
+        identity=identity if identity is not None else _identity(holding, params),
         source=source,
         origin=_origin(params),
         tool_use_id=tool_use_id if isinstance(tool_use_id, str) and tool_use_id else None,
@@ -100,7 +117,15 @@ def _cell(params: dict[str, Any]) -> Cell:
 
 
 def _execute(holding: Holding, params: dict[str, Any], place: Place | None) -> dict[str, Any]:
-    cell = _cell(params)
+    # The identity this cell runs against is the one its place was taken
+    # for, not a fresh resolution: `place.identity` and the identity a
+    # second call to `identity_for` would produce can disagree if the
+    # session was reconfigured between the two — and `execute`'s own
+    # `place` argument is only ever waited on inside the turn that
+    # identity's own kernel holds. A cell with no place — refused at
+    # arrival, redone here to answer with why — resolves its own, since
+    # there is no earlier answer to carry forward.
+    cell = _cell(holding, params, place.identity if place is not None else None)
     return holding.registry.execute(
         cell.identity,
         cell.source,
@@ -115,13 +140,22 @@ def _configure_session(
 ) -> dict[str, Any]:
     workspace = _text(params, "workspace")
     token = params.get("token")
+    # `configure_session` is the one place this shape is validated — see
+    # `_environments_from` in registry.py. Passed straight through rather
+    # than parsed twice: the registry is reachable directly and not only
+    # from this wire, so the check belongs where the invariant does.
     holding.registry.configure_session(
         session_id=_text(params, "session_id"),
         task_id=_text(params, "task_id"),
         workspace=workspace,
-        prefixes=_prefixes(params),
-        environments=_environments(params),
+        environments=params.get("environments"),
         token=token if isinstance(token, str) and token else None,
+        # `.get` rather than a default of `[]`: a message carrying no
+        # `declared` key is a daemon whose own ask of the lab failed, and a
+        # session told nothing about the lab's declarations must not be
+        # configured as one told the lab has none. The registry keeps the
+        # two apart and says different things for them.
+        declared=params.get("declared"),
     )
     # After the session is known and never before it: the greeting a
     # connection opens with is checked against exactly this, so a socket that
@@ -151,6 +185,29 @@ def _restart(holding: Holding, params: dict[str, Any], _place: Place | None) -> 
     return holding.registry.restart(_text(params, "kernel_id"))
 
 
+def _restart_environment(
+    holding: Holding, params: dict[str, Any], _place: Place | None
+) -> dict[str, Any]:
+    """Every kernel started in one environment, given a fresh process.
+
+    Named by ENVIRONMENT and not by session, and deliberately answerable
+    without one: what has changed is a directory on this machine, and every
+    session that has a kernel in it is affected whether or not it is the
+    session whose agent asked. A method that needed a session here would
+    leave a colleague's kernel running against an interpreter this machine
+    has just deleted.
+
+    `reason` is optional the same way `kernel.stop`'s `feedback` is: the
+    daemon sends one when it knows why, and a restart with nothing said is
+    still a restart.
+    """
+    return {
+        "restarted": holding.registry.restart_environment(
+            _text(params, "name"), _optional_text(params, "reason")
+        )
+    }
+
+
 def _list(holding: Holding, _params: dict[str, Any], _place: Place | None) -> dict[str, Any]:
     return {"kernels": holding.registry.list()}
 
@@ -168,6 +225,7 @@ METHODS: dict[str, Handler] = {
     "kernel.interrupt": _interrupt,
     "kernel.stop": _stop,
     "kernel.restart": _restart,
+    "kernel.restart_environment": _restart_environment,
     "kernel.list": _list,
     "kernel.release_session": _release_session,
 }
@@ -180,41 +238,18 @@ def _text(params: dict[str, Any], key: str) -> str:
     return value
 
 
-def _prefixes(params: dict[str, Any]) -> dict[str, list[str]]:
-    # One argument list per language, and nothing else. Anything this process
-    # cannot concatenate an interpreter onto is refused where it arrived
-    # rather than where a kernel would fail to start.
-    prefixes = params.get("prefixes")
-    if not isinstance(prefixes, dict):
-        raise ValueError("a confinement is one argument list per language")
-    built: dict[str, list[str]] = {}
-    for language, prefix in prefixes.items():
-        if (
-            not isinstance(language, str)
-            or not isinstance(prefix, list)
-            or not all(isinstance(part, str) for part in prefix)
-        ):
-            raise ValueError("a confinement is one argument list per language")
-        built[language] = list(prefix)
-    return built
+def _optional_text(params: dict[str, Any], key: str) -> str | None:
+    value = params.get(key)
+    return value if isinstance(value, str) and value else None
 
 
-def _environments(params: dict[str, Any]) -> dict[str, str]:
-    environments = params.get("environments")
-    if not isinstance(environments, dict) or not all(
-        isinstance(language, str) and isinstance(name, str)
-        for language, name in environments.items()
-    ):
-        raise ValueError("an environment is named once per language")
-    return dict(environments)
-
-
-def _identity(params: dict[str, Any]) -> KernelIdentity:
-    return KernelIdentity(
-        session_id=_text(params, "session_id"),
-        task_id=_text(params, "task_id"),
-        name=_text(params, "name"),
-        language=_text(params, "language"),
+def _identity(holding: Holding, params: dict[str, Any]) -> KernelIdentity:
+    return holding.registry.identity_for(
+        _text(params, "session_id"),
+        _text(params, "task_id"),
+        _text(params, "name"),
+        _text(params, "language"),
+        _optional_text(params, "environment"),
     )
 
 
@@ -256,7 +291,7 @@ def _arriving(holding: Holding, method: str, params: dict[str, Any]) -> Place | 
     if method != "kernel.execute":
         return None
     try:
-        return holding.registry.arriving(_cell(params).identity)
+        return holding.registry.arriving(_cell(holding, params).identity)
     except Exception:  # noqa: BLE001 - answered from the thread, never here
         return None
 
@@ -283,6 +318,101 @@ def _answer(
             place.left()
     if request_id is not None:
         write_message(stdout, {"id": request_id, **reply})
+
+
+class Asking:
+    """What this host wants FROM the daemon, and the threads waiting on it.
+
+    The other direction of `_answer`. Some things a tool call needs are not
+    this process's to do — raising a permission card in front of the
+    researcher, and calling the lab with their session's own token — and
+    this process holds neither the session nor the token. So it asks, and
+    the thread that asked waits for the answer.
+
+    Its own id counter, starting at 1 and independent of the daemon's. The
+    two spaces never meet: each end matches replies against its own
+    outstanding map, so an ask numbered 1 here and a request numbered 1
+    there are different messages travelling in opposite directions, and
+    neither end ever looks for the other's id.
+
+    Every ask blocks the thread that made it and nothing else. Replies land
+    on the reading thread, which does no work beyond handing one to whichever
+    thread is waiting — so a card the researcher takes a minute over holds up
+    that one tool call and no cell on this machine.
+    """
+
+    def __init__(self, stdout: IO[str]) -> None:
+        self._stdout = stdout
+        self._lock = threading.Lock()
+        self._next_id = 1
+        # One slot per outstanding ask. A queue rather than an Event plus a
+        # box, because the two halves of that pair can be read apart: a
+        # thread woken by the event still has to find the result somebody
+        # else may already be clearing.
+        self._waiting: dict[int, queue.Queue[dict[str, Any]]] = {}
+        # Why nothing more can be asked, once the stream this travels on has
+        # ended. `None` while the daemon is still there.
+        self._closed: str | None = None
+
+    def ask(self, method: str, params: dict[str, Any]) -> Any:
+        """Asks the daemon for something, and waits here for its answer.
+
+        Raises `ValueError` carrying the daemon's own message when it
+        refuses — the daemon is where a researcher's decision and the lab's
+        own refusals are, and its sentence is the one worth passing on.
+        """
+        with self._lock:
+            if self._closed is not None:
+                raise ValueError(self._closed)
+            ask_id = self._next_id
+            self._next_id += 1
+            slot: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
+            self._waiting[ask_id] = slot
+        try:
+            write_message(self._stdout, {"id": ask_id, "method": method, "params": params})
+        except Exception:
+            # Nothing is coming for an ask that was never sent. Taking the
+            # slot back here is what keeps `settle_all` from later reporting
+            # a stream failure as an unanswered question.
+            with self._lock:
+                self._waiting.pop(ask_id, None)
+            raise
+        message = slot.get()
+        error = message.get("error")
+        if error is not None:
+            raise ValueError(
+                error.get("message") if isinstance(error, dict) else str(error)
+            )
+        return message.get("result")
+
+    def deliver(self, message: dict[str, Any]) -> None:
+        """Hands one reply to whichever thread is waiting on it.
+
+        A reply naming an id nothing is waiting for is dropped: the ask it
+        answers was already settled — by `settle_all`, or by a write that
+        never left — and there is no second thread to wake.
+        """
+        ask_id = message.get("id")
+        with self._lock:
+            slot = self._waiting.pop(ask_id, None) if isinstance(ask_id, int) else None
+        if slot is not None:
+            slot.put(message)
+
+    def settle_all(self, reason: str) -> None:
+        """Fails every ask still waiting, and refuses every later one.
+
+        Called where the stream ends. A daemon that closed this host's stdin
+        is never going to answer, and a thread blocked on a reply that is not
+        coming would sit out the whole draining deadline for nothing —
+        holding up the shutdown it is inside, to wait for a message from a
+        process that has already gone.
+        """
+        with self._lock:
+            self._closed = reason
+            waiting = list(self._waiting.values())
+            self._waiting.clear()
+        for slot in waiting:
+            slot.put({"error": {"message": reason}})
 
 
 SAMPLE_INTERVAL_S = 2.0
@@ -350,10 +480,23 @@ def serve(
     # the lab. One event, written twice, because the two ends of it are
     # waiting in different places.
     kernels.on_cell = lambda cell: write_message(stdout, {"method": "cell", "params": cell})
+    # The other direction, wired the same way and for the same reason: what
+    # a tool call needs that only the daemon can do — a permission card in
+    # front of the researcher, and the lab called with their session's own
+    # token — goes out here and is waited on by the thread that asked.
+    asking = Asking(stdout)
+    kernels.ask_daemon = asking.ask
     _sampling(kernels, share)
     answering: list[threading.Thread] = []
     try:
         for message in read_messages(stdin):
+            # Before anything looks for a handler. A reply carries an id and
+            # no method, so a loop that read it as a request would answer it
+            # with "no method named None" and leave whichever thread is
+            # waiting on it blocked for good.
+            if is_reply(message):
+                asking.deliver(message)
+                continue
             request_id = message.get("id")
             method = message.get("method")
             handler = METHODS.get(method) if isinstance(method, str) else None
@@ -402,6 +545,20 @@ def serve(
             answering.append(thread)
             thread.start()
     finally:
+        # A daemon that has closed this host's stdin is never going to answer,
+        # so every thread waiting on one is waiting for something that is not
+        # coming, and every later ask is asking a process that has gone. Both
+        # are settled here rather than left: a thread blocked on a reply is
+        # inside a tool call somebody is watching, and a wait nothing can end
+        # is indistinguishable from a machine that has stopped answering.
+        #
+        # Before the join below because that reads well, NOT because it
+        # shortens it: the join covers `answering` — the threads started for
+        # `METHODS` handlers — and no handler in `METHODS` asks the daemon for
+        # anything. The only caller is the MCP endpoint's own thread, which is
+        # not in that list, so the placement buys nothing against the draining
+        # deadline and this comment should not claim it does.
+        asking.settle_all("this machine's daemon is no longer answering")
         # What is still being answered gets until the deadline between them,
         # so a call that was about to finish writes what it found. Bounded
         # rather than bare, because a cell that will not come back would

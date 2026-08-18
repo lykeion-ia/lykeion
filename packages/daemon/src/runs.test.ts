@@ -1,13 +1,23 @@
 import { afterEach, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { RunEvent, TurnState } from "@lykeion/api";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
+import type { ExecutionLogEntry, RunEvent, TurnState } from "@lykeion/api";
 import { backoffDelayMs } from "./lab";
 import type { KernelHost } from "./kernel-host";
 import { PROTOCOL_VERSION } from "./kernel-protocol";
 import { startRuns, type RunSubsystem } from "./runs";
+import { envRoot } from "./environments";
 
 const STUB = join(import.meta.dirname, "test-support", "stub-acp-agent.ts");
 const running: RunSubsystem[] = [];
@@ -37,8 +47,42 @@ async function stubLab(commands: unknown[]) {
   const cells: Record<string, unknown>[] = [];
   const kernelListReplies: Array<{ requestId: string; kernels: unknown[] }> = [];
   const titleReplies: Array<{ requestId: string; title: string | null }> = [];
+  const kernelEnvLocks: Array<{ requestId: string; name: string; lockfile: string }> = [];
+  /** Every declaration this lab was asked for, in order — the whole of what
+   *  a card's "allow" is supposed to produce, and the whole of what its
+   *  "deny" is supposed not to. */
+  const kernelEnvCreates: Array<{ sessionId: string; name: string; packages: string[] }> = [];
+  /** How this lab answers `/daemon/kernel-env/create`: `refusal` makes it
+   *  refuse in the lab's own words, `rawBody` is written verbatim under a 200
+   *  instead — a failure wearing a success code, which is what a proxy's own
+   *  page or a truncated response arrives as — and `onCall` fires the moment
+   *  the call arrives, which is how a test can place it against everything
+   *  else that happened rather than only count it. */
+  const kernelEnvCreate: { refusal?: string; rawBody?: string; onCall?: () => void } = {};
+  /** Every add this lab was asked for, in order — the whole of what a
+   *  `manage_packages` card's "allow" is supposed to produce, and the whole
+   *  of what its "deny" is supposed not to. */
+  const kernelEnvPackages: Array<{ sessionId: string; name: string; packages: string[] }> = [];
+  /** How this lab answers `/daemon/kernel-env/packages`: `refusal` refuses in
+   *  the lab's own words, `added` is what it reports as genuinely new (an
+   *  empty list being everything asked for already being declared, which
+   *  changes nothing and rebuilds nothing), and `rawBody` is written verbatim
+   *  under a 200 instead — a failure wearing a success code, which is what a
+   *  proxy's own page or a truncated response arrives as. */
+  const kernelEnvPackagesAdd: { refusal?: string; added?: string[]; rawBody?: string } = {};
+  const kernelEnvResults: Array<Record<string, unknown>> = [];
+  const kernelEnvProgress: Array<{ requestId: string; line: string }> = [];
+  /** What `/daemon/kernel-envs` answers with — this lab's declaration list,
+   *  which the daemon asks for before it confines a session. `null` makes
+   *  the endpoint fail, which is how a test stands in for a lab that cannot
+   *  be asked right now. `rawBody`, when set, is written verbatim under a
+   *  200 instead — how a test stands in for the same failure wearing a
+   *  success code: a proxy's error page, a truncated response, a body whose
+   *  `declarations` is not a list. */
+  const kernelEnvDeclarations: { list: unknown[] | null; rawBody?: string } = { list: [] };
   let commandStream: import("node:http").ServerResponse | undefined;
   let seq = 0;
+  let lockRevision = 0;
   const server = createServer((req, res) => {
     if (req.url?.startsWith("/daemon/commands")) {
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -61,6 +105,95 @@ async function stubLab(commands: unknown[]) {
         kernelListReplies.push(parsed as { requestId: string; kernels: unknown[] });
       if (req.url === "/daemon/task/title")
         titleReplies.push(parsed as { requestId: string; title: string | null });
+      if (req.url === "/daemon/kernel-env/lock") {
+        kernelEnvLocks.push(parsed as { requestId: string; name: string; lockfile: string });
+        lockRevision += 1;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ lockRevision }));
+        return;
+      }
+      if (req.url === "/daemon/kernel-envs") {
+        if (kernelEnvDeclarations.rawBody !== undefined) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(kernelEnvDeclarations.rawBody);
+          return;
+        }
+        if (kernelEnvDeclarations.list === null) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "this lab cannot list its environments right now" }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ declarations: kernelEnvDeclarations.list }));
+        return;
+      }
+      if (req.url === "/daemon/kernel-env/create") {
+        kernelEnvCreates.push(
+          parsed as unknown as { sessionId: string; name: string; packages: string[] },
+        );
+        kernelEnvCreate.onCall?.();
+        if (kernelEnvCreate.refusal !== undefined) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: kernelEnvCreate.refusal }));
+          return;
+        }
+        if (kernelEnvCreate.rawBody !== undefined) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(kernelEnvCreate.rawBody);
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            declaration: {
+              name: parsed.name,
+              language: "python",
+              manager: "uv",
+              packages: parsed.packages,
+              createdBy: "u_ana",
+              createdTs: 1,
+              lockRevision: 0,
+            },
+          }),
+        );
+        return;
+      }
+      if (req.url === "/daemon/kernel-env/packages") {
+        kernelEnvPackages.push(
+          parsed as unknown as { sessionId: string; name: string; packages: string[] },
+        );
+        if (kernelEnvPackagesAdd.refusal !== undefined) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: kernelEnvPackagesAdd.refusal }));
+          return;
+        }
+        if (kernelEnvPackagesAdd.rawBody !== undefined) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(kernelEnvPackagesAdd.rawBody);
+          return;
+        }
+        const added = kernelEnvPackagesAdd.added ?? (parsed.packages as string[]);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            declaration: {
+              name: parsed.name,
+              language: "python",
+              manager: "uv",
+              packages: added,
+              createdBy: "u_ana",
+              createdTs: 1,
+              lockRevision: 1,
+            },
+            added,
+            building: added.length > 0,
+          }),
+        );
+        return;
+      }
+      if (req.url === "/daemon/kernel-env/result") kernelEnvResults.push(parsed);
+      if (req.url === "/daemon/kernel-env/progress")
+        kernelEnvProgress.push(parsed as { requestId: string; line: string });
       res.writeHead(200, { "content-type": "application/json" });
       res.end("{}");
     });
@@ -79,6 +212,14 @@ async function stubLab(commands: unknown[]) {
     cells,
     kernelListReplies,
     titleReplies,
+    kernelEnvLocks,
+    kernelEnvCreates,
+    kernelEnvCreate,
+    kernelEnvPackages,
+    kernelEnvPackagesAdd,
+    kernelEnvResults,
+    kernelEnvProgress,
+    kernelEnvDeclarations,
     commandConnected(): boolean {
       return commandStream !== undefined;
     },
@@ -102,6 +243,68 @@ function markerIn(dataDir: string, name: string): string {
 }
 
 /**
+ * An environment as a machine that has built it looks on disk: the
+ * interpreter `readEnvStatus` probes, and — only when `finished` — the
+ * completion marker `materializeEnvironment` writes LAST, once `uv pip sync`
+ * has actually returned. An interpreter with no marker beside it is not a
+ * spelling of "nearly built": it is exactly what an interrupted provision
+ * leaves behind, which is what `broken` means and why it is worth being able
+ * to write here.
+ *
+ * `base`, when given, writes the `pyvenv.cfg` `uv venv` leaves behind, whose
+ * `home` records which interpreter this environment was actually built on.
+ * Optional because a venv with no readable `pyvenv.cfg` is its own case:
+ * this machine cannot say what the base is, which is not the same fact as
+ * there being none.
+ */
+function envOnDisk(workDir: string, name: string, finished: boolean, base?: string): string {
+  const root = envRoot(workDir, name);
+  mkdirSync(join(root, "bin"), { recursive: true });
+  writeFileSync(join(root, "bin", "python3"), "");
+  if (base !== undefined)
+    writeFileSync(join(root, "pyvenv.cfg"), `home = ${base}\nversion_info = 3.12.7\n`);
+  if (finished)
+    writeFileSync(
+      join(root, ".lykeion-env.json"),
+      JSON.stringify({ lockRevision: 3, packageCount: 12, version: "3.12.7" }),
+    );
+  return root;
+}
+
+/**
+ * Whether the boundary a kernel was handed actually lets it open one named
+ * file — asked of the rendered profile that went out on the wire, not of the
+ * list it was rendered from.
+ *
+ * A question about a file rather than about a string, because that is what
+ * decides whether a kernel starts: the operating system either opens
+ * `<base>/lib/python3.13/os.py` or it does not. `(subpath …)` covers a
+ * directory and everything beneath it and stops at the component boundary,
+ * so a grant on a base's `bin` directory answers `false` here for the
+ * standard library beside it — while a containment check on the same profile
+ * answers `true`, having found the venv's `home` spelled out somewhere in a
+ * grant that reaches none of what the kernel reads.
+ *
+ * Conservative: the allows, minus anything a deny takes back, ignoring the
+ * few narrow allows the profile ends with. So `true` here means genuinely
+ * reachable, and nothing in these tests sits beneath one of those.
+ */
+function grantsReadOf(prefix: string[], file: string): boolean {
+  // Found by its own first line rather than by counting arguments, so a
+  // backend that stops rendering one of these fails loudly here instead of
+  // quietly asserting nothing.
+  const profile = prefix.find((arg) => arg.startsWith("(version 1)")) ?? "";
+  const covers = (root: string): boolean => file === root || file.startsWith(`${root}/`);
+  const subpathsOf = (rule: "allow" | "deny"): string[] =>
+    profile
+      .split("\n")
+      .filter((line) => line.startsWith(`(${rule} `) && line.includes("file-read"))
+      .flatMap((line) => [...line.matchAll(/\(subpath "([^"]*)"\)/g)].map((match) => match[1]!));
+  if (subpathsOf("deny").some(covers)) return false;
+  return subpathsOf("allow").some(covers);
+}
+
+/**
  * What the stub adapter is configured with, handed over on purpose.
  *
  * A run's environment is an allowlist now, so nothing a test exports reaches
@@ -120,6 +323,62 @@ const stubEnv = (): Record<string, string> =>
         entry[0].startsWith("LYKEION_STUB_") && entry[1] !== undefined,
     ),
   );
+
+/**
+ * A fake `uv` binary, in the shape `environments.test.ts`'s own `stubUv`
+ * builds — the same three subcommands `handleKernelEnvSetup` actually
+ * drives, `venv`/`pip compile`/`pip sync`, faked out so these tests exercise
+ * the WIRE (which command carries a lockfile, which endpoint gets called,
+ * what the lab is told) rather than a real network resolve. No test here
+ * resolves from PyPI.
+ */
+function stubUv(lockfile: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "lyk-runs-uv-"));
+  dirs.push(dir);
+  writeFileSync(join(dir, "stub-lockfile.txt"), lockfile);
+  const script = [
+    "#!/bin/sh",
+    'here="$(cd "$(dirname "$0")" && pwd)"',
+    'if [ "$1" = "venv" ]; then',
+    '  target="$2"',
+    '  mkdir -p "$target/bin"',
+    '  : > "$target/bin/python3"',
+    '  chmod +x "$target/bin/python3"',
+    "  printf 'version_info = 3.12.7\\n' > \"$target/pyvenv.cfg\"",
+    "  exit 0",
+    "fi",
+    'if [ "$1" = "pip" ] && [ "$2" = "compile" ]; then',
+    '  cat "$here/stub-lockfile.txt"',
+    '  exit 0',
+    "fi",
+    'if [ "$1" = "pip" ] && [ "$2" = "sync" ]; then',
+    '  exit 0',
+    "fi",
+    'echo "unhandled stub uv invocation: $*" >&2',
+    "exit 1",
+    "",
+  ].join("\n");
+  writeFileSync(join(dir, "uv"), script);
+  chmodSync(join(dir, "uv"), 0o755);
+  return dir;
+}
+
+/** Runs `fn` with a stub `uv` directory prepended to this PROCESS's own
+ *  PATH — the fallback `resolveEnvironment`/`materializeEnvironment` read
+ *  when `startRuns` gives them no `path` of their own, since `startRuns`'s
+ *  options carry none: this daemon always searches the researcher's own
+ *  PATH for the real thing, and a test stands in for that PATH rather than
+ *  asking the daemon for a seam it does not otherwise need. Restored
+ *  afterward regardless of how `fn` settles. */
+async function withStubUvOnPath<T>(uvDir: string, fn: () => Promise<T>): Promise<T> {
+  const original = process.env.PATH;
+  process.env.PATH = `${uvDir}:${original ?? ""}`;
+  try {
+    return await fn();
+  } finally {
+    process.env.PATH = original;
+  }
+}
 
 function subsystem(
   base: string,
@@ -177,19 +436,72 @@ function queuedPositions(
 function stubKernelHost(
   configuring: number,
   protocol: unknown = PROTOCOL_VERSION,
-  languages: Array<{ language: string; environment: string; reads: string[] }> = [
-    { language: "python", environment: "python", reads: [] },
-  ],
+  languages: Array<{
+    language: string; environment: string; interpreter: string; reads: string[];
+  }> = [{ language: "python", environment: "python", interpreter: "/usr/bin/python3", reads: [] }],
 ) {
   const asked: string[] = [];
-  const answering: { configured?: { token?: string } } = {};
+  const answering: { configured?: { token?: string }; refusing: boolean } = { refusing: false };
+  /** Session ids this host will not take a boundary for, so a test can have
+   *  ONE session's re-send fail while the others succeed. */
+  const refusingFor = new Set<string>();
+  /** Every boundary this host has been handed, in order — not only the last.
+   *  A session configured a second time is the whole subject of the
+   *  mid-session build tests, and `configured` alone cannot tell one call
+   *  from two. */
+  const configurations: Array<Record<string, unknown>> = [];
+  /** Every `kernel.restart_environment` this host was asked for, whole. The
+   *  method's own arguments are the point — which environment, and the
+   *  sentence the ending carries — so `asked`'s method names alone cannot
+   *  stand in for it. */
+  const environmentRestarts: Array<Record<string, unknown>> = [];
   const cellListeners: Array<(params: unknown) => void> = [];
+  /** What this daemon answers when the host asks IT for something — the
+   *  second direction of the wire, which the real `kernel-host.ts` carries
+   *  over the host's own stdin and which this stub stands in for at the
+   *  interface. */
+  const served = new Map<string, (params: unknown) => Promise<unknown>>();
+  /** A boundary naming `env` is parked here BEFORE it is recorded, until the
+   *  test lets it go — which is how a test puts one re-send's arrival after
+   *  another's when its own read of the disk happened first. */
+  const holding: { env?: string; entered: number; gate: Promise<void>; open?: () => void } = {
+    entered: 0,
+    gate: Promise.resolve(),
+  };
+  /** Every boundary is parked here AFTER it is recorded until `want` of them
+   *  have arrived — a host that is alive and answering nothing. Re-sends
+   *  dispatched together clear it between them; re-sends sent one after
+   *  another cannot, and the first never returns. */
+  const barrier: { want: number; entered: number; gate: Promise<void>; open?: () => void } = {
+    want: 0,
+    entered: 0,
+    gate: Promise.resolve(),
+  };
   const host: KernelHost = {
     call: async (method, params) => {
       asked.push(method);
       if (method === "host.hello") return { protocol, languages };
+      if (method === "kernel.restart_environment") {
+        environmentRestarts.push((params ?? {}) as Record<string, unknown>);
+        return { restarted: [] };
+      }
       if (method === "kernel.configure_session") {
+        const forSession = (params as { session_id?: string } | undefined)?.session_id;
+        if (answering.refusing || (forSession !== undefined && refusingFor.has(forSession)))
+          throw new Error("this host will not take a boundary right now");
+        const named = ((params as { environments?: Array<{ name: string }> } | undefined)
+          ?.environments ?? []).map((entry) => entry.name);
+        if (holding.env !== undefined && named.includes(holding.env)) {
+          holding.entered += 1;
+          await holding.gate;
+        }
         answering.configured = params as { token?: string };
+        configurations.push(params as Record<string, unknown>);
+        if (barrier.want > 0) {
+          barrier.entered += 1;
+          if (barrier.entered >= barrier.want) barrier.open?.();
+          await barrier.gate;
+        }
         await new Promise((resolve) => setTimeout(resolve, configuring));
         asked.push("the boundary landed");
         return {};
@@ -198,6 +510,9 @@ function stubKernelHost(
     },
     on: (method, handler) => {
       if (method === "cell") cellListeners.push(handler);
+    },
+    serve: (method, handler) => {
+      served.set(method, handler);
     },
     stop: () => Promise.resolve(),
     get running() {
@@ -208,8 +523,65 @@ function stubKernelHost(
   return {
     host,
     asked,
+    configurations,
+    environmentRestarts,
+    /** Asks this daemon for something, the way the real host does when it
+     *  writes `{id, method, params}` to its own stdout — and refuses a
+     *  method nothing served with the same sentence `kernel-host.ts` writes
+     *  back, so a test cannot pass here on a registration that never
+     *  happened. */
+    ask(method: string, params: unknown): Promise<unknown> {
+      const handler = served.get(method);
+      if (handler === undefined)
+        return Promise.reject(
+          new Error(`this machine's daemon serves no method named ${method}`),
+        );
+      return handler(params);
+    },
     get configured() {
       return answering.configured;
+    },
+    /** Makes every later `configure_session` raise — a host that has fallen
+     *  over, or been replaced, between opening a session and building an
+     *  environment under it. */
+    refuseConfigures(): void {
+      answering.refusing = true;
+    },
+    /** Makes every later `configure_session` for THIS session raise, and
+     *  leaves every other session's alone — a host that has lost one
+     *  session's confinement, not one that has fallen over. */
+    refuseConfiguresFor(sessionId: string): void {
+      refusingFor.add(sessionId);
+    },
+    /** Parks every later boundary that names `env` before recording it, so a
+     *  test can hold one re-send's arrival open while another runs to
+     *  completion. Nothing about the held call is recorded until
+     *  `releaseHeld`, which is what makes "which boundary landed last"
+     *  something a test can arrange rather than something it has to catch. */
+    holdBoundariesNaming(env: string): void {
+      holding.env = env;
+      holding.gate = new Promise<void>((resolve) => {
+        holding.open = resolve;
+      });
+    },
+    releaseHeld(): void {
+      holding.open?.();
+    },
+    /** How many boundaries have reached the hold, whether or not they have
+     *  been let go — the only way to know a re-send is in flight when the
+     *  point of the hold is that it has not landed. */
+    get heldEntries(): number {
+      return holding.entered;
+    },
+    /** Answers no boundary until `n` of them have been handed over, and then
+     *  answers them all. A host that is alive and silent, with no clock in
+     *  it: `n` re-sends in flight at once release each other, and `n` sent
+     *  one after another cannot. */
+    barrierAt(n: number): void {
+      barrier.want = n;
+      barrier.gate = new Promise<void>((resolve) => {
+        barrier.open = resolve;
+      });
     },
     /** Fires this host's own "cell" notification at whoever wired
      *  `forwardKernelCells` onto it, the way `kernel-host.ts` would once the
@@ -220,13 +592,13 @@ function stubKernelHost(
   };
 }
 
-const startRunOn = (runId: string) => ({
+const startRunOn = (runId: string, sessionId = "se_1") => ({
   type: "start-run",
   runId,
   agent: "claude",
   studyId: "s_cmp",
   taskId: "t_cmp",
-  sessionId: "se_1",
+  sessionId,
   prompt: "go",
 });
 
@@ -305,8 +677,11 @@ it("writes each language's boundary from that language's own reads alone", async
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
   const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
-    { language: "python", environment: "python", reads: ["/nowhere/python/env"] },
-    { language: "r", environment: "r", reads: ["/nowhere/r/site-library"] },
+    {
+      language: "python", environment: "python",
+      interpreter: "/nowhere/python/bin", reads: ["/nowhere/python/env"],
+    },
+    { language: "r", environment: "r", interpreter: "/nowhere/r/bin", reads: ["/nowhere/r/site-library"] },
   ]);
   subsystem(lab.base, data, () => kernels.host);
   await until(() => lab.commandConnected(), "the command stream");
@@ -314,18 +689,906 @@ it("writes each language's boundary from that language's own reads alone", async
 
   await until(() => kernels.configured !== undefined, "the boundary landing");
   const configured = kernels.configured as unknown as {
-    prefixes: Record<string, string[]>;
-    environments: Record<string, string>;
+    environments: Array<{ language: string; name: string; interpreter: string; prefix: string[] }>;
   };
-  expect(Object.keys(configured.prefixes).sort()).toEqual(["python", "r"]);
-  expect(configured.environments).toEqual({ python: "python", r: "r" });
+  const byLanguage = Object.fromEntries(
+    configured.environments.map((entry) => [entry.language, entry]),
+  );
+  expect(Object.keys(byLanguage).sort()).toEqual(["python", "r"]);
+  expect(byLanguage.python.name).toBe("python");
+  expect(byLanguage.r.name).toBe("r");
+  expect(byLanguage.python.interpreter).toBe("/nowhere/python/bin");
+  expect(byLanguage.r.interpreter).toBe("/nowhere/r/bin");
   // Told apart, not merely both present: one prefix built from the union of
   // both descriptors would satisfy every line below except these two.
-  expect(configured.prefixes.python).not.toEqual(configured.prefixes.r);
-  expect(configured.prefixes.python.join(" ")).toContain("/nowhere/python/env");
-  expect(configured.prefixes.r.join(" ")).toContain("/nowhere/r/site-library");
-  expect(configured.prefixes.python.join(" ")).not.toContain("/nowhere/r/site-library");
-  expect(configured.prefixes.r.join(" ")).not.toContain("/nowhere/python/env");
+  expect(byLanguage.python.prefix).not.toEqual(byLanguage.r.prefix);
+  expect(byLanguage.python.prefix.join(" ")).toContain("/nowhere/python/env");
+  expect(byLanguage.r.prefix.join(" ")).toContain("/nowhere/r/site-library");
+  expect(byLanguage.python.prefix.join(" ")).not.toContain("/nowhere/r/site-library");
+  expect(byLanguage.r.prefix.join(" ")).not.toContain("/nowhere/python/env");
+});
+
+it("tells the host every name this lab has declared, not only the ones built here", async () => {
+  // Two lists, and the host needs both. `environments` is what this machine
+  // can start a kernel in; `declared` is what exists at all. A colleague's
+  // environment that nobody has downloaded here appears in the second and
+  // not the first, and that gap is exactly the fact the host's refusal
+  // reads to say "not built on this machine yet" rather than "no such
+  // environment".
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "python", language: "python", manager: "uv", packages: [], createdTs: 1, lockRevision: 1 },
+    { name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: 2, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_declared"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    declared?: string[];
+    environments: Array<{ name: string }>;
+  };
+  expect(configured.declared).toEqual(["python", "crispr"]);
+  // The point of carrying it: this machine has built one of the two.
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["python"]);
+});
+
+it("hands the session an environment this machine has actually built, beside the language floor", async () => {
+  // The other half of the pair above, and the one that makes every piece
+  // behind it reachable. A machine that has built `crispr` must offer it: the
+  // map `identity_for` resolves a name against is this list, so an entry
+  // missing here is a researcher told "not built on this machine yet" about
+  // the environment their own machine finished building.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "python", language: "python", manager: "uv", packages: [], createdTs: 1, lockRevision: 1 },
+    { name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: 2, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  // Built here, and finished: interpreter and completion marker both.
+  const root = envOnDisk(workDir, "crispr", true);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python",
+      interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_built"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{
+      language: string; name: string; interpreter: string;
+      prefix: string[]; default?: boolean;
+    }>;
+  };
+  const byName = Object.fromEntries(configured.environments.map((entry) => [entry.name, entry]));
+  expect(Object.keys(byName).sort()).toEqual(["crispr", "python"]);
+  const built = byName.crispr!;
+  expect(built.language).toBe("python");
+  // This machine's own copy, not whatever the floor is run out of.
+  expect(built.interpreter).toBe(join(root, "bin", "python3"));
+  // A boundary was rendered for it, and it names the environment's own root.
+  expect(built.prefix.length).toBeGreaterThan(0);
+  expect(built.prefix.join(" ")).toContain(realpathSync(root));
+  // And the floor's own reads travel with it: `bin/python3` inside a venv is
+  // a link out to the base interpreter, and a boundary is written where the
+  // operating system will look. Granting only the root refuses the kernel
+  // before its first instruction.
+  expect(built.prefix.join(" ")).toContain("/nowhere/python/base");
+  // Never the default, whatever is built here. A built environment is
+  // reached by being named; anything else would make "which environment did
+  // this cell run in" depend on what a machine happens to hold.
+  expect("default" in built).toBe(false);
+  expect(byName.python!.default).toBe(true);
+});
+
+it("hands over nothing for a declared environment this machine has only half built", async () => {
+  // Interpreter present, completion marker missing — what an interrupted
+  // `uv pip sync` leaves behind, which `readEnvStatus` calls `broken`. Its
+  // absence from this list is exactly what produces the refusal a researcher
+  // should read, and offering it would hand a kernel an interpreter with
+  // none of the packages the environment is FOR.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: 2, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  envOnDisk(workDir, "crispr", false);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_half_built"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    declared?: string[];
+    environments: Array<{ name: string }>;
+  };
+  // Declared, so the host can say "not built here yet" rather than "no such
+  // environment" — and offered by nobody, so it cannot be started.
+  expect(configured.declared).toEqual(["crispr"]);
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["python"]);
+});
+
+it("names one default per language, however many descriptors the floor reports", async () => {
+  // The host refuses a WHOLE confinement carrying two defaults for one
+  // language, which is a session with no kernels at all rather than one
+  // degraded kernel. The floor reports one descriptor per language today;
+  // this is what keeps that from being the only reason it works.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python",
+      interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+    },
+    {
+      language: "python", environment: "python-3.11",
+      interpreter: "/nowhere/python311/bin/python3", reads: ["/nowhere/python311/base"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_two_pythons"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ language: string; name: string; default?: boolean }>;
+  };
+  // Both reachable by name — this drops neither.
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["python", "python-3.11"]);
+  const defaults = configured.environments.filter((entry) => entry.default);
+  expect(defaults.map((entry) => entry.name)).toEqual(["python"]);
+});
+
+it("replaces the floor's own entry when its name is built here, default and all", async () => {
+  // The starter is called `python` and so is the floor descriptor, so a
+  // machine that builds the starter has two facts about one `(language,
+  // name)` — and only one of them may go out. Which one survives is decided
+  // HERE, by key, rather than left to whichever entry the host happens to
+  // read last: it files these under `(language, name)` too, and a list
+  // carrying the pair twice would make a built environment's reachability a
+  // property of iteration order.
+  //
+  // And the default travels with the name. `python` was this language's
+  // default before the starter was built and is after; the only thing that
+  // changed is which interpreter the name resolves to. Dropping it here
+  // would leave the language with no default at all on exactly the machines
+  // that did the most work.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "python", language: "python", manager: "uv", packages: [], createdTs: 1, lockRevision: 1 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const root = envOnDisk(workDir, "python", true);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python",
+      interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_built_starter"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ language: string; name: string; interpreter: string; default?: boolean }>;
+  };
+  // Exactly one, not two that agree: a duplicate pair on the wire is the
+  // unwritten contract this is here to stop.
+  expect(configured.environments.length).toBe(1);
+  const only = configured.environments[0]!;
+  expect([only.language, only.name]).toEqual(["python", "python"]);
+  // Backed by the copy this machine built, not by the floor interpreter.
+  expect(only.interpreter).toBe(join(root, "bin", "python3"));
+  // And still the language's default, because the name still is.
+  expect(only.default).toBe(true);
+});
+
+it("leaves out a declaration in a language this machine does not run", async () => {
+  // The lab is a different trust domain and its list arrives shape-checked,
+  // not field-checked — so `language` can be a string this floor never
+  // reported or, from an older or broken lab, not a string at all. Either
+  // one reaching `configure_session` makes the host refuse the WHOLE
+  // confinement, and a refused confinement is a session with no kernel tools
+  // whatsoever: one malformed row anywhere in the lab costing every session
+  // on every machine its kernels.
+  //
+  // The same check keeps a declaration to the language it claims: this probe
+  // is `bin/python3` for every row regardless, so an `r` row with a python
+  // venv under it would otherwise replace the R floor entry and hand the R
+  // driver a python interpreter.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    // Not a string at all — what a lab that never validated the field can hold.
+    { name: "crispr", language: null, manager: "uv", packages: ["scanpy"], createdTs: 1, lockRevision: 1 },
+    // A language this machine has no floor for, so nothing to link out into.
+    { name: "genome", language: "r", manager: "uv", packages: [], createdTs: 2, lockRevision: 1 },
+    { name: "omics", language: "python", manager: "uv", packages: ["numpy"], createdTs: 3, lockRevision: 1 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  // All three are fully built on disk, so nothing below is explained by one
+  // of them merely being absent.
+  envOnDisk(workDir, "crispr", true);
+  envOnDisk(workDir, "genome", true);
+  envOnDisk(workDir, "omics", true);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python",
+      interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_bad_language"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ language: string; name: string }>;
+  };
+  // The floor and the one declaration this machine can actually run. The
+  // other two cost themselves their entry and nothing else.
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["python", "omics"]);
+  expect(configured.environments.every((entry) => entry.language === "python")).toBe(true);
+});
+
+it("costs a relative interpreter one environment rather than costing the machine every kernel it has", async () => {
+  // The failure `config.ts`'s `resolve` closes, arriving by the other door.
+  // An environment's `interpreter` is `<workDir>/envs/<name>/bin/python3`,
+  // and the host's `_environments_from` refuses a relative one — rightly,
+  // since a relative interpreter is resolved against the HOST's own working
+  // directory and would put a directory of its choosing in front of every
+  // cell's `PATH`. But it refuses the WHOLE list on the first bad entry, so
+  // `configure_session` fails, `kernelsFor`'s catch names no server, and the
+  // session gets no kernel tools at all — the FLOOR included. That is a
+  // machine's every kernel lost to one odd path, which is exactly what the
+  // two per-entry `try/catch` loops around this exist to prevent.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: 2, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  // Really built, so nothing below is explained by the environment simply
+  // being absent — `readEnvStatus` calls this one `ready`.
+  envOnDisk(workDir, "crispr", true);
+  // The same directory, named the way `--work-dir ./work` leaves it once
+  // nothing has made it absolute. Resolved against this process's own cwd it
+  // is the tree above, so every read of it still lands.
+  const asTyped = relative(process.cwd(), workDir);
+  expect(isAbsolute(asTyped)).toBe(false);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python",
+      interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+    },
+  ]);
+  // Not `subsystem`, which derives an absolute `workDir` from the data
+  // directory — the relative one IS the case.
+  const runs = startRuns({
+    lab: lab.base,
+    token: "machine-token",
+    workDir: asTyped,
+    dataDir: data,
+    adapterFor: () => ({
+      command: process.execPath,
+      args: ["--experimental-strip-types", STUB],
+    }),
+    kernelHost: () => kernels.host,
+    extraEnv: stubEnv,
+  });
+  running.push(runs);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_relative_workdir"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ name: string; interpreter: string }>;
+  };
+  // The floor survived, which is the whole of it: this session can still run
+  // a cell. `crispr` cost itself its entry and nothing else.
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["python"]);
+  // And nothing relative reached the wire, which is what the host would have
+  // refused the whole list over.
+  expect(configured.environments.every((entry) => isAbsolute(entry.interpreter))).toBe(true);
+});
+
+it("writes a built environment's boundary around the base its own pyvenv.cfg names", async () => {
+  // `uv venv` runs with no `--python`, on purpose: which Python an
+  // environment is built on is a fact about its lockfile's `requires-python`
+  // and not about this daemon. So the base a venv's `bin/python3` links out
+  // to genuinely differs from whatever the kernel host process happens to be
+  // running under — a different managed CPython, a different version window
+  // — and a boundary written from the host's base alone names a directory
+  // the venv never links into. The kernel is then refused before its first
+  // instruction, which is precisely the failure this read set exists to
+  // prevent.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: 2, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  // A base with the layout a real one has, on disk rather than fabricated as
+  // a string: `pyvenv.cfg`'s `home` is the base's BIN directory, and the
+  // standard library the interpreter opens before it runs anything is a
+  // SIBLING of it at `<prefix>/lib/python3.13`. Read off this repository's
+  // own `packages/kernel-host/.venv/pyvenv.cfg`, which records
+  // `home = …/cpython-3.12.12-macos-aarch64-none/bin`.
+  //
+  // Somewhere of its own, not under `data`: the data directory is denied by
+  // the policy that grants this, and a fixture inside it would be testing
+  // the deny rather than the grant.
+  const managed = mkdtempSync(join(tmpdir(), "lykeion-base-"));
+  dirs.push(managed);
+  const basePrefix = join(managed, "cpython-3.13");
+  mkdirSync(join(basePrefix, "bin"), { recursive: true });
+  writeFileSync(join(basePrefix, "bin", "python3.13"), "");
+  mkdirSync(join(basePrefix, "lib", "python3.13"), { recursive: true });
+  writeFileSync(join(basePrefix, "lib", "python3.13", "os.py"), "");
+  // Outside the environment's own root, and a different interpreter from the
+  // floor's below — which is the whole case.
+  const home = join(basePrefix, "bin");
+  const root = envOnDisk(workDir, "crispr", true, home);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python",
+      interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_own_base"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ name: string; prefix: string[] }>;
+  };
+  const built = configured.environments.find((entry) => entry.name === "crispr");
+  expect(built).toBeDefined();
+  const opens = (file: string): boolean => grantsReadOf(built!.prefix, file);
+  // The file that decides whether this kernel is a kernel at all. A boundary
+  // stopping at `home` grants the executable and refuses this, which is a
+  // process that dies with nothing said about why.
+  expect(opens(join(realpathSync(basePrefix), "lib", "python3.13", "os.py"))).toBe(true);
+  // And the executable itself, which the prefix subsumes: reaching the
+  // standard library is not bought by giving up the interpreter.
+  expect(opens(join(realpathSync(home), "python3.13"))).toBe(true);
+  // And still its own root, and still the floor's reads — the base is added
+  // to that composition rather than swapped in for it.
+  expect(opens(join(realpathSync(root), "bin", "python3"))).toBe(true);
+  expect(opens("/nowhere/python/base")).toBe(true);
+});
+
+it("leaves a base the baseline already grants to the baseline, rather than losing the environment over it", async () => {
+  // `uv venv` runs with no `--python`, so a machine with no managed
+  // interpreter builds on the system one and `pyvenv.cfg` records
+  // `home = /usr/bin` — a prefix of `/usr`. Named as something this kernel
+  // reads, that is a single segment, which `policyFor` refuses as a path that
+  // swallows the boundary: the researcher loses the environment their own
+  // machine built, over a directory every profile already grants.
+  //
+  // So it is not named. What makes that safe rather than a silent narrowing is
+  // that `SYSTEM_READ` is rendered into EVERY kernel profile unconditionally
+  // (`renderSeatbeltProfile`), which the reads below ask the profile itself
+  // rather than take on trust.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: 2, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const root = envOnDisk(workDir, "crispr", true, "/usr/bin");
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python",
+      interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_system_base"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ name: string; prefix: string[] }>;
+  };
+  const built = configured.environments.find((entry) => entry.name === "crispr");
+  // Offered at all, which is the half of this that a refused boundary takes
+  // away.
+  expect(built).toBeDefined();
+  const opens = (file: string): boolean => grantsReadOf(built!.prefix, file);
+  // And the other half: absent is not zero. The base is still readable — the
+  // interpreter and the standard library beside it — through the grant the
+  // profile carries whatever this list says.
+  expect(opens("/usr/bin/python3")).toBe(true);
+  expect(opens("/usr/lib/python3.13/os.py")).toBe(true);
+  // Nothing else about the composition moved: its own root and the floor's
+  // reads are still named, so this dropped the base and not the read set.
+  expect(opens(join(realpathSync(root), "bin", "python3"))).toBe(true);
+  expect(opens("/nowhere/python/base")).toBe(true);
+});
+
+it("costs an environment whose boundary will not render its own entry, and no other", async () => {
+  // Two shapes of base the system read does NOT cover, so neither is dropped
+  // and both reach `policyFor`, which refuses them: a one-segment prefix
+  // outside the baseline (Fink's `/sw`, an older all-users Anaconda's
+  // `/anaconda3`), and a prefix equal to the researcher's home, which is
+  // categorically not something the baseline grants.
+  //
+  // Unguarded, either one raises out of the loop and the session is handed NO
+  // kernel tools at all: one odd environment anywhere in the lab costing the
+  // researcher every kernel on the machine. It costs itself its entry instead.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "fink", language: "python", manager: "uv", packages: [], createdTs: 1, lockRevision: 1 },
+    { name: "athome", language: "python", manager: "uv", packages: [], createdTs: 2, lockRevision: 1 },
+    { name: "omics", language: "python", manager: "uv", packages: ["numpy"], createdTs: 3, lockRevision: 1 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  // A base with a real layout for the one that must survive, so nothing below
+  // is explained by all three being equally unusable.
+  const managed = mkdtempSync(join(tmpdir(), "lykeion-base-"));
+  dirs.push(managed);
+  const basePrefix = join(managed, "cpython-3.13");
+  mkdirSync(join(basePrefix, "bin"), { recursive: true });
+  writeFileSync(join(basePrefix, "bin", "python3.13"), "");
+  // All three fully built on disk: what separates them is the base each one
+  // records, and nothing else.
+  envOnDisk(workDir, "fink", true, "/sw/bin");
+  envOnDisk(workDir, "athome", true, join(homedir(), "bin"));
+  envOnDisk(workDir, "omics", true, join(basePrefix, "bin"));
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python",
+      interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_unrenderable_base"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    declared?: string[];
+    environments: Array<{ name: string; prefix: string[] }>;
+  };
+  // The floor still goes out, and so does the one built environment whose
+  // boundary this machine can actually render.
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["python", "omics"]);
+  // Reached, not merely listed: the surviving entry carries a real boundary.
+  const survivor = configured.environments.find((entry) => entry.name === "omics")!;
+  expect(grantsReadOf(survivor.prefix, join(realpathSync(basePrefix), "bin", "python3.13"))).toBe(true);
+  // Still declared, both of them: what this machine will not do is offer to
+  // start a kernel in them.
+  expect(configured.declared).toEqual(["fink", "athome", "omics"]);
+});
+
+it("keeps a language whose floor the baseline already grants, rather than losing every kernel over it", async () => {
+  // A kernel host running on a system python reports a `sys.base_prefix` of
+  // `/usr`. Named as something this kernel reads that is one segment, which
+  // `policyFor` refuses as a path that swallows the boundary — and since it is
+  // the only language this host has, the refusal takes the whole session's
+  // kernel tools with it. A machine that would run python perfectly, offering
+  // none.
+  //
+  // So `/usr` is not named, for exactly the reason the built loop does not name
+  // a venv's `/usr` base: every profile this renders already carries it. What
+  // makes that safe rather than a silent narrowing is asked of the rendered
+  // profile below rather than taken on trust.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python", interpreter: "/usr/bin/python3",
+      // Two reads, one covered by the baseline and one not: what is filtered is
+      // the ENTRY, not the descriptor, so the second must still be named.
+      reads: ["/usr", "/nowhere/python/site-packages"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_system_floor"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ language: string; name: string; default?: boolean; prefix: string[] }>;
+  };
+  // Offered at all, which is the half a refused boundary takes away — and
+  // still its language's default.
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["python"]);
+  expect(configured.environments[0]!.default).toBe(true);
+  const opens = (file: string): boolean => grantsReadOf(configured.environments[0]!.prefix, file);
+  // And the other half: absent is not zero. The interpreter and the standard
+  // library beside it are still readable, through the grant every profile
+  // carries whatever this list says.
+  expect(opens("/usr/bin/python3")).toBe(true);
+  expect(opens("/usr/lib/python3.13/os.py")).toBe(true);
+  // The read the baseline does NOT cover is still named: this dropped one entry
+  // and not the descriptor.
+  expect(opens("/nowhere/python/site-packages")).toBe(true);
+  // And the session opens holding its kernel tools, which is the whole claim:
+  // the machine that would work completely does not hand back nothing.
+  await until(() => existsSync(named), "the session opening");
+  const params = JSON.parse(readFileSync(named, "utf8")) as { mcpServers: Array<{ name: string }> };
+  expect(params.mcpServers.map((server) => server.name)).toEqual(["notebook"]);
+});
+
+it("hands a built environment the floor's FILTERED reads when that floor is a /usr one", async () => {
+  // The built loop below composes its own reads from `floorReads`
+  // (`reads: [status.root, ...ownBase, ...(floorReads.get(declaration.language)
+  // ?? [])]`, runs.ts) — and `floorReads` is only supposed to hold what the
+  // floor loop above has ALREADY dropped what the baseline grants
+  // unconditionally (`alreadySystemReadable`, filtered before
+  // `floorReads.set`). If those two lines were ever reordered so
+  // `floorReads` recorded the RAW descriptor instead, a floor reading out of
+  // `/usr` — a system python's `sys.base_prefix` — would hand `/usr` straight
+  // into a BUILT environment's own reads. `policyFor` refuses any boundary
+  // naming `/usr`, a one-segment path that swallows it, so the built
+  // environment would lose its entry entirely: a researcher told their own
+  // `crispr` build is "not built on this machine yet", on a machine whose
+  // only fault is running a system python.
+  //
+  // This is the one test in the file that puts a `/usr` floor descriptor and
+  // a built environment of the SAME language in the same confinement, which
+  // is exactly the combination that exercises `floorReads.get(...)` inside
+  // the built loop rather than only the floor loop's own (correctly
+  // filtered) `reads` variable.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: 2, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const root = envOnDisk(workDir, "crispr", true);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python", interpreter: "/usr/bin/python3",
+      // One read the baseline already covers and one it does not — the same
+      // shape as the floor-only test above, so the composition below can
+      // tell "the filtered list travelled into the built entry" from
+      // "nothing travelled at all".
+      reads: ["/usr", "/nowhere/python/site-packages"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_floor_and_built"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{
+      language: string; name: string; interpreter: string;
+      prefix: string[]; default?: boolean;
+    }>;
+  };
+  // Both entries reach the wire — the hole this pins drops the built entry
+  // silently (its boundary refuses to render), not the floor's.
+  expect(configured.environments.map((entry) => entry.name).sort()).toEqual(["crispr", "python"]);
+  const floor = configured.environments.find((entry) => entry.name === "python")!;
+  const built = configured.environments.find((entry) => entry.name === "crispr")!;
+  expect(built.language).toBe("python");
+  expect(built.interpreter).toBe(join(root, "bin", "python3"));
+
+  const floorOpens = (file: string): boolean => grantsReadOf(floor.prefix, file);
+  const builtOpens = (file: string): boolean => grantsReadOf(built.prefix, file);
+  // The floor's own boundary renders, /usr and all, through SYSTEM_READ.
+  expect(floorOpens("/usr/bin/python3")).toBe(true);
+  expect(floorOpens("/nowhere/python/site-packages")).toBe(true);
+  // The built entry is where the hole lives: it must still reach its own
+  // interpreter, and the floor's filtered read must have travelled with it —
+  // asked of the rendered profile rather than taken on trust.
+  expect(builtOpens(join(realpathSync(root), "bin", "python3"))).toBe(true);
+  expect(builtOpens("/nowhere/python/site-packages")).toBe(true);
+});
+
+it("costs a language whose boundary will not render its own kernel, and no other", async () => {
+  // The floor reports what each language is actually run out of, and a machine
+  // can report one the baseline does not cover and `policyFor` still refuses:
+  // a floor read equal to the researcher's home, which is categorically not
+  // something `SYSTEM_READ` grants and is somebody's whole world besides.
+  // Unguarded it raises out of the loop before any other language is reached,
+  // and the session opens with no kernel tools whatsoever: a researcher who
+  // cannot run a cell in any language because of the one this machine happens
+  // to have installed oddly.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python",
+      interpreter: join(homedir(), "bin", "python3"), reads: [homedir()],
+    },
+    {
+      language: "r", environment: "r",
+      interpreter: "/nowhere/r/bin/R", reads: ["/nowhere/r/site-library"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_unrenderable_floor"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ language: string; name: string; default?: boolean; prefix: string[] }>;
+  };
+  // R keeps its kernel, python's descriptor costs itself its own.
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["r"]);
+  expect(configured.environments[0]!.language).toBe("r");
+  // And it is its language's default, which is a fact about the descriptor
+  // that could be rendered rather than about the first one reported.
+  expect(configured.environments[0]!.default).toBe(true);
+  expect(grantsReadOf(configured.environments[0]!.prefix, "/nowhere/r/site-library")).toBe(true);
+  // The session still opens with its kernel tools, which is the whole claim:
+  // one language this machine cannot confine is not every kernel lost.
+  await until(() => existsSync(named), "the session opening");
+  const params = JSON.parse(readFileSync(named, "utf8")) as { mcpServers: Array<{ name: string }> };
+  expect(params.mcpServers.map((server) => server.name)).toEqual(["notebook"]);
+});
+
+it("costs a language whose reads the host sent malformed its own kernel, and no other", async () => {
+  // `hello` is a cast, not a validated shape (`kernelsFor` in runs.ts): the
+  // host is another process talking over a socket, and nothing here checks
+  // that a descriptor's `reads` actually came across as a list of strings.
+  // The filter that turns `descriptor.reads` into the list `policyFor` is
+  // handed — `.filter((read) => !alreadySystemReadable(read))` — used to sit
+  // one line ABOVE the per-descriptor `try`. A `reads` that is not a list
+  // throws out of `.filter` itself; a list holding something that is not a
+  // string throws out of `alreadySystemReadable`'s own `path.startsWith`
+  // instead. Either way, above the `try`, that throw escapes the whole loop,
+  // rejects `reaching()`, and is caught only by the outer handler — the
+  // session opens with NO kernel server at all, which is exactly the failure
+  // the per-descriptor `try` exists to prevent, arriving through the door
+  // beside it. Moved inside the `try`, the same throw costs only the
+  // descriptor that produced it.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python", interpreter: "/usr/bin/python3",
+      // Malformed on purpose, and cast past `stubKernelHost`'s own typed
+      // signature to get it there: the real host is an untyped wire, and a
+      // descriptor's `reads` holding a number instead of a path string is
+      // exactly the shape `hello`'s cast lets through uninspected.
+      reads: [42] as unknown as string[],
+    },
+    {
+      language: "r", environment: "r",
+      interpreter: "/nowhere/r/bin/R", reads: ["/nowhere/r/site-library"],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_malformed_reads"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ language: string; name: string; default?: boolean; prefix: string[] }>;
+  };
+  // R keeps its kernel, python's malformed descriptor costs itself its own.
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["r"]);
+  expect(configured.environments[0]!.language).toBe("r");
+  expect(configured.environments[0]!.default).toBe(true);
+  expect(grantsReadOf(configured.environments[0]!.prefix, "/nowhere/r/site-library")).toBe(true);
+  // The session still opens with its kernel tools: one descriptor arriving
+  // malformed is not every kernel on the machine lost.
+  await until(() => existsSync(named), "the session opening");
+  const params = JSON.parse(readFileSync(named, "utf8")) as { mcpServers: Array<{ name: string }> };
+  expect(params.mcpServers.map((server) => server.name)).toEqual(["notebook"]);
+});
+
+it("names no kernel server at all when not one boundary on this machine could be rendered", async () => {
+  // The other side of the two tests above, and the reason they are a skip
+  // rather than a shrug. A machine where EVERY boundary failed is not a
+  // session with fewer kernels — it is a machine that cannot confine a kernel,
+  // and this end's contract for that is to name no server rather than hand the
+  // agent a notebook tool with nothing behind it. A tool that leads to a
+  // kernel which could never start is worse than no tool: the agent calls it,
+  // and the researcher reads the failure as their code's.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    {
+      language: "python", environment: "python",
+      interpreter: join(homedir(), "bin", "python3"), reads: [homedir()],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_nothing_renderable"));
+
+  await until(() => existsSync(named), "the session opening");
+  const params = JSON.parse(readFileSync(named, "utf8")) as { mcpServers: Array<{ name: string }> };
+  expect(params.mcpServers).toEqual([]);
+  // And the session was never configured with an empty environment list: the
+  // refusal happens before the host is asked, so no kernel is left listening
+  // for cells nobody can run.
+  expect(kernels.configured).toBeUndefined();
+});
+
+it("still configures a host that reports no languages, which is not a host that tried and failed", async () => {
+  // The distinction the refusal above rests on, from the other side. A host
+  // reporting no languages and a lab that declared nothing is a machine with
+  // nothing to offer — not one that tried to confine a kernel and could not —
+  // and it goes down the path it went down before any of this existed: the
+  // session is configured with an empty environment list, and the agent gets
+  // its notebook tool.
+  //
+  // Without the `unrenderable > 0` conjunct the guard would read `entries.size
+  // === 0` alone, and this machine would be refused a kernel server for having
+  // reported honestly.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, []);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_no_languages"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as { environments: unknown[] };
+  // Configured, and with an empty list rather than not configured at all.
+  expect(configured.environments).toEqual([]);
+  // And the session opens naming the kernel server, which is what a refusal
+  // here would take away.
+  await until(() => existsSync(named), "the session opening");
+  const params = JSON.parse(readFileSync(named, "utf8")) as { mcpServers: Array<{ name: string }> };
+  expect(params.mcpServers.map((server) => server.name)).toEqual(["notebook"]);
+});
+
+it("costs an unbuildable name its own entry and no other", async () => {
+  // A lab older than the name check `kernelEnvCreate` now applies can still
+  // hold a name no machine can resolve to a path. `envRoot` refuses it here,
+  // as it must — but that refusal has to stay this environment's own. An
+  // unguarded throw inside the loop would leave the session with no kernel
+  // tools at all, so one bad name anywhere in the lab would cost every
+  // session on every machine its kernels.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "../x", language: "python", manager: "uv", packages: [], createdTs: 1, lockRevision: 1 },
+    { name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: 2, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  envOnDisk(workDir, "crispr", true);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_bad_name"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    declared?: string[];
+    environments: Array<{ name: string }>;
+  };
+  // The floor still goes out, and so does every other environment this
+  // machine has built.
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["python", "crispr"]);
+  // Still declared, because it is: what this machine will not do is offer to
+  // start a kernel in it.
+  expect(configured.declared).toEqual(["../x", "crispr"]);
+});
+
+it("still confines a session when the lab will not say what it has declared", async () => {
+  // A transient lab blip must not stop kernels starting. What it does stop
+  // is this machine claiming to know something it does not: the key is left
+  // off the message entirely rather than sent as an empty list, because the
+  // host answers a cell differently for "the lab declared nothing" than for
+  // "nobody here could ask".
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = null;
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_no_declarations"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as Record<string, unknown>;
+  // Absent, and not `[]`: an empty list is the lab's own answer, and this
+  // lab gave none.
+  expect("declared" in configured).toBe(false);
+  // The session opens anyway, with its kernel tools — the whole point.
+  expect(configured.environments).toBeDefined();
+  await until(() => existsSync(named), "the session opening");
+  const params = JSON.parse(readFileSync(named, "utf8")) as {
+    mcpServers: Array<{ name: string }>;
+  };
+  expect(params.mcpServers.map((server) => server.name)).toEqual(["notebook"]);
+});
+
+it("leaves the declaration list absent when the lab's answer cannot be read", async () => {
+  // The same failure as the test above, wearing a 200. A proxy's error page,
+  // a truncated body, a `declarations` that is not a list — none of them is
+  // a lab saying it has declared nothing, and reading them as one is worse
+  // than reading nothing at all: the host would then tell a researcher
+  // *this lab has no environment named X* about an environment their
+  // colleague declared, which is the one sentence this whole surface exists
+  // to prevent.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.rawBody = "<html><body>502 Bad Gateway</body></html>";
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_unreadable_declarations"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as Record<string, unknown>;
+  expect("declared" in configured).toBe(false);
+  // And the session still opens: an unreadable answer is a lab blip, and a
+  // lab blip must not be a machine that starts no kernels.
+  expect(configured.environments).toBeDefined();
 });
 
 it("forwards a cell the kernel host announces to the run currently taking its session's turn", async () => {
@@ -516,6 +1779,7 @@ it("opens the session anyway when this machine's kernels never answer", async ()
   const silent: KernelHost = {
     call: () => new Promise(() => {}),
     on: () => {},
+    serve: () => {},
     stop: () => Promise.resolve(),
     get running() {
       return true;
@@ -2535,6 +3799,7 @@ function recordingKernelHost() {
       return {};
     },
     on: () => {},
+    serve: () => {},
     stop: () => Promise.resolve(),
     get running() {
       return true;
@@ -2679,6 +3944,7 @@ it("runs a REPL cell on this machine's kernel host and posts the cell straight b
       };
     },
     on: () => {},
+    serve: () => {},
     stop: () => Promise.resolve(),
     get running() {
       return true;
@@ -2752,7 +4018,9 @@ it("records a REPL cell once even when an agent holds the same session's turn", 
       if (method === "host.hello")
         return {
           protocol: PROTOCOL_VERSION,
-          languages: [{ language: "python", environment: "python", reads: [] }],
+          languages: [
+            { language: "python", environment: "python", interpreter: "/usr/bin/python3", reads: [] },
+          ],
         };
       if (method !== "kernel.execute") return {};
       // The host answers the call AND announces the cell, which is what the
@@ -2764,6 +4032,7 @@ it("records a REPL cell once even when an agent holds the same session's turn", 
     on: (method, handler) => {
       if (method === "cell") cellListeners.push(handler);
     },
+    serve: () => {},
     stop: () => Promise.resolve(),
     get running() {
       return true;
@@ -2900,6 +4169,7 @@ it("answers the lab's kernel-list ask with what this machine's kernel host repor
   const host: KernelHost = {
     call: async (method) => (method === "kernel.list" ? { kernels: reported } : {}),
     on: () => {},
+    serve: () => {},
     stop: () => Promise.resolve(),
     get running() {
       return true;
@@ -3055,4 +4325,1524 @@ it("still says there is no adapter when that is what is true", async () => {
     .flatMap((e) => e.frames)
     .find((f) => f.event.event === "completed") as { event: { state: { state: string; reason?: string } } };
   expect(done.event.state.reason).toMatch(/no adapter for "nope"/);
+});
+
+// ---------------------------------------------------------------------------
+// kernel-env-setup / kernel-env-reclaim
+// ---------------------------------------------------------------------------
+
+it("resolves when the command carries no lockfile, hands the lockfile to the lab, and materializes from it", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const uvDir = stubUv("scanpy==1.9.0\nanndata==0.10.0\n");
+  const workDir = `${data}-work`;
+
+  await withStubUvOnPath(uvDir, async () => {
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the command stream");
+
+    lab.send({
+      type: "kernel-env-setup",
+      runId: "envsetup_1",
+      name: "crispr",
+      language: "python",
+      manager: "uv",
+      packages: ["scanpy"],
+    });
+
+    await until(() => lab.kernelEnvResults.length > 0, "the setup's own result reaching the lab");
+    // This machine resolved — the one thing the replay branch below never
+    // does — and handed what it resolved to the lab.
+    // `requestId` rides along because a lab refuses a pin from a machine it
+    // did not ask: a lockfile is the one thing every other machine later
+    // replays verbatim, so a bearer token alone must not authorize writing one.
+    expect(lab.kernelEnvLocks).toEqual([
+      { requestId: "envsetup_1", name: "crispr", lockfile: "scanpy==1.9.0\nanndata==0.10.0\n" },
+    ]);
+    const result = lab.kernelEnvResults[0]!;
+    expect(result.ok).toBe(true);
+    const status = result.status as { state: string; lockRevision: number; packageCount: number };
+    expect(status.state).toBe("ready");
+    expect(status.lockRevision).toBe(1);
+    expect(status.packageCount).toBe(2);
+    expect(existsSync(join(envRoot(workDir, "crispr"), "bin", "python3"))).toBe(true);
+  });
+});
+
+it("materializes from the lockfile a command already carries, and never resolves — D4's whole point", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  // A lockfile shaped nothing like whatever a resolve would have produced —
+  // if this machine resolved instead of replaying, the marker below would
+  // carry a package count this text does not.
+  const uvDir = stubUv("this-must-never-be-resolved==0.0.0\n");
+
+  await withStubUvOnPath(uvDir, async () => {
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the command stream");
+
+    lab.send({
+      type: "kernel-env-setup",
+      runId: "envsetup_2",
+      name: "crispr",
+      language: "python",
+      manager: "uv",
+      lockfile: "onlyone==1.0.0\n",
+      lockRevision: 5,
+    });
+
+    await until(() => lab.kernelEnvResults.length > 0, "the setup's own result reaching the lab");
+    // The observable proof: nothing here ever asked the lab for a revision,
+    // which is the only thing a resolve would have done.
+    expect(lab.kernelEnvLocks).toEqual([]);
+    const result = lab.kernelEnvResults[0]!;
+    expect(result.ok).toBe(true);
+    const status = result.status as { state: string; lockRevision: number; packageCount: number };
+    // Carried straight through from the command, not derived.
+    expect(status.lockRevision).toBe(5);
+    // Built from the ONE package the given lockfile actually named.
+    expect(status.packageCount).toBe(1);
+  });
+});
+
+it("reports failure rather than hanging the lab's wait when materializing fails", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const emptyBin = mkdtempSync(join(tmpdir(), "lyk-runs-broken-uv-"));
+  dirs.push(emptyBin);
+  // PATH replaced outright, not merely prepended — `uv` must be genuinely
+  // unreachable, not just shadowed by an empty directory ahead of a real
+  // install this machine happens to have. `runConfinedIn` then fails fast,
+  // with no network involved, before it ever gets near `venv`/`pip`.
+  const original = process.env.PATH;
+  process.env.PATH = emptyBin;
+
+  try {
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the command stream");
+
+    lab.send({
+      type: "kernel-env-setup",
+      runId: "envsetup_3",
+      name: "crispr",
+      language: "python",
+      manager: "uv",
+      packages: ["scanpy"],
+    });
+
+    await until(() => lab.kernelEnvResults.length > 0, "the setup's own result reaching the lab");
+    const result = lab.kernelEnvResults[0]!;
+    expect(result.ok).toBe(false);
+    expect(typeof result.error).toBe("string");
+    // Nothing was ever resolved, so nothing was ever handed to the lab to
+    // write down — a failed setup pins nothing.
+    expect(lab.kernelEnvLocks).toEqual([]);
+  } finally {
+    process.env.PATH = original;
+  }
+});
+
+it("frees this machine's own copy of an environment on kernel-env-reclaim", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  const root = envRoot(workDir, "crispr");
+  mkdirSync(join(root, "bin"), { recursive: true });
+  writeFileSync(join(root, "bin", "python3"), "");
+
+  subsystem(lab.base, data);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({ type: "kernel-env-reclaim", runId: "envreclaim_1", name: "crispr" });
+
+  await until(() => !existsSync(root), "this machine's own copy being removed");
+  expect(existsSync(root)).toBe(false);
+});
+
+it("refuses a kernel-env-setup command carrying no name, rather than leaving the lab waiting on it", async () => {
+  // The lab holds the caller's `kernelEnvSetup` promise open until something
+  // settles it, and the only other thing that ever will is a forty-minute
+  // timeout — so returning silently here would leave a researcher watching a
+  // Setup that was never going to happen. Answered, never dropped, for the
+  // reason the kernel host's own loop answers a method it does not know: a
+  // request with no reply reads as a hung machine rather than a refused
+  // message.
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(lab.base, data);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send({ type: "kernel-env-setup", runId: "envsetup_4" });
+
+  await until(() => lab.kernelEnvResults.length === 1, "the refusal");
+  expect(lab.kernelEnvResults[0]!.requestId).toBe("envsetup_4");
+  expect(lab.kernelEnvResults[0]!.ok).toBe(false);
+  // Nothing was built and nothing was pinned on the way to refusing.
+  expect(lab.kernelEnvLocks).toEqual([]);
+});
+
+/** A `crispr` this lab has declared and no machine has built yet — the state
+ *  the whole Setup flow starts from. */
+const CRISPR_DECLARED = {
+  name: "crispr",
+  language: "python",
+  manager: "uv",
+  packages: ["scanpy"],
+  createdTs: 2,
+  lockRevision: 3,
+};
+
+/** The command the lab sends when a researcher clicks Setup on a refusal, in
+ *  its replay shape — the lockfile is already pinned, so nothing here
+ *  resolves and no network is involved. */
+const setupCrispr = (runId: string) => ({
+  type: "kernel-env-setup",
+  runId,
+  name: "crispr",
+  language: "python",
+  manager: "uv",
+  lockfile: "onlyone==1.0.0\n",
+  lockRevision: 3,
+});
+
+it("restarts the rebuilt environment's kernels once the build has succeeded, and says why", async () => {
+  // `materializeEnvironment` runs `uv venv --clear`, which removes everything
+  // already at the target path — so a kernel still running against a rebuilt
+  // environment is a process whose interpreter and site-packages have been
+  // deleted out from under it. The restart is correctness, not courtesy, and
+  // the reason is what keeps a namespace from vanishing silently.
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  dirs.push(`${data}-work`);
+  const uvDir = stubUv("onlyone==1.0.0\n");
+  const kernels = stubKernelHost(0);
+
+  await withStubUvOnPath(uvDir, async () => {
+    subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+
+    lab.send({ ...setupCrispr("envsetup_restart"), reason: "scanpy was added to crispr" });
+    await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+
+    expect(lab.kernelEnvResults[0]!.ok).toBe(true);
+    expect(kernels.environmentRestarts).toEqual([
+      { name: "crispr", reason: "scanpy was added to crispr" },
+    ]);
+    // Before the result, and after the boundary. The result unblocks whoever
+    // is waiting on the build; a kernel relaunched ahead of the re-described
+    // boundary would be started inside the map the session was opened with.
+    expect(kernels.asked.indexOf("kernel.restart_environment")).toBeGreaterThan(
+      kernels.asked.indexOf("kernel.configure_session"),
+    );
+  });
+});
+
+it("restarts nothing when the build failed", async () => {
+  // A build that failed left the previous environment where it was. Ending
+  // healthy kernels over it would turn a failed install into lost work — the
+  // researcher would have their namespace taken to make room for software
+  // that never arrived.
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const emptyBin = mkdtempSync(join(tmpdir(), "lyk-runs-no-uv-"));
+  dirs.push(emptyBin);
+  const kernels = stubKernelHost(0);
+  // PATH replaced outright so `uv` is genuinely unreachable and the
+  // materialize fails fast, with no network involved.
+  const original = process.env.PATH;
+  process.env.PATH = emptyBin;
+
+  try {
+    subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+
+    lab.send({ ...setupCrispr("envsetup_failed"), reason: "scanpy was added to crispr" });
+    await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+
+    expect(lab.kernelEnvResults[0]!.ok).toBe(false);
+    expect(kernels.environmentRestarts).toEqual([]);
+  } finally {
+    process.env.PATH = original;
+  }
+});
+
+it("restarts a rebuilt environment's kernels even when nobody gave a reason", async () => {
+  // A researcher's own Setup click carries no sentence — they are looking at
+  // the button they pressed. What it does NOT carry is a reason to skip the
+  // restart: the directory was cleared whoever asked for the build.
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  dirs.push(`${data}-work`);
+  const uvDir = stubUv("onlyone==1.0.0\n");
+  const kernels = stubKernelHost(0);
+
+  await withStubUvOnPath(uvDir, async () => {
+    subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+
+    lab.send(setupCrispr("envsetup_no_reason"));
+    await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+
+    // Named, and with no sentence invented for it.
+    expect(kernels.environmentRestarts).toEqual([{ name: "crispr" }]);
+  });
+});
+
+it("tells a session already open about an environment built underneath it, over the same bridge", async () => {
+  // The step the whole phase turns on. The refusal a researcher clicks Setup
+  // on arrives inside a session that is already open, and `configure_session`
+  // is otherwise sent once, when that session is created — so without this
+  // the very next cell is refused again, naming an environment this machine
+  // finished building seconds ago, and the only remedy is retiring the
+  // session and the notebook state the build existed to serve.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    CRISPR_DECLARED,
+    // A row in a language this machine does not run, carried through both
+    // configures. The guard that drops it lives in ONE computation, shared by
+    // the session's own configure and this re-configure; a second copy of
+    // that computation is exactly what would let an `r` row reach the host on
+    // the re-send and cost the session every kernel it has.
+    { name: "tidyverse", language: "r", manager: "uv", packages: [], createdTs: 3, lockRevision: 1 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const uvDir = stubUv("onlyone==1.0.0\n");
+  // 400ms per boundary, which is what makes the ORDER observable below: a
+  // result posted before the re-configure had landed would arrive with only
+  // one landing recorded.
+  const kernels = stubKernelHost(400);
+
+  await withStubUvOnPath(uvDir, async () => {
+    const r = subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_mid_session"));
+    // The session is genuinely installed, not merely configured: the handle
+    // that re-sends its boundary is filed at the same line the session is.
+    await until(() => r.liveSessionDirs().length > 0, "the session opening");
+    const first = kernels.configurations[0]! as {
+      token: string; socket: string; session_id: string;
+      environments: Array<{ name: string }>;
+    };
+    // Declared lab-wide, absent from this machine — the state that produces
+    // "not built on this machine yet".
+    expect(first.environments.map((entry) => entry.name)).toEqual(["python"]);
+
+    lab.send(setupCrispr("envsetup_mid"));
+    await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+
+    expect(lab.kernelEnvResults[0]!.ok).toBe(true);
+    // A SECOND boundary, for the session that was already open.
+    expect(kernels.configurations.length).toBe(2);
+    const second = kernels.configurations[1]! as {
+      token: string; socket: string; session_id: string; declared?: string[];
+      environments: Array<{ name: string }>;
+    };
+    expect(second.session_id).toBe("se_1");
+    expect(second.environments.map((entry) => entry.name).sort()).toEqual(["crispr", "python"]);
+    // The same bridge, not a new one. A fresh token or socket would leave the
+    // session's kernels talking over a relay the host no longer answers for.
+    expect(second.token).toBe(first.token);
+    expect(second.socket).toBe(first.socket);
+    // Recomputed by the same code the first configure used, `r` row and all.
+    expect(second.declared).toEqual(["crispr", "tidyverse"]);
+    // And it had LANDED before the lab was told the build was done — the
+    // result is what unblocks the researcher's next cell.
+    expect(kernels.asked.filter((entry) => entry === "the boundary landed").length).toBe(2);
+  });
+});
+
+it("still tells the lab a build succeeded when the host will not take the new boundary", async () => {
+  // The build did succeed. The lab is holding a researcher's Setup open on
+  // hearing so, and a host that will not take the news is not a reason to
+  // report a failure that did not happen — it costs that session a restart,
+  // and nothing else.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [CRISPR_DECLARED];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const uvDir = stubUv("onlyone==1.0.0\n");
+  const kernels = stubKernelHost(0);
+
+  await withStubUvOnPath(uvDir, async () => {
+    const r = subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_refused_reconfigure"));
+    await until(() => r.liveSessionDirs().length > 0, "the session opening");
+    // Only after the session has its own boundary: what fails here is the
+    // re-send, not the session.
+    kernels.refuseConfigures();
+
+    lab.send(setupCrispr("envsetup_refused"));
+    await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+
+    expect(lab.kernelEnvResults[0]!.ok).toBe(true);
+    expect(lab.kernelEnvResults[0]!.requestId).toBe("envsetup_refused");
+    // The environment really is on disk, which is what the lab was told.
+    expect(existsSync(join(envRoot(workDir, "crispr"), "bin", "python3"))).toBe(true);
+    // A boundary really was TENDERED and really was refused. Without this the
+    // test is green in a world where the re-send does not exist at all: the
+    // host throws before recording, so `configurations.length === 1` and
+    // `ok === true` both hold whether the build re-configured anything or
+    // nothing. `asked` is pushed before the refusal, so it is the only thing
+    // here that can tell "refused" from "never attempted".
+    expect(kernels.asked.filter((m) => m === "kernel.configure_session").length).toBe(2);
+    // And the re-send really did fail: one boundary ever landed.
+    expect(kernels.configurations.length).toBe(1);
+  });
+});
+
+it("re-configures the session that survived a revert and not the one that ended", async () => {
+  // TWO sessions, and only one of them ends. With one, "the ended session was
+  // skipped" and "nothing was re-configured at all" are the same observation,
+  // and the second is a subsystem that does not work — so the surviving
+  // session is what makes the skip discriminating. It also pins the other
+  // half: a session whose own cell asked for nothing is told anyway, because
+  // an environment is a fact about the machine rather than about the session
+  // that clicked Setup.
+  //
+  // The handle that re-sends a boundary lives and dies with its session. One
+  // left behind would describe a session to a host that has forgotten it,
+  // every time any environment on this machine is built, for as long as this
+  // daemon runs.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [CRISPR_DECLARED];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const uvDir = stubUv("onlyone==1.0.0\n");
+  const kernels = stubKernelHost(0);
+
+  await withStubUvOnPath(uvDir, async () => {
+    const r = subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_ended_session", "se_1"));
+    await until(() => r.liveSessionDirs().length === 1, "the first session opening");
+    lab.send(startRunOn("run_surviving_session", "se_2"));
+    await until(() => r.liveSessionDirs().length === 2, "the second session opening");
+    expect(kernels.configurations.length).toBe(2);
+
+    // A revert ends the session outright — the child is closed and nothing
+    // on this machine holds it any more.
+    lab.send({
+      type: "revert",
+      runId: "run_ended_session",
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: "se_1",
+    });
+    await until(() => r.liveSessionDirs().length === 1, "the first session ending");
+
+    lab.send(setupCrispr("envsetup_ended"));
+    await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+
+    expect(lab.kernelEnvResults[0]!.ok).toBe(true);
+    // Exactly one further boundary, and it is the survivor's.
+    expect(kernels.configurations.length).toBe(3);
+    const third = kernels.configurations[2]! as {
+      session_id: string;
+      environments: Array<{ name: string }>;
+    };
+    expect(third.session_id).toBe("se_2");
+    expect(third.environments.map((entry) => entry.name).sort()).toEqual(["crispr", "python"]);
+    // Nothing named `se_1` a second time: the only boundary this host was
+    // ever handed for it is the one it was opened with.
+    expect(
+      kernels.configurations.filter((entry) => entry.session_id === "se_1").length,
+    ).toBe(1);
+  });
+});
+
+it("tells the rest of this machine's sessions even when one of them will not be told", async () => {
+  // The failure class six fix rounds on this branch were about: one entry of
+  // a loop failing and taking the rest of the loop with it. Here `se_1`'s
+  // host refuses its boundary and `se_2`'s does not, and `se_2` must still
+  // end up describing the environment that was just built — with the lab told
+  // the build succeeded, because it did.
+  //
+  // The refusal is also the only thing the per-session catch is FOR once the
+  // re-sends are settled together: `Promise.allSettled` is what keeps one
+  // rejection off the others, and the catch is what says whose it was. So
+  // stderr is asserted, since a failure nobody can attribute to a session is
+  // a restart nobody knows to perform.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [CRISPR_DECLARED];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const uvDir = stubUv("onlyone==1.0.0\n");
+  const kernels = stubKernelHost(0);
+  const said: string[] = [];
+
+  await withStubUvOnPath(uvDir, async () => {
+    const r = subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_refused_one", "se_1"));
+    await until(() => r.liveSessionDirs().length === 1, "the first session opening");
+    lab.send(startRunOn("run_told_one", "se_2"));
+    await until(() => r.liveSessionDirs().length === 2, "the second session opening");
+    expect(kernels.configurations.length).toBe(2);
+
+    // Only after both sessions have their own boundary: what fails here is
+    // one re-send, not one session.
+    kernels.refuseConfiguresFor("se_1");
+
+    const reporting = console.error;
+    console.error = (line: unknown) => said.push(String(line));
+    try {
+      lab.send(setupCrispr("envsetup_one_refused"));
+      await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+    } finally {
+      console.error = reporting;
+    }
+
+    // The build succeeded and the lab hears so.
+    expect(lab.kernelEnvResults[0]!.ok).toBe(true);
+    // `se_2` was told, even though `se_1`'s attempt raised.
+    const forSecond = kernels.configurations.filter((entry) => entry.session_id === "se_2");
+    expect(forSecond.length).toBe(2);
+    expect(
+      (forSecond[1]! as { environments: Array<{ name: string }> }).environments
+        .map((entry) => entry.name)
+        .sort(),
+    ).toEqual(["crispr", "python"]);
+    // `se_1` was not, and nothing pretended otherwise: exactly the two initial
+    // boundaries plus the survivor's re-send ever landed.
+    expect(kernels.configurations.filter((entry) => entry.session_id === "se_1").length).toBe(1);
+    // And the researcher on `se_1` is findable — named, with what it costs
+    // them. An unattributed failure is a restart nobody knows to perform.
+    expect(
+      said.some((line) => line.includes("se_1") && line.includes("crispr") && line.includes("restart")),
+    ).toBe(true);
+    // And ONLY that researcher. `some` above is satisfied by an
+    // implementation that says the same sentence about every open session,
+    // including the ones that were told perfectly well — and an attribution
+    // that names everybody attributes nothing: it sends a researcher whose
+    // session is fine off to restart it and lose the notebook state this
+    // whole path exists to keep.
+    expect(said.filter((line) => line.includes("se_2")).length).toBe(0);
+  });
+});
+
+it("stops offering a reclaimed environment to a session that is already open", async () => {
+  // The mirror of the build, and worse. `identity_for` resolves a cell's
+  // environment name against the map its session was confined with and never
+  // asks the filesystem — so a session still holding an entry for an
+  // environment this machine has just deleted mints a kernel and execs an
+  // interpreter that is not there. An environment that was never built at
+  // least refuses in a sentence the researcher can act on; this one fails to
+  // launch with nothing useful said.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [CRISPR_DECLARED];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const uvDir = stubUv("onlyone==1.0.0\n");
+  const kernels = stubKernelHost(0);
+
+  await withStubUvOnPath(uvDir, async () => {
+    const r = subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_reclaimed_under"));
+    await until(() => r.liveSessionDirs().length > 0, "the session opening");
+
+    // Built first, so what the reclaim takes away is something this session
+    // is genuinely being offered rather than something it never had.
+    lab.send(setupCrispr("envsetup_before_reclaim"));
+    await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+    expect(kernels.configurations.length).toBe(2);
+    const built = kernels.configurations[1]! as {
+      token: string;
+      socket: string;
+      environments: Array<{ name: string }>;
+    };
+    expect(built.environments.map((entry) => entry.name).sort()).toEqual(["crispr", "python"]);
+
+    lab.send({ type: "kernel-env-reclaim", runId: "envreclaim_mid", name: "crispr" });
+    await until(() => !existsSync(envRoot(workDir, "crispr")), "this machine's own copy going");
+    // A reclaim answers nothing back to the lab, so the boundary is the only
+    // thing there is to wait on.
+    await until(() => kernels.configurations.length === 3, "the session hearing about it");
+
+    const third = kernels.configurations[2]! as {
+      token: string;
+      socket: string;
+      session_id: string;
+      declared?: string[];
+      environments: Array<{ name: string }>;
+    };
+    expect(third.session_id).toBe("se_1");
+    // Gone from what the session is offered — so the next cell naming it is
+    // refused by name rather than handed a path that is not on disk.
+    expect(third.environments.map((entry) => entry.name)).toEqual(["python"]);
+    // Still DECLARED, which is what makes that refusal the honest sentence
+    // ("not built on this machine yet") rather than "no such environment".
+    expect(third.declared).toEqual(["crispr"]);
+    // Over the same bridge the session's kernels already talk on.
+    expect(third.token).toBe(built.token);
+    expect(third.socket).toBe(built.socket);
+  });
+  // Longer than the 5s default, because a reclaim answers the lab nothing:
+  // the only way to observe it not happening is `until` running out, and
+  // that budget has to fit INSIDE the test's own or the failure arrives as a
+  // bare timeout instead of naming what never happened.
+}, 15_000);
+
+it("leaves a session confined by the reclaim when a reclaim and a build re-send at once", async () => {
+  // Two callers reach the re-send now, and each reads this machine's disk on
+  // its own account. A reclaim arriving while a build's re-send is still in
+  // flight hands the SAME session two boundaries built from two different
+  // moments, and unserialised the one the host answers last is what that
+  // session is left confined by. If that is the build's — read while the
+  // copy was still there — the session goes on offering an environment this
+  // machine has just deleted, and the next cell naming it execs an
+  // interpreter that is gone. Precisely the state the reclaim's re-send
+  // exists to prevent, reached by a race rather than by a missing loop.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [CRISPR_DECLARED];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const uvDir = stubUv("onlyone==1.0.0\n");
+  const kernels = stubKernelHost(0);
+
+  await withStubUvOnPath(uvDir, async () => {
+    const r = subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_raced_retells"));
+    await until(() => r.liveSessionDirs().length > 0, "the session opening");
+
+    // Armed on `crispr`, which the session's own boundary cannot name — it
+    // is declared and not built — so the one thing this holds is the build's
+    // re-send, and it holds it AFTER that re-send has read the copy off the
+    // disk and BEFORE the host is told about it. That gap is the race.
+    kernels.holdBoundariesNaming("crispr");
+    lab.send(setupCrispr("envsetup_raced"));
+    await until(() => kernels.heldEntries === 1, "the build's re-send reaching the host");
+
+    // The reclaim, while that re-send is in the air. Deleting the copy is not
+    // part of the re-send, so it happens on either shape.
+    lab.send({ type: "kernel-env-reclaim", runId: "envreclaim_raced", name: "crispr" });
+    await until(() => !existsSync(envRoot(workDir, "crispr")), "this machine's own copy going");
+
+    // Room for the reclaim's own re-send to overtake the held one, which is
+    // what unserialised code does here in a few milliseconds. Not an
+    // assertion and not a timing claim: nothing below requires it to have
+    // happened, and serialised it cannot happen at all. It is only how long
+    // the race is given to show itself before the held boundary is let go.
+    for (let i = 0; i < 100 && kernels.configurations.length < 2; i += 1)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    kernels.releaseHeld();
+
+    await until(() => kernels.configurations.length === 3, "both re-sends landing");
+    await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+
+    const last = kernels.configurations[2]! as {
+      session_id: string;
+      declared?: string[];
+      environments: Array<{ name: string }>;
+    };
+    expect(last.session_id).toBe("se_1");
+    // Whichever of the two was started first, the boundary this session is
+    // LEFT with does not offer what this machine no longer has.
+    expect(last.environments.map((entry) => entry.name)).toEqual(["python"]);
+    // And it is still declared, so the cell that names it is refused in the
+    // sentence a researcher can act on.
+    expect(last.declared).toEqual(["crispr"]);
+    // The build itself still succeeded, because it did — the reclaim took
+    // its copy away afterwards, which is not the build failing.
+    expect(lab.kernelEnvResults[0]!.ok).toBe(true);
+  });
+  // The window above is a second of it, and the fixture is already ~3.5s.
+}, 20_000);
+
+it("names the sessions left unheard when this machine's kernel host goes quiet", async () => {
+  // A host that is alive and answering nothing is the one case the
+  // per-session catch cannot report. `host.call` has no timeout of its own —
+  // a call is settled by a reply or by the host dying and by nothing else
+  // (`call`, kernel-host.ts) — so that task never settles, its catch never
+  // runs, and the deadline over the whole set is the only thing that will
+  // ever speak. If it speaks generically, the researcher owed a restart
+  // cannot be found from the log at all.
+  //
+  // `se_1` is held forever and `se_2` is refused outright, so both branches
+  // report in one run: the refusal through the per-session catch, the silence
+  // through the deadline. Each session named ONCE — a deadline that re-named
+  // the session it already heard about would be telling a researcher whose
+  // kernels are fine to throw away their notebook state.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [CRISPR_DECLARED];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const uvDir = stubUv("onlyone==1.0.0\n");
+  const kernels = stubKernelHost(0);
+  const said: string[] = [];
+
+  await withStubUvOnPath(uvDir, async () => {
+    // Small enough that a host which never answers is observed inside this
+    // test rather than 90s after it. The assertions below are about what was
+    // SAID, not about when.
+    const r = subsystem(lab.base, data, () => kernels.host, 2_000);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_quiet_host", "se_1"));
+    await until(() => r.liveSessionDirs().length === 1, "the first session opening");
+    lab.send(startRunOn("run_refused_host", "se_2"));
+    await until(() => r.liveSessionDirs().length === 2, "the second session opening");
+
+    // Both only after each session has its own boundary: what goes wrong here
+    // is the re-send, not the session. The refusal is checked before the
+    // hold, so `se_2` never reaches it.
+    kernels.holdBoundariesNaming("crispr");
+    kernels.refuseConfiguresFor("se_2");
+
+    const reporting = console.error;
+    console.error = (line: unknown) => said.push(String(line));
+    try {
+      lab.send(setupCrispr("envsetup_quiet"));
+      await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+    } finally {
+      console.error = reporting;
+      kernels.releaseHeld();
+    }
+
+    // The build succeeded and the lab still hears so, on the deadline path
+    // exactly as on the refusal path.
+    expect(lab.kernelEnvResults[0]!.ok).toBe(true);
+    // The held session is named — by the deadline, since nothing else can.
+    const forHeld = said.filter((line) => line.includes("se_1"));
+    expect(forHeld.length).toBe(1);
+    expect(forHeld[0]!).toContain("crispr");
+    expect(forHeld[0]!).toContain("restart");
+    // The refused one is named once, by its own catch, and NOT a second time
+    // by the deadline: it settled, and the deadline speaks only for what did
+    // not.
+    expect(said.filter((line) => line.includes("se_2")).length).toBe(1);
+  });
+}, 20_000);
+
+it("sends this machine's open sessions their new boundary together, not one after another", async () => {
+  // The concurrency itself, pinned by an outcome with no clock in it. This
+  // host takes a boundary and then answers NOTHING until a second one has
+  // arrived: two re-sends dispatched together release each other, and two
+  // sent one after another cannot — the first is never answered, the single
+  // deadline over the whole set fires, and the second is never even started.
+  // Four boundaries or three.
+  //
+  // What it buys: each re-send costs a `host.hello`, a lab declarations
+  // fetch and, against a host that will not answer, up to a whole
+  // KERNEL_REACH_MS — and a researcher whose build has already finished
+  // waits through every one of them before the lab is told.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [CRISPR_DECLARED];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const uvDir = stubUv("onlyone==1.0.0\n");
+  const kernels = stubKernelHost(0);
+
+  await withStubUvOnPath(uvDir, async () => {
+    // A ceiling of this fixture's own, because the serial shape has to be
+    // able to GIVE UP for the test to see what it did — 90s of the real one
+    // would arrive as the suite's own timeout instead. Nothing asserts on
+    // it; the concurrent shape never reaches it.
+    const r = subsystem(lab.base, data, () => kernels.host, 3_000);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_together_one", "se_1"));
+    await until(() => r.liveSessionDirs().length === 1, "the first session opening");
+    lab.send(startRunOn("run_together_two", "se_2"));
+    await until(() => r.liveSessionDirs().length === 2, "the second session opening");
+    expect(kernels.configurations.length).toBe(2);
+
+    // Armed only now: a session's OWN boundary has to be answered for it to
+    // open at all, and those two arrive one after another by construction.
+    kernels.barrierAt(2);
+
+    lab.send(setupCrispr("envsetup_together"));
+    await until(() => lab.kernelEnvResults.length > 0, "the build's own result");
+
+    expect(lab.kernelEnvResults[0]!.ok).toBe(true);
+    // Both were told. One after another, `se_1`'s re-send would still be
+    // waiting on a host that will not answer until a second arrives, the
+    // aggregate deadline would have fired, and this would be 3.
+    expect(kernels.configurations.length).toBe(4);
+    expect(
+      kernels.configurations.slice(2).map((entry) => entry.session_id).sort(),
+    ).toEqual(["se_1", "se_2"]);
+  });
+}, 20_000);
+
+/**
+ * An agent asking for an environment, and a researcher answering.
+ *
+ * The one thing on this wire that travels host → daemon → researcher → lab,
+ * so every one of these drives it end to end: the ask arrives the way the
+ * real host writes one, the card goes out to the lab as a frame, the
+ * decision comes back down the command stream, and what is asserted is what
+ * the lab was — or was not — asked to declare.
+ */
+
+/** Every permission card this machine has published, in order. */
+function cardsOf(lab: {
+  events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }>;
+}): Array<{ id: string }> {
+  return lab.events
+    .flatMap((post) => post.frames)
+    .map((frame) => frame.event)
+    .filter(
+      (event): event is Extract<RunEvent, { event: "permission-card" }> =>
+        event.event === "permission-card",
+    )
+    .map((event) => event.request);
+}
+
+/**
+ * Whether this run has reached the state a turn publishes the instant its
+ * prompt is sent — which is also the instant its session is in
+ * `liveSessions`, and therefore the first moment an ask naming that session
+ * can find one. Waited on rather than the boundary landing, which happens a
+ * whole session-creation earlier.
+ */
+function turnStarted(
+  lab: { events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }> },
+  runId: string,
+): boolean {
+  return lab.events
+    .filter((post) => post.runId === runId)
+    .flatMap((post) => post.frames)
+    .map((frame) => frame.event)
+    .some((event) => event.event === "state" && event.state.state === "planning");
+}
+
+/** A turn that stays in flight for as long as one of these tests needs, so
+ *  the session raising a card is the session a decision can still reach. */
+const HOLD_THE_TURN_OPEN = JSON.stringify([{ sleep: 5000 }, { endTurn: "end_turn" }]);
+
+function decideOn(runId: string, requestId: string, decision: unknown) {
+  return { type: "decision", runId, decision: { action: "permission", requestId, decision } };
+}
+
+it("refuses to create an environment for a session this machine is not running", async () => {
+  // No live session, no card — and a refusal rather than a silent allow.
+  // Consent nobody was asked for is not consent, and this is the shape that
+  // arrives when a host names a session that ended underneath it.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_none"));
+  await until(() => turnStarted(lab, "run_env_none"), "the turn starting");
+
+  await expect(
+    kernels.ask("environment.create", {
+      session_id: "se_gone",
+      name: "crispr",
+      packages: ["scanpy"],
+    }),
+  ).rejects.toThrow(/se_gone/);
+  expect(lab.kernelEnvCreates).toEqual([]);
+  expect(cardsOf(lab)).toEqual([]);
+});
+
+it("does not ask the lab for an environment the researcher denied", async () => {
+  // Asserted on the LAB rather than on the thrown sentence: a version that
+  // declared the environment and then threw would satisfy a test that only
+  // read the message, and would have left a colleague's lab holding a name
+  // its researcher had just refused.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_deny"));
+  await until(() => turnStarted(lab, "run_env_deny"), "the turn starting");
+
+  const asked = kernels.ask("environment.create", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["scanpy", "anndata"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(decideOn("run_env_deny", cardsOf(lab)[0]!.id, { decision: "deny" }));
+
+  await expect(asked).rejects.toThrow(/crispr/);
+  expect(lab.kernelEnvCreates).toEqual([]);
+});
+
+it("declares an allowed environment and only then re-describes the session", async () => {
+  // The order is the point. Reconfigured after the declaration, the session
+  // can see the new name the moment this returns; reconfigured before it —
+  // or not at all — the agent creates `crispr`, lists, and is told this lab
+  // declares no such thing.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  // Written into the host's own log of what it was asked, so "the lab was
+  // called" and "the session was re-described" are two entries in ONE
+  // ordering rather than two counts nothing places against each other.
+  lab.kernelEnvCreate.onCall = () => kernels.asked.push("the lab declared it");
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_allow"));
+  await until(() => turnStarted(lab, "run_env_allow"), "the turn starting");
+
+  const asked = kernels.ask("environment.create", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(
+    decideOn("run_env_allow", cardsOf(lab)[0]!.id, { decision: "allow", scope: "once" }),
+  );
+
+  expect(await asked).toMatchObject({ name: "crispr", packages: ["scanpy"] });
+  expect(lab.kernelEnvCreates).toEqual([
+    { sessionId: "se_1", name: "crispr", packages: ["scanpy"] },
+  ]);
+  const declaredAt = kernels.asked.indexOf("the lab declared it");
+  expect(declaredAt).toBeGreaterThan(-1);
+  expect(kernels.asked.lastIndexOf("kernel.configure_session")).toBeGreaterThan(declaredAt);
+});
+
+it("refuses an environment card answered for the Study or globally", async () => {
+  // The surface offers neither, and the surface is not a guard: a decision
+  // arrives over the wire from a browser this end does not control, so what
+  // scopes a card was SHOWN with is not something to take a client's word
+  // for. Refused by name rather than quietly narrowed to `once` — a
+  // researcher told "for this Study" and given one call would believe the
+  // wrong thing.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_scope"));
+  await until(() => turnStarted(lab, "run_env_scope"), "the turn starting");
+
+  for (const scope of ["study", "global"] as const) {
+    const before = cardsOf(lab).length;
+    const asked = kernels.ask("environment.create", {
+      session_id: "se_1",
+      name: "crispr",
+      packages: ["scanpy"],
+    });
+    await until(() => cardsOf(lab).length > before, `a permission card for ${scope}`);
+    lab.send(
+      decideOn("run_env_scope", cardsOf(lab)[before]!.id, { decision: "allow", scope }),
+    );
+    await expect(asked).rejects.toThrow(/crispr/);
+  }
+  expect(lab.kernelEnvCreates).toEqual([]);
+});
+
+it("asks once for an environment allowed for this conversation, not twice", async () => {
+  // What makes the card's two scopes mean different things. `once` asks
+  // again next time; `conversation` does not, and a second card for a name
+  // the researcher just allowed teaches them their answer meant less than
+  // it said.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_again"));
+  await until(() => turnStarted(lab, "run_env_again"), "the turn starting");
+
+  const first = kernels.ask("environment.create", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(
+    decideOn("run_env_again", cardsOf(lab)[0]!.id, {
+      decision: "allow",
+      scope: "conversation",
+    }),
+  );
+  await first;
+
+  await kernels.ask("environment.create", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["anndata"],
+  });
+  expect(lab.kernelEnvCreates).toHaveLength(2);
+  // One card, for two creates. Nothing was asked the second time.
+  expect(cardsOf(lab)).toHaveLength(1);
+});
+
+it("carries the lab's own reason back for a create it refused", async () => {
+  // The researcher has just said yes to this. "It failed" with no reason is
+  // the worst possible answer to a card they approved, and the lab is the
+  // only party that knows which of its refusals this was.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  lab.kernelEnvCreate.refusal = "this lab already has an environment named crispr";
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_taken"));
+  await until(() => turnStarted(lab, "run_env_taken"), "the turn starting");
+
+  const asked = kernels.ask("environment.create", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(
+    decideOn("run_env_taken", cardsOf(lab)[0]!.id, { decision: "allow", scope: "once" }),
+  );
+  await expect(asked).rejects.toThrow("this lab already has an environment named crispr");
+});
+
+it("leaves no standing grant behind a create this lab refused, so the next change is still a card", async () => {
+  // A grant must not outlive the act it was given for. "For this
+  // conversation" on an environment card is a standing grant over the NAME,
+  // and it auto-allows every later `manage_packages` for that name with no
+  // card at all — which is honest while the create it was given on actually
+  // happened. It can fail: `python` is seeded on every lab, an agent chooses
+  // the name, and the lab answers `conflict`. Minted when the researcher
+  // answered, the session would then hold uncarded authority to install
+  // software into the environment every default Python kernel in this lab
+  // runs in, obtained from a card that said *Create environment python?* for
+  // something that was never created.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  lab.kernelEnvCreate.refusal = "this lab already has an environment named python";
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_ungranted"));
+  await until(() => turnStarted(lab, "run_env_ungranted"), "the turn starting");
+
+  const create = kernels.ask("environment.create", {
+    session_id: "se_1",
+    name: "python",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(
+    decideOn("run_env_ungranted", cardsOf(lab)[0]!.id, {
+      decision: "allow",
+      scope: "conversation",
+    }),
+  );
+  // Refused by the lab, which is the state this is about: the card was
+  // answered, and the thing it was a card FOR did not happen.
+  await expect(create).rejects.toThrow(/python/);
+
+  // The very call the grant would have covered. It has to reach a researcher.
+  const added = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "python",
+    packages: ["torch"],
+  });
+  await until(() => cardsOf(lab).length > 1, "a second permission card");
+  const second = cardsOf(lab)[1]! as { id: string; tool?: string };
+  expect(second.tool).toBe("manage_packages");
+
+  // And answered "no" it stays no — nothing reached the lab off the back of
+  // a card about a create that never happened.
+  lab.send(decideOn("run_env_ungranted", second.id, { decision: "deny" }));
+  await expect(added).rejects.toThrow(/python/);
+  expect(lab.kernelEnvPackages).toEqual([]);
+});
+
+it("refuses a create whose shape is not one, without raising a card", async () => {
+  // Nothing between a model and this checked anything, and what arrives here
+  // decides what a researcher is shown. A card naming `undefined` is not a
+  // question anybody can answer.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_shape"));
+  await until(() => turnStarted(lab, "run_env_shape"), "the turn starting");
+
+  await expect(
+    kernels.ask("environment.create", {
+      session_id: "se_1",
+      name: "crispr",
+      packages: ["scanpy", 7],
+    }),
+  ).rejects.toThrow(/list of package names/);
+  expect(cardsOf(lab)).toEqual([]);
+  expect(lab.kernelEnvCreates).toEqual([]);
+});
+
+/** Every execution-log entry this machine has published, in order. What the
+ *  lab durably keeps of a decision, and the only place a researcher reads
+ *  back what they answered. */
+function logEntriesOf(lab: {
+  events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }>;
+}): ExecutionLogEntry[] {
+  return lab.events
+    .flatMap((post) => post.frames)
+    .map((frame) => frame.event)
+    .filter(
+      (event): event is Extract<RunEvent, { event: "log-entry" }> =>
+        event.event === "log-entry",
+    )
+    .map((event) => event.entry);
+}
+
+it("writes each environment decision its own row, carrying its own reason", async () => {
+  // Two decisions in one turn, answered differently. Keyed on the card's
+  // `tool` — the literal tool NAME on a card this machine raised — the second
+  // row would be written over the first, inheriting its `ts` and its `result`:
+  // the lab would durably hold ONE row saying `allowed-once` whose stated
+  // reason explains that an environment change was refused.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_rows"));
+  await until(() => turnStarted(lab, "run_env_rows"), "the turn starting");
+
+  const refused = kernels.ask("environment.create", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "the first card");
+  lab.send(
+    decideOn("run_env_rows", cardsOf(lab)[0]!.id, { decision: "allow", scope: "study" }),
+  );
+  await expect(refused).rejects.toThrow(/crispr/);
+
+  const allowed = kernels.ask("environment.create", {
+    session_id: "se_1",
+    name: "atacseq",
+    packages: ["anndata"],
+  });
+  await until(() => cardsOf(lab).length > 1, "the second card");
+  lab.send(
+    decideOn("run_env_rows", cardsOf(lab)[1]!.id, { decision: "allow", scope: "once" }),
+  );
+  await allowed;
+
+  // Waited for rather than read: frames reach the lab on their own timer, and
+  // a count taken the instant the ask settled would be reading a batch that
+  // has not been posted yet.
+  await until(() => logEntriesOf(lab).length >= 2, "both decisions reaching the lab");
+  const rows = logEntriesOf(lab);
+  expect(rows).toHaveLength(2);
+  expect(rows[0]!.decision).toBe("denied");
+  expect(rows[0]!.result).toMatch(/not something to remember beyond this conversation/);
+  expect(rows[1]!.decision).toBe("allowed-once");
+  // The allowance carries no reason at all, rather than the refusal's.
+  expect(rows[1]!.result).toBeUndefined();
+  // Two rows, and two different rows: one key each.
+  expect(rows[0]!.toolUseId).not.toBe(rows[1]!.toolUseId);
+  // And each names what it was about. `input: {}` here would be an empty
+  // object invented for the one thing a researcher reads this back for.
+  expect(rows[0]!.title).toMatch(/crispr/);
+  expect(rows[0]!.input).toEqual({ environment: "crispr", packages: ["scanpy"] });
+  expect(rows[1]!.title).toMatch(/atacseq/);
+  expect(rows[1]!.input).toEqual({ environment: "atacseq", packages: ["anndata"] });
+});
+
+it("records the second refusal of one environment as well as the first", async () => {
+  // Two denials of the same name are byte-identical as rows — same decision,
+  // same title, same input, no result — so under one shared key the second is
+  // not merely overwritten, it is never published at all: `emitStep`
+  // suppresses a republish whose fingerprint has not changed. A consent
+  // decision the researcher actually made would exist nowhere.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_twice"));
+  await until(() => turnStarted(lab, "run_env_twice"), "the turn starting");
+
+  for (const nth of [0, 1]) {
+    const asked = kernels.ask("environment.create", {
+      session_id: "se_1",
+      name: "crispr",
+      packages: ["scanpy"],
+    });
+    await until(() => cardsOf(lab).length > nth, `card ${nth + 1}`);
+    lab.send(decideOn("run_env_twice", cardsOf(lab)[nth]!.id, { decision: "deny" }));
+    await expect(asked).rejects.toThrow(/crispr/);
+  }
+
+  const denials = (): ExecutionLogEntry[] =>
+    logEntriesOf(lab).filter((entry) => entry.decision === "denied");
+  await until(() => denials().length >= 2, "both refusals reaching the lab");
+  expect(denials()).toHaveLength(2);
+  expect(new Set(denials().map((entry) => entry.toolUseId)).size).toBe(2);
+});
+
+it("refuses a create the lab answered 200 to with a body this end cannot read", async () => {
+  // A 200 nothing here understands is not a declaration. Passed on, the agent
+  // is told its environment exists on the strength of a body nothing read —
+  // and the session is re-described for a name that may not be in the lab at
+  // all. A proxy's own page and a truncated response both arrive exactly
+  // like this.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  lab.kernelEnvCreate.rawBody = JSON.stringify({ ok: true });
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_unreadable"));
+  await until(() => turnStarted(lab, "run_env_unreadable"), "the turn starting");
+
+  const asked = kernels.ask("environment.create", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(
+    decideOn("run_env_unreadable", cardsOf(lab)[0]!.id, { decision: "allow", scope: "once" }),
+  );
+
+  await expect(asked).rejects.toThrow(/no declaration/);
+});
+
+it("refuses to raise a card for an environment when the turn it belongs to is over", async () => {
+  // The guard the ACP raise site has applied all along, at the one raise site
+  // that did not. A card raised in the gap between a turn ending and the next
+  // starting is published into a run that has already emitted its terminal
+  // frame, and answered by a researcher looking at a different turn.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_over"));
+  await until(
+    () =>
+      lab.events
+        .flatMap((post) => post.frames)
+        .some((frame) => frame.event.event === "completed"),
+    "the turn ending",
+  );
+
+  await expect(
+    kernels.ask("environment.create", {
+      session_id: "se_1",
+      name: "crispr",
+      packages: ["scanpy"],
+    }),
+  ).rejects.toThrow(/was not approved/);
+  // No card was put in front of anybody. Nothing is recorded either, and
+  // there is nowhere for a record to go: this window is precisely the one
+  // where the run a frame would travel on has already ended. What the agent
+  // is told is the whole of the disclosure.
+  expect(cardsOf(lab)).toEqual([]);
+});
+
+/**
+ * An agent asking for PACKAGES, and a researcher answering.
+ *
+ * The other verb, and the first on this wire that changes something already
+ * running. Same ladder as a create, driven the same way end to end: the ask
+ * arrives as the host writes one, the card goes out as a frame, the decision
+ * comes back down the command stream, and what is asserted is what the lab
+ * was — or was not — asked to change.
+ */
+
+/** What one card is asking about, as a test reads it — the environment's
+ *  name and the packages the card actually carries. */
+function environmentTargetOf(request: { access?: unknown }): {
+  name: string;
+  packages: string[];
+} {
+  return (request.access as { target: { name: string; packages: string[] } }).target;
+}
+
+it("does not ask the lab for packages the researcher denied", async () => {
+  // Asserted on the LAB rather than on the thrown sentence: a version that
+  // added the packages and then threw would satisfy a test that only read
+  // the message, and would have left every machine in the lab installing
+  // software its researcher had just refused.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_pkg_deny"));
+  await until(() => turnStarted(lab, "run_pkg_deny"), "the turn starting");
+
+  const asked = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "python",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(decideOn("run_pkg_deny", cardsOf(lab)[0]!.id, { decision: "deny" }));
+
+  await expect(asked).rejects.toThrow(/python/);
+  expect(lab.kernelEnvPackages).toEqual([]);
+});
+
+it("raises the card under manage_packages, carrying what was asked for and not what results", async () => {
+  // The card's own wording comes off `request.tool`, so the tool name is what
+  // makes "Add scanpy to python?" rather than "Create environment python?".
+  // And `target.packages` is what was ASKED FOR: a researcher approving "add
+  // scanpy" must not be shown the environment's entire contents as though all
+  // of it were being installed now.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  // The lab answers with the environment's whole resulting list, which is a
+  // superset of what was asked for — so a card built from the ANSWER rather
+  // than the ask would be observable here.
+  lab.kernelEnvPackagesAdd.added = ["scanpy"];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_pkg_card"));
+  await until(() => turnStarted(lab, "run_pkg_card"), "the turn starting");
+
+  const asked = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "python",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  const card = cardsOf(lab)[0]! as { id: string; tool?: string; access?: unknown };
+  expect(card.tool).toBe("manage_packages");
+  expect(environmentTargetOf(card)).toEqual({ name: "python", packages: ["scanpy"] });
+
+  lab.send(decideOn("run_pkg_card", card.id, { decision: "allow", scope: "once" }));
+  await asked;
+  expect(lab.kernelEnvPackages).toEqual([
+    { sessionId: "se_1", name: "python", packages: ["scanpy"] },
+  ]);
+});
+
+it("writes the decision its own row, naming the environment and the packages asked for", async () => {
+  // The row is the only durable record that a researcher approved installing
+  // software on every machine in this lab. `input: {}` here would be an empty
+  // object invented for the one thing a researcher reads this back for.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_pkg_row"));
+  await until(() => turnStarted(lab, "run_pkg_row"), "the turn starting");
+
+  const asked = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "python",
+    packages: ["scanpy", "anndata"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(decideOn("run_pkg_row", cardsOf(lab)[0]!.id, { decision: "allow", scope: "once" }));
+  await asked;
+
+  await until(() => logEntriesOf(lab).length >= 1, "the decision reaching the lab");
+  const row = logEntriesOf(lab)[0]!;
+  expect(row.decision).toBe("allowed-once");
+  expect(row.title).toMatch(/python/);
+  expect(row.input).toEqual({ environment: "python", packages: ["scanpy", "anndata"] });
+});
+
+it("asks once for an environment allowed for this conversation, however many packages follow", async () => {
+  // R76, and this is the first task in which the widened grant is reachable
+  // at all — a second `create` is refused 409 by the lab, so nothing before
+  // this could get a second card past it. The `conversation` grant is keyed
+  // by environment NAME, and `scopesFor` tells the researcher exactly that:
+  // "Any packages for this environment, until this chat ends". The realistic
+  // sequence is `add scanpy` then `add anndata`, and a per-package key would
+  // make the scope cover nothing at all.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_pkg_again"));
+  await until(() => turnStarted(lab, "run_pkg_again"), "the turn starting");
+
+  const first = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "python",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(
+    decideOn("run_pkg_again", cardsOf(lab)[0]!.id, { decision: "allow", scope: "conversation" }),
+  );
+  await first;
+
+  // A DIFFERENT package, into the same environment. No card, and it still
+  // reaches the lab — the grant covers the environment, exactly as the card
+  // said it would.
+  await kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "python",
+    packages: ["anndata"],
+  });
+  expect(lab.kernelEnvPackages).toHaveLength(2);
+  expect(cardsOf(lab)).toHaveLength(1);
+
+  // And it covers that environment and no other: a name the researcher has
+  // not answered for is still a question.
+  const other = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["anndata"],
+  });
+  await until(() => cardsOf(lab).length > 1, "a card for the other environment");
+  lab.send(decideOn("run_pkg_again", cardsOf(lab)[1]!.id, { decision: "deny" }));
+  await expect(other).rejects.toThrow(/crispr/);
+});
+
+it("refuses an add for a session this machine is not running, and one with no packages at all", async () => {
+  // No live session, no card — consent nobody was asked for is not consent.
+  // And an add of nothing is refused before a card is raised, because a card
+  // asking a researcher to approve installing no software is not a question
+  // anybody can answer.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_pkg_shape"));
+  await until(() => turnStarted(lab, "run_pkg_shape"), "the turn starting");
+
+  await expect(
+    kernels.ask("environment.add_packages", {
+      session_id: "se_gone",
+      name: "python",
+      packages: ["scanpy"],
+    }),
+  ).rejects.toThrow(/se_gone/);
+  for (const packages of [[], ["scanpy", 7], "scanpy"]) {
+    await expect(
+      kernels.ask("environment.add_packages", { session_id: "se_1", name: "python", packages }),
+    ).rejects.toThrow(/at least one package name/);
+  }
+  expect(cardsOf(lab)).toEqual([]);
+  expect(lab.kernelEnvPackages).toEqual([]);
+});
+
+it("refuses an add the lab answered 200 to with a body this end cannot read", async () => {
+  // A 200 nothing here understands is not an answer. Invented, the agent is
+  // told its packages are on their way on the strength of a body nothing
+  // read — and the shape a lenient reader would invent is the WORST of the
+  // three: an empty `added`, which the host reports as "already holds them,
+  // nothing is being rebuilt". A researcher approved a card, the agent is
+  // told the state was already reached, and nothing is installed anywhere. A
+  // proxy's own page and a truncated response both arrive exactly like this.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  lab.kernelEnvPackagesAdd.rawBody = JSON.stringify({ ok: true });
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_pkg_unreadable"));
+  await until(() => turnStarted(lab, "run_pkg_unreadable"), "the turn starting");
+
+  const asked = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "python",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(
+    decideOn("run_pkg_unreadable", cardsOf(lab)[0]!.id, { decision: "allow", scope: "once" }),
+  );
+
+  await expect(asked).rejects.toThrow(/no declaration/);
+});
+
+it("carries the lab's own reason back for an add it refused", async () => {
+  // The researcher has just said yes to this. "It failed" with no reason is
+  // the worst possible answer to a card they approved, and the lab is the
+  // only party that knows which of its refusals this was — a name it does
+  // not declare, most of all, since that is a create the agent has to ask
+  // for separately.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  lab.kernelEnvPackagesAdd.refusal = "this lab declares no environment named crispr";
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_pkg_missing"));
+  await until(() => turnStarted(lab, "run_pkg_missing"), "the turn starting");
+
+  const asked = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  lab.send(decideOn("run_pkg_missing", cardsOf(lab)[0]!.id, { decision: "allow", scope: "once" }));
+
+  await expect(asked).rejects.toThrow("this lab declares no environment named crispr");
 });

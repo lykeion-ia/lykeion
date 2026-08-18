@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { expect, it } from "vitest";
 import { readDaemonConfig } from "./config";
 
@@ -219,6 +219,28 @@ it("lets a work-dir flag beat the environment", () => {
 it("treats an empty work-dir environment value as unset", () => {
   const config = readDaemonConfig({ LYKEION_DAEMON_WORK_DIR: "", LYKEION_DAEMON_DATA_DIR: "/tmp/lyk-p1" }, []);
   expect(config.workDir).toBe(join(homedir(), "Documents", "Lykeion"));
+});
+
+it("makes a relative work directory absolute, from the flag and from the environment alike", () => {
+  // Not tidiness. `<workDir>/envs/<name>/bin/python3` becomes an
+  // environment's `interpreter` on the wire to the kernel host, and
+  // `_environments_from` refuses a relative one outright — for its own good
+  // reason, since a relative interpreter is resolved against the HOST's
+  // working directory and would put a directory of its choosing in front of
+  // every cell's `PATH`. It refuses the WHOLE confinement on the first bad
+  // entry, floor included, so `configure_session` fails and the session ends
+  // up with no kernel tools at all. One `lykeion --work-dir ./work` costs the
+  // machine every kernel it has, with one line on stderr as the only trace.
+  const fromFlag = readDaemonConfig({}, ["--data-dir", "/tmp/lyk-state", "--work-dir", "work"]);
+  expect(isAbsolute(fromFlag.workDir)).toBe(true);
+  expect(fromFlag.workDir).toBe(resolve("work"));
+
+  const fromEnv = readDaemonConfig(
+    { LYKEION_DAEMON_DATA_DIR: "/tmp/lyk-state", LYKEION_DAEMON_WORK_DIR: "./lykeion-work" },
+    [],
+  );
+  expect(isAbsolute(fromEnv.workDir)).toBe(true);
+  expect(fromEnv.workDir).toBe(resolve("./lykeion-work"));
 });
 
 it("refuses --work-dir with no value the same way --data-dir does", () => {

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..confinement import confined
-from . import KernelIdentity
+from . import KernelIdentity, environment_of
 
 DRIVER = str(Path(__file__).resolve().parent.parent / "driver.py")
 
@@ -183,12 +183,21 @@ def launch(
     prefix: list[str],
     interpreter: str = sys.executable,
     cwd: str | None = None,
+    env_extra: dict[str, str] | None = None,
 ) -> PythonKernel:
     """A kernel process, started behind the prefix the daemon rendered.
 
     The prefix arrives already assembled and this concatenates onto it. A
     kernel that was given none is not started — there is no argument list
     reachable from here that would put an interpreter outside a boundary.
+
+    `env_extra` is what this INCARNATION is given on top of what the
+    environment says, and today it is the overlay an inline `pip install`
+    lands in (`overlay.py`). Merged over `environment_of`'s answer rather
+    than composed beside it: that function is the single definition of what a
+    kernel is launched with, and a second literal here deciding part of the
+    same question is how `CONDA_PREFIX` came to be handled in one place and
+    missed in the other.
     """
     argv = confined(prefix, [interpreter, "-u", DRIVER])
     process = subprocess.Popen(
@@ -198,7 +207,18 @@ def launch(
         stderr=subprocess.PIPE,
         text=True,
         cwd=cwd,
-        env={**os.environ, KERNEL_MARKER: _marker(identity)},
+        env={
+            # The whole answer, from one place. What this host is running
+            # under is an input to `environment_of` rather than a layer under
+            # it, so there is no literal here that could disagree with the
+            # rule about which variables a kernel may keep.
+            **environment_of(interpreter, os.environ),
+            **(env_extra or {}),
+            # Last, so nothing handed in can displace the one thing a
+            # researcher looking at their own machine has to identify this
+            # process by.
+            KERNEL_MARKER: _marker(identity),
+        },
     )
     kernel = PythonKernel(process)
     if not _greeted(process):

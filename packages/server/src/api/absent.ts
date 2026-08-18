@@ -24,9 +24,10 @@ export const NO_MACHINE =
  * research-group methods, which `configSurfaceApi` owns, and so are pairing
  * and the machine list, which `machinesApi` owns, and so are `startRun`,
  * `submitRunDecision` and `runHistory`, which `sessionsApi` owns, and so are
- * the kernel and notebook methods, which `kernelsApi` owns. The conversation
- * methods are the ones in that neighbourhood answered here: nothing yet
- * stores a thread or a message.
+ * the kernel and notebook methods, which `kernelsApi` owns, and so are the
+ * environment-declaration methods, which `environmentsApi` owns. The
+ * conversation methods are the ones in that neighbourhood answered here:
+ * nothing yet stores a thread or a message.
  *
  * A list method has nothing to list, so it answers honestly with `[]`
  * rather than inventing content. A method addressed by an id has nothing to
@@ -55,7 +56,7 @@ export function absentApi(
   | "listMachines" | "listAgentClis" | "pairMachine" | "removeMachine"
   | "startRun" | "submitRunDecision" | "runHistory" | "revertTurn"
   | "listRunningKernels" | "computeSnapshot" | "taskNotebook" | "kernelExecute" | "kernelInterrupt" | "kernelStop" | "kernelRestart"
-  | "kernelEnvSetup"
+  | "kernelEnvSetup" | "kernelEnvReclaim" | "kernelEnvCreate" | "kernelEnvDelete"
 > {
   return {
     async listConversations() {
@@ -86,16 +87,6 @@ export function absentApi(
       );
     },
 
-    async kernelEnvStatus() {
-      return {
-        state: "absent",
-        name: "python",
-        language: "python",
-        manager: "uv",
-        platform: `${process.platform}-${process.arch}`,
-        root: "",
-      };
-    },
     async kernelEnvList() {
       return [];
     },

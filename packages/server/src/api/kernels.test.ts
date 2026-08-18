@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
-import type { LykeionApi, RunEventFrame } from "@lykeion/api";
+import type { KernelEnvStatus, LykeionApi, RunEventFrame } from "@lykeion/api";
 import { expectRejection } from "@lykeion/api/conformance";
 import { readConfig } from "../config";
 import { openStore } from "../store/sqlite";
@@ -15,6 +15,7 @@ import { createRevertRegistry } from "../run-revert";
 import { createKernelListRegistry } from "../kernel-list-registry";
 import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
+import { createEnvSetupRegistry } from "../env-setup-registry";
 import { createRequestListener } from "../http";
 import { apiFor, signUpOwner } from "../test-support/server-api";
 import type { Store } from "../store/store";
@@ -63,7 +64,7 @@ function freshLabServer(): Promise<{
     openStreams,
     runs: relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
     now: () => clock,
   });
   const server = createHttpServer(listener);
@@ -892,6 +893,46 @@ it("says nothing at all about a machine that is not answering", async () => {
   expect(machine.cores).toBeUndefined();
 });
 
+it("leaves environments absent on computeSnapshot for a machine that has never reported them", async () => {
+  // Absent is not the same fact as "reported holding none" — a report that
+  // never carried the field at all must not read as an empty array.
+  const lab = await freshLab();
+  const snapshot = await lab.ownerApi.computeSnapshot();
+  const machine = snapshot.find((m) => m.machineId === lab.machineId)!;
+  expect(machine.environments).toBeUndefined();
+});
+
+it("remembers what a machine last reported holding of its environments, even once it goes offline", async () => {
+  // Unlike every other field on MachineCompute, environments survives the
+  // machine going offline: D2's "the machine's report is the truth about
+  // what is built" only holds for an unreachable machine if that report is
+  // remembered rather than re-asked on every poll.
+  const lab = await freshLab();
+  const reported: KernelEnvStatus[] = [
+    {
+      state: "ready", name: "python", language: "python", manager: "uv",
+      platform: "macos-aarch64", root: "/work/envs/python", version: "3.12.7",
+      packageCount: 6, lockRevision: 1,
+    },
+  ];
+  await fetch(`${lab.base}/daemon/report`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify({
+      platform: "macos-aarch64", daemonVersion: "0.1.0", capabilities: [], clis: [],
+      environments: reported,
+    }),
+  });
+  lab.advanceClock(301);
+
+  const snapshot = await lab.ownerApi.computeSnapshot();
+  const machine = snapshot.find((m) => m.machineId === lab.machineId)!;
+  // Offline, so every other field is absent (as asserted above) — but this
+  // one is not.
+  expect(machine.kernelCount).toBeUndefined();
+  expect(machine.environments).toEqual(reported);
+});
+
 it("serves one fan-out to both readers of it", async () => {
   const lab = await freshLab();
   const machineId = lab.machineId;
@@ -1375,20 +1416,4 @@ it("refuses a cell report whose taskId names a Task the session never ran a turn
   });
   expect(res.status).toBe(403);
   await expect(lab.ownerApi.taskNotebook(untouchedTask.id)).resolves.toEqual([]);
-});
-
-it("refuses environment setup honestly while a machine is online", async () => {
-  const lab = await freshLab();
-  // A paired machine is right there, Online — "no machine is connected"
-  // would be false, and the remediation it names is one the researcher has
-  // already done. What is actually missing is the capability itself.
-  const setup = lab.ownerApi.kernelEnvSetup();
-  await expectRejection(setup, "unsupported", /cannot set up managed environments yet/);
-  await expect(setup).rejects.not.toThrow(/no machine is connected/);
-});
-
-it("falls back to the no-machine refusal once every machine has gone silent", async () => {
-  const lab = await freshLab();
-  lab.advanceClock(46);
-  await expectRejection(lab.ownerApi.kernelEnvSetup(), "unsupported", /no machine is connected/);
 });

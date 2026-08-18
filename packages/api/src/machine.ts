@@ -71,6 +71,47 @@ export interface KernelEnvStatus {
   packageCount?: number;
   /** Display path of the env root. */
   root: string;
+  /** Which lockfile revision this machine's copy was built from. Absent on a
+   *  copy no machine has built. Compared against the declaration's own
+   *  `lockRevision` to derive "a revision behind" — which is exactly why
+   *  `KernelEnvState` has no fourth value for it: an older pin is still a
+   *  pin, and those kernels keep working. */
+  lockRevision?: number;
+}
+
+/**
+ * One environment as this lab has declared it — the name, what was asked
+ * for, and the lockfile revision currently pinning it.
+ *
+ * Lab-wide and machine-free by construction. Whether any particular machine
+ * has actually built the gigabytes is `KernelEnvStatus`, reported by that
+ * machine. The lab's list is the truth about what exists; a machine's report
+ * is the truth about what is built, and neither overwrites the other.
+ */
+export interface KernelEnvDeclaration {
+  name: string;
+  language: Language;
+  manager: "uv" | "conda";
+  /** What was asked for — `["scanpy"]` — not the ninety-package closure
+   *  that satisfies it. That is the lockfile, and it is not carried here. */
+  packages: string[];
+  /** Who declared it. Absent means Lykeion declared it, not a person — the
+   *  `python` starter seeded on a fresh lab, before any user exists to own
+   *  it. Writing a member's id here for a declaration they never made would
+   *  be a false statement about them on a screen every researcher reads;
+   *  absent is the honest fact, the same way `stoppedBy` stays absent on a
+   *  kernel nobody stopped rather than naming somebody. */
+  createdBy?: string;
+  createdTs: number;
+  /** Rises by one on every successful resolve. `0` means nothing has been
+   *  resolved yet, so no machine can build this from a lockfile. */
+  lockRevision: number;
+}
+
+export interface KernelEnvCreateInput {
+  name: string;
+  language: Language;
+  packages: string[];
 }
 
 /**
@@ -83,12 +124,18 @@ export interface KernelEnvStatus {
  * rendered for one Task directory. A kernel whose Task were left implicit
  * would have a working directory decided by whichever Task its session
  * happened to run first.
+ *
+ * `environment` is in the identity for the same reason: two environments are
+ * two interpreters, which are two processes, which are two namespaces. A
+ * kernel whose environment were left implicit would run in whichever one its
+ * session happened to configure first.
  */
 export interface KernelIdentity {
   sessionId: string;
   taskId: string;
   name: string;
   language: Language;
+  environment: string;
 }
 
 /**
@@ -143,8 +190,6 @@ export interface RunningKernel extends KernelIdentity {
   executionCount: number;
   /** Cells waiting behind the one running. */
   queueDepth: number;
-  /** The named environment this kernel runs in. */
-  environment: string;
   /** The title of the last cell it ran, absent before the first. */
   lastCellTitle?: string;
   startedTs?: number;
@@ -164,6 +209,16 @@ export interface RunningKernel extends KernelIdentity {
    *  nothing, and absent once the cell that was running has been handed it:
    *  the sentence is delivered to the call it interrupted, not kept. */
   stopReason?: string;
+  /** Why the process behind this kernel RIGHT NOW was started, when anything
+   *  other than a cell arriving started it — an environment rebuilt
+   *  underneath it, today. Unlike `stopReason`, this survives the relaunch,
+   *  because that is the whole point: a kernel that was idle when its
+   *  environment was rebuilt has no cell to hand a sentence to, and its
+   *  namespace would otherwise go with nothing anywhere saying why. Absent on
+   *  one nobody explained — a lazy relaunch, a researcher's own Restart — and
+   *  gone again the moment a later relaunch puts a process behind this
+   *  identity with its own answer, or none. */
+  restartReason?: string;
   resources?: KernelResources;
   /** Its last several readings, oldest first — the same figures `resources`
    *  carries the newest of, kept across the ticks a screen might have missed
@@ -196,6 +251,20 @@ export interface MachineCompute {
    *  there for. Absent when none of this machine's kernels has a series of
    *  its own. */
   series?: Array<{ memoryBytes?: number; cpuPercent?: number }>;
+  /** Every environment this lab has declared, as this machine holds it:
+   *  `ready` with what it holds and the revision it was built from, or
+   *  `absent` because those gigabytes have never been downloaded here.
+   *  Absent (the field) when the machine has not reported — which is NOT the
+   *  same fact as a machine holding none.
+   *
+   *  Unlike every other field above, this one survives the machine going
+   *  offline: it is what the machine last reported holding, persisted
+   *  rather than re-asked on every poll, because an environment changes on
+   *  the order of minutes-to-never rather than every cell. An offline
+   *  machine's kernel counts read as unknown because nothing can ask it
+   *  right now; its environments read as what it last said, because that is
+   *  still the truth about what is on its disk. */
+  environments?: KernelEnvStatus[];
 }
 
 /**
@@ -254,6 +323,24 @@ export interface NotebookCell {
   ts: number;
   /** The cell's output messages, in arrival order. */
   outputs: KernelMessage[];
+  /** What this cell installed into the kernel that ran it, and into nothing
+   *  else — a `pip install` inside a cell lands in a per-incarnation overlay
+   *  under the Task's own directory, so it is gone the moment that kernel
+   *  restarts and it exists on no other machine in the lab.
+   *
+   *  Noticed by listing that directory before the cell and after it, never by
+   *  reading the source: `!pip install`, `%pip`, `subprocess.run`,
+   *  `os.system` and `python -m pip` are all the same event on disk, and the
+   *  next spelling will be too. The claim is every install that lands where
+   *  pip installs by DEFAULT — `uv pip install` aims at the environment
+   *  instead and is refused by the boundary rather than recorded here, and an
+   *  install given an explicit destination elsewhere in the Task is just a
+   *  cell writing files.
+   *
+   *  ABSENT on a cell that installed nothing, never `[]`. A reader shows this
+   *  where it is present, and an empty array on every ordinary cell would put
+   *  the surface on every row of every notebook in the lab. */
+  installed?: string[];
   /** The tool call this cell arrived as, joining it to the Execution Log
    *  entry carrying the same `toolUseId`. Set on an agent's cell one of two
    *  ways: the provider forwards its own id for the call in the MCP call's

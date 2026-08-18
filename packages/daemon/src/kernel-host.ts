@@ -11,7 +11,7 @@
  * nobody asked for.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { isReply, type HostMessage } from "./kernel-protocol";
+import { isReply, type HostAsk, type HostMessage } from "./kernel-protocol";
 
 /** How long a host that was asked to stop is given before it is killed. The
  *  same escalation an adapter gets, for the same reason: a process that has
@@ -25,6 +25,12 @@ const STDERR_TAIL = 8192;
 export interface KernelHost {
   call(method: string, params: unknown): Promise<unknown>;
   on(method: string, handler: (params: unknown) => void): void;
+  /** What this daemon answers when the host asks it for something — the
+   *  other direction of `call`. One handler per method, per host: `serve`
+   *  is about this process pair and not about any one session, so whoever
+   *  registers one owes it a guard against doing so again for the same
+   *  host. */
+  serve(method: string, handler: (params: unknown) => Promise<unknown>): void;
   stop(): Promise<void>;
   readonly running: boolean;
   stderrTail(): string;
@@ -45,6 +51,12 @@ export function startKernelHost(options: {
 
   const outstanding = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   const listeners = new Map<string, Array<(params: unknown) => void>>();
+  // What this daemon answers the host's own asks with. Keyed by method, one
+  // handler each: a second registration for a method replaces the first
+  // rather than stacking, because two answers to one ask is two replies
+  // carrying the same id, and the second names an ask the host has already
+  // settled.
+  const served = new Map<string, (params: unknown) => Promise<unknown>>();
   let nextId = 1;
   let alive = true;
   // Set synchronously the moment stop() is called, so a call() racing it in
@@ -105,9 +117,87 @@ export function startKernelHost(options: {
       else pending.resolve(message.result);
       return;
     }
-    // A notification nothing is listening for is dropped, not an error: a
-    // host is free to announce more than this machine currently consumes.
-    for (const handler of listeners.get(message.method) ?? []) handler(message.params);
+    if ("method" in message) {
+      // Something the host wants FROM this daemon: the method it wants
+      // served, AND an id of its own minting saying it is waiting for the
+      // answer. Both, not the id alone — the reply is written back into the
+      // HOST's ask id space, so a line carrying an id and no method, answered
+      // here, would put `no method named undefined` under an id that may
+      // belong to an ask the host really is waiting on and settle it with
+      // nonsense. That line is dropped below instead: dropping risks a wait,
+      // and a wait is what the host's own `settle_all` already ends, while
+      // answering risks corrupting a live ask.
+      if ("id" in message) {
+        answer(message);
+        return;
+      }
+      // A notification nothing is listening for is dropped, not an error: a
+      // host is free to announce more than this machine currently consumes.
+      for (const handler of listeners.get(message.method) ?? []) handler(message.params);
+      return;
+    }
+    // No outcome, no method: not an answer, not an ask, not an announcement.
+    // Dropped the way a line that will not parse is, and for the same reason
+    // — a host writing one has a defect, and this end going on answering
+    // every other kernel on the machine is worth more than saying so.
+  }
+
+  /**
+   * Runs whatever this daemon serves for one of the host's asks, and writes
+   * back exactly one reply.
+   *
+   * A method nothing here serves is answered too, never dropped: the host is
+   * blocked on this reply, and a promise nothing settles is indistinguishable
+   * from a machine that has stopped answering. It is the same rule `host.py`
+   * already applies to a method IT does not know.
+   */
+  function answer(ask: HostAsk): void {
+    const handler = served.get(ask.method);
+    if (handler === undefined) {
+      send({
+        id: ask.id,
+        error: { message: `this machine's daemon serves no method named ${ask.method}` },
+      });
+      return;
+    }
+    // Wrapped rather than called bare, so a handler that throws
+    // synchronously settles exactly where one that rejects does. Called
+    // bare, that throw would leave this data handler — which nothing is
+    // prepared to catch — and take the host's reply with it.
+    void (async () => handler(ask.params))().then(
+      (result) => send({ id: ask.id, result }),
+      (err: unknown) =>
+        send({
+          id: ask.id,
+          error: { message: err instanceof Error ? err.message : String(err) },
+        }),
+    );
+  }
+
+  /**
+   * One line to the host's stdin, or the death of a host whose input stream
+   * is already gone.
+   *
+   * A stream that has already ended or been destroyed cannot take a write,
+   * and the process on the other end of it is not going to read one either
+   * way — attempting it is what a data handler nothing is prepared to catch
+   * would throw out of. But a stream reaches this state on a clean close as
+   * often as on a failed write, and a clean close fires no `error` and no
+   * `exit` on its own: skipping the write without going through `die` here
+   * would leave every call still outstanding waiting on a settlement nothing
+   * left is going to produce.
+   *
+   * Both directions go through here, which is why it is a function rather
+   * than a guard inside `call`: a reply to one of the host's own asks is
+   * written from inside the data handler, exactly where a throw has nobody
+   * to catch it.
+   */
+  function send(message: unknown): void {
+    if (child.stdin?.destroyed || child.stdin?.writableEnded) {
+      die("its input stream is gone");
+      return;
+    }
+    child.stdin?.write(`${JSON.stringify(message)}\n`);
   }
 
   function die(reason: string): void {
@@ -154,25 +244,17 @@ export function startKernelHost(options: {
       if (closed) return Promise.reject(new Error("this machine is stopping its kernel host"));
       const id = nextId++;
       return new Promise<unknown>((resolve, reject) => {
+        // Registered before the write, so a stream already gone settles this
+        // call through `die` rather than leaving it outstanding forever.
         outstanding.set(id, { resolve, reject });
-        // A stream that has already ended or been destroyed cannot take a
-        // write, and the process on the other end of it is not going to read
-        // one either way — attempting it is what a data handler nothing is
-        // prepared to catch would throw out of. But a stream reaches this
-        // state on a clean close as often as on a failed write, and a clean
-        // close fires no `error` and no `exit` on its own: skipping the
-        // write without going through `die` here would leave this call, and
-        // every one still outstanding, waiting on a settlement nothing left
-        // is going to produce.
-        if (child.stdin?.destroyed || child.stdin?.writableEnded) {
-          die("its input stream is gone");
-          return;
-        }
-        child.stdin?.write(`${JSON.stringify({ id, method, params })}\n`);
+        send({ id, method, params });
       });
     },
     on(method, handler) {
       listeners.set(method, [...(listeners.get(method) ?? []), handler]);
+    },
+    serve(method, handler) {
+      served.set(method, handler);
     },
     stop() {
       closed = true;

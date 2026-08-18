@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import signal
+import sys
 import time
 from pathlib import Path
 
@@ -18,7 +19,9 @@ pytestmark = pytest.mark.integration
 
 RSCRIPT = shutil.which("Rscript")
 
-IDENTITY = KernelIdentity(session_id="ses_1", task_id="task_1", name="main", language="r")
+IDENTITY = KernelIdentity(
+    session_id="ses_1", task_id="task_1", name="main", language="r", environment="r"
+)
 
 FIXTURE = (
     Path(__file__).resolve().parents[2]
@@ -414,6 +417,45 @@ def test_a_kernel_starts_with_none_of_the_machines_own_r_startup_files(tmp_path,
         assert planted["outputs"][-1]["data"]["text/plain"].strip() == "[1] FALSE"
         carried = started.execute("Sys.getenv('LYKEION_PLANTED')")
         assert carried["outputs"][-1]["data"]["text/plain"].strip() == '[1] ""'
+    finally:
+        started.stop()
+
+
+def test_an_r_kernel_is_not_handed_the_environment_lykeion_itself_runs_in(tmp_path, monkeypatch):
+    """An R cell leads with R's own `bin`, and inherits no venv of ours.
+
+    Not about R environments — none can be built this phase. It is the same
+    leak of the product's own installation into a researcher's cell, in a
+    second file: an R cell's `system("pip install …")`, and anything reached
+    through `reticulate`, read `PATH` and `VIRTUAL_ENV` exactly as a shell
+    cell does, and found Lykeion's.
+
+    An Rscript's root is neither a virtualenv nor a conda environment, so for
+    one the honest answer is the removal half of the rule and nothing else.
+    Both variables are set on the host first, so what the cell reports is a
+    value that had to be taken away rather than one this machine never had.
+    """
+    if RSCRIPT is None:
+        pytest.skip("this machine has no Rscript, so it holds no R kernels")
+    monkeypatch.setenv("VIRTUAL_ENV", sys.prefix)
+    monkeypatch.setenv("CONDA_PREFIX", "/opt/conda/envs/somebody-elses")
+
+    started = launch(IDENTITY, ["/usr/bin/env"], RSCRIPT, str(tmp_path))
+    try:
+        result = started.execute(
+            "writeLines(Sys.getenv('VIRTUAL_ENV', unset = '<absent>'))\n"
+            "writeLines(Sys.getenv('CONDA_PREFIX', unset = '<absent>'))\n"
+            "writeLines(strsplit(Sys.getenv('PATH'), .Platform$path.sep)[[1]][1])\n"
+        )
+        said = "".join(
+            output["text"]
+            for output in result["outputs"]
+            if output["kind"] == "stream" and output["name"] == "stdout"
+        )
+        named, conda, leading = said.splitlines()
+        assert named == "<absent>"
+        assert conda == "<absent>"
+        assert leading == os.path.dirname(RSCRIPT)
     finally:
         started.stop()
 

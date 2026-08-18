@@ -12,13 +12,25 @@ import json
 import threading
 from typing import Any, IO, Iterator
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 4
 
 # One writer at a time. Everything a host answers goes onto a single stream
 # the other end reads a line at a time, so two of them written together must
 # not become one line neither is on: a partial line is worse than a delayed
 # one, because it is a parse error that discards a message nothing resends.
 _writing = threading.Lock()
+
+
+def is_reply(message: dict[str, Any]) -> bool:
+    """Whether this message answers something rather than asking for it.
+
+    One predicate for both directions, because both now travel this stream:
+    the daemon's requests and this host's own asks both carry an `id` and a
+    `method`, and only an answer carries an outcome. Read off the id instead
+    and every request the daemon sends would look like the reply to an ask
+    this host is waiting on.
+    """
+    return "result" in message or "error" in message
 
 
 def write_message(stream: IO[str], message: dict[str, Any]) -> None:

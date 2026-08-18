@@ -26,6 +26,17 @@ describe("UI ↔ core contract", () => {
     }
   });
 
+  it("the in-memory core declares no environments at all, having seeded none", async () => {
+    // The strict half of the conformance suite's `kernelEnvList` check,
+    // asserted here because it is only true of THIS core. A real lab seeds
+    // the `python` starter on every boot, so the shared suite can only bound
+    // the list; this core seeds nothing, so the honest expectation is
+    // exactly nothing — and that is what makes "invents nothing" a claim
+    // that can fail rather than one that passes on an empty array.
+    const api = createInMemoryApi();
+    expect(await api.kernelEnvList()).toEqual([]);
+  });
+
   it("CoreInfo's shape is just name and version", () => {
     const sample: CoreInfo = { name: "lykeion-core", version: "0.1.0" };
     expect(Object.keys(sample).sort()).toEqual(["name", "version"]);

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "./sqlite";
 import { migrate } from "./migrations";
-import { notebookFor, recordCell, type CellToRecord } from "./cells";
+import { notebookFor, readReportedCell, recordCell, type CellToRecord } from "./cells";
 import type { Store } from "./store";
 
 const dirs: string[] = [];
@@ -115,4 +115,75 @@ it("round-trips a cell's outputs, snake-cased fields included", () => {
     { kind: "stream", name: "stdout", text: "2\n" },
     { kind: "execute_result", execution_count: 1, data: { "text/plain": "2" }, data_ref: {} },
   ]);
+});
+
+it("keeps what a cell installed into its kernel, on the cell that installed it", () => {
+  // The far end of the whole wire. An inline install is gone from the machine
+  // the moment that kernel restarts, so the cell is the only place the fact
+  // can be kept at all — and it is exactly where a researcher scrolling back
+  // next week goes looking for why an import that worked has stopped.
+  const store = freshStore();
+  recordCell(store, frameFor({ installed: ["anndata", "scanpy"] }), 1000);
+  expect(notebookFor(store, "tk_1")[0]!.installed).toEqual(["anndata", "scanpy"]);
+});
+
+it("leaves the field off a cell that installed nothing", () => {
+  // Absent is not zero, at the end of the wire as at the start of it: a
+  // reader shows this where it is present, and `[]` on every ordinary cell
+  // would put the surface on every row of every notebook in this lab.
+  const store = freshStore();
+  recordCell(store, frameFor(), 1000);
+  expect("installed" in notebookFor(store, "tk_1")[0]!).toBe(false);
+});
+
+it("leaves the field off a cell recorded before this lab kept the answer", () => {
+  // Every cell written before the column existed reads NULL, which is the
+  // same answer as a cell that installed nothing: there is nothing to show
+  // here. An invented `[]` would be this lab claiming it looked.
+  const store = freshStore();
+  recordCell(store, frameFor(), 1000);
+  store.run(`UPDATE cells SET installed = NULL`);
+  expect("installed" in notebookFor(store, "tk_1")[0]!).toBe(false);
+});
+
+/** One cell as a machine reports it, every field defaulted except the ones a
+ *  test names — the shape `readReportedCell` is handed off the wire, which
+ *  differs from `CellToRecord` in carrying its own `ts` and naming no Task. */
+function reportFor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kernelId: "k_1",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 1,
+    source: "1 + 1",
+    origin: { surface: "agent", by: "a_claude" },
+    ok: true,
+    wallMs: 12,
+    ts: 42,
+    outputs: [],
+    ...overrides,
+  };
+}
+
+it("reads a reported cell's installed packages as a list of names", () => {
+  expect(readReportedCell(reportFor({ installed: ["scanpy"] }))?.installed).toEqual(["scanpy"]);
+});
+
+it("refuses a report whose installed packages are not names", () => {
+  // Stored as opaque JSON and read straight back into a browser, the same as
+  // `outputs` — so an array of anything at all would put whatever a machine
+  // sent onto a notebook page.
+  expect(readReportedCell(reportFor({ installed: "scanpy" }))).toBeUndefined();
+  expect(readReportedCell(reportFor({ installed: [1, 2] }))).toBeUndefined();
+  expect(readReportedCell(reportFor({ installed: [{ name: "scanpy" }] }))).toBeUndefined();
+});
+
+it("folds an empty installed list to no field rather than losing the cell over it", () => {
+  // Absent-is-not-zero is a rule about what a producer WRITES. On this side
+  // the two say the same thing, and refusing the cell would cost a researcher
+  // the whole row to enforce a distinction nothing here reads.
+  const read = readReportedCell(reportFor({ installed: [] }));
+  expect(read).toBeDefined();
+  expect("installed" in read!).toBe(false);
 });

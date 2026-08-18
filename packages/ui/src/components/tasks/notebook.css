@@ -448,6 +448,17 @@
 .nbp-setup-btn:disabled { opacity: 0.45; cursor: default; }
 .nbp-envpick { display: flex; gap: 2px; flex-wrap: wrap; }
 
+/* The environment chips as a row of the panel in their own right, rather
+   than a row inside the Setup surface: choosing an environment is how a
+   researcher reaches one this Task has not used yet, which is the state
+   where no Setup surface exists to hold the chips. */
+.nbp-envrow {
+  padding: 6px 12px;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-2);
+  flex: 0 0 auto;
+}
+
 .nbp-envchip {
   appearance: none;
   border: 1px solid transparent;
@@ -478,4 +489,24 @@
   border-radius: 7px;
   padding: 6px 8px;
   white-space: pre-wrap;
+}
+
+/* What a cell installed into its own kernel and nothing else. Sits between
+   the source and the outputs, because that is the order it happened in: the
+   cell ran, it installed something, and then it printed. Warn-coloured
+   rather than danger — nothing went wrong, and a red line here would read as
+   a failed cell to somebody scanning the ledger for one. */
+.nbp-cell-installed {
+  margin: 0;
+  padding: 5px 8px;
+  border-top: 1px solid var(--line-soft);
+  font-size: var(--type-micro);
+  line-height: 1.5;
+  color: var(--ink-tertiary);
+  background: var(--surface-2);
+}
+
+.nbp-cell-installed-names {
+  font-family: var(--font-mono);
+  color: var(--ink-muted);
 }

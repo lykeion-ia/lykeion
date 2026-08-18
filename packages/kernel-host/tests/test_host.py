@@ -1,7 +1,15 @@
 import io
 import json
+import os
+import sys
+import threading
+import time
+from typing import Any, IO
 
-from lykeion_kernel.host import serve
+import pytest
+
+from lykeion_kernel.host import Holding, _arriving, _execute, serve
+from lykeion_kernel.mcp.endpoint import Endpoints
 from lykeion_kernel.registry import Registry
 
 CELL = {
@@ -11,6 +19,21 @@ CELL = {
     "language": "python",
     "origin": {"surface": "agent", "by": "claude"},
 }
+
+
+def python_environment(*, says: str | None = None) -> list[dict]:
+    """One Python environment, the shape `kernel.configure_session` takes on
+    the wire, optionally running a boundary that says something on start."""
+    prefix = ["/usr/bin/env"] if says is None else ["/usr/bin/env", f"LYKEION_BOUNDARY={says}"]
+    return [
+        {
+            "language": "python",
+            "name": "python",
+            "interpreter": sys.executable,
+            "prefix": prefix,
+            "default": True,
+        }
+    ]
 
 
 def request(method: str, params: dict, request_id: int | None = None) -> io.StringIO:
@@ -32,7 +55,7 @@ def test_answers_hello_with_what_it_is():
 
     line = stdout.getvalue().strip()
     assert '"id": 1' in line
-    assert '"protocol": 2' in line
+    assert '"protocol": 4' in line
 
 
 def test_an_unknown_method_is_answered_rather_than_ignored():
@@ -58,8 +81,7 @@ def test_a_call_whose_params_are_not_an_object_is_answered_and_the_host_goes_on(
                 "session_id": "ses_1",
                 "task_id": "tk_1",
                 "workspace": str(tmp_path),
-                "prefixes": {"python": ["/usr/bin/env"]},
-                "environments": {"python": "python"},
+                "environments": python_environment(),
             },
         }
     )
@@ -131,6 +153,38 @@ def test_a_kernel_this_host_does_not_hold_is_named_back_rather_than_invented():
         assert "k_nothing" in replies(stdout)[0]["error"]["message"]
 
 
+def test_restarting_an_environment_needs_no_session_and_names_no_kernel():
+    """What has changed is a DIRECTORY on this machine.
+
+    Every session with a kernel in that environment is affected, not only the
+    one whose agent asked for the packages — and the daemon reaching this has
+    a rebuild it has just carried out, not a session. A method that required
+    one here would leave a colleague's kernel running against an interpreter
+    `uv venv --clear` has already deleted.
+
+    A host holding nothing answers with an empty list rather than refusing:
+    the first build of an environment nothing is bound to is the ordinary
+    case, and a refusal would turn every one of them into a reported failure.
+    """
+    stdout = io.StringIO()
+
+    serve(request("kernel.restart_environment", {"name": "crispr", "reason": "scanpy was added"}, 5), stdout)
+
+    reply = replies(stdout)[0]
+    assert reply["id"] == 5
+    assert reply["result"] == {"restarted": []}
+
+
+def test_restarting_an_environment_with_no_name_is_refused():
+    # The one field this cannot do without: a rebuild is about one
+    # environment, and a call that named none could only mean all of them.
+    stdout = io.StringIO()
+
+    serve(request("kernel.restart_environment", {"reason": "scanpy was added"}, 6), stdout)
+
+    assert "needs a name" in replies(stdout)[0]["error"]["message"]
+
+
 def test_a_notification_whose_handler_raises_is_still_not_answered():
     stdout = io.StringIO()
 
@@ -162,10 +216,7 @@ def test_a_session_the_daemon_confines_gets_its_boundary_and_starts_kernels_in_i
                 "session_id": "ses_1",
                 "task_id": "tk_1",
                 "workspace": str(tmp_path),
-                "prefixes": {
-                    "python": ["/usr/bin/env", "LYKEION_BOUNDARY=what-the-daemon-rendered"]
-                },
-                "environments": {"python": "python"},
+                "environments": python_environment(says="what-the-daemon-rendered"),
             },
         }
     )
@@ -188,13 +239,113 @@ def test_a_session_the_daemon_confines_gets_its_boundary_and_starts_kernels_in_i
     ]
 
 
+def test_a_cell_naming_a_second_environment_over_the_wire_runs_in_it(spoken, tmp_path):
+    spoken.send(
+        {
+            "id": 1,
+            "method": "kernel.configure_session",
+            "params": {
+                "session_id": "ses_1",
+                "task_id": "tk_1",
+                "workspace": str(tmp_path),
+                "environments": [
+                    {
+                        "language": "python", "name": "python",
+                        "interpreter": sys.executable, "prefix": ["/usr/bin/env"], "default": True,
+                    },
+                    {
+                        "language": "python", "name": "crispr",
+                        "interpreter": sys.executable, "prefix": ["/usr/bin/env"],
+                    },
+                ],
+            },
+        }
+    )
+    spoken.until(lambda: spoken.reply(1), "the session confined")
+
+    spoken.send(
+        {
+            "id": 2,
+            "method": "kernel.execute",
+            "params": {**CELL, "source": "1", "environment": "crispr"},
+        }
+    )
+    ran = spoken.until(lambda: spoken.reply(2), "the cell run in the environment it named")
+
+    assert ran["result"]["environment"] == "crispr"
+
+
+def test_a_cell_runs_against_the_identity_its_place_was_taken_for(tmp_path):
+    """`_arriving` resolves a cell's identity once, on the reading thread,
+    and takes its place in that kernel's queue; `_execute` runs the cell
+    later, on a worker thread of its own. `identity_for` reads live session
+    state, so if `_execute` resolved its own identity instead of using the
+    one its place already carries, a session reconfigured in between could
+    have it running a different kernel than the one that queued for it — a
+    place taken in kernel A's turn, evaluated against kernel B's, which has
+    no correct outcome (`Turn.taken` reads `self._waiting[0]` on a queue
+    that place was never added to; on an empty one, `IndexError`).
+
+    Forced deterministically rather than raced: `_arriving` and `_execute`
+    are the same two functions `serve()`'s reading loop and its worker
+    thread call, called here directly, in the same order and with the same
+    reconfiguration landing between them that a real race would need luck
+    to produce — this is not a test that could pass by chance where a real
+    race would sometimes lose. `python` stays declared across the
+    reconfiguration, so a bug that re-resolved would not be masked by the
+    environment it moved to having simply vanished from the session — it
+    would instead run in the wrong kernel and be caught by the assertion,
+    or crash outright as described above.
+    """
+    registry = Registry([])
+    holding = Holding(registry=registry, endpoints=Endpoints(registry))
+    try:
+        registry.configure_session(
+            session_id="ses_1",
+            task_id="tk_1",
+            workspace=str(tmp_path),
+            environments=[
+                {
+                    "language": "python", "name": "python",
+                    "interpreter": sys.executable, "prefix": ["/usr/bin/env"], "default": True,
+                },
+            ],
+        )
+        params = {**CELL, "source": "1"}
+
+        place = _arriving(holding, "kernel.execute", params)
+        assert place is not None
+
+        registry.configure_session(
+            session_id="ses_1",
+            task_id="tk_1",
+            workspace=str(tmp_path),
+            environments=[
+                {
+                    "language": "python", "name": "python",
+                    "interpreter": sys.executable, "prefix": ["/usr/bin/env"],
+                },
+                {
+                    "language": "python", "name": "crispr",
+                    "interpreter": sys.executable, "prefix": ["/usr/bin/env"], "default": True,
+                },
+            ],
+        )
+
+        cell = _execute(holding, params, place)
+
+        assert cell["ok"] is True
+        assert cell["environment"] == "python"
+    finally:
+        registry.shutdown()
+
+
 def test_a_confinement_missing_what_it_is_made_of_is_refused():
     whole = {
         "session_id": "ses_1",
         "task_id": "tk_1",
         "workspace": "/w",
-        "prefixes": {"python": []},
-        "environments": {"python": "python"},
+        "environments": python_environment(),
     }
     for missing in ("session_id", "task_id", "workspace"):
         stdout = io.StringIO()
@@ -202,21 +353,57 @@ def test_a_confinement_missing_what_it_is_made_of_is_refused():
         serve(request("kernel.configure_session", params, 1), stdout)
         assert f"needs a {missing}" in replies(stdout)[0]["error"]["message"]
 
-    # A boundary is one argument list per language, and anything else is not
-    # one this host could concatenate an interpreter onto.
-    for prefixes in ("--", {"python": [7]}, {"python": "not-a-list"}, None):
-        stdout = io.StringIO()
-        serve(request("kernel.configure_session", {**whole, "prefixes": prefixes}, 1), stdout)
-        assert "one argument list per language" in replies(stdout)[0]["error"]["message"]
-
-    # An environment is one name per language, named the same way.
-    for environments in ("--", {"python": 7}, None):
+    # A confinement is a list of environments, and anything this process
+    # cannot concatenate an interpreter onto is not one of them.
+    malformed = [
+        "--",
+        None,
+        [7],
+        [{"language": "python", "interpreter": sys.executable, "prefix": ["/usr/bin/env"]}],
+        [{"language": "python", "name": "python", "interpreter": 7, "prefix": ["/usr/bin/env"]}],
+        [{"language": "python", "name": "python", "interpreter": sys.executable, "prefix": "not-a-list"}],
+        [{"language": "python", "name": "python", "interpreter": sys.executable, "prefix": [7]}],
+    ]
+    for environments in malformed:
         stdout = io.StringIO()
         serve(
             request("kernel.configure_session", {**whole, "environments": environments}, 1),
             stdout,
         )
-        assert "environment is named once per language" in replies(stdout)[0]["error"]["message"]
+        assert "a confinement is a list of environments" in replies(stdout)[0]["error"]["message"]
+
+
+def test_the_declaration_list_arrives_from_the_wire_or_is_left_absent():
+    """The key the daemon leaves off when the lab would not answer.
+
+    Absent and empty are two different messages here, and the host has to
+    keep them apart all the way from the wire: a session told nothing about
+    what this lab declares must not be configured as one told the lab
+    declares nothing, because the refusals downstream read the two
+    differently.
+    """
+    whole = {
+        "session_id": "ses_1",
+        "task_id": "tk_1",
+        "workspace": "/w",
+        "environments": python_environment(),
+    }
+
+    said = Registry([])
+    serve(request("kernel.configure_session", {**whole, "declared": ["python", "crispr"]}, 1), io.StringIO(), said)
+    assert said.confinement_for("ses_1").declared == frozenset({"python", "crispr"})
+
+    declared_none = Registry([])
+    serve(request("kernel.configure_session", {**whole, "declared": []}, 1), io.StringIO(), declared_none)
+    assert declared_none.confinement_for("ses_1").declared == frozenset()
+
+    never_asked = Registry([])
+    serve(request("kernel.configure_session", whole, 1), io.StringIO(), never_asked)
+    assert never_asked.confinement_for("ses_1").declared is None
+
+    stdout = io.StringIO()
+    serve(request("kernel.configure_session", {**whole, "declared": [{"name": "crispr"}]}, 1), stdout)
+    assert "a declaration list is a list of names" in replies(stdout)[0]["error"]["message"]
 
 
 def test_the_host_says_which_kernels_it_is_holding():
@@ -274,3 +461,115 @@ def test_a_kernel_this_host_holds_is_ended_when_its_own_stdin_does(prefix):
     serve(stdin, stdout, holding)
 
     assert holding.list()[0]["state"] == "stopped"
+
+
+def _reading() -> tuple[IO[str], IO[str]]:
+    """A real pipe, so a test can end this host's stdin the way the daemon
+    does — by closing the far end — rather than by handing `serve` a stream
+    that was already finished before it started."""
+    read_fd, write_fd = os.pipe()
+    return os.fdopen(read_fd, "r"), os.fdopen(write_fd, "w", buffering=1)
+
+
+def _until(check, what: str, seconds: float = 5.0) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if check():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"{what} never happened")
+
+
+def test_a_reply_from_the_daemon_reaches_the_thread_that_asked():
+    """The second direction, read the way the daemon writes it.
+
+    An ask carries this host's own id and the daemon answers under it. The
+    reply carries an id and no method, so a loop that read it as a request
+    would answer it with `no method named None` and leave the thread that
+    asked blocked on something nobody is going to send.
+    """
+    stdin, daemon = _reading()
+    stdout = io.StringIO()
+    kernels = Registry([])
+    serving = threading.Thread(target=serve, args=(stdin, stdout, kernels), daemon=True)
+    serving.start()
+    try:
+        _until(lambda: kernels.ask_daemon is not None, "the asking side being wired")
+        answered: list[Any] = []
+        asking = threading.Thread(
+            target=lambda: answered.append(
+                kernels.ask_daemon("environment.create", {"name": "crispr"})
+            ),
+            daemon=True,
+        )
+        asking.start()
+        _until(lambda: '"environment.create"' in stdout.getvalue(), "the ask being written")
+        ask = json.loads(stdout.getvalue().splitlines()[-1])
+        assert ask["params"] == {"name": "crispr"}
+        # Numbered from this host's own counter, which starts at 1 and knows
+        # nothing about how many requests the daemon has sent.
+        assert ask["id"] == 1
+
+        daemon.write(json.dumps({"id": ask["id"], "result": {"name": "crispr"}}) + "\n")
+        asking.join(timeout=5)
+        assert not asking.is_alive()
+        assert answered == [{"name": "crispr"}]
+        # Answered, and not also mistaken for a call: nothing was written
+        # back about a method nobody named.
+        assert "no method named" not in stdout.getvalue()
+    finally:
+        daemon.close()
+        serving.join(timeout=5)
+
+
+def test_an_ask_waiting_on_a_reply_is_settled_when_the_stream_ends():
+    """A daemon that closed this host's stdin is never going to answer.
+
+    Settled where the stream ends rather than left blocked: the thread
+    waiting is inside a tool call somebody is watching, and a promise nothing
+    settles is indistinguishable from a machine that stopped answering. It is
+    also what keeps that thread from sitting out the whole draining deadline
+    for a reply that cannot arrive.
+    """
+    stdin, daemon = _reading()
+    stdout = io.StringIO()
+    kernels = Registry([])
+    serving = threading.Thread(target=serve, args=(stdin, stdout, kernels), daemon=True)
+    serving.start()
+    _until(lambda: kernels.ask_daemon is not None, "the asking side being wired")
+    outcome: list[Any] = []
+    def waiting() -> None:
+        try:
+            outcome.append(kernels.ask_daemon("environment.create", {"name": "crispr"}))
+        except ValueError as failure:
+            outcome.append(failure)
+    asking = threading.Thread(target=waiting, daemon=True)
+    asking.start()
+    _until(lambda: '"environment.create"' in stdout.getvalue(), "the ask being written")
+
+    daemon.close()
+
+    asking.join(timeout=2)
+    assert not asking.is_alive()
+    assert isinstance(outcome[0], ValueError)
+    assert "no longer answering" in str(outcome[0])
+    serving.join(timeout=5)
+    assert not serving.is_alive()
+
+
+def test_an_ask_made_after_the_stream_ended_is_refused_rather_than_blocked():
+    """The same fact, asked later. A tool call that reaches for the daemon
+    after it has gone is owed the refusal the blocked one got, not a wait
+    that nothing can end."""
+    stdin, daemon = _reading()
+    stdout = io.StringIO()
+    kernels = Registry([])
+    serving = threading.Thread(target=serve, args=(stdin, stdout, kernels), daemon=True)
+    serving.start()
+    _until(lambda: kernels.ask_daemon is not None, "the asking side being wired")
+    ask = kernels.ask_daemon
+    daemon.close()
+    serving.join(timeout=5)
+
+    with pytest.raises(ValueError, match="no longer answering"):
+        ask("environment.create", {"name": "crispr"})

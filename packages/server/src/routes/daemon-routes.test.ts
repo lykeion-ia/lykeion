@@ -8,6 +8,9 @@ import { handleDaemonRoute, resolveMachine } from "./daemon-routes";
 import { changeRecorder } from "../api/changes";
 import { createChannel } from "../channel";
 import { hashSecret } from "../auth";
+import { environmentStore } from "../store/environments";
+import { createEnvSetupRegistry, type EnvSetupRegistry } from "../env-setup-registry";
+import { createRunRelay, type RunCommand, type RunRelay } from "../run-relay";
 import type { Store } from "../store/store";
 
 const dirs: string[] = [];
@@ -33,7 +36,25 @@ function recorderFor(store: Store) {
   return changeRecorder({ store, actorId: null, now: () => NOW, channel: createChannel(store, 1000) });
 }
 
-function post(store: Store, path: string, body: unknown, authorization?: string, now: number = NOW) {
+function post(
+  store: Store,
+  path: string,
+  body: unknown,
+  authorization?: string,
+  now: number = NOW,
+  // A real registry rather than a stub, so a route that checks whether this
+  // machine was actually asked is exercised against the same object the
+  // server wires in. Fresh per call by default: a route under test that
+  // never consults it should not be able to pass by inheriting somebody
+  // else's outstanding ask.
+  envSetups: EnvSetupRegistry = createEnvSetupRegistry(),
+  // A real relay too, and fresh per call for the same reason. Nothing is
+  // attached to it by default, so a route that dispatches a command to a
+  // machine nothing is listening on gets exactly what a disconnected machine
+  // gives — which is a state this route has to survive rather than throw
+  // from, since it has already written the declaration.
+  runs: RunRelay = createRunRelay(),
+) {
   return handleDaemonRoute({
     store,
     changes: recorderFor(store),
@@ -42,6 +63,8 @@ function post(store: Store, path: string, body: unknown, authorization?: string,
     body,
     authorization,
     now,
+    envSetups,
+    runs,
   });
 }
 
@@ -735,8 +758,896 @@ it("names which of the Studies and Tasks a machine asked about are gone", () => 
   expect(result).toEqual({ status: 200, json: { studyIds: ["s_gone"], taskIds: ["t_gone"] } });
 });
 
+it("lists every declaration this lab holds to a machine it recognizes, lab-wide rather than owner-scoped", () => {
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  environmentStore(store).declare({
+    name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: NOW,
+  });
+  const result = post(store, "/daemon/kernel-envs", {}, "Bearer a-real-token");
+  expect(result!.status).toBe(200);
+  const body = result!.json as { declarations: Array<{ name: string }> };
+  expect(body.declarations.map((d) => d.name)).toEqual(["crispr"]);
+});
+
+it("refuses to list declarations to a machine it does not know", () => {
+  const store = freshStore();
+  const result = post(store, "/daemon/kernel-envs", {}, "Bearer not-a-token");
+  expect(result?.status).toBe(401);
+});
+
+/** A registry already waiting on `requestId` from `machineId`, for the
+ *  environment `name` that ask was minted for — the state the lock route
+ *  requires. `await` is deliberately not awaited: the entry has to stay
+ *  outstanding, which is exactly what a machine mid-build leaves.
+ *
+ *  `resolvedFrom` is what this lab asked that machine to resolve FROM, and it
+ *  is present because the lock route is only ever reached legitimately on the
+ *  resolving branch. Before it was here the helper produced the REPLAY shape
+ *  for everybody — `oneSetup` sends no `resolvedFrom` on that branch — so
+ *  every lock test on this branch was exercising the one shape the route now
+ *  refuses, which is why the suite could not see the hole. The replay shape
+ *  is `materializing` below, named rather than spelled as an absent argument:
+ *  a default parameter is applied to an explicit `undefined` too, so
+ *  "pass nothing here" could not have expressed it. */
+function awaiting(
+  machineId: string,
+  requestId: string,
+  name: string,
+  resolvedFrom: string[] = ["scanpy"],
+): EnvSetupRegistry {
+  const envSetups = createEnvSetupRegistry();
+  void envSetups.await(machineId, requestId, name, { resolvedFrom });
+  return envSetups;
+}
+
+/** The same, for a machine asked to MATERIALIZE a pin this lab already holds:
+ *  outstanding, addressed to this machine, naming this environment, and
+ *  carrying no request to resolve anything — which is what `oneSetup` leaves
+ *  on the replaying branch. */
+function materializing(machineId: string, requestId: string, name: string): EnvSetupRegistry {
+  const envSetups = createEnvSetupRegistry();
+  void envSetups.await(machineId, requestId, name);
+  return envSetups;
+}
+
+it("writes a lockfile and answers with the revision it became", () => {
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  environmentStore(store).declare({
+    name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: NOW,
+  });
+  const result = post(
+    store,
+    "/daemon/kernel-env/lock",
+    { requestId: "envsetup_1", name: "crispr", lockfile: "scanpy==1.9.0\n" },
+    "Bearer a-real-token",
+    NOW,
+    awaiting(machineId, "envsetup_1", "crispr", ["scanpy"]),
+  );
+  expect(result).toEqual({ status: 200, json: { lockRevision: 1 } });
+  expect(environmentStore(store).get("crispr")!.lockRevision).toBe(1);
+  expect(environmentStore(store).readLock("crispr", 1)).toBe("scanpy==1.9.0\n");
+  // And the pin can say what it was resolved from, which is the fact every
+  // other machine's replay-or-resolve decision turns on: a revision this lab
+  // cannot name the request for widens `planFor` to `resolve` for the whole
+  // lab.
+  expect(environmentStore(store).readLockRequest("crispr", 1)).toEqual(["scanpy"]);
+});
+
+it("refuses a lockfile from a machine this lab asked only to REPLAY a pin it already holds", () => {
+  // The materialize branch hands a machine this lab's own lockfile and asks
+  // it to build from that text; `oneSetup` records the difference by sending
+  // no `resolvedFrom` with the ask. Such a machine resolves nothing, so it
+  // has no pin of its own to post — and a pin accepted from it could not
+  // name what it was resolved from, which is exactly the state `planFor`
+  // answers by widening EVERY OTHER machine in this lab to `resolve`. One
+  // materialize-only machine would turn D4 off lab-wide for this
+  // environment, durably, with nothing saying so.
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  const envs = environmentStore(store);
+  envs.declare({
+    name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: NOW,
+  });
+  // Revision 1 is already pinned, which is what makes a replay the plan.
+  envs.writeLock("crispr", "scanpy==1.9.0\n", NOW, ["scanpy"]);
+
+  const result = post(
+    store,
+    "/daemon/kernel-env/lock",
+    { requestId: "envsetup_9", name: "crispr", lockfile: "scanpy==9.9.9\n" },
+    "Bearer a-real-token",
+    NOW,
+    // Outstanding, addressed to this machine, naming this environment — and
+    // asked to replay, not to resolve.
+    materializing(machineId, "envsetup_9", "crispr"),
+  );
+
+  expect(result!.status).toBe(403);
+  // Nothing moved: not the revision, not the text, not the change log. The
+  // refusal is not merely a status code.
+  expect(envs.get("crispr")!.lockRevision).toBe(1);
+  expect(envs.readLock("crispr", 1)).toBe("scanpy==1.9.0\n");
+  expect(envs.readLock("crispr", 2)).toBeUndefined();
+  expect(changeLogEntries(store).map((e) => e.kind)).not.toContain("environment-lock-written");
+});
+
+it("refuses a lockfile from a machine this lab never asked to set that environment up", () => {
+  // A pin is the one thing every OTHER machine later replays verbatim (D4),
+  // so a bearer token alone must not be enough to write one: it proves some
+  // paired machine is calling, never that it is the one this lab asked. A
+  // machine allowed to pin unasked would not merely spoil its own build, it
+  // would repin the environment lab-wide and have every colleague reproduce
+  // it faithfully.
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  environmentStore(store).declare({
+    name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: NOW,
+  });
+  const result = post(
+    store,
+    "/daemon/kernel-env/lock",
+    { requestId: "envsetup_1", name: "crispr", lockfile: "scanpy==9.9.9\n" },
+    "Bearer a-real-token",
+    NOW,
+    // Nothing outstanding: this machine was never asked.
+    createEnvSetupRegistry(),
+  );
+  expect(result!.status).toBe(403);
+  // And nothing was written — the refusal is not merely a status code.
+  expect(environmentStore(store).get("crispr")!.lockRevision).toBe(0);
+  expect(environmentStore(store).readLock("crispr", 1)).toBeUndefined();
+});
+
+it("refuses to write a lockfile for a name this lab no longer declares, rather than throwing on the raw foreign key", () => {
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  const result = post(
+    store,
+    "/daemon/kernel-env/lock",
+    { requestId: "envsetup_1", name: "gone", lockfile: "x==1\n" },
+    "Bearer a-real-token",
+    NOW,
+    // Asked for `gone` and answering about `gone`: the declaration was
+    // deleted underneath a resolve that was already in flight, which is the
+    // race this 404 exists for — not a machine reaching for a name it was
+    // never sent.
+    awaiting(machineId, "envsetup_1", "gone"),
+  );
+  expect(result!.status).toBe(404);
+  expect((result!.json as { error: string }).error).toMatch(/gone/);
+});
+
+it("refuses a pin naming an environment other than the one this machine was asked to build", () => {
+  // The residue left by binding on machine + request alone: a machine
+  // legitimately building `crispr` still has an outstanding ask, and during
+  // that window it could post a pin for `atlas` — an environment it was
+  // never sent anywhere near. A pin is durable and lab-wide, so that is not
+  // one machine spoiling its own build, it is one machine repinning a
+  // colleague's environment and having every later machine replay it.
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  const envs = environmentStore(store);
+  envs.declare({
+    name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: NOW,
+  });
+  envs.declare({
+    name: "atlas", language: "python", manager: "uv", packages: ["anndata"], createdTs: NOW,
+  });
+
+  const result = post(
+    store,
+    "/daemon/kernel-env/lock",
+    { requestId: "envsetup_1", name: "atlas", lockfile: "anndata==9.9.9\n" },
+    "Bearer a-real-token",
+    NOW,
+    // Asked for `crispr`, and only `crispr`.
+    awaiting(machineId, "envsetup_1", "crispr"),
+  );
+
+  expect(result!.status).toBe(403);
+  // Nothing written, for either name — the refusal is not merely a status.
+  expect(envs.get("atlas")!.lockRevision).toBe(0);
+  expect(envs.readLock("atlas", 1)).toBeUndefined();
+  expect(envs.get("crispr")!.lockRevision).toBe(0);
+  expect(changeLogEntries(store).map((e) => e.kind)).not.toContain("environment-lock-written");
+});
+
+it("refuses a lockfile post whose body omits the requestId, the name or the lockfile", () => {
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  const envs = environmentStore(store);
+  envs.declare({
+    name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: NOW,
+  });
+  const complete = { requestId: "envsetup_1", name: "crispr", lockfile: "scanpy==1.9.0\n" };
+
+  // Authenticated, and holding a real outstanding ask, so each of these
+  // reaches the body check rather than stopping at the 401 above it.
+  for (const omitted of ["requestId", "name", "lockfile"] as const) {
+    const body: Record<string, string> = { ...complete };
+    delete body[omitted];
+    const result = post(
+      store,
+      "/daemon/kernel-env/lock",
+      body,
+      "Bearer a-real-token",
+      NOW,
+      awaiting(machineId, "envsetup_1", "crispr"),
+    );
+    expect(result!.status).toBe(400);
+    expect((result!.json as { error: string }).error).toMatch(/requestId, a name and a lockfile/);
+  }
+  expect(envs.get("crispr")!.lockRevision).toBe(0);
+});
+
+it("refuses to write a lockfile for a machine it does not know", () => {
+  const store = freshStore();
+  const result = post(store, "/daemon/kernel-env/lock", { name: "x", lockfile: "y" }, "Bearer not-a-token");
+  expect(result?.status).toBe(401);
+});
+
+it("a report's environments field is stored, NULL when the field is absent rather than an invented empty array", () => {
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  const body = { platform: "macos-aarch64", daemonVersion: "0.1.0", capabilities: [], clis: [] };
+
+  post(store, "/daemon/report", body, "Bearer a-real-token");
+  expect(machineRow(store, machineId).environments).toBeNull();
+
+  const status = {
+    state: "ready", name: "python", language: "python", manager: "uv",
+    platform: "macos-aarch64", root: "/work/envs/python", version: "3.12.7",
+    packageCount: 6, lockRevision: 1,
+  };
+  post(store, "/daemon/report", { ...body, environments: [status] }, "Bearer a-real-token");
+  expect(JSON.parse(machineRow(store, machineId).environments as string)).toEqual([status]);
+});
+
+it("keeps what a machine last reported holding when a later report carries no environments at all", () => {
+  // The daemon omits the field rather than sending an empty one when it
+  // could not build the list — `main.ts` does exactly that when
+  // `fetchKernelEnvDeclarations` fails, and still sends the report because
+  // the fingerprint differs. Overwriting here would blank a machine that has
+  // reported honestly many times, and it would then read as "has not
+  // reported" on the Machines screen: the precise ambiguity this column was
+  // persisted to remove. Absent means "could not say", never "holds none".
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  const body = { platform: "macos-aarch64", daemonVersion: "0.1.0", capabilities: [], clis: [] };
+  const status = {
+    state: "ready", name: "python", language: "python", manager: "uv",
+    platform: "macos-aarch64", root: "/work/envs/python", version: "3.12.7",
+    packageCount: 6, lockRevision: 1,
+  };
+
+  post(store, "/daemon/report", { ...body, environments: [status] }, "Bearer a-real-token");
+  expect(JSON.parse(machineRow(store, machineId).environments as string)).toEqual([status]);
+  const afterFirst = changeLogCount(store);
+
+  // A report that says nothing about environments changes nothing.
+  post(store, "/daemon/report", body, "Bearer a-real-token");
+  expect(JSON.parse(machineRow(store, machineId).environments as string)).toEqual([status]);
+  // And is not announced as a change, since the column never moved.
+  expect(changeLogCount(store)).toBe(afterFirst);
+});
+
+it("a report records a change when environments differ, and none for repeating the same report", () => {
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  const body = { platform: "macos-aarch64", daemonVersion: "0.1.0", capabilities: [], clis: [] };
+  const status = {
+    state: "ready", name: "python", language: "python", manager: "uv",
+    platform: "macos-aarch64", root: "/work/envs/python", version: "3.12.7",
+    packageCount: 6, lockRevision: 1,
+  };
+
+  post(store, "/daemon/report", body, "Bearer a-real-token");
+  expect(changeLogCount(store)).toBe(0);
+
+  post(store, "/daemon/report", { ...body, environments: [status] }, "Bearer a-real-token");
+  expect(changeLogCount(store)).toBe(1);
+
+  // The identical report again — no second entry.
+  post(store, "/daemon/report", { ...body, environments: [status] }, "Bearer a-real-token");
+  expect(changeLogCount(store)).toBe(1);
+});
+
 it("refuses to say anything about workspaces to a machine it does not know", () => {
   const store = freshStore();
   const result = post(store, "/daemon/workspaces", { studyIds: ["s_1"] }, "Bearer not-a-token");
   expect(result?.status).toBe(401);
+});
+
+/**
+ * An environment declared on an agent's ask, once its researcher has allowed
+ * it on a card.
+ *
+ * The card is raised on the machine, in front of a person; this route is
+ * what that approval becomes in the lab. What it has to get right is WHO the
+ * declaration belongs to, because the only thing authenticating this call is
+ * a machine token — and a machine is not a person.
+ */
+
+/** A member, and one open session of theirs on `machineId`. Inserted
+ *  directly, so a test can choose whose session is on whose machine — which
+ *  is the whole of what this route decides. */
+function insertSession(
+  store: Store,
+  sessionId: string,
+  machineId: string,
+  openedBy: string,
+  endedTs?: number,
+): void {
+  store.run(
+    `INSERT INTO users (id, email, display_name, password, created_ts, seq) VALUES (?, ?, ?, ?, ?, ?)`,
+    [openedBy, `${openedBy}@lab.example`, openedBy, "irrelevant", NOW, nextSeq(store)],
+  );
+  store.run(`INSERT INTO members (user_id, role, joined_ts, seq) VALUES (?, 'member', ?, ?)`, [
+    openedBy,
+    NOW,
+    nextSeq(store),
+  ]);
+  store.run(
+    `INSERT INTO sessions (id, study_id, runtime_id, agent, opened_by, opened_ts, ended_ts, seq)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [sessionId, "s_1", machineId, "claude", openedBy, NOW, endedTs ?? null, nextSeq(store)],
+  );
+}
+
+it("declares an environment under the session's own researcher, not the machine's owner", () => {
+  // The token names the machine; only the session names the person. A lab
+  // that read the owner off the token would file a visiting colleague's
+  // environment — and the change a lab reads — under whoever happens to own
+  // the laptop it was asked on.
+  const store = freshStore();
+  const { machineId, ownerId } = insertPairedMachine(store, "a-real-token");
+  insertSession(store, "se_1", machineId, "u_ben");
+  expect(ownerId).not.toBe("u_ben");
+
+  const result = post(
+    store,
+    "/daemon/kernel-env/create",
+    { sessionId: "se_1", name: "crispr", packages: ["scanpy"] },
+    "Bearer a-real-token",
+  );
+
+  expect(result!.status).toBe(200);
+  const declaration = environmentStore(store).get("crispr")!;
+  expect(declaration.createdBy).toBe("u_ben");
+  expect(declaration.packages).toEqual(["scanpy"]);
+  expect(declaration.language).toBe("python");
+  expect(changeLogEntries(store)).toContainEqual({
+    kind: "environment-created",
+    actorId: "u_ben",
+  });
+});
+
+it("refuses to declare an environment for a session belonging to another machine", () => {
+  // A bearer token proves that SOME paired machine is calling and nothing
+  // more. Without this check, any machine in the lab could declare
+  // environments attributed to any colleague by naming their session — and
+  // every other machine would go on to build whatever it named.
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  const other = insertPairedMachine(store, "another-machine-token");
+  insertSession(store, "se_theirs", other.machineId, "u_ben");
+
+  const result = post(
+    store,
+    "/daemon/kernel-env/create",
+    { sessionId: "se_theirs", name: "crispr", packages: ["scanpy"] },
+    "Bearer a-real-token",
+  );
+
+  expect(result!.status).toBe(403);
+  // Nothing written — the refusal is not merely a status code.
+  expect(environmentStore(store).list()).toEqual([]);
+  expect(changeLogEntries(store).map((entry) => entry.kind)).not.toContain(
+    "environment-created",
+  );
+});
+
+it("refuses to declare an environment for a session that has ended", () => {
+  // Nobody is watching a session that has ended, so nobody answered a card
+  // for this — whatever the machine asking believes.
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  insertSession(store, "se_over", machineId, "u_ben", NOW - 10);
+
+  const result = post(
+    store,
+    "/daemon/kernel-env/create",
+    { sessionId: "se_over", name: "crispr", packages: ["scanpy"] },
+    "Bearer a-real-token",
+  );
+
+  expect(result!.status).toBe(403);
+  expect(environmentStore(store).list()).toEqual([]);
+});
+
+it("refuses to declare an environment to a machine it does not know", () => {
+  const store = freshStore();
+  const result = post(
+    store,
+    "/daemon/kernel-env/create",
+    { sessionId: "se_1", name: "crispr", packages: [] },
+    "Bearer not-a-token",
+  );
+  expect(result!.status).toBe(401);
+});
+
+it("refuses a create whose body omits the session, the name or the package list", () => {
+  // An absent package list is not an empty one: an environment holding only
+  // its interpreter is something a caller says, not something inferred from
+  // a field nobody sent.
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  insertSession(store, "se_1", machineId, "u_ben");
+  const complete = { sessionId: "se_1", name: "crispr", packages: ["scanpy"] };
+
+  for (const omitted of ["sessionId", "name", "packages"] as const) {
+    const body: Record<string, unknown> = { ...complete };
+    delete body[omitted];
+    expect(post(store, "/daemon/kernel-env/create", body, "Bearer a-real-token")!.status).toBe(
+      400,
+    );
+  }
+  // A list holding something that is not a package name is refused whole,
+  // never filtered down to the entries that are — a filtered list is a
+  // declaration nobody wrote, pinned for every machine in the lab.
+  expect(
+    post(
+      store,
+      "/daemon/kernel-env/create",
+      { ...complete, packages: ["scanpy", 7] },
+      "Bearer a-real-token",
+    )!.status,
+  ).toBe(400);
+  expect(environmentStore(store).list()).toEqual([]);
+});
+
+it("takes an environment holding only its interpreter", () => {
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  insertSession(store, "se_1", machineId, "u_ben");
+
+  const result = post(
+    store,
+    "/daemon/kernel-env/create",
+    { sessionId: "se_1", name: "bare", packages: [] },
+    "Bearer a-real-token",
+  );
+
+  expect(result!.status).toBe(200);
+  expect(environmentStore(store).get("bare")!.packages).toEqual([]);
+});
+
+it("refuses a name this lab already declares, in the lab's own words", () => {
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  insertSession(store, "se_1", machineId, "u_ben");
+  environmentStore(store).declare({
+    name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: NOW,
+  });
+
+  const result = post(
+    store,
+    "/daemon/kernel-env/create",
+    { sessionId: "se_1", name: "crispr", packages: ["anndata"] },
+    "Bearer a-real-token",
+  );
+
+  expect(result!.status).toBe(409);
+  // The researcher has just approved this card; the reason is the whole of
+  // what makes the refusal actionable.
+  expect((result!.json as { error: string }).error).toMatch(/already has an environment named crispr/);
+  // And the declaration that was already there is untouched.
+  expect(environmentStore(store).get("crispr")!.packages).toEqual(["scanpy"]);
+});
+
+/**
+ * Packages added to an environment this lab already declares — the other
+ * verb, and the first operation on this wire that changes something already
+ * running.
+ *
+ * Each of these names its own environment. `inFlightSetups` in
+ * `api/environments.ts` coalesces on `${machineId}:${name}` at module scope,
+ * and nothing settles the builds these dispatch, so two tests sharing a name
+ * on identically-numbered machines would have the second silently join the
+ * first's outstanding build.
+ */
+
+/** A machine paired, holding one open session, with a declaration already in
+ *  this lab and a relay attached so what the route dispatches is observable.
+ *  Everything these tests share, since not one of them is about pairing.
+ *
+ *  `pinned` is what this lab's current lockfile was resolved FROM, for a test
+ *  that needs a declaration whose pin still answers it. Omitted leaves
+ *  `lockRevision` at 0, which is a declaration NOTHING in the lab has built
+ *  yet — and which `planFor` therefore reads as still owing a build. */
+function labWithEnvironment(
+  name: string,
+  packages: string[],
+  pinned?: string[],
+): {
+  store: Store;
+  machineId: string;
+  taken: RunCommand[];
+  runs: RunRelay;
+  detach: () => void;
+} {
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  insertSession(store, "se_1", machineId, "u_ben");
+  environmentStore(store).declare({
+    name, language: "python", manager: "uv", packages, createdBy: "u_ben", createdTs: NOW,
+  });
+  if (pinned !== undefined)
+    environmentStore(store).writeLock(name, `${pinned.join("==1\n")}==1\n`, NOW, pinned);
+  const runs = createRunRelay();
+  const taken: RunCommand[] = [];
+  const detach = runs.attach(machineId, (_seq, command) => {
+    taken.push(command);
+  });
+  return { store, machineId, taken, runs, detach };
+}
+
+it("appends packages to a declaration and never replaces what it already held", () => {
+  // `manage_packages` ADDS. A call that replaced would silently uninstall
+  // everything it did not happen to mention — an agent asking for `scanpy`
+  // taking `numpy` out of every machine in the lab, with a card that said
+  // nothing about `numpy` at all.
+  const lab = labWithEnvironment("append", ["numpy", "pandas"]);
+
+  const result = post(
+    lab.store,
+    "/daemon/kernel-env/packages",
+    { sessionId: "se_1", name: "append", packages: ["scanpy"] },
+    "Bearer a-real-token",
+    NOW,
+    createEnvSetupRegistry(),
+    lab.runs,
+  );
+
+  expect(result!.status).toBe(200);
+  // The order the declaration already had, then what was genuinely new, in
+  // the order it was asked for.
+  expect(environmentStore(lab.store).get("append")!.packages).toEqual([
+    "numpy", "pandas", "scanpy",
+  ]);
+  expect((result!.json as { added: string[] }).added).toEqual(["scanpy"]);
+  // Recorded under the SESSION's researcher, never the machine's owner: the
+  // token names a machine, and only the session names a person.
+  expect(changeLogEntries(lab.store)).toContainEqual({
+    kind: "environment-packages-added",
+    actorId: "u_ben",
+  });
+  lab.detach();
+});
+
+it("adds only what is genuinely new, and rebuilds nothing when that is nothing", () => {
+  // Not an error — it is the state the caller asked for, already reached.
+  // But it must not bump the declaration or send a build either: a rebuild
+  // ends every kernel in that environment, and doing that for a call that
+  // changed nothing would take a researcher's namespace for no reason at all.
+  //
+  // Pinned from exactly what it declares, which is what makes this the state
+  // where there really is nothing to do. A declaration this lab has never
+  // resolved is a different fact — see the retry test below — and asserting
+  // "no build" against one would be asserting it of the wrong thing.
+  const lab = labWithEnvironment("noop", ["numpy", "scanpy"], ["numpy", "scanpy"]);
+  const before = changeLogCount(lab.store);
+
+  const result = post(
+    lab.store,
+    "/daemon/kernel-env/packages",
+    { sessionId: "se_1", name: "noop", packages: ["scanpy", "numpy"] },
+    "Bearer a-real-token",
+    NOW,
+    createEnvSetupRegistry(),
+    lab.runs,
+  );
+
+  expect(result!.status).toBe(200);
+  expect((result!.json as { added: string[]; building: boolean }).added).toEqual([]);
+  expect((result!.json as { building: boolean }).building).toBe(false);
+  // No duplicate, no reordering, and nothing announced.
+  expect(environmentStore(lab.store).get("noop")!.packages).toEqual(["numpy", "scanpy"]);
+  expect(changeLogCount(lab.store)).toBe(before);
+  // And no build. This is the assertion that matters: the answer's own
+  // `building: false` is a claim, and the relay is the fact.
+  expect(lab.taken).toEqual([]);
+  lab.detach();
+});
+
+it("asks for the build again when this lab's pin is behind what it declares, so a failed build can be retried", () => {
+  // The state a failed build leaves, and it is reachable through a network
+  // blip: `scanpy` was appended to the declaration, the build that was
+  // dispatched for it never landed, so the pin still answers `["numpy"]`
+  // alone. Nothing renders that state — `KernelEnvCard`'s "a revision behind"
+  // compares the declaration's own `lockRevision` against a machine's, and
+  // that never moved either — and `envs.addPackages` answers `added: []` for
+  // a package already declared. Without this, an agent asking again is told
+  // nothing was added and nothing is building, the package is still not
+  // installed anywhere, and no call this branch ships can start a build for
+  // it: the declaration sits permanently ahead of every machine in the lab.
+  const lab = labWithEnvironment("retried", ["numpy", "scanpy"], ["numpy"]);
+  const before = changeLogCount(lab.store);
+
+  const result = post(
+    lab.store,
+    "/daemon/kernel-env/packages",
+    { sessionId: "se_1", name: "retried", packages: ["scanpy"] },
+    "Bearer a-real-token",
+    NOW,
+    createEnvSetupRegistry(),
+    lab.runs,
+  );
+
+  expect(result!.status).toBe(200);
+  // Nothing was added, because nothing was new — the answer stays honest
+  // about the declaration.
+  expect((result!.json as { added: string[] }).added).toEqual([]);
+  // And nothing was written: no duplicate in the declaration, no change-log
+  // row for an append that did not happen.
+  expect(environmentStore(lab.store).get("retried")!.packages).toEqual(["numpy", "scanpy"]);
+  expect(changeLogCount(lab.store)).toBe(before);
+  // But a build IS running, and the relay is the fact behind the claim.
+  expect((result!.json as { building: boolean }).building).toBe(true);
+  const setup = lab.taken.find((command) => command.type === "kernel-env-setup");
+  expect(setup).toBeDefined();
+  expect(setup!.name).toBe("retried");
+  // Resolving, not replaying: the pin does not answer this declaration, which
+  // is the whole reason this build was owed.
+  expect(setup!.packages).toEqual(["numpy", "scanpy"]);
+  // And the reason a displaced kernel's ending carries is true of what
+  // happened — nothing was added by this call.
+  expect(setup!.reason).toBe("retried already declared scanpy and had not been built with them here yet");
+  lab.detach();
+});
+
+it("asks the calling machine to rebuild, carrying why in words", () => {
+  // The rebuild goes to the machine whose bearer token authenticated this
+  // call — a machine rebuilding its own copy, so no cross-machine
+  // authorization question arises. The reason rides the command so the
+  // machine can carry it into the ending of every kernel it displaces.
+  const lab = labWithEnvironment("rebuilt", ["numpy"]);
+
+  post(
+    lab.store,
+    "/daemon/kernel-env/packages",
+    { sessionId: "se_1", name: "rebuilt", packages: ["scanpy"] },
+    "Bearer a-real-token",
+    NOW,
+    createEnvSetupRegistry(),
+    lab.runs,
+  );
+
+  const setup = lab.taken.find((command) => command.type === "kernel-env-setup");
+  expect(setup).toBeDefined();
+  expect(setup!.name).toBe("rebuilt");
+  expect(setup!.reason).toBe("scanpy was added to rebuilt");
+  // Resolved, not replayed: nothing is pinned yet, and the packages it
+  // carries are the declaration as it now stands.
+  expect(setup!.packages).toEqual(["numpy", "scanpy"]);
+  lab.detach();
+});
+
+it("says both packages when two were added, so the ending reads as a sentence", () => {
+  const lab = labWithEnvironment("twoadded", []);
+
+  post(
+    lab.store,
+    "/daemon/kernel-env/packages",
+    { sessionId: "se_1", name: "twoadded", packages: ["scanpy", "anndata"] },
+    "Bearer a-real-token",
+    NOW,
+    createEnvSetupRegistry(),
+    lab.runs,
+  );
+
+  const setup = lab.taken.find((command) => command.type === "kernel-env-setup")!;
+  expect(setup.reason).toBe("scanpy, anndata were added to twoadded");
+  lab.detach();
+});
+
+it("refuses to add packages to a name this lab does not declare", () => {
+  // 404 rather than a create in disguise. `manage_packages` adds to what
+  // exists; declaring a new name is a different request, asked on a
+  // differently-worded card, and answering it here would install software
+  // under a question the researcher was never shown.
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  insertSession(store, "se_1", machineId, "u_ben");
+
+  const result = post(
+    store,
+    "/daemon/kernel-env/packages",
+    { sessionId: "se_1", name: "never-declared", packages: ["scanpy"] },
+    "Bearer a-real-token",
+  );
+
+  expect(result!.status).toBe(404);
+  expect((result!.json as { error: string }).error).toMatch(/never-declared/);
+  expect(environmentStore(store).list()).toEqual([]);
+});
+
+it("refuses to add packages for a session belonging to another machine", () => {
+  // The same reasoning the create route's own check rests on, and it bites
+  // harder here: without it any paired machine could install software into
+  // any environment in the lab by naming a colleague's session id.
+  const store = freshStore();
+  insertPairedMachine(store, "a-real-token");
+  const other = insertPairedMachine(store, "another-machine-token");
+  insertSession(store, "se_theirs", other.machineId, "u_ben");
+  environmentStore(store).declare({
+    name: "theirs", language: "python", manager: "uv", packages: ["numpy"], createdTs: NOW,
+  });
+
+  const result = post(
+    store,
+    "/daemon/kernel-env/packages",
+    { sessionId: "se_theirs", name: "theirs", packages: ["scanpy"] },
+    "Bearer a-real-token",
+  );
+
+  expect(result!.status).toBe(403);
+  // Nothing written — the refusal is not merely a status code.
+  expect(environmentStore(store).get("theirs")!.packages).toEqual(["numpy"]);
+});
+
+it("refuses to add packages for a session that has ended, and to a machine it does not know", () => {
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  insertSession(store, "se_over", machineId, "u_ben", NOW - 10);
+  environmentStore(store).declare({
+    name: "ended", language: "python", manager: "uv", packages: ["numpy"], createdTs: NOW,
+  });
+  const body = { sessionId: "se_over", name: "ended", packages: ["scanpy"] };
+
+  expect(post(store, "/daemon/kernel-env/packages", body, "Bearer a-real-token")!.status).toBe(403);
+  expect(post(store, "/daemon/kernel-env/packages", body, "Bearer not-a-token")!.status).toBe(401);
+  expect(environmentStore(store).get("ended")!.packages).toEqual(["numpy"]);
+});
+
+it("refuses an add of nothing, and one whose list holds something that is not a name", () => {
+  // An EMPTY list is refused here where a create takes one: an environment
+  // holding only its interpreter is something a caller can mean, and an ADD
+  // of nothing is not. A list holding a non-name is refused whole rather
+  // than filtered, because what gets installed on every machine in this lab
+  // has to be what the researcher was shown.
+  const lab = labWithEnvironment("refusals", ["numpy"]);
+  const complete = { sessionId: "se_1", name: "refusals", packages: ["scanpy"] };
+
+  for (const body of [
+    { ...complete, packages: [] },
+    { ...complete, packages: ["scanpy", 7] },
+    { ...complete, packages: ["scanpy", ""] },
+    { ...complete, packages: "scanpy" },
+    { sessionId: "se_1", packages: ["scanpy"] },
+    { name: "refusals", packages: ["scanpy"] },
+  ]) {
+    expect(
+      post(
+        lab.store,
+        "/daemon/kernel-env/packages",
+        body,
+        "Bearer a-real-token",
+        NOW,
+        createEnvSetupRegistry(),
+        lab.runs,
+      )!.status,
+    ).toBe(400);
+  }
+  expect(environmentStore(lab.store).get("refusals")!.packages).toEqual(["numpy"]);
+  expect(lab.taken).toEqual([]);
+  lab.detach();
+});
+
+async function untilCommand(
+  taken: RunCommand[],
+  matches: (command: RunCommand) => boolean,
+  what: string,
+): Promise<RunCommand> {
+  const start = Date.now();
+  for (;;) {
+    const found = taken.find(matches);
+    if (found) return found;
+    if (Date.now() - start > 2000) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+it("builds the packages of a second add that arrived while the first was still building", async () => {
+  // The failure this whole re-check exists for, driven exactly as it happens:
+  // *add scanpy*, then *add anndata* while the first build is still running.
+  // Builds coalesce — two `uv venv --clear` runs over one directory is worse —
+  // so the second add dispatches nothing of its own. Without the re-check it is
+  // answered `building: true`, is in NO build on any machine, and every kernel
+  // in the environment then restarts announcing only *scanpy*. Under a
+  // `conversation` grant the second call raises no card at all, so it goes
+  // through with nothing in front of the researcher.
+  const lab = labWithEnvironment("coalesced", ["numpy"]);
+  const envSetups = createEnvSetupRegistry();
+  const add = (packages: string[]) =>
+    post(
+      lab.store,
+      "/daemon/kernel-env/packages",
+      { sessionId: "se_1", name: "coalesced", packages },
+      "Bearer a-real-token",
+      NOW,
+      envSetups,
+      lab.runs,
+    );
+
+  expect(add(["scanpy"])!.status).toBe(200);
+  const first = await untilCommand(
+    lab.taken,
+    (command) => command.type === "kernel-env-setup",
+    "the first build",
+  );
+  expect(first.packages).toEqual(["numpy", "scanpy"]);
+
+  // The second add, while that build is still outstanding. It dispatches
+  // nothing — it joins.
+  expect(add(["anndata"])!.status).toBe(200);
+  expect(lab.taken.filter((command) => command.type === "kernel-env-setup")).toHaveLength(1);
+
+  // Now the machine finishes the first build the way a real daemon does: it
+  // pins what it was asked to resolve, then reports.
+  post(
+    lab.store,
+    "/daemon/kernel-env/lock",
+    { requestId: first.runId, name: "coalesced", lockfile: "numpy==1\nscanpy==1\n" },
+    "Bearer a-real-token",
+    NOW,
+    envSetups,
+    lab.runs,
+  );
+  envSetups.settle(lab.machineId, first.runId, {
+    ok: true,
+    status: {
+      state: "ready", name: "coalesced", language: "python", manager: "uv",
+      platform: "macos-aarch64", root: "/work/envs/coalesced", version: "3.12.7",
+      packageCount: 2, lockRevision: 1,
+    },
+  });
+
+  // A SECOND build, carrying the package the first one was never told about.
+  const second = await untilCommand(
+    lab.taken,
+    (command) => command.type === "kernel-env-setup" && command.runId !== first.runId,
+    "the second build",
+  );
+  // Resolved, not replayed: the pin the first build wrote answers a request
+  // this declaration has already grown past.
+  expect(second.lockfile).toBeUndefined();
+  expect(second.packages).toEqual(["numpy", "scanpy", "anndata"]);
+  expect(second.reason).toBe("anndata was added to coalesced");
+  lab.detach();
+});
+
+it("survives a machine that is not on its own command stream, having already written the declaration", () => {
+  // The declaration is the lab's and is already committed by the time the
+  // build is dispatched. A machine whose command stream is down is a machine
+  // that will build this the next time it is asked — it must not turn the
+  // researcher's approved change into a 500 and leave the lab with a
+  // declaration nobody was told about.
+  const lab = labWithEnvironment("unreachable", ["numpy"]);
+  lab.detach();
+
+  const result = post(
+    lab.store,
+    "/daemon/kernel-env/packages",
+    { sessionId: "se_1", name: "unreachable", packages: ["scanpy"] },
+    "Bearer a-real-token",
+    NOW,
+    createEnvSetupRegistry(),
+    lab.runs,
+  );
+
+  expect(result!.status).toBe(200);
+  expect(environmentStore(lab.store).get("unreachable")!.packages).toEqual(["numpy", "scanpy"]);
 });

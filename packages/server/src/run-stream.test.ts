@@ -18,6 +18,7 @@ import { createRevertRegistry } from "./run-revert";
 import { createKernelListRegistry } from "./kernel-list-registry";
 import { createTitleRegistry } from "./title-registry";
 import { createPendingCells } from "./kernel-cells";
+import { createEnvSetupRegistry } from "./env-setup-registry";
 
 const dirs: string[] = [];
 const servers: Array<{ close(): Promise<void> }> = [];
@@ -78,7 +79,7 @@ function freshLabServer(existingDir?: string): Promise<{
     indexHtml,
     channel,
     openStreams,
-    runs: relay, reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    runs: relay, reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
   });
   const server = createHttpServer(listener);
 

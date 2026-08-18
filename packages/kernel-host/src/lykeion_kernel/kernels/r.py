@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any, IO
 
 from ..confinement import confined
-from . import KernelIdentity
+from . import KernelIdentity, environment_of
+from ..overlay import SCRATCH_DIR
 from .python import ESCALATION_S, KERNEL_MARKER, STDERR_TAIL, start_token
 
 DRIVER = str(Path(__file__).resolve().parent.parent / "driver.R")
@@ -25,7 +26,10 @@ DRIVER = str(Path(__file__).resolve().parent.parent / "driver.R")
 # boundary aborts with `cannot create 'R_TempDir'` and never starts at all:
 # the machine's shared temporary directory is outside every workspace rule.
 # The daemon does the same for sessions, in scratch.ts.
-SCRATCH_DIR = ".lykeion"
+#
+# Imported rather than spelled again here. This name decides what a Task's
+# snapshot leaves out, and a second Python copy of it is a second place that
+# can move — see `overlay.SCRATCH_DIR`, which says what a move costs.
 
 
 def _tmp_dir(workspace: str) -> str:
@@ -303,6 +307,7 @@ def launch(
     prefix: list[str],
     interpreter: str,
     cwd: str | None = None,
+    env_extra: dict[str, str] | None = None,
 ) -> RKernel:
     """An R kernel process, started behind the prefix the daemon rendered.
 
@@ -310,9 +315,27 @@ def launch(
     declares NO_AGENT_HOME, so ~/.Rprofile and ~/.Renviron are outside the
     boundary. Without it every R kernel would begin by trying to read files it
     is denied and reporting startup noise for a boundary working correctly.
+
+    `env_extra` is on this signature because it is on every launcher's — the
+    registry calls one function type, not a per-language one. Nothing sends R
+    any today: the overlay it would carry is `PIP_TARGET` and a `PYTHONPATH`,
+    and R's own inline installs are `install.packages()`, which reads
+    `R_LIBS_USER` and has never heard of either. It is merged rather than
+    ignored so that an R overlay, when there is one, arrives here rather than
+    at a second decision about what an R kernel is started with.
     """
     argv = confined(prefix, [interpreter, "--vanilla", DRIVER])
-    env = {**os.environ, KERNEL_MARKER: _marker(identity)}
+    # The same rule the Python kernel is started under, and for the same
+    # reason: an R cell's `system("pip install …")`, and anything reached
+    # through `reticulate`, read `PATH` and `VIRTUAL_ENV` too. An Rscript's
+    # root is neither a virtualenv nor a conda environment, so what this
+    # amounts to in practice is R's own `bin` in front of `PATH` and the
+    # product's own installation no longer named to a researcher's cell.
+    env = {
+        **environment_of(interpreter, os.environ),
+        **(env_extra or {}),
+        KERNEL_MARKER: _marker(identity),
+    }
     if cwd is not None:
         # The workspace is not created here — the daemon's runs.ts guarantees
         # it through ensureTaskDir before any kernel is asked for.

@@ -14,6 +14,7 @@ import { createRevertRegistry } from "../run-revert";
 import { createKernelListRegistry } from "../kernel-list-registry";
 import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
+import { createEnvSetupRegistry } from "../env-setup-registry";
 import { createRequestListener } from "../http";
 import { apiFor, signUpOwner } from "../test-support/server-api";
 import type { Store } from "../store/store";
@@ -75,7 +76,7 @@ function freshLabServer(): Promise<{
     reverts: createRevertRegistry(),
     kernelLists: createKernelListRegistry(),
     titles: createTitleRegistry(),
-    pendingCells: createPendingCells(),
+    pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
     now: () => clock,
   });
   const server = createHttpServer(listener);

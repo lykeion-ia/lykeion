@@ -38,6 +38,8 @@ import type { ArtifactBlob } from "./artifact";
 import type {
   Machine,
   KernelEnvStatus,
+  KernelEnvDeclaration,
+  KernelEnvCreateInput,
   NotebookCell,
   RunningKernel,
   MachineCompute,
@@ -289,32 +291,65 @@ export interface LykeionApi {
   removeMachine(machineId: string): Promise<void>;
 
   /**
-   * Provisioning status of Lykeion's own managed Python environment. `absent`
-   * on a fresh install (nothing is faked); a real implementation would report
-   * the actual on-disk state. Surfaced on the Machines screen.
+   * Every environment this lab has declared. Empty on a fresh install —
+   * nothing is faked. Machine-free: what a particular machine has built is
+   * `MachineCompute.environments`, reported by that machine.
    */
-  kernelEnvStatus(): Promise<KernelEnvStatus>;
+  kernelEnvList(): Promise<KernelEnvDeclaration[]>;
 
   /**
-   * Every managed Python environment under `machine/envs` (empty on a fresh
-   * install — nothing is faked). Surfaced on the Machines screen alongside
-   * the single-env `kernelEnvStatus`.
+   * Declare an environment. Writes the declaration and nothing else: no
+   * machine downloads anything until somebody asks it to, which is what
+   * `kernelEnvSetup` is. Refuses a name this lab already has.
    */
-  kernelEnvList(): Promise<KernelEnvStatus[]>;
+  kernelEnvCreate(input: KernelEnvCreateInput): Promise<KernelEnvDeclaration>;
 
   /**
-   * Provision the named managed environment (uv venv + the scientific base
-   * for `"python"`; the R toolchain for `"r"`). `name` defaults to
-   * `"python"` when omitted. Long-running on first install; progress lines
-   * stream on `KERNEL_SETUP_CHANNEL`. Resolves to the final status.
-   * `onProgress`, when given, receives each output line directly; the
-   * in-memory implementation calls it straight away rather than routing it
-   * through the channel.
+   * Remove the declaration, lab-wide. Builds on machines are NOT deleted by
+   * this and cannot be: a machine shut in a drawer for a month cannot be
+   * told anything. Each machine's copy shows up as reclaimable the next time
+   * that machine reports.
+   */
+  kernelEnvDelete(name: string): Promise<void>;
+
+  /**
+   * Provision the named managed environment on `machineId` — a `uv venv` and
+   * `uv pip sync` this phase, confined the way every third-party build is
+   * (D5). Both are required: which machine downloads a gigabyte is a real
+   * cost, and inferring "the researcher's own machine" would be Lykeion
+   * silently choosing among a member's several paired computers on the
+   * strength of a heartbeat. The caller always knows — the Notebook knows
+   * which machine its Task runs on, and a Machines row is a machine.
+   *
+   * The first machine to set up a given environment resolves its package
+   * list into a lockfile and this lab keeps it; every later machine (on
+   * this environment's declaration, whichever member's) replays that exact
+   * lockfile rather than resolving afresh (D4) — this is the whole reason
+   * two researchers' numbers match. Long-running on the first machine;
+   * progress lines stream on `KERNEL_SETUP_CHANNEL`. Resolves to the final
+   * status.
+   *
+   * `onProgress` is part of this method's shape and is honoured by no
+   * implementation yet: the HTTP client cannot carry a callback over JSON,
+   * and the in-memory core refuses this call outright rather than pretending
+   * to provision. Lines reach the browser over `KERNEL_SETUP_CHANNEL`
+   * instead, and subscribing to it belongs to the Notebook's Setup surface.
+   * Stated rather than left describing a path that no longer exists.
    */
   kernelEnvSetup(
-    name?: string,
+    machineId: string,
+    name: string,
     onProgress?: (line: string) => void,
   ): Promise<KernelEnvStatus>;
+
+  /**
+   * Frees `machineId`'s own copy of `name` — the machine's build, never the
+   * lab-wide declaration, which stands (D2). Small, local and reversible:
+   * anyone can rebuild it from the lockfile this lab still holds. Silent
+   * about a machine that was never asked to hold it in the first place —
+   * there is nothing there to free either way.
+   */
+  kernelEnvReclaim(machineId: string, name: string): Promise<void>;
 
   /** Every kernel any machine in this lab is holding. Empty when none is. */
   listRunningKernels(): Promise<RunningKernel[]>;

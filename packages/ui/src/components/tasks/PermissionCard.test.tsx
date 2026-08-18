@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PermissionRequest } from "@lykeion/api";
 import { PermissionCard } from "./PermissionCard";
@@ -267,5 +267,212 @@ describe("PermissionCard — network access", () => {
       <PermissionCard request={REQUEST} onAllow={() => {}} onDeny={() => {}} />,
     );
     expect(screen.getByText("Code").closest("details")).toHaveAttribute("open");
+  });
+});
+
+/**
+ * Installing software: the one card whose consequence lands on machines
+ * other than this one. The environment is lab-wide and each colleague's
+ * laptop builds it, so what is being approved is not a call — it is packages
+ * on everybody's disk.
+ */
+describe("PermissionCard — an environment", () => {
+  it("names the environment and every package before anything installs", () => {
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_environments",
+          access: {
+            kind: "environment",
+            target: { name: "crispr", packages: ["scanpy", "anndata"] },
+          },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    expect(screen.getByText("Create environment crispr?")).toBeInTheDocument();
+    expect(screen.getByText(/scanpy/)).toBeInTheDocument();
+    expect(screen.getByText(/anndata/)).toBeInTheDocument();
+  });
+
+  it("offers no standing grant to install software", async () => {
+    const user = userEvent.setup();
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_packages",
+          access: {
+            kind: "environment",
+            target: { name: "python", packages: ["scanpy"] },
+          },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Choose approval scope" }),
+    );
+    // Global here would be a standing grant to run strangers' build scripts
+    // on colleagues' machines, permanently, without being asked again.
+    expect(screen.queryByText("Global")).not.toBeInTheDocument();
+    expect(screen.queryByText("This Study")).not.toBeInTheDocument();
+    expect(screen.getByText("Once")).toBeInTheDocument();
+    expect(screen.getByText("This conversation")).toBeInTheDocument();
+  });
+
+  it("starts on Once, not on this conversation", async () => {
+    // The button's label renders FROM the selected scope, so the narrower
+    // default is readable before the menu is ever opened — and a click
+    // straight through grants the narrow thing rather than the wide one.
+    const user = userEvent.setup();
+    const onAllow = vi.fn();
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_environments",
+          access: {
+            kind: "environment",
+            target: { name: "crispr", packages: ["scanpy"] },
+          },
+        }}
+        onAllow={onAllow}
+        onDeny={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Allow once" }));
+    expect(onAllow).toHaveBeenCalledWith("once");
+  });
+
+  it("expands the package list on first paint, labelled for what it is", () => {
+    // The same rule a shell command's code block follows: what is being
+    // approved is visible with zero clicks, because approving what you
+    // cannot see is not consent. The title names one or two packages at
+    // most; what actually lands on every machine in the lab is the list.
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_environments",
+          access: {
+            kind: "environment",
+            target: { name: "crispr", packages: ["scanpy", "anndata"] },
+          },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    const disclosure = screen.getByText("Packages").closest("details");
+    expect(disclosure).not.toBeNull();
+    expect(disclosure).toHaveAttribute("open");
+  });
+
+  it("says what an environment with no packages is, rather than showing nothing", () => {
+    // `[]` is legal and means an environment holding only its interpreter.
+    // Rendered as the empty string it would be a consent card with a blank
+    // where the thing being approved goes.
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_environments",
+          access: { kind: "environment", target: { name: "bare", packages: [] } },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    expect(
+      screen.getByText("bare — no packages, the interpreter only"),
+    ).toBeInTheDocument();
+  });
+
+  it("says what allowing for this conversation actually covers", () => {
+    // The grant behind it is kept by the environment's NAME, so it covers any
+    // later change to that environment for the rest of the conversation. That
+    // is the design — keyed by the package list the scope would cover nothing
+    // and ask every time — but a standing grant the researcher did not know
+    // they were giving is not, so the row has to say it.
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_packages",
+          access: {
+            kind: "environment",
+            target: { name: "python", packages: ["scanpy"] },
+          },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Choose approval scope" }));
+    expect(
+      screen.getByText("Any packages for this environment, until this chat ends"),
+    ).toBeInTheDocument();
+    // And the generic wording is gone rather than sitting beside it.
+    expect(screen.queryByText("Until this chat ends")).not.toBeInTheDocument();
+  });
+
+  it("does not pass off the daemon's own description as the agent's reason", () => {
+    // `manage_environments` publishes no "why" argument, so nothing an agent
+    // said can arrive in `detail`. What is there is the one-line name this
+    // decision is recorded under, and rendering it under "Agent-supplied
+    // reason." would attribute a description to the agent as a justification
+    // — as well as saying for a third time what the question and the package
+    // list already say.
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_environments",
+          detail: "Create the environment crispr with scanpy",
+          access: {
+            kind: "environment",
+            target: { name: "crispr", packages: ["scanpy"] },
+          },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    expect(screen.queryByText("Agent-supplied reason.")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Create the environment crispr with scanpy"),
+    ).not.toBeInTheDocument();
+    // The question and the packages are still there — this drops a third
+    // copy, not the card's content.
+    expect(screen.getByText("Create environment crispr?")).toBeInTheDocument();
+    expect(screen.getByText(/scanpy/)).toBeInTheDocument();
+  });
+
+  it("asks the other question when it is the packages tool asking", () => {
+    // One kind, two tools, two different questions. Declaring an environment
+    // and adding to one that already exists are the same fact being
+    // consented to and not the same sentence, and a card that asked one in
+    // the other's words would have a researcher approve the wrong thing.
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_packages",
+          access: {
+            kind: "environment",
+            target: { name: "python", packages: ["scanpy", "anndata"] },
+          },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    expect(
+      screen.getByText("Add scanpy and anndata to python?"),
+    ).toBeInTheDocument();
   });
 });

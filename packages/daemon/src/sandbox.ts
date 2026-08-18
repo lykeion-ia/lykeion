@@ -227,6 +227,34 @@ const SYSTEM_READ = [
 ];
 
 /**
+ * Whether the baseline every profile already carries makes `path` readable on
+ * its own — `path` beneath one of the `SYSTEM_READ` trees, which
+ * `renderSeatbeltProfile` emits unconditionally into every profile it renders.
+ *
+ * Containment and not membership: `/usr/local/opt/python@3.13` is reached by
+ * the grant on `/usr` like everything else beneath it, and a comparison
+ * against the eleven strings above would answer no about a path the kernel can
+ * plainly open.
+ *
+ * Canonical on both sides, because that is the shape the rule is written in
+ * (`renderSeatbeltProfile` canonicalizes `SYSTEM_READ` before rendering it,
+ * since the kernel canonicalizes the path being accessed and not the path in
+ * the filter). `/var/db` is `/private/var/db` on this platform, and a raw
+ * comparison would miss every path beneath it.
+ *
+ * Exported for the one caller that has a path it may either name or leave to
+ * the baseline. Nothing here decides what a profile grants — this only answers
+ * whether naming a path again would add anything.
+ */
+export function alreadySystemReadable(path: string): boolean {
+  const target = canonicalPrefix(path);
+  if (target === undefined) return false;
+  return SYSTEM_READ.map(canonicalPrefix).some(
+    (root) => root !== undefined && beneath(root, target),
+  );
+}
+
+/**
  * The directory names a credential store goes by. Denied at any depth, under
  * any grant — the researcher's keys are theirs whether they sit in their home
  * directory or inside the folder they meant to share.

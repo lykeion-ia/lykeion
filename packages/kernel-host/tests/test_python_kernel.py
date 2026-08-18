@@ -14,16 +14,19 @@ import subprocess
 import sys
 import threading
 import time
+import venv
 from typing import Any
 
 import pytest
 
 from lykeion_kernel.confinement import confined
-from lykeion_kernel.kernels import KernelIdentity
+from lykeion_kernel.kernels import KernelIdentity, environment_of
 from lykeion_kernel.kernels import python as python_kernel
 from lykeion_kernel.kernels.python import launch, start_token
 
-identity = KernelIdentity(session_id="ses_1", task_id="tk_1", name="main", language="python")
+identity = KernelIdentity(
+    session_id="ses_1", task_id="tk_1", name="main", language="python", environment="python"
+)
 
 
 def test_nothing_is_spawned_without_the_prefix_the_daemon_gave(monkeypatch):
@@ -406,6 +409,202 @@ def test_a_kernel_killed_from_outside_stops_claiming_to_be_there(prefix, until):
     try:
         os.kill(kernel.pid, signal.SIGKILL)
         until(lambda: not kernel.alive(), "the killed kernel to be reported gone")
+    finally:
+        kernel.stop()
+
+
+def test_a_kernel_outside_a_virtualenv_is_not_handed_the_hosts(prefix, tmp_path, monkeypatch):
+    """No `VIRTUAL_ENV` at all, rather than the one this host is in.
+
+    A stale name is worse than none: `pip` and `uv` read that variable and
+    act on it, and neither of them can tell that the venv it names is not the
+    one this interpreter is in. So a kernel started outside a virtualenv is
+    started with the variable removed.
+
+    The directory here has every shape of a virtualenv — `bin/python3`, a
+    root above it — and is not one, because its `pyvenv.cfg` is gone. That is
+    the test the rule makes: the file beside the root, not the path's looks.
+    """
+    plain = tmp_path / "envs" / "plain"
+    venv.create(str(plain), with_pip=False, symlinks=True)
+    (plain / "pyvenv.cfg").unlink()
+    # The host is one a daemon started from an activated virtualenv, so what
+    # the cell reports about is a value that had to be taken away.
+    monkeypatch.setenv("VIRTUAL_ENV", sys.prefix)
+
+    kernel = launch(identity, prefix, interpreter=str(plain / "bin" / "python3"))
+    try:
+        result = kernel.execute(
+            "import os, shutil\n"
+            "print(os.environ.get('VIRTUAL_ENV', '<absent>'))\n"
+            "print(shutil.which('python3'))\n"
+        )
+        named, found = stream_of(result, "stdout").splitlines()
+        assert named == "<absent>"
+        # And the PATH half of the same rule, on the same kernel: a bare name
+        # in this cell reaches the interpreter this kernel was started with.
+        assert found == str(plain / "bin" / "python3")
+    finally:
+        kernel.stop()
+
+
+def test_a_kernel_keeps_every_tool_the_researcher_installed_on_their_machine(monkeypatch):
+    """The inherited `PATH` is kept behind the environment's own, not replaced.
+
+    "Prepended, never replacing" is a guarantee this function's own docstring
+    makes, and it was the one with no test: discarding the inherited `PATH`
+    entirely passed the whole suite, because every shell cell in it runs
+    `true`, `echo`, `printf`, `exit 3` or `command -v python3` — the first
+    four are `/bin/sh` builtins and the fifth resolves inside the leading
+    directory, so nothing here ever needed a program from the machine.
+
+    What that costs in production is the compatibility half of naming an
+    environment at all: `git`, `ls`, `grep`, `samtools` and everything else a
+    researcher installed, gone from every cell.
+    """
+    monkeypatch.setenv("PATH", "/sentinel")
+
+    answer = environment_of("/opt/envs/crispr/bin/python3", os.environ)
+
+    assert answer["PATH"].split(os.pathsep) == ["/opt/envs/crispr/bin", "/sentinel"]
+
+
+@pytest.mark.parametrize(
+    "host_path",
+    [
+        None,
+        "",
+        # The half the truthiness guard did not cover, and the way this
+        # actually happens: a shell profile doing `PATH=$PATH:$SOMETHING`
+        # with `$SOMETHING` unset. Inherited, non-empty, and carrying the
+        # workspace anyway.
+        "/usr/bin:",
+        ":/usr/bin",
+        "/usr/bin::/opt/bin",
+    ],
+)
+def test_a_kernel_is_never_told_its_own_working_directory_is_on_its_path(monkeypatch, host_path):
+    """No empty entry survives, wherever in the inherited `PATH` it sat.
+
+    On POSIX an empty `PATH` component means THE CURRENT DIRECTORY, and a
+    kernel's current directory is the workspace — content the agent itself
+    may have just written. So `"<home>:"` would put that directory behind
+    every bare command name a cell runs, which is the one thing prepending a
+    directory to `PATH` must not accidentally do.
+
+    A unit test rather than a launched kernel, because two of these states are
+    states of the host process and not of a cell: this suite runs with a
+    `PATH`, and the only honest way to ask what happens without one is to take
+    it away from the process that is about to be read.
+    """
+    if host_path is None:
+        monkeypatch.delenv("PATH", raising=False)
+    else:
+        monkeypatch.setenv("PATH", host_path)
+
+    answer = environment_of("/opt/envs/crispr/bin/python3", os.environ)
+
+    entries = answer["PATH"].split(os.pathsep)
+    assert entries[0] == "/opt/envs/crispr/bin"
+    assert "" not in entries
+
+
+def test_a_kernel_is_not_handed_a_conda_environment_it_is_not_in(prefix, tmp_path, monkeypatch):
+    """`CONDA_PREFIX` and `CONDA_DEFAULT_ENV` removed rather than inherited.
+
+    Identical in class to `VIRTUAL_ENV` and swept under the same rule: a host
+    started inside a conda environment would hand every cell a prefix that
+    `pip`, `conda` and `mamba` read and act on, with nothing in any of them
+    able to tell that the environment it names is not the one this kernel is
+    in.
+
+    Both are set on the host first, so what the cell reports is a value that
+    had to be taken away rather than one that happened to be absent on the
+    machine running the suite — which is what this whole file's machine is,
+    since nobody here has conda.
+    """
+    plain = tmp_path / "envs" / "plain"
+    venv.create(str(plain), with_pip=False, symlinks=True)
+    (plain / "pyvenv.cfg").unlink()
+    monkeypatch.setenv("CONDA_PREFIX", "/opt/conda/envs/somebody-elses")
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "somebody-elses")
+
+    kernel = launch(identity, prefix, interpreter=str(plain / "bin" / "python3"))
+    try:
+        result = kernel.execute(
+            "import os\n"
+            "print(os.environ.get('CONDA_PREFIX', '<absent>'))\n"
+            "print(os.environ.get('CONDA_DEFAULT_ENV', '<absent>'))\n"
+        )
+        assert stream_of(result, "stdout").splitlines() == ["<absent>", "<absent>"]
+    finally:
+        kernel.stop()
+
+
+def test_a_kernel_is_not_handed_the_researchers_own_pip_prefix(prefix, tmp_path, monkeypatch):
+    """`PIP_PREFIX` removed, because with it no install in any cell works.
+
+    Not the same complaint as `VIRTUAL_ENV`'s. That one names the WRONG
+    environment; this one names an install destination at all, alongside the
+    `PIP_TARGET` `launch_env` writes for every Python kernel that has a
+    workspace — and pip refuses that pair outright, `ERROR: Cannot set --home
+    and --prefix together`. So a researcher who exports `PIP_PREFIX` in their
+    own shell profile — a normal thing to do on a shared machine — breaks
+    every inline install in Lykeion, and the message they get has no relation
+    to anything they typed.
+
+    Set on the host first, so what the cell reports is a value that had to be
+    taken away rather than one that happened to be absent on the machine
+    running the suite.
+    """
+    plain = tmp_path / "envs" / "plain"
+    venv.create(str(plain), with_pip=False, symlinks=True)
+    monkeypatch.setenv("PIP_PREFIX", "/opt/somebodys-prefix")
+
+    kernel = launch(identity, prefix, interpreter=str(plain / "bin" / "python3"))
+    try:
+        result = kernel.execute(
+            "import os\nprint(os.environ.get('PIP_PREFIX', '<absent>'))\n"
+        )
+        assert stream_of(result, "stdout").strip() == "<absent>"
+    finally:
+        kernel.stop()
+
+
+def test_a_kernel_inside_a_conda_environment_is_told_which_one(prefix, tmp_path, monkeypatch):
+    """`CONDA_PREFIX` names the root the interpreter is really in.
+
+    A `conda-meta` directory at the root is the mark conda leaves, and it is
+    the test here for exactly the reason `pyvenv.cfg` is the test for a
+    virtualenv: what is beside the root, never the shape of the path. Built
+    by giving a real interpreter that one mark, so this directory is a conda
+    environment by the rule the code applies and by nothing else.
+
+    `CONDA_DEFAULT_ENV` stays absent even here. Conda's own name for an
+    environment is not derivable from its prefix, and the host's name for a
+    different environment is precisely the stale value this rule removes.
+    """
+    looks_like_conda = tmp_path / "envs" / "crispr"
+    venv.create(str(looks_like_conda), with_pip=False, symlinks=True)
+    (looks_like_conda / "pyvenv.cfg").unlink()
+    (looks_like_conda / "conda-meta").mkdir()
+    monkeypatch.setenv("CONDA_PREFIX", "/opt/conda/envs/somebody-elses")
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "somebody-elses")
+
+    kernel = launch(identity, prefix, interpreter=str(looks_like_conda / "bin" / "python3"))
+    try:
+        result = kernel.execute(
+            "import os, shutil\n"
+            "print(os.environ.get('CONDA_PREFIX', '<absent>'))\n"
+            "print(os.environ.get('CONDA_DEFAULT_ENV', '<absent>'))\n"
+            "print(os.path.dirname(os.path.dirname(shutil.which('python3'))))\n"
+        )
+        named, default_env, reached = stream_of(result, "stdout").splitlines()
+        # Both halves read out of the cell: the prefix it was told, and the
+        # root a bare `python3` in it actually lands in.
+        assert named == reached
+        assert named == str(looks_like_conda)
+        assert default_env == "<absent>"
     finally:
         kernel.stop()
 

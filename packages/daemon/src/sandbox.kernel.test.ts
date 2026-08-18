@@ -20,6 +20,9 @@ import {
 } from "./sandbox";
 import { createServer } from "node:net";
 import { confinementFor } from "./agent-home";
+import { envRoot } from "./environments";
+import { kernelConfinementFor } from "./kernels";
+import { SCRATCH_DIR } from "./scratch";
 import { snapshotPathFor, takeSnapshot } from "./snapshot";
 import { ensureTaskDir } from "./workspace";
 
@@ -479,6 +482,76 @@ onDarwin("what a run needs in order to be a run", () => {
     const wrote = await inside(policy, `echo REPLACED > ${store}/token`);
     expect(wrote.code).not.toBe(0);
     expect(readFileSync(join(store, "token"), "utf8")).not.toContain("REPLACED");
+  });
+});
+
+/**
+ * The two halves of one rule, asked of the operating system together.
+ *
+ * An inline `pip install` has to WORK and has to be CONTAINED, and those are
+ * the same sentence read from either end: the overlay it lands in is
+ * writable, and the environment it must never reach is not.
+ */
+onDarwin("where an inline install may land, and where it may not", () => {
+  it("refuses a write into the environment and allows one into the overlay", async () => {
+    // The check the Claude Science audit could not run. It found the starters
+    // POSIX-writable (`drwxr-xr-x`, owned by the invoking user, `test -w`
+    // succeeding), concluded read-only must be sandbox-enforced, and left
+    // C-020 `pending` on exactly this half:
+    //   "That is a live check — attempt a write into conda/envs/python from
+    //    inside a sandboxed cell — and it belongs to S3."
+    //     — s1-session-and-kernel-model.md:183-187
+    //
+    // Asserting it is what earns Lykeion's divergence: we dropped "read-only
+    // environments" for "reproducible from a lockfile", and the unwritability
+    // still has to be true or a cell can plant a sitecustomize.py that runs on
+    // the next launch — possibly outside any boundary at all.
+    //
+    // Against the policy a real kernel is given, built by `kernelConfinementFor`
+    // from the real `envRoot`, never a hand-written one: a profile that reads
+    // correctly and denies nothing is the failure this file exists to catch.
+    const workDir = fresh();
+    const environment = envRoot(workDir, "python");
+    mkdirSync(environment, { recursive: true });
+    writeFileSync(join(environment, "pyvenv.cfg"), "version = 3.13\n");
+    const task = ensureTaskDir(workDir, "s_1", "t_1");
+    const dataDir = join(fresh(), "daemon-state");
+    mkdirSync(dataDir, { recursive: true });
+
+    // The same path `overlay.py`'s `overlay_for` builds — the Task's own
+    // scratch, one directory per kernel, one beneath it per incarnation.
+    // This end of the wire cannot call that end, so the scratch segment is
+    // read from `SCRATCH_DIR` rather than typed again: that is the constant
+    // `takeSnapshot` skips, which is the thing the Python side has to agree
+    // with, and a second literal here would let this test go on passing over
+    // a directory the snapshot no longer walks past.
+    const overlay = join(task, SCRATCH_DIR, "overlays", "k_0123456789abcdef", "1");
+
+    const { policy } = kernelConfinementFor({
+      platform: "darwin",
+      workspace: task,
+      dataDir,
+      grants: [],
+      reads: [environment],
+    });
+
+    const denied = await inside(
+      policy,
+      `echo "import os" > ${join(environment, "sitecustomize.py")}`,
+    );
+    expect(denied.code).not.toBe(0);
+    expect(existsSync(join(environment, "sitecustomize.py"))).toBe(false);
+
+    // And the other half. A cell creates this directory itself the first
+    // time pip writes into it, so the boundary has to allow the creation as
+    // well as the write — the same shape the agent's own scratch is tested
+    // in above.
+    const allowed = await inside(
+      policy,
+      `mkdir -p ${overlay} && echo ok > ${overlay}/probe.txt && cat ${overlay}/probe.txt`,
+    );
+    expect(allowed.stdout).toContain("ok");
+    expect(allowed.code).toBe(0);
   });
 });
 

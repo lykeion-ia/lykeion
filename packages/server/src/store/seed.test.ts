@@ -6,6 +6,7 @@ import { methodSkills } from "@lykeion/api";
 import { openStore } from "./sqlite";
 import { migrate } from "./migrations";
 import { seedLabContent } from "./seed";
+import { environmentStore } from "./environments";
 import type { Store } from "./store";
 
 // The seeder runs on every boot, so what it must not do is more interesting
@@ -105,4 +106,43 @@ it("leaves an edited record as the researcher left it", () => {
     store.get(`SELECT payload FROM workflows WHERE id = ?`, [workflow])!
       .payload,
   ).toContain("Renamed");
+});
+
+// R14: the starter environment has no author. On a fresh lab there is no
+// user at all yet, and `kernel_envs.created_by` used to be `NOT NULL
+// REFERENCES users(id)` under `PRAGMA foreign_keys = ON` — declaring the
+// starter there raised a foreign-key violation on first boot, before any
+// owner had signed up to receive the seed's request.
+
+it("seeds the python starter on a fresh lab with nobody signed up yet, attributed to nobody", () => {
+  const store = freshStore();
+
+  // Before R14 this threw a foreign-key violation: `created_by` demanded a
+  // row in `users` this fresh store has none of.
+  seedLabContent(store);
+
+  const python = environmentStore(store).get("python");
+  expect(python).toBeDefined();
+  // Absent, not a placeholder id: this is Lykeion's own declaration, not a
+  // person's, and inventing an owner would be a false statement about
+  // somebody the moment a user does exist.
+  expect(python!.createdBy).toBeUndefined();
+  expect(python!.language).toBe("python");
+  expect(python!.manager).toBe("uv");
+  expect(python!.lockRevision).toBe(0);
+  expect(python!.packages).toEqual([
+    "numpy", "pandas", "scipy", "matplotlib", "seaborn", "pillow",
+  ]);
+});
+
+it("does not duplicate the starter across boots", () => {
+  const store = freshStore();
+  seedLabContent(store);
+  expect(countOf(store, "kernel_envs")).toBe(1);
+
+  // A second boot must not throw on the PRIMARY KEY the first boot wrote —
+  // `environmentStore.declare` has no `ON CONFLICT` of its own, unlike the
+  // skills/workflows loops above.
+  seedLabContent(store);
+  expect(countOf(store, "kernel_envs")).toBe(1);
 });

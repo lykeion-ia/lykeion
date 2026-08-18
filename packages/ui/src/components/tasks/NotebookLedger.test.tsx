@@ -179,3 +179,30 @@ it("draws a cell's outputs as a code surface, not as loose text under one", () =
   // never a pixel count — `tokens.test.ts` polices that across the package.
   expect(rule(".nbp-out")).toMatch(/font-size:\s*var\(--type-sub\)/);
 });
+
+it("says on the cell what it installed into this kernel only", () => {
+  // The spec's own words for why this is drawn rather than merely recorded:
+  // "so a researcher scrolling back next week finds the answer on the cell
+  // that caused it." A record only the wire can see answers nobody.
+  renderLedger({ cells: [cell({ installed: ["scanpy", "anndata"] })] });
+  expect(screen.getByText(/scanpy, anndata/)).toBeInTheDocument();
+  // The impermanence is the fact that matters. A researcher reading this
+  // next week is looking at packages that are already gone.
+  expect(screen.getByText(/gone\s+when it restarts/i)).toBeInTheDocument();
+});
+
+it("says nothing on a cell that installed nothing", () => {
+  // Absent is not zero, on the surface a researcher actually reads. A badge
+  // saying "installed none" would appear on almost every cell in the
+  // notebook and mean nothing on any of them.
+  renderLedger({ cells: [cell()] });
+  expect(screen.queryByText(/installed into this kernel only/i)).not.toBeInTheDocument();
+});
+
+it("says nothing for an empty install list either", () => {
+  // The key should be absent rather than empty, and the wire is tested for
+  // that at its own end — but this is the surface where an empty list would
+  // become a visible claim, so it is refused here too rather than trusted.
+  renderLedger({ cells: [cell({ installed: [] })] });
+  expect(screen.queryByText(/installed into this kernel only/i)).not.toBeInTheDocument();
+});

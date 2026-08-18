@@ -54,6 +54,14 @@ export function MachinesScreen() {
   // change on the scale a kernel's state does.
   const tasks = usePromise(() => api.listTasks({ includeDone: true }), [api, tick]);
   const studies = usePromise(() => api.listStudies({ includeArchived: true }), [api, tick]);
+  // What the lab has declared, on the roster's slower clock: a declaration
+  // changes when somebody creates or deletes an environment, which is nothing
+  // like the rate a kernel changes state. The rows need it for two things
+  // neither of which a machine can answer about itself — whether a machine's
+  // copy is a revision behind the lab's current pin, and whether an
+  // environment is one a person declared at all, since Lykeion's own starter
+  // cannot be deleted.
+  const declarations = usePromise(() => api.kernelEnvList(), [api, tick]);
 
   const machines = q.data ?? [];
   const taskLabel = useMemo(
@@ -86,6 +94,25 @@ export function MachinesScreen() {
     },
     [api],
   );
+  // Frees one machine's own copy. Re-reads on the ROSTER's tick, not the
+  // kernel tick: what changed is what is on a disk, which is what `compute`
+  // carries, and that is polled with the machines.
+  const onReclaim = useCallback(
+    (machineId: string, name: string) => {
+      void api.kernelEnvReclaim(machineId, name).then(() => setTick((n) => n + 1));
+    },
+    [api],
+  );
+  // Removes the declaration for the whole lab. The machines' own copies are
+  // untouched by this and appear as reclaimable the next time each machine
+  // reports — which is the honest behaviour for machines that are offline
+  // right now and cannot be told anything.
+  const onDelete = useCallback(
+    (name: string) => {
+      void api.kernelEnvDelete(name).then(() => setTick((n) => n + 1));
+    },
+    [api],
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -108,6 +135,9 @@ export function MachinesScreen() {
           onInterrupt={onInterrupt}
           onStop={onStop}
           onRestart={onRestart}
+          declarations={declarations.data ?? []}
+          onReclaim={onReclaim}
+          onDelete={onDelete}
         >
           {/* The same list the first run ends on, for every later visit — this
               is where somebody comes back to when an agent stops working or

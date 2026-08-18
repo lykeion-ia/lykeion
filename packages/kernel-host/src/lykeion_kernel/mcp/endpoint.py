@@ -28,7 +28,6 @@ from typing import Any
 
 from mcp.server.stdio import stdio_server
 
-from ..kernels import KernelIdentity
 from ..registry import Registry
 from .server import Reach, server_for
 
@@ -259,12 +258,11 @@ def _reach(said: dict[str, Any], registry: Registry, workspace: str) -> Reach:
         raise ValueError(f"this connection was not the one given {session_id}'s kernels")
     return Reach(
         registry=registry,
-        identity=KernelIdentity(
-            session_id=session_id,
-            task_id=task_id,
-            name=_named(said, "name"),
-            language=LANGUAGE,
-        ),
+        # A connection names its kernel, not its environment — the greeting
+        # has no such field — so this resolves to whichever environment the
+        # session declared as its own default for this language, the same
+        # way `host.py`'s own `_identity` does.
+        identity=registry.identity_for(session_id, task_id, _named(said, "name"), LANGUAGE, None),
         agent=_named(said, "agent"),
     )
 

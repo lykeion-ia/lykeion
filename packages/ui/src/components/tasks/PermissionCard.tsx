@@ -6,18 +6,35 @@ import type {
 } from "@lykeion/api";
 import { CodeBlock } from "./CodeBlock";
 import { ChevronDownIcon } from "../icons";
-import { PERMISSION_SCOPES, DEFAULT_SCOPE } from "../../lib/permission-scopes";
+import { scopesFor, defaultScopeFor } from "../../lib/permission-scopes";
 import { useOutsideClick } from "../../hooks/useOutsideClick";
 
 /**
+ * A list of names as a person would say it: "scanpy", "scanpy and anndata",
+ * "scanpy, anndata and scipy". What goes in a card's headline, where a
+ * bracketed array would read as a data structure rather than as a sentence.
+ */
+function spoken(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
  * The card's code block always wants a plain string. Every `AccessKind`
- * target already is one except `connector`, whose target is a
- * `{ server, tool }` pair — render that as `server: tool`.
+ * target already is one except two: `connector`, whose target is a
+ * `{ server, tool }` pair — rendered as `server: tool` — and `environment`,
+ * whose target names an environment and the packages going into it. Those
+ * render one per line, because the package list IS what is being approved
+ * and a comma-run of forty of them is not something a person reads.
  */
 function accessCode(access: AccessKind): string {
-  return access.kind === "connector"
-    ? `${access.target.server}: ${access.target.tool}`
-    : access.target;
+  if (access.kind === "connector")
+    return `${access.target.server}: ${access.target.tool}`;
+  if (access.kind === "environment")
+    return access.target.packages.length === 0
+      ? `${access.target.name} — no packages, the interpreter only`
+      : access.target.packages.join("\n");
+  return access.target;
 }
 
 /**
@@ -29,8 +46,15 @@ function accessCode(access: AccessKind): string {
  * before any disclosure is opened. A shell command is the exception: it is far
  * too long for a title, so the question stays generic and the command itself
  * renders expanded below (see `payloadLabel`).
+ *
+ * The `environment` kind is the one that needs the TOOL as well as the
+ * access. Declaring a new environment and adding packages to one that
+ * already exists are the same kind — the same fact is being consented to,
+ * software on every machine in this lab — but they are not the same
+ * question, and a card that asked one of them in the other's words would
+ * have a researcher approve the wrong thing.
  */
-function accessTitle(access: AccessKind): string {
+function accessTitle(access: AccessKind, tool: string): string {
   switch (access.kind) {
     case "network":
       return `Connect to ${access.target}?`;
@@ -44,6 +68,16 @@ function accessTitle(access: AccessKind): string {
       return `Use ${access.target.server} · ${access.target.tool}?`;
     case "remote-job":
       return `Submit a remote job to ${access.target}?`;
+    case "environment":
+      if (tool === "manage_environments")
+        return `Create environment ${access.target.name}?`;
+      // Adding to an environment that already exists. An empty package list
+      // is not a request anything raises — `manage_packages` refuses one by
+      // value — but it must still not render as "Add  to python?", so the
+      // environment's own name carries the question instead.
+      return access.target.packages.length === 0
+        ? `Change the ${access.target.name} environment?`
+        : `Add ${spoken(access.target.packages)} to ${access.target.name}?`;
   }
 }
 
@@ -51,14 +85,17 @@ function accessTitle(access: AccessKind): string {
  * The payload disclosure's label, and whether it starts open.
  *
  * Open for a shell command ("Code") because the command IS what is being
- * approved and approving what you cannot see is not consent. Closed for
- * every other kind ("Details") because the title already names the target —
- * the disclosure holds the raw form, not the decision.
+ * approved and approving what you cannot see is not consent. Open for an
+ * environment ("Packages") for exactly the same reason: the title names one
+ * or two of them at most, and what actually gets installed on every machine
+ * in the lab is the whole list. Closed for every other kind ("Details")
+ * because the title already names the target — the disclosure holds the raw
+ * form, not the decision.
  */
 function payloadLabel(access: AccessKind): { label: string; open: boolean } {
-  return access.kind === "execute"
-    ? { label: "Code", open: true }
-    : { label: "Details", open: false };
+  if (access.kind === "execute") return { label: "Code", open: true };
+  if (access.kind === "environment") return { label: "Packages", open: true };
+  return { label: "Details", open: false };
 }
 
 /**
@@ -88,10 +125,16 @@ const ALLOW_SUFFIX: Record<PermissionScope, string> = {
  *    Granting stays a deliberate click on `Allow` → `onAllow(selectedScope)`.
  *    A menu whose rows each granted immediately would turn one stray click
  *    into a `Global` grant.
- * 3. The initial `selectedScope` is `DEFAULT_SCOPE` ("conversation"), not
- *    "once". The `Allow` button's label renders FROM this state, so the
- *    default has to be an explicit value the researcher can read ("Allow for
- *    this conversation") before ever opening the menu.
+ * 3. The initial `selectedScope` is `defaultScopeFor(access)` — "conversation"
+ *    for most cards, "once" for an environment. The `Allow` button's label
+ *    renders FROM this state, so the default has to be an explicit value the
+ *    researcher can read ("Allow for this conversation") before ever opening
+ *    the menu.
+ * 4. Which scopes the menu offers is `scopesFor(access)`, not the whole
+ *    list. An environment card offers no standing grant at all — see that
+ *    function for why. This is a narrowing of what is OFFERED; the daemon
+ *    refuses a broader scope on its own account, because a decision arrives
+ *    over the wire and this component is not a guard.
  */
 export function PermissionCard({
   request,
@@ -106,8 +149,9 @@ export function PermissionCard({
   onAllow: (scope: PermissionScope) => void;
   onDeny: () => void;
 }) {
-  const [selectedScope, setSelectedScope] =
-    useState<PermissionScope>(DEFAULT_SCOPE);
+  const [selectedScope, setSelectedScope] = useState<PermissionScope>(
+    defaultScopeFor(request.access),
+  );
   const [menuOpen, setMenuOpen] = useState(false);
   // A shell command starts visible; every other payload starts folded away.
   const [payloadOpen, setPayloadOpen] = useState(
@@ -154,12 +198,24 @@ export function PermissionCard({
       {/* The headline names what is about to happen, as a question. The old
           "Permission requested" eyebrow said only THAT consent was wanted, never
           for what — the target lived in the code block alone. */}
-      <h3 className="perm-title">{accessTitle(request.access)}</h3>
+      <h3 className="perm-title">
+        {accessTitle(request.access, request.tool)}
+      </h3>
 
       {/* The agent's own reason for asking, attributed as such: it is the
-          agent's claim about why this is needed, not the app's assurance that it
-          is safe. */}
-      {request.detail && (
+          agent's claim about why this is needed, not the app's assurance that
+          it is safe.
+
+          Not for an environment card, which carries a `detail` that is not one
+          of those. `manage_environments` publishes no "why" argument, so
+          nothing an agent said could arrive here; what the daemon puts there
+          is a one-line name for the decision, so the researcher reading their
+          transcript back sees which environment they answered for rather than
+          a row saying only that they answered. Rendered here it would
+          attribute a description to the agent as a justification, and say for
+          the third time — after the question above and the package list below
+          — what is already on screen twice. */}
+      {request.detail && request.access.kind !== "environment" && (
         <>
           <div className="perm-detail">{request.detail}</div>
           <div className="perm-detail-source">Agent-supplied reason.</div>
@@ -212,7 +268,7 @@ export function PermissionCard({
               role="menu"
               aria-label="Approval scope"
             >
-              {PERMISSION_SCOPES.map(({ scope, label, description }) => (
+              {scopesFor(request.access).map(({ scope, label, description }) => (
                 <button
                   key={scope}
                   type="button"

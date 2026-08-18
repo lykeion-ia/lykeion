@@ -1,9 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Store } from "../store/store";
 import type { ChangeRecorder } from "../api/changes";
-import type { AgentOption } from "@lykeion/api";
+import { isLykeionError, type AgentOption, type ErrorCode } from "@lykeion/api";
 import { hashSecret, newToken } from "../auth";
 import { nextSeq } from "../store/migrations";
+import { environmentStore } from "../store/environments";
+import { buildEnvironmentOn, declareEnvironment, planFor } from "../api/environments";
+import type { EnvSetupRegistry } from "../env-setup-registry";
+import type { RunRelay } from "../run-relay";
 
 /** The machine a bearer token names. */
 export interface Machine {
@@ -28,6 +32,16 @@ export interface DaemonRequest {
   body: unknown;
   authorization: string | undefined;
   now: number;
+  /** The `kernel-env-setup` asks this lab is currently waiting on. Read, never
+   *  settled, by `/daemon/kernel-env/lock` — which needs to know a machine
+   *  posting a pin was actually asked to produce one. */
+  envSetups: EnvSetupRegistry;
+  /** The command queue a route reaches a machine over. Only
+   *  `/daemon/kernel-env/packages` uses it: adding packages to a declaration
+   *  is the one thing on this wire that has to send a command back down to
+   *  the very machine that just called, so the software the researcher
+   *  approved is actually built there. */
+  runs: RunRelay;
 }
 
 export interface DaemonResult {
@@ -68,6 +82,10 @@ const OWNED_ROUTES = new Set([
   "POST /daemon/heartbeat",
   "POST /daemon/report",
   "POST /daemon/workspaces",
+  "POST /daemon/kernel-envs",
+  "POST /daemon/kernel-env/create",
+  "POST /daemon/kernel-env/packages",
+  "POST /daemon/kernel-env/lock",
 ]);
 
 function field(body: unknown, name: string): string {
@@ -317,6 +335,16 @@ interface StoredCli {
  * nothing, which is an answer, and it lands — otherwise an agent that drops
  * its options would go on advertising a catalogue it no longer has.
  */
+/** The raw value of an `environments` report field, JSON-encoded for
+ *  storage — `null` when the field is absent or malformed (a daemon too old
+ *  to report this, or one whose ask for the declared list failed this
+ *  cycle), never an invented empty array. See migration 26: NULL is "never
+ *  reported", not "reported holding nothing". */
+function environmentsField(body: unknown): string | null {
+  const value = arrayField(body, "environments");
+  return value === undefined ? null : JSON.stringify(value);
+}
+
 function optionsKeeper(stored: StoredCli[]): (cli: ReportedCli) => string | null {
   const held = new Map(stored.map((row) => [row.cliId, row.options]));
   return (cli) =>
@@ -488,11 +516,12 @@ function report(req: DaemonRequest): DaemonResult {
   // than asserted, the same way every other reported reason in this file is.
   const kernelsReason = kernelsReasonField ?? null;
   const processVisibility = optionalStringField(body, "processVisibility") ?? null;
+  const environments = environmentsField(body);
 
   store.tx(() => {
     const current = store.get(
       `SELECT platform, daemon_version, capabilities, total_memory_bytes, cores,
-              kernels_ready, kernels_reason, process_visibility
+              kernels_ready, kernels_reason, process_visibility, environments
          FROM runtimes WHERE id = ?`,
       [machine.machineId],
     )!;
@@ -530,15 +559,33 @@ function report(req: DaemonRequest): DaemonResult {
       // sentence naming what it is missing changes exactly when this does.
       current.kernels_ready !== kernelsReady ||
       current.kernels_reason !== kernelsReason ||
-      current.process_visibility !== processVisibility;
+      current.process_visibility !== processVisibility ||
+      // What this machine holds of each declared environment is on the
+      // Machines screen too (D2) — a build finishing, or a machine losing
+      // one, is a change an owner would see there.
+      //
+      // A report that carried no environments at all changes nothing, and
+      // must not be recorded as a change: the write below keeps whatever was
+      // last heard, so a comparison that fired here would announce a
+      // difference the column never took.
+      (environments !== null && current.environments !== environments);
     // Read once, before the delete below takes the rows this reads from out.
     const optionsFor = optionsKeeper(existing);
     const changed = metaChanged || cliSetChanged(existing, clis, optionsFor);
 
+    // `environments` is COALESCEd rather than assigned: `lab.ts`'s own
+    // contract says a machine that could not build the list omits the field
+    // rather than sending an empty one, and `main.ts` does exactly that when
+    // `fetchKernelEnvDeclarations` fails — while still sending the report,
+    // since the fingerprint differs. A plain assignment would blank a machine
+    // that has reported honestly many times, leaving it reading as "has not
+    // reported" on the Machines screen: precisely the ambiguity this column
+    // was persisted to remove. Every other column here is genuinely resent on
+    // every report, so only this one needs keeping.
     store.run(
       `UPDATE runtimes SET platform = ?, daemon_version = ?, capabilities = ?, last_seen_ts = ?,
               total_memory_bytes = ?, cores = ?, kernels_ready = ?, kernels_reason = ?,
-              process_visibility = ? WHERE id = ?`,
+              process_visibility = ?, environments = COALESCE(?, environments) WHERE id = ?`,
       [
         platform,
         daemonVersion,
@@ -549,6 +596,7 @@ function report(req: DaemonRequest): DaemonResult {
         kernelsReady,
         kernelsReason,
         processVisibility,
+        environments,
         machine.machineId,
       ],
     );
@@ -592,6 +640,360 @@ function report(req: DaemonRequest): DaemonResult {
 }
 
 /**
+ * Every environment this lab has declared, lab-wide rather than
+ * owner-scoped: any paired machine may resolve any declared environment
+ * (D2's declaration is a fact about the lab, not about whoever created it),
+ * so any paired machine may read the list it needs before it can say what
+ * it holds of each one — both for a `kernel-env-setup` command's own
+ * `packages`/`lockfile`, minted on the lab's side of the wire, and for this
+ * machine's own regular report, which reads `readEnvStatus` against this
+ * same list.
+ */
+function kernelEnvs(req: DaemonRequest): DaemonResult {
+  const machine = resolveMachine(req.store, req.authorization);
+  if (!machine) return { status: 401, json: { error: "no such machine" } };
+  return { status: 200, json: { declarations: environmentStore(req.store).list() } };
+}
+
+/** What status a typed refusal from `declareEnvironment` goes out as. The
+ *  daemon reads the body's `error` either way (`callLab` in the daemon's
+ *  `lab.ts`), so what this decides is whether a client that branches on
+ *  status can tell "the name is unusable" from "that name is taken" — and
+ *  a researcher who has just approved a card is owed the difference. */
+const STATUS_FOR: Record<ErrorCode, number> = {
+  unauthenticated: 401,
+  forbidden: 403,
+  "not-found": 404,
+  conflict: 409,
+  invalid: 400,
+  unsupported: 422,
+};
+
+/**
+ * Declares one environment on behalf of an agent whose researcher has just
+ * allowed it, and answers with the declaration.
+ *
+ * The declaration is attributed to the SESSION's owner, never to the
+ * machine's. A bearer token proves that some paired machine is calling; it
+ * says nothing about which person's work is being done on it, and it is
+ * shared by every session that machine is running. Only the session names
+ * the researcher.
+ *
+ * Which is also why the session has to be this machine's. Without that
+ * check, any paired machine in the lab could declare environments attributed
+ * to any colleague, by naming their session id — an id it is not hard to
+ * come by, since the lab hands one to every machine a session is opened on.
+ * The token says which machine; only the session says which person; and the
+ * two have to agree.
+ */
+/**
+ * The researcher whose session `sessionId` is, or the one refusal that keeps
+ * a machine off a session that is not its own.
+ *
+ * Extracted rather than written twice: both environment-changing routes
+ * authenticate a MACHINE and attribute to a PERSON, and a second copy of
+ * this check would drift into a route where one of the three facts it
+ * refuses on is no longer refused.
+ *
+ * One refusal for those three facts — no such session, one that has ended,
+ * one belonging to another machine — because a machine that is not running
+ * that session has no business learning which of the three it was.
+ */
+function researcherOfSession(
+  store: Store,
+  machine: Machine,
+  sessionId: string,
+): { openedBy: string } | undefined {
+  const session = store.get(
+    `SELECT opened_by AS opened_by, runtime_id AS runtime_id
+       FROM sessions WHERE id = ? AND ended_ts IS NULL`,
+    [sessionId],
+  );
+  if (!session || session.runtime_id !== machine.machineId) return undefined;
+  return { openedBy: session.opened_by as string };
+}
+
+const NOT_THIS_MACHINES_SESSION = {
+  status: 403,
+  json: { error: "this machine is not running a session with that id" },
+};
+
+function kernelEnvCreate(req: DaemonRequest): DaemonResult {
+  const machine = resolveMachine(req.store, req.authorization);
+  if (!machine) return { status: 401, json: { error: "no such machine" } };
+  const sessionId = field(req.body, "sessionId");
+  const name = field(req.body, "name");
+  const packages = arrayField(req.body, "packages");
+  // An absent `packages` is not an empty one — an environment holding only
+  // its interpreter is something a caller says, not something inferred from
+  // a field nobody sent. A list holding anything but a package name is
+  // refused whole rather than filtered: a filtered list is a declaration
+  // this lab pins for every machine that differs from the one it was sent.
+  if (
+    !sessionId ||
+    !name ||
+    packages === undefined ||
+    !packages.every((entry): entry is string => typeof entry === "string" && entry !== "")
+  )
+    return {
+      status: 400,
+      json: { error: "a sessionId, a name and a list of package names are required" },
+    };
+  const session = researcherOfSession(req.store, machine, sessionId);
+  if (!session) return NOT_THIS_MACHINES_SESSION;
+  try {
+    const declaration = declareEnvironment(
+      req.store,
+      (kind, payload, ownerId) => req.changes.record(kind, payload, ownerId),
+      // Python only, this phase (D1) — there is no R environment for a
+      // caller to name, so nothing on this wire carries a language.
+      { name, language: "python", packages },
+      session.openedBy,
+      req.now,
+    );
+    return { status: 200, json: { declaration } };
+  } catch (err) {
+    // The lab's own sentence travels: the researcher just approved this
+    // card, and "it failed" with no reason is the worst possible answer to
+    // one they said yes to.
+    if (isLykeionError(err)) return { status: STATUS_FOR[err.code], json: { error: err.message } };
+    throw err;
+  }
+}
+
+/** What one rebuild is FOR, in words a kernel's ending can carry: "scanpy
+ *  was added to python". Built here, from what was actually added, because
+ *  this is the only place that knows the difference between what was asked
+ *  for and what the declaration did not already hold. */
+function whyRebuilding(added: string[], name: string): string {
+  return added.length === 1
+    ? `${added[0]} was added to ${name}`
+    : `${added.join(", ")} were added to ${name}`;
+}
+
+/** What the same rebuild is FOR when the call that asked for it added
+ *  NOTHING: everything it named is already declared, and the build is a retry
+ *  of one this lab never got — not a new request. A kernel's ending carries
+ *  this sentence, so it has to be true of what actually happened. */
+function whyCatchingUp(asked: string[], name: string): string {
+  return `${name} already declared ${asked.join(", ")} and had not been built with them here yet`;
+}
+
+/**
+ * Whether this lab still owes `name` a build — `planFor`'s own derivation,
+ * asked as a question.
+ *
+ * This is what makes a retry the recovery. `envs.addPackages` answers `added:
+ * []` for a package the declaration already names, so an agent whose build
+ * FAILED — a network blip mid-`uv pip sync`, a machine that never came back —
+ * asking again for the same package would otherwise be told nothing was added
+ * and no build is running, with the package still not installed and no call
+ * anywhere able to trigger one. The declaration is ahead of the pin in
+ * exactly that state, which is precisely what `planFor` derives, so the
+ * question is asked of the derivation that already exists rather than of a
+ * flag that could disagree with it.
+ *
+ * `false` where the question cannot be asked at all. `planFor` throws for a
+ * declaration deleted underneath this call and for a pinned revision whose
+ * text this lab does not hold; neither is a build this route can usefully
+ * dispatch, and answering `false` claims only that no build is running
+ * because of this call, which is exactly true. The second of those is a
+ * broken store, and `kernelEnvSetup` already refuses it by name in front of a
+ * researcher who can act on it.
+ */
+function buildStillOwed(store: Store, name: string): boolean {
+  try {
+    return planFor(store, name).resolve;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Adds packages to an environment this lab already declares, on behalf of an
+ * agent whose researcher has just allowed it — and asks the calling machine
+ * to rebuild its own copy.
+ *
+ * The attribution rules are `kernelEnvCreate`'s exactly, and reached through
+ * the same helper: the token names the MACHINE, only the session names the
+ * PERSON, and the two have to agree.
+ *
+ * **Appends.** The declaration keeps everything it already held; see
+ * `environmentStore.addPackages`. A call adding only names already declared
+ * changes nothing and records nothing — it is the state the caller asked for,
+ * already reached, and `added: []` is how the answer says so.
+ *
+ * **But `added: []` is not "nothing to do".** Whether the DECLARATION moved
+ * and whether a BUILD is owed are two questions, and they come apart in
+ * exactly the state a failed build leaves: the package is declared, so
+ * nothing is appended, and no build ever landed, so the pin never moved and
+ * no machine holds it. Asked again there, this route dispatches the build
+ * anyway (`buildStillOwed`) and answers `building: true` — the retry IS the
+ * recovery. Without it a declaration can sit permanently ahead of every
+ * machine in the lab: `KernelEnvCard`'s "a revision behind" cannot fire,
+ * because the declaration's `lockRevision` never moved either, and no other
+ * call anywhere re-triggers a build for a package that is already declared.
+ *
+ * **Then the rebuild, on the calling machine.** No cross-machine
+ * authorization question arises: `authorizedOwnRuntime`'s ownership check
+ * ("only the member who paired a machine may set up environments on it")
+ * exists to stop one researcher directing another's laptop, and this route
+ * directs nobody — the machine it dispatches to is the one whose bearer
+ * token authenticated the call, rebuilding its own copy. That token is the
+ * fact standing in for the ownership check; the session, checked above,
+ * stands in for the actor the check was written against. Its offline check
+ * is likewise moot: a machine that is posting to this route is connected.
+ *
+ * **Not awaited.** This route answers synchronously, and a `uv` resolve plus
+ * a materialize is minutes — held open, it would be an MCP tool call and an
+ * HTTP request both parked for the length of a package download. The answer
+ * says a build is running instead, which is what the tool then has to tell
+ * the model so it does not import something that is not there yet.
+ */
+function kernelEnvPackages(req: DaemonRequest): DaemonResult {
+  const machine = resolveMachine(req.store, req.authorization);
+  if (!machine) return { status: 401, json: { error: "no such machine" } };
+  const sessionId = field(req.body, "sessionId");
+  const name = field(req.body, "name");
+  const packages = arrayField(req.body, "packages");
+  // An EMPTY list is refused here, unlike a create's: an environment holding
+  // only its interpreter is something a caller can mean, but an ADD of
+  // nothing is not a state anyone can be asking for. A list holding anything
+  // but a package name is refused whole rather than filtered, for the reason
+  // a create's is: a filtered list is software this lab installs on every
+  // machine that differs from what the researcher approved.
+  if (
+    !sessionId ||
+    !name ||
+    packages === undefined ||
+    packages.length === 0 ||
+    !packages.every((entry): entry is string => typeof entry === "string" && entry !== "")
+  )
+    return {
+      status: 400,
+      json: { error: "a sessionId, a name and at least one package name are required" },
+    };
+  const session = researcherOfSession(req.store, machine, sessionId);
+  if (!session) return NOT_THIS_MACHINES_SESSION;
+  const envs = environmentStore(req.store);
+  const declaration = envs.get(name);
+  // 404 rather than a create in disguise. `manage_packages` adds to what
+  // exists; a name this lab does not declare is a different request, asked
+  // on a different card, and answering it here would install software under
+  // a question the researcher was never shown.
+  if (declaration === undefined)
+    return { status: 404, json: { error: `this lab declares no environment named ${name}` } };
+
+  const { packages: held, added } = envs.addPackages(name, packages);
+  // Recorded only for a real append. A call that added nothing wrote nothing,
+  // and a change-log row for it would be this lab reporting a declaration
+  // that moved when it did not.
+  if (added.length > 0)
+    req.changes.record("environment-packages-added", { name, packages: added }, session.openedBy);
+  // Two questions, and `added` only answers the first. What was appended
+  // decides whether the DECLARATION moved; whether this lab's pin still
+  // answers that declaration decides whether a BUILD is owed. They come apart
+  // exactly when a previous build failed: the declaration already names the
+  // package, so nothing is appended, and the pin never moved, so nothing on
+  // any machine holds it. Asked again in that state the caller is the retry,
+  // and refusing to dispatch would leave the lab permanently declared past
+  // every machine with no surface able to say so and no call able to fix it.
+  if (added.length === 0 && !buildStillOwed(req.store, name))
+    return {
+      status: 200,
+      json: { declaration: { ...declaration, packages: held }, added, building: false },
+    };
+
+  const reason = added.length > 0 ? whyRebuilding(added, name) : whyCatchingUp(packages, name);
+  // Dispatched, never awaited — see the note above. The rejection is
+  // swallowed rather than reported: this call has already written the
+  // declaration every machine in the lab builds from, and a machine that
+  // cannot be reached down its own command stream right now is a machine
+  // whose researcher will click Setup, or whose next session will find the
+  // environment missing and say so by name.
+  const machineName = req.store.get(`SELECT name FROM runtimes WHERE id = ?`, [
+    machine.machineId,
+  ])?.name as string | undefined;
+  void buildEnvironmentOn(
+    { store: req.store, runs: req.runs, envSetups: req.envSetups },
+    { machineId: machine.machineId, name: machineName ?? machine.machineId },
+    name,
+    // What THIS call is owed — the declaration its own append just produced.
+    // A build already in flight was planned before these packages existed, so
+    // joining it is not the same as being satisfied by it; `buildEnvironmentOn`
+    // compares this list against what the build it joined actually covered and
+    // asks for another round when they are not in it.
+    held,
+    reason,
+  ).catch(() => {});
+  return {
+    status: 200,
+    json: { declaration: { ...declaration, packages: held }, added, building: true, reason },
+  };
+}
+
+/**
+ * Hands this lab a lockfile a machine just resolved, and answers with the
+ * revision it became. Synchronous, unlike the machine's own final
+ * `kernel-env-setup` result: `materializeEnvironment` needs the revision
+ * BEFORE it can build, since the completion marker records which revision
+ * this machine actually built from, and nothing can name it before this
+ * write happens.
+ *
+ * Refuses a name this lab no longer declares — the one race this route has
+ * to answer for honestly, rather than let the raw foreign-key constraint on
+ * `kernel_env_locks` throw: a declaration a researcher deleted while a
+ * first-ever resolve was still in flight on some machine leaves that
+ * machine with a lockfile for a name this lab no longer recognizes.
+ *
+ * Bound to an outstanding ask to RESOLVE this environment — machine,
+ * request and name, and the ask itself. The bearer token proves some paired
+ * machine is calling and never that it is the one this lab asked, and a pin
+ * is the single most consequential thing on this wire: every OTHER machine
+ * replays a lockfile verbatim (D4), so a machine allowed to write one it was
+ * never asked for would repin an environment lab-wide and have every
+ * colleague faithfully reproduce it. Checking the name too is what keeps a
+ * machine building `foo` from pinning `bar` during its own build window. The
+ * pinning mechanism exists so two machines cannot disagree; it must not be
+ * the way one machine overrules the rest.
+ *
+ * And a machine sent a REPLAY has no pin to post at all: it was handed this
+ * lab's own lockfile and asked to materialize it, and `oneSetup` records
+ * that by sending no `resolvedFrom` with the ask. Accepted anyway, its text
+ * would become a revision this lab cannot say what was resolved from — which
+ * is precisely the state `planFor` answers by widening every other machine
+ * to `resolve`. One materialize-only machine would turn D4 off lab-wide for
+ * that environment, durably, and every colleague would re-resolve
+ * independently from then on. `askedToResolve` is what refuses it.
+ */
+function kernelEnvLock(req: DaemonRequest): DaemonResult {
+  const machine = resolveMachine(req.store, req.authorization);
+  if (!machine) return { status: 401, json: { error: "no such machine" } };
+  const requestId = field(req.body, "requestId");
+  const name = field(req.body, "name");
+  const lockfile = field(req.body, "lockfile");
+  if (!requestId || !name || !lockfile)
+    return { status: 400, json: { error: "a requestId, a name and a lockfile are required" } };
+  // Read rather than settled: this machine is still mid-build and this lab
+  // goes on waiting for the result that follows.
+  if (!req.envSetups.askedToResolve(machine.machineId, requestId, name))
+    return { status: 403, json: { error: "this machine was not asked to resolve that environment" } };
+  const envs = environmentStore(req.store);
+  if (envs.get(name) === undefined)
+    return { status: 404, json: { error: `this lab no longer declares an environment named ${name}` } };
+  // What THIS lab asked to be resolved, written beside the text it produced
+  // — never the declaration as it reads at this instant. The declaration can
+  // have grown while the resolve was running (that is precisely what
+  // `manage_packages` does), and stamping the pin with the newer list would
+  // claim the lockfile covers packages it was never resolved from. The next
+  // machine would then replay it and silently hold none of them.
+  const resolvedFrom = req.envSetups.resolvedFrom(machine.machineId, requestId, name);
+  const lockRevision = envs.writeLock(name, lockfile, req.now, resolvedFrom);
+  req.changes.record("environment-lock-written", { name }, machine.ownerId);
+  return { status: 200, json: { lockRevision } };
+}
+
+/**
  * The surface a daemon talks to once it has a code, or a token. Exchange
  * carries neither an existing identity nor a session — a bearer token is
  * what it is trying to obtain — so it alone answers with no authorization
@@ -603,5 +1005,9 @@ export function handleDaemonRoute(req: DaemonRequest): DaemonResult | undefined 
   if (req.path === "/daemon/pair/exchange") return exchange(req);
   if (req.path === "/daemon/report") return report(req);
   if (req.path === "/daemon/workspaces") return workspaces(req);
+  if (req.path === "/daemon/kernel-envs") return kernelEnvs(req);
+  if (req.path === "/daemon/kernel-env/create") return kernelEnvCreate(req);
+  if (req.path === "/daemon/kernel-env/packages") return kernelEnvPackages(req);
+  if (req.path === "/daemon/kernel-env/lock") return kernelEnvLock(req);
   return heartbeat(req);
 }

@@ -14,6 +14,7 @@ import { createRevertRegistry } from "../run-revert";
 import { createKernelListRegistry } from "../kernel-list-registry";
 import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
+import { createEnvSetupRegistry } from "../env-setup-registry";
 import { createRequestListener } from "../http";
 import { apiFor, signUpOwner } from "../test-support/server-api";
 import { changeRecorder } from "./changes";
@@ -57,7 +58,7 @@ function freshLabServer(now: () => number): Promise<RawServer> {
 
   const listener = createRequestListener({
     store, config, secure: false, indexHtml, channel, openStreams, runs: relay,
-    reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), now,
+    reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(), now,
   });
   const server = createHttpServer(listener);
 
@@ -816,7 +817,7 @@ it("wires the returned handle's onEvent/submit/close to the relay for an in-proc
     channel,
     runs: lab.relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
 
@@ -867,7 +868,7 @@ it("stops a fresh handle's queued replay when its callback detaches", async () =
     channel,
     runs: lab.relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
   const handle = await sessionsApi(deps).startRun({
@@ -930,7 +931,7 @@ it("resumed in-process handles use their durable cursor, route decisions per mac
     channel,
     runs: lab.relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
   const resumed = [
@@ -998,7 +999,7 @@ it("stops synchronous replay when a resumed handle closes from its first frame",
     channel,
     runs: lab.relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   });
   const [resumed] = await api.resumeRuns(lab.taskId);
@@ -1047,7 +1048,7 @@ it("does not queue handle or RPC commands after a run is already terminal", asyn
     channel,
     runs: lab.relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   });
   const handle = await api.startRun({

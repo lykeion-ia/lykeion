@@ -126,6 +126,24 @@ function CellView({
           </span>
         }
       />
+      {/* What a cell installed into this kernel alone, and only when it
+          installed something. The key is absent on a cell that installed
+          nothing — absent is not zero — so an empty list renders nothing
+          rather than a badge saying none, which would put a claim on almost
+          every cell in the notebook.
+
+          It says the impermanence out loud because that is the fact a
+          researcher scrolling back next week needs: the packages named here
+          are gone, and the cell above is where they came from. The agent is
+          told the same thing on its own result; this is the researcher's
+          copy of it, on the cell that caused it. */}
+      {cell.installed !== undefined && cell.installed.length > 0 && (
+        <p className="nbp-cell-installed">
+          Installed into this kernel only:{" "}
+          <span className="nbp-cell-installed-names">{cell.installed.join(", ")}</span> — gone
+          when it restarts. Adding them to the environment keeps them, for every machine.
+        </p>
+      )}
       {cell.outputs.length > 0 && (
         <details
           className="nbp-output-wrap"

@@ -31,7 +31,8 @@ import { adapterFor, heldBackReason, rememberAdapters, rememberHeldBack } from "
 import { acceptAdapter, revokeAdapter } from "./adapter-consent";
 import type { AdapterLaunch } from "./agent-registry";
 import { installAgentHomes } from "./agent-install";
-import { heartbeat, report, workspacesGone } from "./lab";
+import { fetchKernelEnvDeclarations, heartbeat, report, workspacesGone } from "./lab";
+import { readEnvStatus } from "./environments";
 import { createRetryLoop, type RetryLoop } from "./retry";
 import { startKernelHost, type KernelHost } from "./kernel-host";
 import { startRuns, type RunSubsystem } from "./runs";
@@ -240,7 +241,7 @@ let lastReported = "";
  * POST to a stub lab — has no other seam to enter through, and every other
  * function here is reached from it, never the other way round.
  */
-export async function reportIfChanged(machine: PairedState, dataDir: string): Promise<void> {
+export async function reportIfChanged(machine: PairedState, dataDir: string, workDir: string): Promise<void> {
   const resolved = new Map<string, AdapterLaunch>();
   // Run together rather than one after the other: neither asks anything of
   // the other, and a cycle that ran them in sequence would cost their sum
@@ -256,6 +257,21 @@ export async function reportIfChanged(machine: PairedState, dataDir: string): Pr
     }),
     probeKernelFloor({ dataDir, signal: inFlight.signal }),
   ]);
+  // What this machine holds of every environment the lab has declared —
+  // a couple of `stat`s per declaration, safe on every cycle. `undefined`
+  // on a cycle whose own ask for the declared list failed: a report that
+  // cannot honestly say what is held must not claim it holds nothing, so
+  // this cycle's report simply carries no `environments` field at all,
+  // leaving whatever the lab last heard standing.
+  let environments: ReturnType<typeof readEnvStatus>[] | undefined;
+  try {
+    const declarations = await fetchKernelEnvDeclarations(machine.lab, machine.token, inFlight.signal);
+    environments = declarations.map((declaration) => readEnvStatus(workDir, declaration));
+  } catch (err) {
+    console.error(
+      `could not read this machine's own environments before reporting: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   const visibility = processVisibility();
   rememberAdapters(resolved);
   // Beside the map of what may run, the reason each of the rest may not.
@@ -284,7 +300,12 @@ export async function reportIfChanged(machine: PairedState, dataDir: string): Pr
   // `uv` between one cycle and the next has to report again too, or the lab
   // goes on saying it cannot host a kernel forever, on the strength of a
   // check this daemon never repeats to anyone.
-  const fingerprint = `${cliFingerprint(clis)}:${totalMemoryBytes}:${cores}:${floor.ready}:${floor.reason ?? ""}:${visibility}`;
+  // A machine that installs the very first package into `python` between
+  // one cycle and the next has to report again too, the same reasoning
+  // `floor.ready`/`floor.reason` are already in this fingerprint for — the
+  // Machines screen shows this machine's own environments from this exact
+  // report, and nothing else asks again on its behalf.
+  const fingerprint = `${cliFingerprint(clis)}:${totalMemoryBytes}:${cores}:${floor.ready}:${floor.reason ?? ""}:${visibility}:${JSON.stringify(environments)}`;
   if (fingerprint === lastReported) return;
   await retries.run(machine.lab, "report", () =>
     report(
@@ -301,6 +322,7 @@ export async function reportIfChanged(machine: PairedState, dataDir: string): Pr
         cores,
         kernels: { ready: floor.ready, ...(floor.reason === undefined ? {} : { reason: floor.reason }) },
         processVisibility: visibility,
+        ...(environments === undefined ? {} : { environments }),
       },
       inFlight.signal,
     ),
@@ -312,8 +334,8 @@ export async function reportIfChanged(machine: PairedState, dataDir: string): Pr
  *  every caller of this reschedules on completion, and a probe that failed
  *  must be tried again in five minutes the same as one that succeeded, not
  *  leave probing stopped for good. */
-function runProbeCycle(machine: PairedState, dataDir: string): Promise<void> {
-  return reportIfChanged(machine, dataDir).catch((err: unknown) => {
+function runProbeCycle(machine: PairedState, dataDir: string, workDir: string): Promise<void> {
+  return reportIfChanged(machine, dataDir, workDir).catch((err: unknown) => {
     if (stopping) return;
     const message = err instanceof Error ? err.message : String(err);
     console.error(`probe against ${machine.lab} failed: ${message}`);
@@ -329,10 +351,10 @@ function scheduleHeartbeat(machine: PairedState): void {
   }, HEARTBEAT_INTERVAL_MS);
 }
 
-function scheduleProbe(machine: PairedState, dataDir: string): void {
+function scheduleProbe(machine: PairedState, dataDir: string, workDir: string): void {
   if (stopping) return;
   probeTimer = setTimeout(() => {
-    void runProbeCycle(machine, dataDir).then(() => scheduleProbe(machine, dataDir));
+    void runProbeCycle(machine, dataDir, workDir).then(() => scheduleProbe(machine, dataDir, workDir));
   }, PROBE_INTERVAL_MS);
 }
 
@@ -797,7 +819,9 @@ async function runServe(config: DaemonConfig): Promise<void> {
   // the traffic while it is already failing, and `lastReported` ends up written
   // by whichever chain settled last rather than by the report the lab actually
   // applied — which then suppresses a report that should have been sent.
-  void runProbeCycle(identity, config.dataDir).then(() => scheduleProbe(identity, config.dataDir));
+  void runProbeCycle(identity, config.dataDir, config.workDir).then(() =>
+    scheduleProbe(identity, config.dataDir, config.workDir),
+  );
 }
 
 /** The arguments the background copy is started with: the same ones this

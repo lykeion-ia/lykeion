@@ -131,6 +131,32 @@ it("leaves a run's own scratch out of the snapshot it takes", async () => {
   expect(existsSync(join(snapshot, ".lykeion"))).toBe(false);
 });
 
+it("leaves an overlay out of the snapshot it takes", async () => {
+  // The other half of a coupling nothing in either language enforces. The
+  // kernel host puts a cell's inline installs under this Task's scratch
+  // (`overlay.py`, whose own test pins the same name from the Python side),
+  // and what keeps them out of a Task's permanent record is this skip and
+  // nothing else. If the two ever spell the scratch directory differently, a
+  // `pip install` inside a cell — which is meant to be gone by the next
+  // restart — becomes part of what the Task is restored to, forever.
+  //
+  // Written as a real overlay tree rather than as an assertion about the
+  // constant, so it fails on the effect wherever the drift happened.
+  const { workDir } = fresh();
+  const task = ensureTaskDir(workDir, "st_1", "tk_1");
+  writeFileSync(join(task, "counts.csv"), "a,b\n");
+  const overlay = join(task, ".lykeion", "overlays", "k_0123456789abcdef", "1");
+  mkdirSync(join(overlay, "scanpy"), { recursive: true });
+  writeFileSync(join(overlay, "scanpy", "__init__.py"), "VERSION = '1.10'\n");
+
+  expect(await takeSnapshot(workDir, "st_1", "tk_1")).toEqual({ taken: true });
+
+  const snapshot = snapshotPathFor(workDir, "st_1", "tk_1");
+  expect(existsSync(join(snapshot, "counts.csv"))).toBe(true);
+  expect(existsSync(join(snapshot, ".lykeion"))).toBe(false);
+  expect(existsSync(join(snapshot, ".lykeion", "overlays"))).toBe(false);
+});
+
 it("measures only what it would copy when the volume cannot clone", async () => {
   const { workDir } = fresh();
   const task = ensureTaskDir(workDir, "st_1", "tk_1");

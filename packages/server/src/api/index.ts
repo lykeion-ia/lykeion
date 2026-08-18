@@ -8,6 +8,7 @@ import type { RevertRegistry } from "../run-revert";
 import type { KernelListRegistry } from "../kernel-list-registry";
 import type { TitleRegistry } from "../title-registry";
 import type { PendingCells } from "../kernel-cells";
+import type { EnvSetupRegistry } from "../env-setup-registry";
 import type { ChangeRecorder } from "./changes";
 import { absentApi } from "./absent";
 import { accountApi } from "./account";
@@ -19,6 +20,7 @@ import { taskNamingApi } from "./task-naming";
 import { machinesApi } from "./machines";
 import { sessionsApi } from "./sessions";
 import { kernelsApi } from "./kernels";
+import { environmentsApi } from "./environments";
 
 /** What every family module is handed. `now` is a function so tests can
  *  pin the clock and prove the ordering tiebreak does the work. */
@@ -47,6 +49,10 @@ export interface Deps {
    *  to be told the outcome of. Held for the process's lifetime, like
    *  `runs`. */
   pendingCells: PendingCells;
+  /** `kernel-env-setup` asks waiting on the machine they were sent to, so
+   *  `/daemon/kernel-env/result` can settle the one it names. Held for the
+   *  process's lifetime, like `runs`. */
+  envSetups: EnvSetupRegistry;
   /**
    * Where a family records what it changed. One per request, handed to
    * every family, and flushed by the request once its writes have settled.
@@ -82,6 +88,7 @@ export function createWorkspaceApi(deps: Deps): LykeionApi {
     ...machinesApi(deps),
     ...sessionsApi(deps),
     ...kernelsApi(deps),
+    ...environmentsApi(deps),
     ...settingsApi(deps),
     ...configSurfaceApi(deps),
   };

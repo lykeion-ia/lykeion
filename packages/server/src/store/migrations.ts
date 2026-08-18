@@ -851,6 +851,200 @@ export const MIGRATIONS: Migration[] = [
       store.run(`ALTER TABLE runtimes ADD COLUMN process_visibility TEXT`);
     },
   },
+  {
+    version: 25,
+    up(store) {
+      // The declaration: what an environment IS, lab-wide. Deliberately
+      // holds no path and no build state — those are facts about one
+      // machine, and a machine can hold a build for a declaration this
+      // table has already removed.
+      //
+      // Deleting one is a hard delete, not a tombstone: nothing anywhere
+      // consumes "this name used to exist" as distinct from "this name was
+      // never declared", and an UPSERT that resurrected a soft-deleted row
+      // would risk reviving its old `lock_revision` — a machine holding the
+      // OLD build would then read as current, which is the exact silent
+      // wrong-version failure this phase exists to prevent.
+      store.run(`
+        CREATE TABLE kernel_envs (
+          name          TEXT PRIMARY KEY,
+          language      TEXT NOT NULL CHECK (language IN ('python', 'r')),
+          manager       TEXT NOT NULL CHECK (manager IN ('uv', 'conda')),
+          packages      TEXT NOT NULL,
+          -- Nullable (R14): absent means Lykeion declared it, not a person.
+          -- The python starter is seeded on a fresh lab, before any user
+          -- exists to own it -- SQLite's own foreign-key check does not
+          -- apply to a NULL value, so this is compatible with
+          -- foreign_keys = ON on a lab with nobody signed up yet.
+          created_by    TEXT REFERENCES users(id),
+          created_ts    INTEGER NOT NULL,
+          lock_revision INTEGER NOT NULL DEFAULT 0
+        )`);
+      // Every revision kept, never just the newest. A machine reports the
+      // revision it built from, and "one behind" is only readable if the
+      // older one is still here to be named.
+      store.run(`
+        CREATE TABLE kernel_env_locks (
+          name       TEXT NOT NULL REFERENCES kernel_envs(name),
+          revision   INTEGER NOT NULL,
+          lockfile   TEXT NOT NULL,
+          written_ts INTEGER NOT NULL,
+          PRIMARY KEY (name, revision)
+        )`);
+    },
+  },
+  {
+    version: 26,
+    up(store) {
+      // What a machine last reported holding, one JSON-encoded
+      // `KernelEnvStatus[]` per row, written by `/daemon/report` alongside
+      // `total_memory_bytes`/`cores`/`kernels_ready` — the same "machine's
+      // regular report" mechanism, not a live per-poll fan-out. NULL is
+      // "never reported" and stays NULL until a report actually carries the
+      // field, the same three-valued discipline `kernels_ready` already
+      // follows: a daemon too old to report this, and a machine that
+      // reported holding nothing, must not read alike.
+      //
+      // Persisted rather than asked live (the way `listRunningKernels` asks
+      // for kernels on every poll) so an OFFLINE machine still says what it
+      // holds: kernels change every cell and are worth re-asking, but an
+      // environment changes on the order of minutes-to-never, and D2's "the
+      // lab's list is the truth about what exists; each machine's report is
+      // the truth about what is built" only holds for an offline machine if
+      // that report is remembered rather than re-asked.
+      store.run(`ALTER TABLE runtimes ADD COLUMN environments TEXT`);
+    },
+  },
+  {
+    version: 27,
+    up(store) {
+      // Repairs a database that ran an EARLIER draft of version 25, in which
+      // `created_by` was `NOT NULL`. Version 25 was edited in place while
+      // this feature was still unmerged — legitimate for a migration no lab
+      // has shipped — but a developer who ran the lab locally mid-branch has
+      // the old shape, and `seedLabContent` declares the starter with no
+      // creator (R14). Against `NOT NULL` that throws inside `startServer`
+      // and the server never finishes booting.
+      //
+      // SQLite cannot relax a column's nullability in place, so this is the
+      // create-copy-drop-rename dance. It is a destructive rebuild, so it
+      // runs only where the broken shape is actually on disk: `PRAGMA
+      // table_info` says whether `created_by` is still NOT NULL, and a
+      // database that already has the nullable column — every fresh install,
+      // which gets 25's final text — is left alone entirely.
+      const createdBy = store
+        .all(`PRAGMA table_info(kernel_envs)`)
+        .find((column) => column.name === "created_by");
+      // Already nullable — the shape this migration exists to produce.
+      if (createdBy === undefined || createdBy.notnull === 0) return;
+
+      // No PRAGMA can help here. `migrate` runs every migration inside
+      // `store.tx()`, which issues BEGIN (`sqlite.ts:62`), and `PRAGMA
+      // foreign_keys` is a documented no-op inside a transaction — so
+      // enforcement stays ON however this asks for it, and `DROP TABLE
+      // kernel_envs` performs an implicit DELETE that `kernel_env_locks.name
+      // REFERENCES kernel_envs(name)` refuses the moment a single pin
+      // exists. `defer_foreign_keys` does not rescue it either.
+      //
+      // The ORDERING does the work the PRAGMA appeared to: drop the CHILD
+      // first, so the parent's drop has no referencing table left to
+      // violate, and carry the pins through the gap in a holding pen of
+      // their own. `ALTER TABLE ... RENAME TO` also has nothing to rewrite
+      // by then, since no table references `kernel_envs_rebuilt`.
+      store.run(`
+        CREATE TABLE kernel_envs_rebuilt (
+          name          TEXT PRIMARY KEY,
+          language      TEXT NOT NULL CHECK (language IN ('python', 'r')),
+          manager       TEXT NOT NULL CHECK (manager IN ('uv', 'conda')),
+          packages      TEXT NOT NULL,
+          created_by    TEXT REFERENCES users(id),
+          created_ts    INTEGER NOT NULL,
+          lock_revision INTEGER NOT NULL DEFAULT 0
+        )`);
+      store.run(`
+        INSERT INTO kernel_envs_rebuilt
+          (name, language, manager, packages, created_by, created_ts, lock_revision)
+        SELECT name, language, manager, packages, created_by, created_ts, lock_revision
+          FROM kernel_envs`);
+
+      // A holding pen with no foreign key of its own, so the pins survive the
+      // window in which their parent table does not exist.
+      store.run(`
+        CREATE TABLE kernel_env_locks_carried (
+          name       TEXT NOT NULL,
+          revision   INTEGER NOT NULL,
+          lockfile   TEXT NOT NULL,
+          written_ts INTEGER NOT NULL,
+          PRIMARY KEY (name, revision)
+        )`);
+      store.run(`
+        INSERT INTO kernel_env_locks_carried (name, revision, lockfile, written_ts)
+        SELECT name, revision, lockfile, written_ts FROM kernel_env_locks`);
+
+      // Child first: dropping a referencing table never violates anything.
+      store.run(`DROP TABLE kernel_env_locks`);
+      // Now parentless, so the implicit DELETE has no constraint left to break.
+      store.run(`DROP TABLE kernel_envs`);
+      store.run(`ALTER TABLE kernel_envs_rebuilt RENAME TO kernel_envs`);
+
+      // Recreated with its foreign key intact, against a parent that now holds
+      // every row it did before.
+      store.run(`
+        CREATE TABLE kernel_env_locks (
+          name       TEXT NOT NULL REFERENCES kernel_envs(name),
+          revision   INTEGER NOT NULL,
+          lockfile   TEXT NOT NULL,
+          written_ts INTEGER NOT NULL,
+          PRIMARY KEY (name, revision)
+        )`);
+      store.run(`
+        INSERT INTO kernel_env_locks (name, revision, lockfile, written_ts)
+        SELECT name, revision, lockfile, written_ts FROM kernel_env_locks_carried`);
+      store.run(`DROP TABLE kernel_env_locks_carried`);
+    },
+  },
+  {
+    version: 28,
+    up(store) {
+      // The package list this lab actually asked a machine to RESOLVE this
+      // lockfile from, JSON-encoded, so that "is this pin still the pin for
+      // what the declaration now says" is DERIVED rather than flagged.
+      //
+      // A "needs resolve" flag would be a second source of truth about the
+      // declaration, and it drifts from the declaration the first time
+      // anything writes one without the other. This column cannot drift: it
+      // is what was sent, written beside the lockfile it produced, and
+      // `kernelEnvSetup` compares it against the declaration's `packages` as
+      // they stand right now.
+      //
+      // NULL is "this lab cannot name what that pin was resolved from" — a
+      // row written before this column existed. Not "resolved from nothing",
+      // which is what an invented `'[]'` here would claim, and which would
+      // have `kernelEnvSetup` replay a lockfile against a declaration it
+      // has no evidence matches. See that method for why the absence widens
+      // to a resolve instead.
+      store.run(`ALTER TABLE kernel_env_locks ADD COLUMN requested_packages TEXT`);
+    },
+  },
+  {
+    version: 29,
+    up(store) {
+      // What a cell installed into the kernel that ran it and nowhere else,
+      // JSON-encoded. A `pip install` inside a cell lands in a
+      // per-incarnation overlay under the Task's own directory: it works, and
+      // it is gone the next time that kernel restarts — so the cell is the
+      // only place the fact can be kept at all, and it is also exactly where
+      // a researcher scrolling back next week goes looking for it.
+      //
+      // NULL is "this cell installed nothing", and it is also every cell
+      // recorded before this column existed. Both read the same way to a
+      // reader — there is nothing to show here — which is why they can share
+      // a spelling, and why the spelling is NULL rather than `'[]'`: an
+      // empty array is a claim that this lab looked and found none, made
+      // about rows nobody ever looked at.
+      store.run(`ALTER TABLE cells ADD COLUMN installed TEXT`);
+    },
+  },
 ];
 
 assertAscending(MIGRATIONS);

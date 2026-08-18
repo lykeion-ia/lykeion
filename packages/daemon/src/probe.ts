@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { basename, join } from "node:path";
 import type { AgentCli, AgentOption } from "@lykeion/api";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { connectAcp } from "./acp";
 import { confinementFor } from "./agent-home";
@@ -106,21 +106,87 @@ function throwawayWorkspace(): string {
 }
 
 /**
- * Runs an already-confined command in `workspace` and always removes it
- * afterwards, whichever way the run went. The one place this file spawns
- * anything: `readVersion` — which wants only the build a catalogued CLI
- * printed — and `runConfined` — whose caller wants to know whether the
- * command answered at all — both settle here rather than each owning an
- * `execFile` call of their own.
+ * Splits a stream of chunks into whole lines, calling `onLine` once each one
+ * is complete. A chunk boundary can land in the middle of a line — nothing
+ * about a `data` event guarantees it ends on `\n` — so the trailing partial
+ * line is held back rather than reported early, and carried into the next
+ * chunk that completes it. `flush` reports whatever is left once the process
+ * has exited, since real output rarely ends with a trailing newline of its
+ * own.
+ */
+function lineSplitter(onLine: (line: string) => void): {
+  push: (chunk: Buffer | string) => void;
+  flush: () => void;
+} {
+  let carry = "";
+  return {
+    push(chunk) {
+      carry += chunk.toString();
+      const lines = carry.split("\n");
+      carry = lines.pop() ?? "";
+      for (const line of lines) onLine(line);
+    },
+    flush() {
+      if (carry.length > 0) onLine(carry);
+      carry = "";
+    },
+  };
+}
+
+/**
+ * Runs an already-confined command in `workspace`, and — unless told to keep
+ * it — always removes that directory afterwards, whichever way the run went.
+ * The one place this file spawns anything: `readVersion` — which wants only
+ * the build a catalogued CLI printed — `runConfined` — whose caller wants to
+ * know whether the command answered at all — and `runConfinedIn` — whose
+ * workspace IS the thing being built — all settle here rather than each
+ * owning an `execFile` call of their own.
+ *
+ * `onLine`, when given, is fed from the child's `stdout`/`stderr` streams as
+ * data arrives — not from the buffered strings the completion callback
+ * receives, which only exist once the process has already exited. A `uv`
+ * install that runs for minutes has to report progress while it runs; a
+ * callback wired to the buffered result would deliver that whole log in one
+ * burst after the fact, which is not progress at all.
+ *
+ * `keepWorkspace` exists because this function's caller and the shape of the
+ * workspace do not always agree on whether it is disposable. A probe's
+ * workspace is a throwaway temp directory `throwawayWorkspace()` built for
+ * exactly this call; `runConfinedIn`'s workspace is the environment being
+ * provisioned, and deleting it after every successful build would delete the
+ * thing the build just produced.
+ *
+ * `env`, when given, replaces this process's own environment for the child
+ * rather than merging into it — callers that want to layer a variable on top
+ * of the inherited environment build that merge themselves, since this
+ * function has no opinion on which variables a particular tool needs.
+ * Omitted, the child inherits this process's environment exactly as it
+ * always has: nothing here changes for `readVersion` or `runConfined`.
  */
 function execConfined(
   confined: { command: string; args: string[] },
   workspace: string,
   timeoutMs: number,
   signal: AbortSignal | undefined,
+  opts?: {
+    onLine?: (line: string) => void;
+    /** Which stream(s) `onLine` is fed from. Defaults to both. A caller
+     *  whose child prints its actual PAYLOAD on one stream — `uv pip
+     *  compile`'s lockfile on stdout, say — passes `["stderr"]` so that
+     *  payload is never mistaken for progress. */
+    onLineStreams?: ("stdout" | "stderr")[];
+    keepWorkspace?: boolean;
+    env?: NodeJS.ProcessEnv;
+    maxBuffer?: number;
+  },
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise((resolvePromise) => {
-    execFile(
+    const streams = opts?.onLineStreams ?? ["stdout", "stderr"];
+    const stdoutSplitter =
+      opts?.onLine && streams.includes("stdout") ? lineSplitter(opts.onLine) : undefined;
+    const stderrSplitter =
+      opts?.onLine && streams.includes("stderr") ? lineSplitter(opts.onLine) : undefined;
+    const child = execFile(
       confined.command,
       confined.args,
       // In the directory the boundary was rendered for. Without this the
@@ -128,12 +194,22 @@ function execConfined(
       // started in, which the profile does not allow — and a program that
       // cannot reach its own working directory does not get as far as
       // printing anything, so every run reads as unknown.
-      { timeout: timeoutMs, signal, cwd: workspace },
+      {
+        timeout: timeoutMs,
+        signal,
+        cwd: workspace,
+        ...(opts?.env ? { env: opts.env } : {}),
+        ...(opts?.maxBuffer !== undefined ? { maxBuffer: opts.maxBuffer } : {}),
+      },
       (error, stdout, stderr) => {
-        rmSync(workspace, { recursive: true, force: true });
+        stdoutSplitter?.flush();
+        stderrSplitter?.flush();
+        if (!opts?.keepWorkspace) rmSync(workspace, { recursive: true, force: true });
         resolvePromise({ ok: !error, stdout, stderr });
       },
     );
+    if (stdoutSplitter) child.stdout?.on("data", stdoutSplitter.push);
+    if (stderrSplitter) child.stderr?.on("data", stderrSplitter.push);
   });
 }
 
@@ -227,6 +303,146 @@ export async function runConfined(
     { command: resolved, args },
   );
   return execConfined(confined, workspace, timeoutMs, opts.signal);
+}
+
+/** How long a provisioning run is given before this machine gives up on it.
+ *  A `uv` resolve or install runs for minutes against a real package list —
+ *  the design doc's own example is a six-minute build — which is why this is
+ *  its own budget rather than `DEFAULT_TIMEOUT_MS`, sized for a `--version`
+ *  call that only has to print a string. */
+const PROVISION_TIMEOUT_MS = 10 * 60_000;
+
+/** `execFile`'s own default `maxBuffer` is 1 MB — sized for a `--version`
+ *  reply, not for what a real package install can print across a
+ *  `PROVISION_TIMEOUT_MS`-length run. Exceeding it kills the child mid-
+ *  install and reports the build failed, and a re-provision hits the exact
+ *  same ceiling, so a chatty install would never converge. The buffered
+ *  strings stay largely redundant now that progress streams live through
+ *  `onLine`, but the completion callback still needs them for its own error
+ *  messages, so this raises the ceiling rather than removing the buffer. */
+const PROVISION_MAX_BUFFER = 64 * 1024 * 1024;
+
+/**
+ * A confined run whose one writable directory is supplied rather than thrown
+ * away — which is what provisioning needs and what `runConfined` deliberately
+ * refuses to give a probe.
+ *
+ * `policy.workspace` is documented as "the one Task directory this run may
+ * write"; for a provisioning run it is the environment being built. Nothing
+ * else about the boundary widens on its own account: the only grants beyond
+ * `workspace` are the ones `opts.writable` names (below), and this machine's
+ * own data directory stays denied, because `uv` installing a package runs
+ * that package's own build backend and that is third-party code like any
+ * other.
+ *
+ * Three things this does that `runConfined` must not:
+ *
+ * - Creates `workspace` before the policy is rendered. `policyFor`
+ *   canonicalizes it with `realpathSync`, which throws for a directory that
+ *   does not exist — and `envs/<name>` does not exist the first time a
+ *   machine builds it. Without this, the very first provision on every
+ *   machine would throw before `uv` ever ran.
+ * - Tells `execConfined` to keep that directory rather than delete it. That
+ *   function's unconditional cleanup is correct for a probe's throwaway temp
+ *   directory and would otherwise delete the environment this call just
+ *   spent minutes building, on every success.
+ * - Throws when this platform has no sandbox backend, rather than reporting
+ *   `ok: true` the way `runConfined` does. A probe that cannot be confined
+ *   reports nothing and is harmless; a *build* that cannot be confined would
+ *   run a stranger's `setup.py` unconfined, and there is no version of that
+ *   which is acceptable.
+ *
+ * `opts.writable` and `opts.env` are how a caller gets a second writable
+ * place and tells the child where it is — two different jobs, both left to
+ * the caller because this function has no opinion on what either is for:
+ *
+ * - `opts.writable` names directories beyond `workspace` this run may also
+ *   write to. Each is created before the policy is rendered, for exactly the
+ *   reason `workspace` itself is (above): `policyFor` canonicalizes every
+ *   grant through `canonicalPath`, which throws for a path that does not yet
+ *   resolve, and a machine's first build is exactly the case where none of
+ *   these exist yet. Granted through `policyFor`'s own `grants`, never by
+ *   widening `workspace` — `workspace` stays the one directory this run's
+ *   OUTPUT lives in, and a second writable path is a second, named thing,
+ *   not a wider version of the first.
+ * - `opts.env` is layered onto `confinedEnv`'s allowlist — never onto this
+ *   daemon's own environment, and never conditionally. `uv pip sync` on an
+ *   sdist runs that package's own PEP 517 build backend, which is arbitrary
+ *   third-party code running with `(allow network-outbound)`; a boundary
+ *   that spends this many lines denying filesystem paths and then hands
+ *   that code every secret this daemon happened to start with — an API key,
+ *   a token, whatever is in the researcher's shell — would be a boundary
+ *   with a hole in exactly the shape D5 exists to close. `confinedEnv`'s own
+ *   module comment states the rule: a variable reaches a confined process
+ *   because a named line of Lykeion put it there, never because it happened
+ *   to be in the environment this daemon was started from. Granting a
+ *   directory does not tell a program to use it either — `environments.ts`
+ *   sets `UV_CACHE_DIR` here to point at the one it named in
+ *   `opts.writable`, because a boundary can make a path reachable but only
+ *   the child's own configuration decides whether it looks there.
+ *
+ * It is `environments.ts` that knows one of these directories is `uv`'s own
+ * cache, kept outside every environment root so `uv venv --clear` can never
+ * take it out along with a broken build — this function only knows it was
+ * asked for a second writable place and something to tell the child about it.
+ */
+export async function runConfinedIn(
+  workspace: string,
+  command: string,
+  args: string[],
+  opts: {
+    dataDir: string;
+    path?: string;
+    platform?: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    /** Called once per line of stdout/stderr, as `uv` produces it — the
+     *  progress a multi-minute build reports to `KERNEL_SETUP_CHANNEL`. Fed
+     *  from both streams unless `onLineStreams` narrows it. */
+    onLine?: (line: string) => void;
+    /** Restricts `onLine` to the named stream(s). See `execConfined`'s own
+     *  doc comment — this exists for a call whose stdout carries a payload
+     *  rather than progress commentary. */
+    onLineStreams?: ("stdout" | "stderr")[];
+    /** Extra variables layered onto `confinedEnv`'s allowlist for the
+     *  child — see this function's own doc comment. Never this daemon's own
+     *  environment, whether or not this is given. */
+    env?: Record<string, string>;
+    /** Extra directories this run may write to, beyond `workspace` — see
+     *  this function's own doc comment. */
+    writable?: string[];
+  },
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const pathValue = opts.path ?? process.env.PATH ?? "";
+  const resolved = await resolveOnPath(command, pathValue);
+  if (resolved === undefined) return { ok: false, stdout: "", stderr: "" };
+  const platform = opts.platform ?? process.platform;
+  if (sandboxBackendFor(platform) === undefined) throw new Error(noBackendReason(platform));
+  // Written where the boundary is about to be rendered for, and before that
+  // render happens — see this function's own doc comment.
+  mkdirSync(workspace, { recursive: true });
+  const writable = opts.writable ?? [];
+  for (const dir of writable) mkdirSync(dir, { recursive: true });
+  const confined = confine(
+    platform,
+    policyFor({
+      workspace,
+      grants: writable.map((path) => ({ path, mode: "write" as const })),
+      dataDir: opts.dataDir,
+      ...confinementFor(NO_AGENT, workspace),
+    }),
+    { command: resolved, args },
+  );
+  return execConfined(confined, workspace, opts.timeoutMs ?? PROVISION_TIMEOUT_MS, opts.signal, {
+    onLine: opts.onLine,
+    onLineStreams: opts.onLineStreams,
+    keepWorkspace: true,
+    maxBuffer: PROVISION_MAX_BUFFER,
+    // Unconditional, not merged with this process's own environment: a
+    // confined build must never inherit whatever this daemon happened to be
+    // started with, whether or not `opts.env` was given at all.
+    env: confinedEnv(undefined, opts.env ?? {}),
+  });
 }
 
 /**

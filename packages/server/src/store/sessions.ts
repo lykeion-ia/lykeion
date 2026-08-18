@@ -810,6 +810,10 @@ export function recordRunFrames(
               ok: cell.ok,
               wallMs: cell.wallMs,
               outputs: cell.outputs,
+              // The agent's own cells travel this path and the researcher's
+              // travel `/daemon/cell`; a field carried on one and dropped on
+              // the other would make the surface depend on who ran the cell.
+              ...(cell.installed === undefined ? {} : { installed: cell.installed }),
               ...(cell.toolUseId === undefined ? {} : { toolUseId: cell.toolUseId }),
             },
             cell.ts,

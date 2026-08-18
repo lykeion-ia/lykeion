@@ -12,6 +12,7 @@ import { createRevertRegistry } from "../run-revert";
 import { createKernelListRegistry } from "../kernel-list-registry";
 import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
+import { createEnvSetupRegistry } from "../env-setup-registry";
 import { changeRecorder } from "./changes";
 import { configSurfaceApi } from "./config-surface";
 import type { Deps } from "./index";
@@ -84,7 +85,7 @@ function depsFor(store: Store, now: () => number = () => NOW): Deps {
     channel,
     runs: createRunRelay(),
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
     changes: changeRecorder({ store, actorId: actor.userId, now, channel }),
   };
 }

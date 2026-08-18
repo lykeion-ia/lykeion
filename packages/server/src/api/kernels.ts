@@ -1,11 +1,11 @@
 import {
   LykeionError,
+  type KernelEnvStatus,
   type Language,
   type LykeionApi,
   type MachineCompute,
   type RunningKernel,
 } from "@lykeion/api";
-import { NO_MACHINE } from "./absent";
 import type { Deps } from "./index";
 import type { Actor } from "../auth";
 import type { RunCommand, RunRelay } from "../run-relay";
@@ -25,7 +25,6 @@ export type KernelsApi = Pick<
   | "kernelInterrupt"
   | "kernelStop"
   | "kernelRestart"
-  | "kernelEnvSetup"
 >;
 
 interface KernelMachine {
@@ -162,12 +161,21 @@ async function authorizedKernelMachine(
  * asked for it, including the same daemon's very next process. A machine
  * that is not there to receive a kernel command right now has no kernel to
  * run it, so refusing is the honest answer, not queueing one.
+ *
+ * Takes only what it actually reads — `machineId` and `name`, for the error
+ * message — rather than the full `KernelMachine`, so `environments.ts` can
+ * reuse this for `kernel-env-setup`/`kernel-env-reclaim`, which address a
+ * machine directly and carry no kernel identity at all.
  */
-function deliverOrRefuse(runs: RunRelay, machine: KernelMachine, command: RunCommand): void {
+export function deliverOrRefuse(
+  runs: RunRelay,
+  machine: { machineId: string; name: string },
+  command: RunCommand,
+): void {
   if (runs.deliverNow(machine.machineId, command)) return;
   throw new LykeionError(
     "conflict",
-    `${machine.name} is not currently connected — reconnect it before running code on its kernels`,
+    `${machine.name} is not currently connected — reconnect it and try again`,
   );
 }
 
@@ -235,6 +243,7 @@ function toRunningKernel(
     ...(raw.processId === undefined ? {} : { processId: raw.processId }),
     ...(raw.stoppedBy === undefined ? {} : { stoppedBy: raw.stoppedBy }),
     ...(raw.stopReason === undefined ? {} : { stopReason: raw.stopReason }),
+    ...(raw.restartReason === undefined ? {} : { restartReason: raw.restartReason }),
     ...(raw.resources === undefined ? {} : { resources: raw.resources }),
     ...(raw.series === undefined ? {} : { series: raw.series }),
   };
@@ -305,23 +314,32 @@ export function kernelsApi(deps: Deps): KernelsApi {
     async computeSnapshot() {
       const kernels = await sweep(deps);
       const rows = store.all(
-        `SELECT id, total_memory_bytes, cores, last_seen_ts FROM runtimes WHERE removed_ts IS NULL`,
+        `SELECT id, total_memory_bytes, cores, last_seen_ts, environments FROM runtimes WHERE removed_ts IS NULL`,
       );
       const when = now();
       return rows.map((row): MachineCompute => {
         const machineId = row.id as string;
         const machine: MachineCompute = { machineId };
-        // An offline machine carries nothing at all — not its counts, and not
-        // its own size either. The fan-out reports a machine that did not
-        // answer as holding nothing, which is the same shape as a machine
-        // that answered "none", and rendering that as "0 kernels" would tell
-        // a researcher their colleague's machine is idle when the truth is
-        // nobody could reach it. Size goes with the rest, and is why this
-        // return comes before it: a row carrying `totalMemoryBytes` and no
-        // `memoryBytes` renders "— of 8.0 GB", which reads as a live machine
-        // measured at nothing rather than as one nobody could reach. The
-        // type says so too — every field but the id is optional, and an
-        // offline machine carries none of them.
+        // What this machine last reported holding of every environment this
+        // lab has declared — read BEFORE the offline return below, unlike
+        // every other field here. D2's "the lab's report is the truth about
+        // what is built" only holds for an offline machine if that report is
+        // remembered rather than re-asked, so this is the one figure an
+        // offline machine still gets to say honestly. Absent (not `[]`) on a
+        // machine that has never reported it at all.
+        if (row.environments !== null)
+          machine.environments = JSON.parse(row.environments as string) as KernelEnvStatus[];
+        // An offline machine carries nothing else at all — not its counts,
+        // and not its own size either. The fan-out reports a machine that did
+        // not answer as holding nothing, which is the same shape as a
+        // machine that answered "none", and rendering that as "0 kernels"
+        // would tell a researcher their colleague's machine is idle when the
+        // truth is nobody could reach it. Size goes with the rest, and is why
+        // this return comes before it: a row carrying `totalMemoryBytes` and
+        // no `memoryBytes` renders "— of 8.0 GB", which reads as a live
+        // machine measured at nothing rather than as one nobody could reach.
+        // The type says so too — every field but the id and `environments`
+        // is optional, and an offline machine carries none of them.
         if (healthFor(row.last_seen_ts as number, when) === "offline") return machine;
         if (row.total_memory_bytes !== null)
           machine.totalMemoryBytes = row.total_memory_bytes as number;
@@ -415,24 +433,6 @@ export function kernelsApi(deps: Deps): KernelsApi {
     async kernelRestart(kernelId) {
       const resolved = await authorizedKernelMachine(deps, actor, now(), kernelId);
       deliverOrRefuse(runs, resolved, { type: "kernel-restart", runId: kernelId, kernelId });
-    },
-
-    async kernelEnvSetup() {
-      // Two refusals, and the machines table decides which is true. With no
-      // machine online the missing thing really is a machine. With one
-      // right there, "no machine is connected" would be false and would
-      // send the researcher to redo an install they have already done — the
-      // missing thing is provisioning itself, which no build of this server
-      // performs yet.
-      const nowTs = now();
-      const online = store
-        .all(`SELECT last_seen_ts FROM runtimes WHERE removed_ts IS NULL`)
-        .some((row) => healthFor(row.last_seen_ts as number, nowTs) === "online");
-      if (!online) throw new LykeionError("unsupported", NO_MACHINE);
-      throw new LykeionError(
-        "unsupported",
-        "this lab cannot set up managed environments yet — kernels run in the machine's own interpreter for now.",
-      );
     },
   };
 }

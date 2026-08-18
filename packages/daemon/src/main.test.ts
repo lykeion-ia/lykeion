@@ -49,9 +49,24 @@ function pathWithUv(): string {
  *  every body the lab received, in arrival order, so a caller that runs
  *  `reportIfChanged` more than once can tell a suppressed report (nothing
  *  new arrives) apart from a sent one. */
-async function stubLab(): Promise<{ machine: PairedState; dataDir: string; bodies: DaemonReport[] }> {
+async function stubLab(): Promise<{
+  machine: PairedState;
+  dataDir: string;
+  workDir: string;
+  bodies: DaemonReport[];
+}> {
   const bodies: DaemonReport[] = [];
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    // `reportIfChanged` asks this route for the lab's own declared
+    // environments before it ever builds its report — answered here with
+    // none, so `bodies` keeps holding exactly the `/daemon/report` calls
+    // every test in this file already reads it as.
+    if (req.url === "/daemon/kernel-envs") {
+      req.resume();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ declarations: [] }));
+      return;
+    }
     let raw = "";
     req.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
     req.on("end", () => {
@@ -74,13 +89,18 @@ async function stubLab(): Promise<{ machine: PairedState; dataDir: string; bodie
   };
   const dataDir = mkdtempSync(join(tmpdir(), "lykeion-main-data-"));
   dirs.push(dataDir);
-  return { machine, dataDir, bodies };
+  // Never written to by anything in this file — no environment is built
+  // here — only read by `readEnvStatus`, which reports `absent` for a
+  // directory that does not exist, the same as any other machine that has
+  // never provisioned this declaration.
+  const workDir = join(dataDir, "work");
+  return { machine, dataDir, workDir, bodies };
 }
 
 async function captureReport(): Promise<DaemonReport> {
   process.env.PATH = emptyPath();
-  const { machine, dataDir, bodies } = await stubLab();
-  await reportIfChanged(machine, dataDir);
+  const { machine, dataDir, workDir, bodies } = await stubLab();
+  await reportIfChanged(machine, dataDir, workDir);
   return bodies[0]!;
 }
 
@@ -136,13 +156,13 @@ it(
     // cycle and the next would then go on being told it could not host a
     // kernel, forever, on the strength of a check this daemon never repeated
     // to anyone.
-    const { machine, dataDir, bodies } = await stubLab();
+    const { machine, dataDir, workDir, bodies } = await stubLab();
 
     process.env.PATH = emptyPath();
-    await reportIfChanged(machine, dataDir);
+    await reportIfChanged(machine, dataDir, workDir);
 
     process.env.PATH = pathWithUv();
-    await reportIfChanged(machine, dataDir);
+    await reportIfChanged(machine, dataDir, workDir);
 
     // Whether or not the first call's body actually arrived — a prior test in
     // this file may have already left the lab believing this exact "no uv"

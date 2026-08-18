@@ -34,7 +34,13 @@ export type AccessKind =
   | { kind: "execute"; target: string }
   | { kind: "network"; target: string }
   | { kind: "connector"; target: { server: string; tool: string } }
-  | { kind: "remote-job"; target: string };
+  | { kind: "remote-job"; target: string }
+  /** Software, on every machine in this lab. One kind for both of the tools
+   *  that change what an environment holds — `manage_environments` declaring
+   *  a new one and `manage_packages` adding to one that exists — because
+   *  what is being consented to is the same fact either way. Which of them
+   *  asked is read off the card's own `tool`, not off this kind. */
+  | { kind: "environment"; target: { name: string; packages: string[] } };
 
 /** A permission card. */
 export interface PermissionRequest {

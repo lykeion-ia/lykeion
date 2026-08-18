@@ -173,7 +173,9 @@ async function reachingAKernel() {
   hosts.push(host);
   const hello = (await host.call("host.hello", {})) as {
     protocol: number;
-    languages: Array<{ language: string; environment: string; reads: string[] }>;
+    languages: Array<{
+      language: string; environment: string; interpreter: string; reads: string[];
+    }>;
   };
   // The one place the two constants meet with nothing stubbed between them.
   // Each package declares this number for itself, and a bump that landed on one
@@ -182,8 +184,9 @@ async function reachingAKernel() {
   // that nothing asserted here would ship green and take every Task's kernel
   // tools with it.
   expect(hello.protocol).toBe(PROTOCOL_VERSION);
-  const prefixes: Record<string, string[]> = {};
-  const environments: Record<string, string> = {};
+  const environments: Array<{
+    language: string; name: string; interpreter: string; prefix: string[]; default?: boolean;
+  }> = [];
   for (const descriptor of hello.languages) {
     const { prefix } = kernelConfinementFor({
       platform: "darwin",
@@ -192,8 +195,13 @@ async function reachingAKernel() {
       grants: [],
       reads: descriptor.reads,
     });
-    prefixes[descriptor.language] = prefix;
-    environments[descriptor.language] = descriptor.environment;
+    environments.push({
+      language: descriptor.language,
+      name: descriptor.environment,
+      interpreter: descriptor.interpreter,
+      prefix,
+      default: true,
+    });
   }
   ensureKernelSocketDir();
   const token = kernelSessionToken();
@@ -203,7 +211,6 @@ async function reachingAKernel() {
     session_id: "se_1",
     task_id: "tk_1",
     workspace,
-    prefixes,
     environments,
     socket: kernelSocketPath(workspace),
     token,
@@ -263,6 +270,15 @@ onDarwin("publishes one runner per language and a shell, and neither names a ker
 
   const expected = [
     "execute_shell_cell",
+    // Published on every machine, whatever it can run: a session holds
+    // environments whether or not this machine can start a kernel in one,
+    // and this is the tool that answers about them and asks for a new one.
+    // It runs no cell, which is why the loop below still holds for it.
+    "manage_environments",
+    // Published on every machine for the same reason, and running no cell
+    // either: a session can add packages to an environment this machine has
+    // never built, since the declaration is the lab's (D2).
+    "manage_packages",
     ...hello.languages.map((descriptor) => `execute_${descriptor.language}_cell`),
   ];
   expect(published.tools.map((tool) => tool.name).sort()).toEqual(expected.sort());

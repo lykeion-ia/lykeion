@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  alreadySystemReadable,
   boundaryOf,
   canonicalPath,
   confine,
@@ -108,6 +109,38 @@ it("refuses a readable path broad enough to swallow the boundary, resolved rathe
   expect(
     policyFor({ workspace: root, grants: [], dataDir: join(root, "data"), readable: [root] }).readable,
   ).toEqual([root]);
+});
+
+it("reads the baseline's own grants as the subtrees they are, not as eleven strings", () => {
+  // What `alreadySystemReadable` is asked is whether naming a path would add
+  // anything to a profile that already carries `SYSTEM_READ` — and the rule
+  // that carries it is `(subpath "/usr")`, which reaches everything beneath
+  // /usr. So the question is containment. A venv built on a homebrew or a
+  // system python sits at /usr/local/… or /usr, and an equality check against
+  // the list would answer "no, name it" about a path the kernel opens anyway
+  // — which is how the caller ends up handing `policyFor` a path it refuses.
+  expect(alreadySystemReadable("/usr")).toBe(true);
+  expect(alreadySystemReadable("/usr/local/opt/python@3.13/Frameworks")).toBe(true);
+  expect(alreadySystemReadable("/Library/Frameworks/Python.framework/Versions/3.12")).toBe(true);
+  // Canonical on both sides, the same as the rule is rendered: /var is a link
+  // to /private/var here, so a comparison against the entry as WRITTEN misses
+  // every real path beneath it.
+  expect(alreadySystemReadable("/var/db/anything")).toBe(true);
+  // And the places the baseline categorically does not reach. Answering `true`
+  // for one of these would drop a grant a kernel genuinely needs — which is
+  // why this is a containment question and not "is it absolute".
+  expect(alreadySystemReadable(homedir())).toBe(false);
+  expect(alreadySystemReadable(join(homedir(), ".local", "share", "uv", "python"))).toBe(false);
+  expect(alreadySystemReadable("/sw")).toBe(false);
+  expect(alreadySystemReadable("/anaconda3")).toBe(false);
+  // Containment and not a string prefix, which is the other half of the same
+  // rule and the half a raw `startsWith` would get wrong. `(subpath "/usr")`
+  // stops at the component boundary: /usrlocal is a sibling of /usr, not
+  // something beneath it, and nothing in the baseline opens it. Answering
+  // `true` here would drop a grant the kernel genuinely needs and confine an
+  // environment built there to a boundary that cannot read its own interpreter.
+  expect(alreadySystemReadable("/usrlocal")).toBe(false);
+  expect(alreadySystemReadable("/etcetera/python3.13")).toBe(false);
 });
 
 it("puts a deny after an allow on its own ancestor, so the deny is what matches", () => {

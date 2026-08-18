@@ -301,6 +301,10 @@ function fakeHost(): { host: KernelHost; announce: (method: string, params: unkn
     on(method, handler) {
       listeners.set(method, [...(listeners.get(method) ?? []), handler]);
     },
+    // Nothing here asks this daemon for anything: what this suite drives is
+    // the host-to-daemon NOTIFICATION path, and an ask is a different
+    // direction with its own tests.
+    serve: () => {},
     stop: () => Promise.resolve(),
     get running() {
       return true;
@@ -360,6 +364,44 @@ it("routes a cell notification to the run of the session it names", () => {
   // one Task's notebook.
   expect("sessionId" in forwarded.cell).toBe(false);
   expect("taskId" in forwarded.cell).toBe(false);
+});
+
+it("carries what a cell installed into the kernel through to the run", () => {
+  // This hop is the only one between the kernel that noticed the install and
+  // the notebook a researcher reads it on. A field dropped here is a surface
+  // nothing anywhere can reach, and everything either side of it would still
+  // pass its own tests.
+  const { host, announce } = fakeHost();
+  const events: Array<{ runId: string; event: RunEvent }> = [];
+  forwardKernelCells(
+    host,
+    () => "run_1",
+    (runId, event) => events.push({ runId, event }),
+    () => undefined,
+  );
+
+  announce("cell", { ...cellAnnouncement("sess_1"), installed: ["anndata", "scanpy"] });
+
+  const forwarded = events[0]!.event as Extract<RunEvent, { event: "cell" }>;
+  expect(forwarded.cell.installed).toEqual(["anndata", "scanpy"]);
+});
+
+it("leaves the field off a cell that installed nothing rather than sending an empty one", () => {
+  // Absent is not zero. `[]` here would put the key on every cell in the lab,
+  // and any reader that shows it where present would then show it everywhere.
+  const { host, announce } = fakeHost();
+  const events: Array<{ runId: string; event: RunEvent }> = [];
+  forwardKernelCells(
+    host,
+    () => "run_1",
+    (runId, event) => events.push({ runId, event }),
+    () => undefined,
+  );
+
+  announce("cell", cellAnnouncement("sess_1"));
+
+  const forwarded = events[0]!.event as Extract<RunEvent, { event: "cell" }>;
+  expect("installed" in forwarded.cell).toBe(false);
 });
 
 it("drops a cell notification for a session with no run currently taking its turn", () => {

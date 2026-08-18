@@ -271,6 +271,12 @@ export interface CellAnnouncement {
   wallMs: number;
   ts: number;
   outputs: NotebookCell["outputs"];
+  /** What this cell installed into the kernel that ran it and nowhere else.
+   *  Absent on a cell that installed nothing — see `NotebookCell.installed`,
+   *  and note that the absence is the whole point rather than a shortening:
+   *  a hop that turned it into `[]` on the way past would make every cell in
+   *  the lab claim the surface. */
+  installed?: string[];
   /** The caller's own id for the tool call this cell arrived as, when the
    *  provider forwarded one in the call's `_meta`. Absent otherwise — the
    *  forwarder may still fill it in from the session's own log. */
@@ -333,6 +339,11 @@ export function forwardKernelCells(
         wallMs: announced.wallMs,
         ts: announced.ts,
         outputs: announced.outputs,
+        // Carried, and carried as an absence where there was one: this is
+        // the only hop between the kernel that noticed the install and the
+        // notebook a researcher reads it on, and a field dropped here is a
+        // surface nothing anywhere can reach.
+        ...(announced.installed === undefined ? {} : { installed: announced.installed }),
         ...(toolUseId === undefined ? {} : { toolUseId }),
       },
     });

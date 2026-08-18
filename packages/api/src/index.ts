@@ -89,9 +89,11 @@ export const Commands = {
   listMachines: "list_machines",
   pairMachine: "pair_machine",
   removeMachine: "remove_machine",
-  kernelEnvStatus: "kernel_env_status",
   kernelEnvList: "kernel_env_list",
   kernelEnvSetup: "kernel_env_setup",
+  kernelEnvReclaim: "kernel_env_reclaim",
+  kernelEnvCreate: "kernel_env_create",
+  kernelEnvDelete: "kernel_env_delete",
   listRunningKernels: "list_running_kernels",
   computeSnapshot: "compute_snapshot",
   taskNotebook: "task_notebook",
@@ -120,8 +122,20 @@ export { MAX_TURNS_OUTSTANDING } from "./run";
 
 export const RUN_EVENT_CHANNEL = "lykeion://run-event";
 
-/** The event channel carrying managed-env provisioning progress: one
- * `uv` output line (a string) per payload, for the Setup UI. */
+/** The event channel carrying managed-env provisioning progress, one `uv`
+ * output line per payload, for the Setup UI: `{ machineId, name, line }`.
+ * `machineId` and `name` are which machine and which environment the line
+ * came from — without them two builds running at once (two researchers,
+ * or one on two machines) interleave into one undifferentiated log with no
+ * way to tell them apart, since this is one lab-wide channel rather than
+ * one per build. */
 export const KERNEL_SETUP_CHANNEL = "lykeion://kernel-setup";
+
+/** One payload on `KERNEL_SETUP_CHANNEL`. */
+export interface KernelSetupProgress {
+  machineId: string;
+  name: string;
+  line: string;
+}
 
 export type CommandName = (typeof Commands)[keyof typeof Commands];

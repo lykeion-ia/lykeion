@@ -1,4 +1,4 @@
-import type { Language, RunDecision, RunEvent } from "@lykeion/api";
+import type { KernelEnvDeclaration, KernelEnvStatus, Language, RunDecision, RunEvent } from "@lykeion/api";
 import type { ProbedCli } from "./probe";
 import type { StandingGrant } from "./session";
 
@@ -77,6 +77,13 @@ export interface DaemonReport {
   /** Which process-visibility rule this machine's own platform applies —
    *  see `processVisibility`. */
   processVisibility: string;
+  /** What this machine holds of every environment this lab has declared,
+   *  read fresh each report via `readEnvStatus` — a couple of `stat`s, safe
+   *  to include on every cycle. Absent on a report this machine could not
+   *  build (its own ask for the declared list failed) rather than sent as
+   *  an empty array claiming nothing is held; the lab keeps whatever it
+   *  last heard rather than overwriting a real report with a blank one. */
+  environments?: KernelEnvStatus[];
 }
 
 /**
@@ -233,7 +240,9 @@ export interface RunCommand {
     | "kernel-stop"
     | "kernel-restart"
     | "kernel-list"
-    | "name-task";
+    | "name-task"
+    | "kernel-env-setup"
+    | "kernel-env-reclaim";
   runId: string;
   studyId?: string;
   taskId?: string;
@@ -264,6 +273,33 @@ export interface RunCommand {
   /** The member a `kernel-execute` command's cell is recorded as run by, and
    *  the one a `kernel-stop` names to whatever cell was in the kernel. */
   by?: string;
+  /** Which provisioner a `kernel-env-setup` command builds with — this
+   *  phase always `"uv"` (D1). */
+  manager?: "uv" | "conda";
+  /** What a `kernel-env-setup` command asks this machine to RESOLVE.
+   *  Present only when there is nothing to replay yet; absent whenever
+   *  `lockfile` is present. */
+  packages?: string[];
+  /** The lockfile a `kernel-env-setup` command asks this machine to
+   *  MATERIALIZE from, rather than resolve — D4. Absent only on the very
+   *  first setup of a declaration, which is what tells this machine to
+   *  resolve instead. */
+  lockfile?: string;
+  /** Which revision `lockfile` is, so this machine's own completion marker
+   *  records the revision it actually built from. Absent exactly when
+   *  `lockfile` is. */
+  lockRevision?: number;
+  /** Why a `kernel-env-setup` is happening, in words — "scanpy was added to
+   *  python". Carried into the ending of every kernel this rebuild displaces,
+   *  so a namespace that vanishes says what took it.
+   *
+   *  Absent for a plain Setup click, which is a rebuild nobody needs a
+   *  sentence for — the researcher is looking at the button they pressed.
+   *  Its absence does NOT make the restart optional: `uv venv --clear`
+   *  removes the interpreter whoever asked for the build, so what its
+   *  absence changes is only what the ending says. See
+   *  `handleKernelEnvSetup`. */
+  reason?: string;
 }
 
 /** One SSE block's `data:` line(s), joined the way the spec joins a
@@ -457,6 +493,10 @@ export interface KernelCellReport {
   wallMs: number;
   ts: number;
   outputs: unknown[];
+  /** What this cell installed into the kernel that ran it and nowhere else —
+   *  see `NotebookCell.installed`. Absent where nothing was, which is what
+   *  the lab's own reader distinguishes. */
+  installed?: string[];
   toolUseId?: string;
 }
 
@@ -509,4 +549,216 @@ export async function postTaskTitle(
   signal: AbortSignal,
 ): Promise<void> {
   await callLab(lab, "/daemon/task/title", token, { requestId, title }, signal);
+}
+
+/** Every environment this lab has declared, machine-free — what a
+ *  `kernel-env-setup` command needs before this machine can say what it
+ *  holds of each one, and what this machine reads `readEnvStatus` against
+ *  on every regular report. Lab-wide rather than owner-scoped: any paired
+ *  machine may read the declaration list, the same way any paired machine
+ *  may resolve any declared environment (D2's declaration is a fact about
+ *  the lab, not about whoever created it). */
+export async function fetchKernelEnvDeclarations(
+  lab: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<KernelEnvDeclaration[]> {
+  const res = await callLab(lab, "/daemon/kernel-envs", token, {}, signal);
+  // A 200 this cannot read is not a lab that declared nothing. Answering
+  // `[]` to an unreadable body would put "the lab declared nothing" on the
+  // wire, and both callers pass that on as fact: the host then tells a
+  // researcher *this lab has no environment named X* about an environment
+  // their colleague declared, and the report claims this machine holds none
+  // of environments it has never been told about.
+  //
+  // Throwing instead hands the failure to the `catch` each caller already
+  // has — `runs.ts` leaves `declared` off `configure_session`, `main.ts`
+  // leaves `environments` off the report — which is the same absence a
+  // transport failure produces, and the honest one. This is that failure
+  // wearing a 200.
+  let parsed: unknown;
+  try {
+    parsed = await res.json();
+  } catch {
+    throw new Error(`${lab} answered /daemon/kernel-envs with a body this could not read`);
+  }
+  const declarations = (parsed as { declarations?: unknown } | null)?.declarations;
+  if (!Array.isArray(declarations))
+    throw new Error(`${lab} answered /daemon/kernel-envs with no declaration list`);
+  return declarations as KernelEnvDeclaration[];
+}
+
+/**
+ * Asks this lab to declare one environment, on behalf of a researcher who
+ * has just allowed it on a card.
+ *
+ * `sessionId` is what attributes the declaration to a person: the bearer
+ * token names this MACHINE, which every session on it shares, and the lab
+ * reads the researcher off the session rather than off the token. It is also
+ * what the lab checks this machine against — a session this machine is not
+ * running is refused there.
+ *
+ * A non-2xx carries the lab's own sentence through, which `callLab` already
+ * does: the researcher just approved this, and "it failed" with no reason is
+ * the worst possible answer to a card they said yes to.
+ *
+ * Two crossings worth naming rather than discovering, both the same shape. A
+ * name this lab already declares comes back 409, and `callLab` raises every
+ * 409 as `LabFrameConflict` — a class written for a frame batch the lab's
+ * durable cursor will not take. A machine this lab has removed comes back
+ * 401, which `callLab` raises as `LabRefused`, the signal a daemon's own
+ * retry loops act on by setting the pairing aside; raised from here it is
+ * caught by whoever is answering the host's ask and turned into a sentence
+ * for the agent, so this machine learns it has been removed from its next
+ * heartbeat rather than from this call.
+ *
+ * In both cases the sentence is what travels and what the agent is told, and
+ * nothing between here and the host branches on the class, so both cost
+ * nothing today. They would cost something the day a caller of this function
+ * starts reading the class instead of the message.
+ */
+export async function postKernelEnvCreate(
+  lab: string,
+  token: string,
+  sessionId: string,
+  name: string,
+  packages: string[],
+  signal?: AbortSignal,
+): Promise<KernelEnvDeclaration> {
+  const res = await callLab(
+    lab,
+    "/daemon/kernel-env/create",
+    token,
+    { sessionId, name, packages },
+    signal,
+  );
+  const body = (await res.json().catch(() => ({}))) as { declaration?: unknown };
+  // A 200 this cannot read is not a declaration. Answering with something
+  // invented here would have the agent told its environment exists on the
+  // strength of a body nothing understood.
+  if (typeof body.declaration !== "object" || body.declaration === null)
+    throw new Error(`${lab} answered /daemon/kernel-env/create with no declaration`);
+  return body.declaration as KernelEnvDeclaration;
+}
+
+/** What this lab did with an ask to add packages to an environment it
+ *  already declares: the declaration as it now stands, which of the asked-for
+ *  packages were genuinely new, and whether a rebuild is running because of
+ *  it. `added: []` is not a failure — it is everything asked for already
+ *  being declared, which changes nothing and rebuilds nothing. */
+export interface KernelEnvPackagesAdded {
+  declaration: KernelEnvDeclaration;
+  added: string[];
+  building: boolean;
+}
+
+/**
+ * Asks this lab to add packages to an environment it already declares, on
+ * behalf of a researcher who has just allowed it on a card.
+ *
+ * `sessionId` carries the same two facts it carries for a create: which
+ * person this is attributed to, and which machine the lab checks this call
+ * against. The lab reads the researcher off the session rather than off the
+ * token, because the token names a MACHINE that every session on it shares.
+ *
+ * What comes back is the lab's own record, not this machine's — including
+ * whether anything was actually added, which only the lab can say, since only
+ * it holds what the declaration already had.
+ */
+export async function postKernelEnvAddPackages(
+  lab: string,
+  token: string,
+  sessionId: string,
+  name: string,
+  packages: string[],
+  signal?: AbortSignal,
+): Promise<KernelEnvPackagesAdded> {
+  const res = await callLab(
+    lab,
+    "/daemon/kernel-env/packages",
+    token,
+    { sessionId, name, packages },
+    signal,
+  );
+  const body = (await res.json().catch(() => ({}))) as {
+    declaration?: unknown;
+    added?: unknown;
+    building?: unknown;
+  };
+  // A 200 this cannot read is not an answer. Invented here, the agent would
+  // be told its packages were added on the strength of a body nothing
+  // understood — and told to wait for a build that may never have started.
+  if (typeof body.declaration !== "object" || body.declaration === null || !Array.isArray(body.added))
+    throw new Error(`${lab} answered /daemon/kernel-env/packages with no declaration`);
+  return {
+    declaration: body.declaration as KernelEnvDeclaration,
+    added: body.added.filter((entry): entry is string => typeof entry === "string"),
+    building: body.building === true,
+  };
+}
+
+/**
+ * Hands this lab a lockfile this machine just resolved, and learns the
+ * revision it became — synchronous, unlike `postKernelEnvResult` below,
+ * because `materializeEnvironment` needs that revision BEFORE it can build:
+ * the completion marker records which revision this machine actually built
+ * from, and nothing here can name it before this call returns.
+ */
+export async function postKernelEnvLock(
+  lab: string,
+  token: string,
+  requestId: string,
+  name: string,
+  lockfile: string,
+  signal?: AbortSignal,
+): Promise<{ lockRevision: number }> {
+  // `requestId` names the ask this machine is carrying out, and the lab
+  // refuses a pin from a machine it did not ask — a lockfile is the one
+  // thing every other machine later replays verbatim, so writing one is not
+  // something a bearer token alone should authorize.
+  const res = await callLab(lab, "/daemon/kernel-env/lock", token, { requestId, name, lockfile }, signal);
+  const body = (await res.json().catch(() => ({}))) as { lockRevision?: unknown };
+  if (typeof body.lockRevision !== "number")
+    throw new Error(`${lab} answered /daemon/kernel-env/lock with no lockRevision`);
+  return { lockRevision: body.lockRevision };
+}
+
+/** One `uv` output line from a `kernel-env-setup` this machine is carrying
+ *  out, forwarded live so a researcher watching the Notebook's Setup
+ *  surface sees it rather than waiting out the whole build in silence.
+ *  `name` rides along because `KERNEL_SETUP_CHANNEL` is one lab-wide
+ *  channel, not one per build — without it, two environments building at
+ *  once (on this machine or another) would interleave into one
+ *  undifferentiated log. `runtimeId` is not this call's to send; the lab
+ *  already knows which machine is calling from the bearer token, which is
+ *  the one thing here a machine cannot misreport about itself. Best-effort:
+ *  a progress line this lab never receives costs nothing but itself, unlike
+ *  the final result below, which the waiting `kernelEnvSetup` call actually
+ *  depends on. */
+export async function postKernelEnvProgress(
+  lab: string,
+  token: string,
+  requestId: string,
+  name: string,
+  line: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await callLab(lab, "/daemon/kernel-env/progress", token, { requestId, name, line }, signal);
+}
+
+/** What a `kernel-env-setup` this machine was carrying out finally came to
+ *  — settling the lab's own wait on it (`kernelEnvSetup`'s returned
+ *  promise), unlike every other kernel command's reply, which nothing here
+ *  waits on. `ok: false` is the honest outcome of a resolve or a
+ *  materialize that failed; the lab surfaces `error` as the reason the
+ *  researcher's own call rejects with, rather than leaving it to time out
+ *  with no explanation. */
+export async function postKernelEnvResult(
+  lab: string,
+  token: string,
+  requestId: string,
+  result: { ok: true; status: KernelEnvStatus } | { ok: false; error: string },
+  signal?: AbortSignal,
+): Promise<void> {
+  await callLab(lab, "/daemon/kernel-env/result", token, { requestId, ...result }, signal);
 }

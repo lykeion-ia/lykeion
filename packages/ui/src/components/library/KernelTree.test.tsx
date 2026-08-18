@@ -301,3 +301,31 @@ it("says how many cells are waiting behind the one running", () => {
   tree([machine()], [kernel({ state: "running", queueDepth: 3 })]);
   expect(screen.getByText(/3 queued/)).toBeInTheDocument();
 });
+
+it("says why a kernel was restarted underneath the researcher", () => {
+  // The line the whole reason-carrying ending exists for. A kernel that was
+  // IDLE when its environment was rebuilt has no cell to hand a sentence to,
+  // so without this its namespace empties and the researcher comes back to a
+  // kernel that has forgotten everything and looks perfectly healthy.
+  tree([machine()], [kernel({ restartReason: "scanpy was added to python" })]);
+
+  expect(screen.getByText(/scanpy was added to python/)).toBeInTheDocument();
+});
+
+it("says nothing about a restart nobody gave a reason for", () => {
+  // A researcher who clicked Restart themselves already knows why. Absent is
+  // absent, and an empty "Restarted —" would be a sentence with nothing after
+  // it.
+  tree([machine()], [kernel()]);
+
+  expect(screen.queryByText(/Restarted —/)).not.toBeInTheDocument();
+});
+
+it("says why a kernel was stopped, when whoever stopped it said", () => {
+  // Queryable since phase 3 and drawn nowhere until now, which left a
+  // deliberate ending indistinguishable on screen from a kernel that fell
+  // over.
+  tree([machine()], [kernel({ state: "stopped", stopReason: "wrong dataset" })]);
+
+  expect(screen.getByText(/wrong dataset/)).toBeInTheDocument();
+});

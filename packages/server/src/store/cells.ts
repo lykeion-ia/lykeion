@@ -36,6 +36,9 @@ export interface CellToRecord {
   ok: boolean;
   wallMs: number;
   outputs: KernelMessage[];
+  /** What this cell installed into the kernel that ran it and nowhere else.
+   *  Absent where nothing was — see `NotebookCell.installed`. */
+  installed?: string[];
   toolUseId?: string;
 }
 
@@ -57,6 +60,7 @@ export interface ReportedCell {
   wallMs: number;
   ts: number;
   outputs: KernelMessage[];
+  installed?: string[];
   toolUseId?: string;
 }
 
@@ -121,9 +125,23 @@ export function readReportedCell(value: unknown): ReportedCell | undefined {
     !whole(v.ts) ||
     !Array.isArray(v.outputs) ||
     !v.outputs.every(isKernelMessage) ||
+    // A list of names or nothing. Read to its element type like `outputs`
+    // beside it, and for the same reason: this is stored as opaque JSON and
+    // read straight back into a browser, so an array of anything at all
+    // would put whatever a machine sent onto a notebook page.
+    (v.installed !== undefined &&
+      (!Array.isArray(v.installed) || !v.installed.every((n) => typeof n === "string"))) ||
     (v.toolUseId !== undefined && typeof v.toolUseId !== "string")
   )
     return undefined;
+  // `[]` is folded to absent rather than refused. Absent-is-not-zero is a
+  // rule about what a PRODUCER writes — the kernel host records the key only
+  // when something was installed — and on this side of the wire the two say
+  // the same thing, so refusing the cell over an empty array would cost a
+  // researcher the whole cell to enforce a distinction nothing reads.
+  const installed = Array.isArray(v.installed) && v.installed.length > 0
+    ? (v.installed as string[])
+    : undefined;
   return {
     kernelId: v.kernelId,
     name: v.name,
@@ -136,6 +154,7 @@ export function readReportedCell(value: unknown): ReportedCell | undefined {
     wallMs: v.wallMs as number,
     ts: v.ts as number,
     outputs: v.outputs as KernelMessage[],
+    ...(installed === undefined ? {} : { installed }),
     ...(v.toolUseId === undefined ? {} : { toolUseId: v.toolUseId as string }),
   };
 }
@@ -147,8 +166,8 @@ export function recordCell(store: Store, cell: CellToRecord, ts: number): string
   store.run(
     `INSERT INTO cells
        (id, task_id, session_id, kernel_id, name, language, environment, execution_count,
-        source, origin_surface, origin_by, ok, wall_ms, ts, outputs, tool_use_id, seq)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        source, origin_surface, origin_by, ok, wall_ms, ts, outputs, installed, tool_use_id, seq)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       cell.taskId,
@@ -165,6 +184,11 @@ export function recordCell(store: Store, cell: CellToRecord, ts: number): string
       cell.wallMs,
       ts,
       JSON.stringify(cell.outputs),
+      // NULL, not `'[]'`: a cell that installed nothing and a cell whose
+      // packages this lab could not name are both "nothing to show", and a
+      // stored empty array would come back as a present-but-empty field that
+      // `notebookFor` would then have to invent the absence back out of.
+      cell.installed === undefined ? null : JSON.stringify(cell.installed),
       cell.toolUseId ?? null,
       seq,
     ],
@@ -182,7 +206,7 @@ export function notebookFor(store: Store, taskId: string): NotebookCell[] {
   return store
     .all(
       `SELECT id, kernel_id, name, language, environment, execution_count, source,
-              origin_surface, origin_by, ok, wall_ms, ts, outputs, tool_use_id
+              origin_surface, origin_by, ok, wall_ms, ts, outputs, installed, tool_use_id
          FROM cells
         WHERE task_id = ?
         ORDER BY seq ASC`,
@@ -204,6 +228,12 @@ export function notebookFor(store: Store, taskId: string): NotebookCell[] {
       wallMs: row.wall_ms as number,
       ts: row.ts as number,
       outputs: JSON.parse(row.outputs as string) as KernelMessage[],
+      // Absent for every cell recorded before this column existed and for
+      // every cell that installed nothing, which are the same answer to the
+      // reader: there is nothing to show on this cell.
+      ...(row.installed === null || row.installed === undefined
+        ? {}
+        : { installed: JSON.parse(row.installed as string) as string[] }),
       ...(row.tool_use_id === null ? {} : { toolUseId: row.tool_use_id as string }),
     }));
 }

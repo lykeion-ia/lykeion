@@ -1,7 +1,9 @@
 import type {
+  AccessKind,
   AgentOption,
   ExecutionLogEntry,
   PermissionRequest,
+  PermissionScope,
   Plan,
   RunDecision,
   RunEvent,
@@ -118,6 +120,33 @@ export function carriesThinking(agent: string): boolean {
   return agent !== "codex";
 }
 
+/**
+ * What a researcher's answer to one of this machine's own cards came to.
+ *
+ * `allowed` alone is what the caller acts on. `remember` is what the answer
+ * said to KEEP — a `conversation` scope on an environment card is a standing
+ * grant that auto-allows every later card about that environment with no
+ * question at all — and it is deliberately not applied when the answer
+ * arrives.
+ *
+ * **Why the caller mints it and not `decide`.** A card is a question about an
+ * act that has not happened yet, and the act can fail after the answer. The
+ * reachable case: an agent asks to create `python`, a card reading *Create
+ * environment python?* is answered "for this conversation", and the lab
+ * refuses the create because `python` is the starter every lab already has.
+ * Minted at answer time, the session would then hold a standing, uncarded
+ * grant to add arbitrary packages to the environment every default Python
+ * kernel in the lab runs in — authority over something the researcher was
+ * never shown, obtained from a card for something that does not exist. So the
+ * grant is minted by whoever performed the act, immediately after it lands,
+ * and a grant can never outlive the act it was given for.
+ *
+ * Always present on an allowance, and a no-op for `once` — so the caller
+ * calls it unconditionally and there is no second decision anywhere about
+ * what a scope means.
+ */
+export type Answered = { allowed: false } | { allowed: true; remember: () => void };
+
 export interface LiveSession {
   /**
    * Starts one turn. Callers serialise turns themselves: wait for a turn's
@@ -136,6 +165,25 @@ export interface LiveSession {
    */
   prompt(text: string): void;
   decide(decision: RunDecision): void;
+  /**
+   * Raises one card of this machine's OWN, and answers with what the
+   * researcher decided.
+   *
+   * Every other card here relays one an adapter asked for. This one has no
+   * adapter behind it: it is raised for something the machine is being asked
+   * to do on the researcher's behalf — an agent asking for an environment,
+   * over the kernel channel rather than over ACP — and it goes through the
+   * same queue as all the others, because a turn that raised four questions
+   * has four questions to answer whichever channel each arrived on.
+   *
+   * `tool` is what the card names as having asked, and the surface chooses
+   * its wording from it; `detail` is for a caller with a real reason to
+   * offer, never a restatement of the question. `allowed: false` is a refusal
+   * for every reason there is — denied, answered with a scope this card does
+   * not take, or abandoned when the turn ended underneath it — and the caller
+   * owes whoever asked a sentence rather than a silent failure.
+   */
+  askPermission(access: AccessKind, tool: string, detail?: string): Promise<Answered>;
   /**
    * Stops the current turn: notifies the adapter over `session/cancel` and
    * settles every permission request still open, so no card is left waiting
@@ -480,6 +528,19 @@ export async function startSession(options: {
   // Session-scoped grants: what "this session" on a card means. Held here and
   // nowhere else, so they go when the session does.
   const sessionGrants: StandingGrant[] = [];
+  // The environments this conversation has already said yes to, by name.
+  // What "this conversation" MEANS on an environment card, and it cannot be
+  // a `StandingGrant`: those are a path and a mode, and an environment card
+  // names neither. Without this the card's two scopes would be one — `once`
+  // and `conversation` both asking again next time, which teaches a
+  // researcher their last answer meant less than it said.
+  const environmentGrants = new Set<string>();
+  // What each card this machine raised itself was ANSWERED with, from the
+  // moment `decide` records it until `askPermission` reads it back one line
+  // later. Not a grant and not a decision — those are `environmentGrants` and
+  // `waiting` — but the fact that lets a grant be minted by whoever performed
+  // the act rather than by whoever heard the answer. See `Answered`.
+  const answeredScopes = new Map<string, PermissionScope>();
   // The canonical set the boundary was rendered from, so the question "did
   // the researcher allow this?" is asked of exactly what the kernel was
   // told — not of the paths as they were written.
@@ -501,6 +562,11 @@ export async function startSession(options: {
   // Every card raised while it is still open, so a later `decide` can recover
   // what it was asking about — a decision only carries the request id back.
   const cards = new Map<string, PermissionRequest>();
+  // Which execution-log row each open card's decision belongs to, decided at
+  // the raise site and kept here because none of the three places that settle
+  // a card — `publishGate`, `decide`, `abandonCards` — is the place that
+  // raised it. See `recordDecision` for why this cannot simply be `card.tool`.
+  const logKeys = new Map<string, string>();
   // Whether consent the researcher has given SINCE this card was raised already
   // covers it. Asked of the card's own raise site, which is the only place that
   // still knows what the original check looked at. A turn raises a whole batch
@@ -784,7 +850,9 @@ export async function startSession(options: {
       };
       const allowed = answer("allow");
       if (allowed === undefined) return unanswerable();
-      emitStep(recordDecision(card, sessionGrant ? "allowed-conversation" : "allowed-study"));
+      emitStep(
+        recordDecision(card.tool, card, sessionGrant ? "allowed-conversation" : "allowed-study"),
+      );
       return allowed;
     }
 
@@ -837,34 +905,71 @@ export async function startSession(options: {
     // so a sibling's answer can arrive after this card was already waiting —
     // and the grant it created covers this call exactly as it would have if it
     // had existed when the call first arrived.
-    const verdict = await gated(request, () =>
-      target === undefined
-        ? undefined
-        : covers(sessionGrants, target, mode)
-          ? "allowed-conversation"
-          : covers(standing, target, mode)
-            ? "allowed-study"
-            : undefined,
+    const verdict = await gated(
+      request,
+      () =>
+        target === undefined
+          ? undefined
+          : covers(sessionGrants, target, mode)
+            ? "allowed-conversation"
+            : covers(standing, target, mode)
+              ? "allowed-study"
+              : undefined,
+      // The adapter's own id for the call this card gates, which is the id
+      // its `tool_call` update arrives under: the decision and the call it
+      // decides have to land on one row.
+      request.tool,
     );
     return answer(verdict) ?? unanswerable();
   });
 
-  /** Merges a decision about a permission-gated call into its execution-log
-   *  entry, keyed by the ACP tool-call id the card carries in `tool`. The
-   *  A later adapter update reads the same stored decision and cannot
-   *  contradict it. */
+  /**
+   * What a card was asking about, for a row nothing else is going to fill in.
+   *
+   * An ACP card's own arguments arrive on the adapter's `tool_call` update and
+   * are already in `steps` under the same key by the time a decision lands —
+   * which is what `existing` below carries, and why this answers `{}` for one.
+   * A card this machine raised has no adapter update behind it at all, so
+   * without this its row would stand for a decision with an empty object where
+   * the thing decided about should be: a researcher reading the transcript
+   * would see that something was allowed and never what.
+   */
+  const askedAbout = (card: PermissionRequest): unknown =>
+    card.access.kind === "environment"
+      ? { environment: card.access.target.name, packages: card.access.target.packages }
+      : {};
+
+  /**
+   * Merges a decision about a permission-gated call into its execution-log
+   * entry. A later adapter update reads the same stored decision and cannot
+   * contradict it.
+   *
+   * `logKey` is which row this decision belongs to, and it is an argument
+   * rather than `card.tool` because the two raise sites mean different things
+   * by that field. An ACP card carries the adapter's own tool-call id there,
+   * unique per call and the same id its `tool_call` update will arrive under —
+   * so the decision and the call it decides land on one row, which is the
+   * whole point. A card this machine raised carries the TOOL'S NAME there
+   * instead, because the surface reads it to choose the card's wording; keyed
+   * on that, every environment decision in a turn would write over the last
+   * one, inheriting its `ts` and its `result` and publishing a row whose
+   * stated reason belongs to a different decision. Two of them shaped alike
+   * would not even be published twice — `emitStep` suppresses a byte-identical
+   * republish, so the second consent would exist nowhere. So that raise site
+   * passes its own `pr_` id, which is unique per card by construction.
+   */
   const recordDecision = (
+    logKey: string,
     card: PermissionRequest,
     decision: "allowed-once" | "allowed-conversation" | "allowed-study" | "denied" | "cancelled",
     result?: string,
   ): ExecutionLogEntry => {
-    const id = card.tool;
-    const existing = steps.get(id);
+    const existing = steps.get(logKey);
     const entry: ExecutionLogEntry = {
       ts: existing?.ts ?? Math.floor(Date.now() / 1000),
-      toolUseId: id,
+      toolUseId: logKey,
       tool: existing?.tool ?? "other",
-      input: existing?.input ?? {},
+      input: existing?.input ?? askedAbout(card),
       decision,
       isError: decision === "denied" || decision === "cancelled",
     };
@@ -872,7 +977,7 @@ export async function startSession(options: {
     if (title !== undefined) entry.title = title;
     if (result !== undefined) entry.result = result;
     else if (existing?.result !== undefined) entry.result = existing.result;
-    steps.set(id, entry);
+    steps.set(logKey, entry);
     return entry;
   };
 
@@ -919,10 +1024,12 @@ export async function startSession(options: {
       }
       const settle = waiting.get(next);
       const covered = cards.get(next);
+      const logKey = logKeys.get(next);
       waiting.delete(next);
       cards.delete(next);
       coverage.delete(next);
-      if (covered) emitStep(recordDecision(covered, already));
+      logKeys.delete(next);
+      if (covered && logKey !== undefined) emitStep(recordDecision(logKey, covered, already));
       settle?.("allow");
     }
 
@@ -963,9 +1070,14 @@ export async function startSession(options: {
    *  consent `covered` reports has since arrived for it. Every gate in this
    *  session goes through here, so there is one queue and one place that
    *  decides what is on screen. */
-  const gated = (request: PermissionRequest, covered: () => Covered): Promise<Verdict> => {
+  const gated = (
+    request: PermissionRequest,
+    covered: () => Covered,
+    logKey: string,
+  ): Promise<Verdict> => {
     cards.set(request.id, request);
     coverage.set(request.id, covered);
+    logKeys.set(request.id, logKey);
     // The executor runs synchronously, so `waiting` has this card before
     // `publishGate` below goes looking for the head of the queue.
     const verdict = new Promise<Verdict>((resolve) => waiting.set(request.id, resolve));
@@ -984,11 +1096,13 @@ export async function startSession(options: {
     for (const [id, resolve] of waiting) {
       resolve("reject");
       const card = cards.get(id);
-      if (card) emitStep(recordDecision(card, "cancelled"));
+      const logKey = logKeys.get(id);
+      if (card && logKey !== undefined) emitStep(recordDecision(logKey, card, "cancelled"));
     }
     waiting.clear();
     cards.clear();
     coverage.clear();
+    logKeys.clear();
     // Deliberately not `publishGate()`: the caller is ending the turn and
     // emits `completed` next, and a `planning` state slipped in between would
     // say this session went back to work.
@@ -1183,6 +1297,70 @@ export async function startSession(options: {
           },
         );
     },
+    async askPermission(access, tool, detail) {
+      const request: PermissionRequest = {
+        // From the same counter every relayed card is numbered off, so one
+        // session has one id space: a decision names a request id and
+        // nothing else, and two cards that could share one would settle
+        // each other's.
+        id: `pr_${nextRequest++}`,
+        access,
+        tool,
+        ...(detail === undefined ? {} : { detail }),
+      };
+      // The same guard the ACP raise site applies, for the same reason and
+      // not because this caller is likely to hit it: a card raised in the gap
+      // between one turn's grace-triggered ending and the next turn's
+      // `prompt()` would be published into a run that has already emitted its
+      // terminal frame, and answered by a researcher who is looking at a
+      // different turn.
+      //
+      // Refused without writing a step, which is where this differs from the
+      // ACP path deliberately. That one writes one because an adapter that
+      // reports the refused call afterwards sends a `tool_call_update` under
+      // the same id, and the merge reads `steps` to decide what the call's
+      // decision was — a row that is not there is a row that update turns
+      // into "it ran". Nothing is coming for this id: there is no adapter
+      // call behind this card, and no live run for the frame to travel on
+      // either. What the caller does with `allowed: false` is the whole of the
+      // disclosure here.
+      if (settled || hasStaleOutstanding()) return { allowed: false };
+      // The same question asked again if this card ever reaches the head of
+      // the queue: a sibling raised in the same batch can be answered "for
+      // this conversation" while this one is still waiting, and the answer
+      // covers this card exactly as it would have had it arrived first.
+      const verdict = await gated(
+        request,
+        () =>
+          access.kind === "environment" && environmentGrants.has(access.target.name)
+            ? "allowed-conversation"
+            : undefined,
+        // Its own request id, not the tool's name: there is no adapter call
+        // behind this card for a row to be shared with, and the name is the
+        // same string for every environment decision in the turn. See
+        // `recordDecision`.
+        request.id,
+      );
+      // Read and cleared whichever way this went, so nothing can read one
+      // researcher's answer twice and nothing accumulates for a card that was
+      // denied or abandoned. Absent for a card `publishGate` drained against
+      // a grant that already existed — that answer is already standing, and
+      // re-adding it is not what `remember` is for.
+      const scope = answeredScopes.get(request.id);
+      answeredScopes.delete(request.id);
+      if (verdict !== "allow") return { allowed: false };
+      return {
+        allowed: true,
+        // The whole of what "for this conversation" means on an environment
+        // card, held until the caller says the act actually happened. See
+        // `Answered`. `once` leaves nothing behind, which is what makes this
+        // a no-op there rather than a branch the caller has to write.
+        remember: () => {
+          if (access.kind === "environment" && scope === "conversation")
+            environmentGrants.add(access.target.name);
+        },
+      };
+    },
     decide(decision) {
       if (decision.action === "cancel") {
         cancelTurn();
@@ -1193,26 +1371,50 @@ export async function startSession(options: {
       if (!resolve) return;
       waiting.delete(decision.requestId);
       const card = cards.get(decision.requestId);
+      const logKey = logKeys.get(decision.requestId);
       cards.delete(decision.requestId);
       coverage.delete(decision.requestId);
+      logKeys.delete(decision.requestId);
       // Counted whichever way this card goes. The counter names the
       // researcher's place in the batch, and a denial is as much a decision
       // made as an allowance.
       settledInGate += 1;
 
       if (decision.decision.decision === "deny") {
-        if (card) emitStep(recordDecision(card, "denied"));
+        if (card && logKey !== undefined) emitStep(recordDecision(logKey, card, "denied"));
         publishGate();
         resolve("reject");
         return;
       }
       const scope = decision.decision.scope;
+      // An environment card takes `once` and `conversation` and nothing
+      // wider. The surface offers only those two — and the surface is not a
+      // guard: a decision arrives over the wire, from a browser this end
+      // does not control, so which scopes a card was SHOWN with is not
+      // something to take a client's word for. Refused by name, the way
+      // `global` already is below, because a researcher told "for this
+      // Study" and given "this call only" would believe the wrong thing.
+      if (card?.access.kind === "environment" && (scope === "study" || scope === "global")) {
+        if (logKey !== undefined)
+          emitStep(
+            recordDecision(
+              logKey,
+              card,
+              "denied",
+              "an environment change is not something to remember beyond this conversation — allow it once, or for this conversation",
+            ),
+          );
+        publishGate();
+        resolve("reject");
+        return;
+      }
       if (scope === "global") {
         // Refused by name rather than quietly narrowed: a researcher told
         // "always" and given "this session" would believe the wrong thing.
-        if (card)
+        if (card && logKey !== undefined)
           emitStep(
             recordDecision(
+              logKey,
               card,
               "denied",
               "a grant for every Study needs the lab's grant store, which this lab does not have yet",
@@ -1225,9 +1427,25 @@ export async function startSession(options: {
       const grant = card ? grantFrom(card) : undefined;
       if (grant && scope === "conversation") sessionGrants.push(grant);
       if (grant && scope === "study") onGrant(grant);
-      if (card)
+      // What the researcher answered WITH, handed back to whoever raised this
+      // card rather than acted on here. An environment card's "for this
+      // conversation" is a standing grant over a name, and `decide` runs at
+      // the moment the researcher answers — before the act the card was about
+      // has been attempted, and therefore before anybody knows whether it
+      // happened. A create that then fails on a name collision would leave a
+      // grant over a COLLEAGUE'S environment that no card ever asked about.
+      // So this records the answer and `askPermission` hands it to the caller
+      // as `remember`, which is called once the act has landed. See
+      // `Answered`.
+      //
+      // The two lines above are a different case and stay here: an ACP card's
+      // grant is a path and a mode, the act behind it is the adapter's own
+      // tool call, and this end never learns whether that call succeeded.
+      answeredScopes.set(decision.requestId, scope);
+      if (card && logKey !== undefined)
         emitStep(
           recordDecision(
+            logKey,
             card,
             scope === "once"
               ? "allowed-once"

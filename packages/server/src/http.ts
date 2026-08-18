@@ -4,14 +4,21 @@ import { readFileSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
 import { assertBindable, assertServable, type ServerConfig } from "./config";
 import { openStore } from "./store/sqlite";
-import { migrate } from "./store/migrations";
+import { migrate, nextSeq } from "./store/migrations";
 import { seedLabContent } from "./store/seed";
 import { handleAuthRoute } from "./routes/auth-routes";
 import { handleDaemonRoute, resolveMachine } from "./routes/daemon-routes";
 import { readCookie, resolveActor, SESSION_COOKIE } from "./auth";
 import { createWorkspaceApi } from "./api/index";
 import { changeRecorder } from "./api/changes";
-import { isLykeionError, type ActiveRunSnapshot, type RunEventFrame } from "@lykeion/api";
+import {
+  isLykeionError,
+  KERNEL_SETUP_CHANNEL,
+  type ActiveRunSnapshot,
+  type KernelEnvStatus,
+  type KernelSetupProgress,
+  type RunEventFrame,
+} from "@lykeion/api";
 import { dispatch, rpcMethods } from "./rpc";
 import type { Store } from "./store/store";
 import { createChannel, type Channel, type Send } from "./channel";
@@ -20,6 +27,7 @@ import { createRevertRegistry, type RevertRegistry } from "./run-revert";
 import { createKernelListRegistry, type KernelListRegistry, type RawKernelReport } from "./kernel-list-registry";
 import { createTitleRegistry, type TitleRegistry } from "./title-registry";
 import { createPendingCells, type PendingCells } from "./kernel-cells";
+import { createEnvSetupRegistry, type EnvSetupRegistry, type EnvSetupResult } from "./env-setup-registry";
 import { failDroppedRuns } from "./run-recovery";
 import { readReportedCell, recordCell } from "./store/cells";
 import {
@@ -154,6 +162,7 @@ export async function startServer(
   const kernelLists: KernelListRegistry = createKernelListRegistry();
   const titles: TitleRegistry = createTitleRegistry();
   const pendingCells: PendingCells = createPendingCells();
+  const envSetups: EnvSetupRegistry = createEnvSetupRegistry();
   // Every open `/events` or `/daemon/commands` response, so `close()` can
   // end them itself: a stream nobody tears down keeps its heartbeat alive
   // (harmless — it is `unref`'d) but also keeps `server.close()` waiting on
@@ -172,7 +181,7 @@ export async function startServer(
 
   const listener = createRequestListener({
     store, config, secure, indexHtml, now, channel, openStreams, runs, reverts, kernelLists, titles,
-    pendingCells,
+    pendingCells, envSetups,
   });
   const server = secure
     ? createHttpsServer(
@@ -229,6 +238,9 @@ export function createRequestListener(deps: {
   /** The REPL cells this lab has asked a machine to run, so `/daemon/cell`
    *  can recognize the one it is being told about. */
   pendingCells: PendingCells;
+  /** `kernel-env-setup` asks waiting on the machine they were sent to, so
+   *  `/daemon/kernel-env/result` can settle the one it names. */
+  envSetups: EnvSetupRegistry;
   /** Every open `/events` or `/daemon/commands` response's teardown, so the
    *  server that built this listener can end them from `close()`. */
   openStreams: Set<() => void>;
@@ -236,8 +248,10 @@ export function createRequestListener(deps: {
    *  tiebreaks do the work rather than happening to pass on real time. */
   now?: () => number;
 }): (req: IncomingMessage, res: ServerResponse) => void {
-  const { store, config, secure, indexHtml, channel, openStreams, runs, reverts, kernelLists, titles, pendingCells } =
-    deps;
+  const {
+    store, config, secure, indexHtml, channel, openStreams, runs, reverts, kernelLists, titles, pendingCells,
+    envSetups,
+  } = deps;
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
 
   return (req, res) => {
@@ -577,6 +591,43 @@ export function createRequestListener(deps: {
             return sendJson(res, 403, { error: "this machine was not asked to name that task" });
           return sendJson(res, 200, { ok: true });
         }
+        if (path === "/daemon/kernel-env/progress") {
+          const machine = resolveMachine(store, req.headers.authorization);
+          if (!machine) return sendJson(res, 401, { error: "no such machine" });
+          const b = body as { requestId?: unknown; name?: unknown; line?: unknown } | null;
+          if (typeof b?.requestId !== "string" || typeof b.name !== "string" || typeof b.line !== "string")
+            return sendJson(res, 400, { error: "a requestId, a name, and a line are required" });
+          // Best-effort and unauthenticated-against-the-registry on purpose:
+          // unlike `/daemon/kernel-env/result`, nothing here is waiting on
+          // this specific line, so there is no pending entry to check the
+          // reporting machine against — only a live channel to publish it
+          // to, which every subscriber reads regardless of which machine's
+          // build it came from. `machineId` is this machine's own, taken
+          // from the token rather than trusted from the body — the one
+          // fact a machine cannot misreport about itself — and `name` is
+          // what actually lets two builds running at once stay legible on
+          // one lab-wide channel.
+          const payload: KernelSetupProgress = { machineId: machine.machineId, name: b.name, line: b.line };
+          channel.publish({ seq: nextSeq(store), kind: KERNEL_SETUP_CHANNEL, payload });
+          return sendJson(res, 200, { ok: true });
+        }
+        if (path === "/daemon/kernel-env/result") {
+          const machine = resolveMachine(store, req.headers.authorization);
+          if (!machine) return sendJson(res, 401, { error: "no such machine" });
+          const b = body as { requestId?: unknown; ok?: unknown; status?: unknown; error?: unknown } | null;
+          if (typeof b?.requestId !== "string" || typeof b.ok !== "boolean")
+            return sendJson(res, 400, { error: "a requestId and an ok flag are required" });
+          const result: EnvSetupResult =
+            b.ok === true
+              ? { ok: true, status: b.status as KernelEnvStatus }
+              : { ok: false, error: typeof b.error === "string" ? b.error : "the machine did not say why" };
+          // Held to the same binding as `/daemon/kernel/list` and
+          // `/daemon/task/title`: the bearer token proves some paired
+          // machine is calling, never that it is the one this ask went to.
+          if (!envSetups.settle(machine.machineId, b.requestId, result))
+            return sendJson(res, 403, { error: "this machine was not asked to set up that environment" });
+          return sendJson(res, 200, { ok: true });
+        }
         if (path === "/daemon/cell") {
           const machine = resolveMachine(store, req.headers.authorization);
           if (!machine) return sendJson(res, 401, { error: "no such machine" });
@@ -650,7 +701,7 @@ export function createRequestListener(deps: {
         try {
           const result = handleDaemonRoute({
             store, changes: daemonChanges, method: req.method, path, body,
-            authorization: req.headers.authorization, now: now(),
+            authorization: req.headers.authorization, now: now(), envSetups, runs,
           });
           if (result) return sendJson(res, result.status, result.json);
           return sendJson(res, 404, { error: "no such route" });
@@ -682,6 +733,7 @@ export function createRequestListener(deps: {
         const changes = changeRecorder({ store, actorId: actor.userId, now, channel });
         const api = createWorkspaceApi({
           store, actor, now, config, channel, changes, runs, reverts, kernelLists, titles, pendingCells,
+          envSetups,
         });
         const method = path.slice("/rpc/".length);
         if (!rpcMethods(api).has(method)) return sendJson(res, 404, { error: `no such method: ${method}` });

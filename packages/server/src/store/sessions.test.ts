@@ -166,6 +166,34 @@ it("folds a cell frame into the Task's notebook, keyed off the turn's own task, 
   expect(runSnapshot(store, turnId)?.stream).toEqual([]);
 });
 
+it("carries what an agent's cell installed into its kernel all the way onto the notebook", () => {
+  // The agent's own cells reach this lab as run frames and the researcher's
+  // reach it through `/daemon/cell`. This is the frame path's half: a field
+  // the fold drops here is one that arrives at every other hop and is on no
+  // notebook anybody can open.
+  const store = freshStore();
+  const { turnId } = freshTurn(store, { taskId: "t_installed" });
+  const cell: NotebookCell = {
+    id: "wire-only",
+    kernelId: "k_1",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 1,
+    source: "!pip install scanpy",
+    origin: { surface: "agent", by: "a_claude" },
+    ok: true,
+    wallMs: 8,
+    ts: 42,
+    outputs: [],
+    installed: ["anndata", "scanpy"],
+  };
+
+  recordRunFrames(store, turnId, [{ seq: 1, event: { event: "cell", cell } }], 100);
+
+  expect(notebookFor(store, "t_installed")[0]!.installed).toEqual(["anndata", "scanpy"]);
+});
+
 it("drops a cell frame for a run that has already ended, the same as every other frame", () => {
   const store = freshStore();
   const { turnId } = freshTurn(store, { taskId: "t_ended" });

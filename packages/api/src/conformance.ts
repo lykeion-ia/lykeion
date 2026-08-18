@@ -1782,27 +1782,43 @@ export function absentCapabilityConformance(makeApi: () => Promise<LykeionApi>):
       expect(await api.listAgentClis()).toEqual([]);
     });
 
-    it("kernelEnvStatus reports the absent default (nothing faked)", async () => {
+    it("kernelEnvList invents nothing beyond the python starter a fresh lab may seed", async () => {
+      // Not asserted as strictly empty: a real lab seeds exactly one
+      // declaration on every boot — the `python` starter (D3's "something
+      // to set up rather than an empty list and no way to make one") — and
+      // that is real, declared content, not a fake one. What must still
+      // never happen is a SECOND name nothing here ever asked for.
       const api = await makeApi();
-      const status = await api.kernelEnvStatus();
-      expect(status.state).toBe("absent");
-      expect(status.version).toBeUndefined();
-      expect(status.packageCount).toBeUndefined();
+      const list = await api.kernelEnvList();
+      // Asserted as a set, not with `.every()`: `[].every(...)` is `true`,
+      // so an `every` here would pass for an implementation that listed
+      // nothing AND for one that had started inventing names — which is the
+      // opposite of what this test is for. A length bound is the strongest
+      // claim that holds honestly across both cores, since one seeds the
+      // starter and one seeds nothing.
+      //
+      // The stricter half — that a core seeding NOTHING lists nothing — is
+      // asserted directly against the in-memory core in `index.test.ts`,
+      // where the expected set is known exactly rather than having to hold
+      // for every implementation at once.
+      expect(list.length).toBeLessThanOrEqual(1);
+      expect(list.map((env) => env.name).filter((name) => name !== "python")).toEqual([]);
     });
 
-    it("kernelEnvList returns an empty list (no faked envs)", async () => {
-      const api = await makeApi();
-      await expect(api.kernelEnvList()).resolves.toEqual([]);
-    });
-
-    it("kernelEnvSetup refuses when no machine is online", async () => {
+    it("kernelEnvSetup refuses a machine nothing here has ever heard of", async () => {
       // A refusal, not a resolved no-op: a Setup that "succeeds" while
       // provisioning nothing leaves the surface reporting an install that
-      // never happened. With no machine online the honest reason is that
-      // one — a core with a machine in reach answers differently, and that
-      // behaviour belongs to its own suite.
+      // never happened. `machineId` names a specific machine, so the honest
+      // refusal on a fresh core names that machine rather than a vaguer
+      // "no runtime is connected" — a core with that machine in reach
+      // answers differently, and that behaviour belongs to its own suite.
       const api = await makeApi();
-      await expectRejection(api.kernelEnvSetup(), "unsupported", /no machine is connected/);
+      await expectRejection(api.kernelEnvSetup("rt_bogus", "python"), "not-found", /rt_bogus/);
+    });
+
+    it("kernelEnvReclaim refuses a machine nothing here has ever heard of", async () => {
+      const api = await makeApi();
+      await expectRejection(api.kernelEnvReclaim("rt_bogus", "python"), "not-found", /rt_bogus/);
     });
   });
 }
@@ -1876,6 +1892,129 @@ export function kernelAxisConformance(makeApi: () => Promise<LykeionApi>): void 
     it("refuses to restart a kernel it does not have", async () => {
       const api = await makeApi();
       await expectRejection(api.kernelRestart("k_1"), "unsupported", /./);
+    });
+  });
+}
+
+/**
+ * The lab's environment declarations — name, language, manager, requested
+ * packages, who and when — held with nothing but storage: no path, no build
+ * state, no machine. `kernelEnvSetup`, which actually provisions, is not
+ * this area's concern and lives in `kernelAxisConformance` and the areas
+ * that assert its absence.
+ */
+export function environmentDeclarationsConformance(makeApi: () => Promise<LykeionApi>): void {
+  describe("the lab's environment declarations", () => {
+    it("declares an environment and lists back what was asked, not what got resolved", async () => {
+      const api = await makeApi();
+      const declared = await api.kernelEnvCreate({
+        name: "crispr",
+        language: "python",
+        packages: ["scanpy", "anndata"],
+      });
+      expect(declared.name).toBe("crispr");
+      expect(declared.packages).toEqual(["scanpy", "anndata"]);
+      // Nothing has been resolved yet, so nothing is pinned.
+      expect(declared.lockRevision).toBe(0);
+
+      // Found by name, not by position: a real lab may already carry the
+      // `python` starter alongside whatever this test just declared.
+      const list = await api.kernelEnvList();
+      expect(list.find((env) => env.name === "crispr")).toEqual(declared);
+    });
+
+    it("refuses a name this lab already has", async () => {
+      const api = await makeApi();
+      await api.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
+      await expectRejection(
+        api.kernelEnvCreate({ name: "crispr", language: "python", packages: ["anndata"] }),
+        "conflict",
+        /crispr/,
+      );
+    });
+
+    it("refuses a name no machine could ever build", async () => {
+      // A declaration's name becomes a directory on every machine that
+      // builds it — `<workDir>/envs/<name>`, what `uv venv --clear` is
+      // pointed at and what the sandbox policy is rendered around. A name
+      // that cannot be one path segment is a declaration nothing in this lab
+      // can ever build, and the refusal belongs in front of whoever typed it
+      // rather than on a colleague's machine hours later.
+      //
+      // Held here, against every core, because this is one contract with one
+      // answer: `kernelEnvCreate` is exposed to agents as
+      // `kernel_env_create`, and a core that accepts `../etc` teaches an
+      // agent a name the lab it is really working against will refuse.
+      const api = await makeApi();
+      for (const name of ["../etc", "my env", "", "crispr/v2"]) {
+        await expectRejection(
+          api.kernelEnvCreate({ name, language: "python", packages: ["scanpy"] }),
+          "invalid",
+          /letters, numbers, dashes and underscores/,
+        );
+      }
+      // Refused, not merely reported: none of them is now a declaration.
+      const list = await api.kernelEnvList();
+      expect(list.some((env) => env.name === "../etc")).toBe(false);
+
+      // And the check is not simply refusing everything — the shape a
+      // researcher actually types still goes through.
+      const declared = await api.kernelEnvCreate({
+        name: "crispr_v2-final",
+        language: "python",
+        packages: ["scanpy"],
+      });
+      expect(declared.name).toBe("crispr_v2-final");
+    });
+
+    it("refuses anything but Python, this phase", async () => {
+      const api = await makeApi();
+      await expectRejection(
+        api.kernelEnvCreate({ name: "r-stats", language: "r", packages: [] }),
+        "unsupported",
+        /Python environments only/,
+      );
+    });
+
+    it("removes a declaration so it drops out of the list", async () => {
+      const api = await makeApi();
+      await api.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
+      await api.kernelEnvDelete("crispr");
+      // Not asserted against `[]`: a real lab may already carry the
+      // `python` starter this test never touched. What this test is about
+      // is that `crispr` itself is gone.
+      const list = await api.kernelEnvList();
+      expect(list.some((env) => env.name === "crispr")).toBe(false);
+    });
+
+    it("refuses to delete an environment this lab never declared, including one already deleted", async () => {
+      const api = await makeApi();
+      await expectRejection(api.kernelEnvDelete("bogus"), "not-found", /bogus/);
+
+      await api.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
+      await api.kernelEnvDelete("crispr");
+      await expectRejection(api.kernelEnvDelete("crispr"), "not-found", /crispr/);
+    });
+
+    it("lets a deleted name be declared again, starting fresh rather than inheriting a stale pin", async () => {
+      // The case two implementations of this area can quietly disagree on:
+      // a store that tombstones a deleted row instead of removing it can
+      // crash or resurrect an old lockfile revision here, while an
+      // in-memory implementation that does a plain array delete sails
+      // through. Both must answer the same way.
+      const api = await makeApi();
+      await api.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
+      await api.kernelEnvDelete("crispr");
+
+      const recreated = await api.kernelEnvCreate({
+        name: "crispr",
+        language: "python",
+        packages: ["anndata"],
+      });
+      expect(recreated.packages).toEqual(["anndata"]);
+      // Nothing of the deleted predecessor's lockfile survives under the
+      // recreated name.
+      expect(recreated.lockRevision).toBe(0);
     });
   });
 }
@@ -2280,6 +2419,7 @@ const AREAS = [
   absentCapabilityConformance,
   pairingUnsupportedConformance,
   kernelAxisConformance,
+  environmentDeclarationsConformance,
 ];
 
 /** And what only an implementation that can actually run a turn can. */

@@ -139,6 +139,30 @@ function KernelRow({
             {kernel.lastCellTitle}
           </span>
         )}
+        {/* Why the process behind this kernel right now was started, when
+            something other than a cell arriving started it — an environment
+            rebuilt underneath it, today.
+
+            This is the line the whole reason-carrying ending exists for. A
+            kernel that was IDLE when its environment was rebuilt has no cell
+            to hand a sentence to, so without this its namespace empties and
+            nothing anywhere tells the researcher why — they come back to a
+            kernel that has forgotten everything and reads as perfectly
+            healthy. Absent on a kernel nobody restarted, and on one a
+            researcher restarted themselves, since they already know. */}
+        {kernel.restartReason && (
+          <span className="mt-0.5 block truncate text-meta text-warn">
+            Restarted — {kernel.restartReason}
+          </span>
+        )}
+        {/* Why it was stopped, when whoever stopped it said. Queryable since
+            phase 3 and drawn nowhere until now, which made a deliberate
+            ending indistinguishable on screen from a kernel that fell over. */}
+        {kernel.stopReason && (
+          <span className="mt-0.5 block truncate text-meta text-fg-subtle">
+            Stopped — {kernel.stopReason}
+          </span>
+        )}
       </span>
 
       {saying !== null ? (

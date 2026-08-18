@@ -39,6 +39,7 @@ export interface RawKernelReport {
   processId?: number;
   stoppedBy?: string;
   stopReason?: string;
+  restartReason?: string;
   resources?: { memoryBytes?: number; cpuPercent?: number };
   series?: Array<{ memoryBytes?: number; cpuPercent?: number }>;
 }

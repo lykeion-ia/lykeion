@@ -13,6 +13,7 @@ here, not just in whatever eventually tries to talk to a real host.
 
 import io
 import json
+import sys
 from pathlib import Path
 
 from lykeion_kernel.host import serve
@@ -27,7 +28,7 @@ def test_answers_the_bytes_the_daemon_actually_sends():
     serve(stdin, stdout)
     reply = json.loads(stdout.getvalue().strip())
     assert reply["id"] == 1
-    assert reply["result"]["protocol"] == 2
+    assert reply["result"]["protocol"] == 4
 
 
 def test_answers_the_compact_bytes_the_daemon_writes_with_no_spaces():
@@ -38,7 +39,7 @@ def test_answers_the_compact_bytes_the_daemon_writes_with_no_spaces():
     serve(stdin, stdout)
     reply = json.loads(stdout.getvalue().strip())
     assert reply["id"] == 2
-    assert reply["result"]["protocol"] == 2
+    assert reply["result"]["protocol"] == 4
 
 
 def test_the_greeting_names_one_descriptor_per_language_this_machine_runs():
@@ -47,9 +48,10 @@ def test_the_greeting_names_one_descriptor_per_language_this_machine_runs():
     stdout = io.StringIO()
     serve(stdin, stdout, holding)
     result = json.loads(stdout.getvalue())["result"]
-    assert result["protocol"] == 2
+    assert result["protocol"] == 4
     python = next(d for d in result["languages"] if d["language"] == "python")
     assert python["environment"] == "python"
+    assert python["interpreter"] == sys.executable
     assert str(Path(DRIVER).parent) in python["reads"]
     # The singulars are gone rather than kept alongside. A field nothing
     # renders is one the next reader has to work out is dead.

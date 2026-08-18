@@ -1,5 +1,10 @@
 import { useState, type ReactNode } from "react";
-import type { MachineCompute, RunningKernel, Machine } from "@lykeion/api";
+import type {
+  KernelEnvDeclaration,
+  MachineCompute,
+  RunningKernel,
+  Machine,
+} from "@lykeion/api";
 import { useApi, useInvalidateData } from "../../api/ApiContext";
 import { ChevronDownIcon, MonitorIcon } from "../icons";
 import { ConfirmModal } from "../ui/ConfirmModal";
@@ -8,6 +13,7 @@ import { cn } from "../../lib/utils";
 import { formatAgo } from "../../lib/task-meta";
 import { formatBytes, formatCores, UNREPORTED } from "../../lib/format";
 import { kernelSummary, MachineKernels } from "./KernelTree";
+import { KernelEnvCard } from "./KernelEnvCard";
 import { Sparkline } from "./Sparkline";
 
 interface HealthMeta {
@@ -72,6 +78,9 @@ function MachineRow({
   onInterrupt,
   onStop,
   onRestart,
+  declarations,
+  onReclaim,
+  onDelete,
   onRemove,
 }: {
   machine: Machine;
@@ -89,6 +98,14 @@ function MachineRow({
   onInterrupt: (kernelId: string) => void;
   onStop: (kernelId: string, feedback: string) => void;
   onRestart: (kernelId: string) => void;
+  /** What this lab has declared, so a row can say a machine is a revision
+   *  behind — and so a starter nobody may delete offers no Delete. Empty
+   *  while the list is still loading, which is why a row compares revisions
+   *  only when it finds its own declaration rather than assuming the lab
+   *  pins nothing. */
+  declarations: KernelEnvDeclaration[];
+  onReclaim: (machineId: string, name: string) => void;
+  onDelete: (name: string) => void;
   /** Present only for a machine the caller owns — the control this renders
    *  must never reach a machine that is not the caller's own. */
   onRemove?: (machine: Machine) => void;
@@ -100,7 +117,14 @@ function MachineRow({
   // something is running is to see what. A machine holding nothing has no
   // disclosure at all, so this decides nothing for it.
   const [open, setOpen] = useState(true);
-  const holding = kernels.length > 0;
+  // What this machine has ON it, which is now two different things. An
+  // environment is not a kernel — it is gigabytes on a disk, sitting there
+  // whether or not anything is running — so a machine holding no kernels but
+  // holding environments still has something to open. Before this, such a
+  // machine had no disclosure at all and its environments were unreachable
+  // on the one screen that exists to say what a machine holds.
+  const environments = compute?.environments ?? [];
+  const holding = kernels.length > 0 || environments.length > 0;
 
   // Absent, not zero, whenever the pair itself was never reported — a
   // daemon too old to send its own size, or a machine the fan-out could not
@@ -228,6 +252,41 @@ function MachineRow({
             onStop={onStop}
             onRestart={onRestart}
           />
+          {/* Under the kernels rather than beside them, and under the
+              MACHINE rather than in a list of their own on this screen:
+              which environments exist is a fact about the lab, but which of
+              them are on a disk is a fact about a machine, and that is the
+              question this screen answers. The same environment therefore
+              appears under every machine, saying something different under
+              each.
+
+              Not gated on the machine being online. An environment is what
+              this machine last reported holding, persisted rather than
+              re-asked, so it stays true while the machine is asleep — unlike
+              its kernel counts, which read as unknown the moment nothing can
+              ask it. */}
+          {environments.map((status) => {
+            const declaration = declarations.find((d) => d.name === status.name);
+            return (
+              <KernelEnvCard
+                key={status.name}
+                status={status}
+                declaration={declaration}
+                machineName={machine.name}
+                onReclaim={(name) => onReclaim(machine.id, name)}
+                // Offered only for an environment somebody actually declared.
+                // An absent `createdBy` means Lykeion declared it — the
+                // starter — and the core refuses to delete it (D7), so a
+                // control here would be one that can only fail. A declaration
+                // this caller has not loaded yet offers nothing either,
+                // rather than offering a delete against a name it cannot
+                // check.
+                onDelete={
+                  declaration?.createdBy === undefined ? undefined : () => onDelete(status.name)
+                }
+              />
+            );
+          })}
         </ul>
       )}
     </li>
@@ -245,6 +304,9 @@ function MachineTable({
   onInterrupt,
   onStop,
   onRestart,
+  declarations,
+  onReclaim,
+  onDelete,
   onRemove,
 }: {
   label: string;
@@ -266,6 +328,12 @@ function MachineTable({
   onInterrupt: (kernelId: string) => void;
   onStop: (kernelId: string, feedback: string) => void;
   onRestart: (kernelId: string) => void;
+  /** The lab's declarations, passed straight down to the rows — one list for
+   *  the whole roster, since what a lab has declared is the same fact under
+   *  every machine and only its state differs. */
+  declarations: KernelEnvDeclaration[];
+  onReclaim: (machineId: string, name: string) => void;
+  onDelete: (name: string) => void;
   onRemove: (machine: Machine) => void;
 }) {
   if (machines.length === 0) return null;
@@ -315,6 +383,9 @@ function MachineTable({
             onInterrupt={onInterrupt}
             onStop={onStop}
             onRestart={onRestart}
+            declarations={declarations}
+            onReclaim={onReclaim}
+            onDelete={onDelete}
             // Passed only for a machine the caller owns, so the control
             // cannot be rendered against somebody else's in the first place.
             {...(machine.ownerId === meId ? { onRemove } : {})}
@@ -502,6 +573,9 @@ export function MachinesList({
   onInterrupt = () => {},
   onStop = () => {},
   onRestart = () => {},
+  declarations = [],
+  onReclaim = () => {},
+  onDelete = () => {},
   children,
 }: {
   machines: Machine[];
@@ -523,6 +597,20 @@ export function MachinesList({
   onInterrupt?: (kernelId: string) => void;
   onStop?: (kernelId: string, feedback: string) => void;
   onRestart?: (kernelId: string) => void;
+  /** What this lab has declared. Defaulted to empty for the same reason
+   *  `kernels` and `compute` are — a caller that wants only the roster still
+   *  gets one. An empty list is NOT "this lab declares nothing" here: it is
+   *  a list this caller did not pass, and the rows treat it as nothing known
+   *  rather than as a lab with no environments, which is why a row with no
+   *  declaration of its own compares no revisions and offers no delete. */
+  declarations?: KernelEnvDeclaration[];
+  /** Frees one machine's own copy — the declaration stands, and anyone can
+   *  rebuild it from the lockfile the lab still holds. */
+  onReclaim?: (machineId: string, name: string) => void;
+  /** Removes the declaration for everybody. A different blast radius from
+   *  `onReclaim` entirely, which is why they are two props and not one with
+   *  a flag. */
+  onDelete?: (name: string) => void;
   /**
    * Whatever the screen wants between the roster and the way to add to it.
    *
@@ -571,6 +659,9 @@ export function MachinesList({
           onInterrupt={onInterrupt}
           onStop={onStop}
           onRestart={onRestart}
+          declarations={declarations}
+          onReclaim={onReclaim}
+          onDelete={onDelete}
           onRemove={setPendingRemove}
         />
       )}

@@ -1,11 +1,18 @@
-import type { RunEvent, RunEventFrame } from "@lykeion/api";
+import { isAbsolute } from "node:path";
+import type { KernelEnvDeclaration, KernelEnvStatus, RunEvent, RunEventFrame } from "@lykeion/api";
 import { addBounded } from "./bounded-set";
 import {
   backoffDelayMs,
+  fetchKernelEnvDeclarations,
   LabFrameConflict,
   LabRefused,
   openCommands,
   postKernelCell,
+  postKernelEnvAddPackages,
+  postKernelEnvCreate,
+  postKernelEnvProgress,
+  postKernelEnvResult,
+  postKernelEnvLock,
   postKernelList,
   postRunEvents,
   postRunGrant,
@@ -32,9 +39,17 @@ import {
   kernelSocketPath,
 } from "./kernels";
 import { PROTOCOL_VERSION } from "./kernel-protocol";
-import { boundaryOf, policyFor } from "./sandbox";
+import { alreadySystemReadable, boundaryOf, policyFor } from "./sandbox";
 import { restoreSnapshot, takeSnapshot } from "./snapshot";
 import { startSession, type LiveSession, type McpServer, type StandingGrant } from "./session";
+import {
+  envBase,
+  envInterpreter,
+  materializeEnvironment,
+  readEnvStatus,
+  removeEnvironment,
+  resolveEnvironment,
+} from "./environments";
 
 /** How long a run's buffered events wait for company before they are posted
  *  on their own. Long enough that a burst of `assistant-text` chunks travels
@@ -249,6 +264,143 @@ export function startRuns(options: {
   // every directory a subprocess might still be using, never fewer.
   const sessionDirs = new Map<string, string>();
   const retainedSessionDirs = new Set<string>();
+  // How to describe a live session's environments to the kernel host again,
+  // over the socket and token that session's kernels already talk over. Kept
+  // alongside `liveSessions` and deleted wherever that map loses an entry:
+  // the host forgets a session it has been asked to release, and a handle
+  // left behind here would re-configure one nothing on this machine holds.
+  //
+  // Only sessions that were actually given a kernel appear — a session told
+  // about no tool server has no kernels to re-describe.
+  const sessionConfigures = new Map<string, () => Promise<void>>();
+  /** The tail of the retell queue — what the next `retellLiveSessions` waits
+   *  on before it reads anything. See that function for why. */
+  let retells: Promise<void> = Promise.resolve();
+  /**
+   * Tells every session open on this machine right now what its kernels
+   * would be started with today.
+   *
+   * Every one of them, and not only the session whose cell asked for
+   * whatever changed: an environment appearing on this machine, or leaving
+   * it, is a fact about the MACHINE, and any open session may name it in its
+   * next cell. A session still confined by the map it was opened with is a
+   * session that will refuse an environment that is now here, or hand a
+   * kernel an interpreter that is now gone.
+   *
+   * **This never rejects.** Both callers have already done the thing they
+   * were asked to do — a build that succeeded, a copy that is gone — and one
+   * of them is holding a researcher's own wait open on saying so. A host
+   * that will not take the news costs the sessions it names a restart and
+   * nothing else, which is not a reason to report a failure that did not
+   * happen. `trouble` says what that costs the session it names, since which
+   * session it was is precisely who is owed that restart.
+   *
+   * **Settled together, not one after another.** Each re-send reaches the
+   * host and the lab on its own account, so a serial loop would spend up to
+   * one whole `KERNEL_REACH_MS` PER open session before the caller could say
+   * anything at all — a researcher on a machine with four sessions and an
+   * unresponsive host waiting six minutes to hear that their build finished.
+   * One deadline over the whole set instead of one per session.
+   *
+   * **One at a time, machine-wide.** Both callers reach this after changing
+   * what is on disk, and each re-send reads that disk for itself — so two
+   * overlapping retells are two boundaries built from two different moments,
+   * landing in whichever order the host happens to answer in, last write
+   * winning. A reclaim overtaken by a build's slower re-send would leave the
+   * session offering an environment this machine has just deleted, which is
+   * the very state the reclaim's retell exists to prevent, reached by a race
+   * rather than by a missing loop. Globally rather than per session, since a
+   * per-session chain is more precise and buys nothing against how rare these
+   * are.
+   *
+   * What chaining costs, stated at the strength the code actually holds it:
+   * one retell waits behind each retell already queued, NOT at most one in
+   * total. Nothing bounds how many can be in flight — `handleCommand` gives
+   * every `kernel-env-setup` and `kernel-env-reclaim` its own fire-and-forget
+   * task with no queue of its own — and a retell's deadline starts when its
+   * turn begins, not when it queues. So against a silent host, K concurrent
+   * env commands can delay the last one's answer to the lab by up to K whole
+   * deadlines. That is the same multiplication settling the sessions together
+   * removed one paragraph above, moved from per-session to per-command, and
+   * it is accepted rather than fixed: it needs a host that has stopped
+   * answering AND several env commands at once, where the paragraph above
+   * needed only the first. Worth coalescing if that ever stops being true —
+   * a retell queued behind one that is still waiting would read the same
+   * post-completion disk state, so it could collapse into it.
+   */
+  async function retellLiveSessions(trouble: (sessionId: string) => string): Promise<void> {
+    const mine = retells.then(() => tellEveryOpenSession(trouble));
+    // The tail is what the NEXT retell waits on, so it must not be able to
+    // carry a failure forward into one — `tellEveryOpenSession` does not
+    // reject today and this is what keeps that from becoming load-bearing.
+    retells = mine.catch(() => {});
+    await mine;
+  }
+  /** One retell, all of it — everything `retellLiveSessions` documents except
+   *  the queueing. Called only from there, so that nothing can reach the
+   *  sessions without taking its turn behind whatever retell is already
+   *  reading this machine's disk. */
+  async function tellEveryOpenSession(trouble: (sessionId: string) => string): Promise<void> {
+    // A copy, since the awaits below can outlive any of these sessions and
+    // the map is written by whoever ends one.
+    const open = [...sessionConfigures];
+    // Which of them are done, so the deadline below can say who is not.
+    const settled = new Set<string>();
+    await withDeadline(
+      Promise.allSettled(
+        // No per-session liveness check, and what stands in for it is weaker
+        // than it looks. The spread above, this `map`, and each callback up
+        // to its own first `await` all run in ONE synchronous block, so every
+        // task is STARTED while its session is still held — but the send is
+        // two awaits further on, after `host.hello` and the lab's
+        // declarations fetch (`kernelsFor`'s `configure`), and a session that
+        // ends in THAT gap is still handed a boundary.
+        //
+        // That residual window is accepted rather than guarded. The daemon
+        // never sends `kernel.release_session` — it exists in the host
+        // (host.py) with no caller on this side — so the host is still
+        // holding the session, and a late boundary refreshes it rather than
+        // resurrecting one nothing holds. What it costs is a `host.hello`, a
+        // declarations fetch and a share of the deadline.
+        //
+        // Make this loop serial again and the window widens to the whole of
+        // every earlier iteration, for every session queued behind them, so
+        // whoever does owes it a `sessionConfigures.has(sessionId)` guard at
+        // the top of the body.
+        open.map(async ([sessionId, reconfigure]) => {
+          try {
+            await reconfigure();
+          } catch (err) {
+            console.error(
+              `${trouble(sessionId)}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          } finally {
+            settled.add(sessionId);
+          }
+        }),
+      ),
+      options.kernelReachMs ?? KERNEL_REACH_MS,
+      "this machine's kernels did not answer in time",
+    ).catch((err) => {
+      // `Promise.allSettled` does not reject, so this is the deadline and
+      // only the deadline — and naming the sessions still under it is the
+      // whole job here, because the catch above will never speak for them.
+      // `host.call` carries no timeout of its own (`call`, kernel-host.ts): a
+      // call is settled by a reply or by the host dying and by nothing else,
+      // so against a host that is alive and silent those tasks stay pending
+      // for as long as this daemon runs. Unnamed, the researcher owed a
+      // restart cannot be found — which is what the per-session logging is
+      // for, and this is the one branch where it cannot do it.
+      //
+      // At least one name always comes out: the race settles through the work
+      // whenever every task has finished, so reaching here means one had not.
+      const why = err instanceof Error ? err.message : String(err);
+      for (const [sessionId] of open) {
+        if (settled.has(sessionId)) continue;
+        console.error(`${trouble(sessionId)}: ${why}`);
+      }
+    });
+  }
   // ACP connections crossing initialize/session-new are not installed in
   // `liveSessions` yet, so cancellation needs a separate ownership handle to
   // reap that subprocess and unblock the per-session turn queue.
@@ -372,6 +524,7 @@ export function startRuns(options: {
       // retired adapter is still executing during its SIGTERM grace period.
       const live = liveSessions.get(sessionId);
       liveSessions.delete(sessionId);
+      sessionConfigures.delete(sessionId);
       try {
         if (live) await live.close();
       } finally {
@@ -652,6 +805,7 @@ export function startRuns(options: {
   function retireSession(sessionId: string, session: LiveSession): void {
     if (liveSessions.get(sessionId) !== session) return;
     liveSessions.delete(sessionId);
+    sessionConfigures.delete(sessionId);
     retainedSessions.add(session);
     const dir = sessionDirs.get(sessionId);
     sessionDirs.delete(sessionId);
@@ -693,6 +847,581 @@ export function startRuns(options: {
   }
 
   /**
+   * What this machine does when an agent asks for a new environment.
+   *
+   * The host cannot do any of this itself: raising a card needs the
+   * researcher's live session, and declaring the environment needs the lab
+   * and this machine's token — and that process holds neither. So it asks,
+   * over the second direction of the same stream its kernels answer on, and
+   * blocks the one tool call that asked until this settles.
+   *
+   * In order, and the order is the whole of it:
+   *
+   * 1. The ask is read by value. Nothing between a model and this checked
+   *    anything, and what arrives here decides what a researcher is shown.
+   * 2. No live session, no card. Refused by name rather than allowed
+   *    silently: consent nobody was asked for is not consent.
+   * 3. The card. A denial throws, so the host turns it into the tool's own
+   *    refusal rather than an empty success.
+   * 4. The lab declares it, attributed to the session's own researcher.
+   * 5. The session is reconfigured BEFORE this returns. Without it the agent
+   *    creates `crispr`, immediately lists, and is told this lab declares no
+   *    such thing — because the confinement its session is holding was built
+   *    before the declaration existed. `host.py`'s module docstring is the
+   *    rule this relies on: the caller sequences by waiting for the first
+   *    reply before sending the second, and this IS that first reply.
+   *
+   * A failure at any step throws, and every sentence it can throw names the
+   * environment: the agent asked for a name and has to write the next call.
+   */
+  async function serveEnvironmentCreate(params: unknown): Promise<unknown> {
+    const asked = (params ?? {}) as {
+      session_id?: unknown;
+      name?: unknown;
+      packages?: unknown;
+    };
+    const sessionId = asked.session_id;
+    const name = asked.name;
+    const packages = asked.packages;
+    if (
+      typeof sessionId !== "string" || sessionId === "" ||
+      typeof name !== "string" || name === "" ||
+      !Array.isArray(packages) ||
+      !packages.every((entry): entry is string => typeof entry === "string" && entry !== "")
+    )
+      throw new Error(
+        "creating an environment needs a session, a name and a list of package names",
+      );
+    const session = liveSessions.get(sessionId);
+    if (session === undefined)
+      throw new Error(
+        `this machine is holding no live session for ${sessionId}, so there is nobody here to ask about ${name}`,
+      );
+    const answered = await session.askPermission(
+      { kind: "environment", target: { name, packages } },
+      "manage_environments",
+      // What the transcript's row for this decision is called. The card
+      // itself shows the name and every package below it, so this is not for
+      // the screen — it is so that a researcher reading back what they
+      // allowed sees which environment they allowed rather than a row saying
+      // only that something was.
+      packages.length === 0
+        ? `Create the environment ${name}, holding only its interpreter`
+        : `Create the environment ${name} with ${packages.join(", ")}`,
+    );
+    // Every way `false` arrives, said as one thing, because this end cannot
+    // tell them apart: refused, answered with a scope this card does not
+    // take, or abandoned when the turn ended underneath it. Naming the
+    // researcher as having refused it would be a guess, and the wrong one
+    // for a card they never saw.
+    if (!answered.allowed)
+      throw new Error(
+        `the environment ${name} was not approved — the card was refused, or the turn ended before it was answered`,
+      );
+    const declaration = await postKernelEnvCreate(
+      options.lab,
+      options.token,
+      sessionId,
+      name,
+      packages,
+      eventsController.signal,
+    );
+    // AFTER the lab wrote the declaration, and this order is the whole of it.
+    // "For this conversation" on an environment card is a standing grant over
+    // that NAME, and it auto-allows every later `manage_packages` for it with
+    // no card at all. `postKernelEnvCreate` can refuse — `conflict`, "this lab
+    // already has an environment named python" — and it is a name an agent
+    // chooses, so the collision is with an environment somebody else made.
+    // Minted before this line, a refused create would leave the session
+    // holding uncarded authority to install software into the environment
+    // every default Python kernel in this lab runs in, off a card that said
+    // *Create environment python?*. It throws above rather than reaching
+    // here, and the grant is never made.
+    answered.remember();
+    // Before returning, never after. See step 5 above.
+    await sessionConfigures.get(sessionId)?.();
+    return declaration;
+  }
+
+  /**
+   * What this machine does when an agent asks for packages to be added to an
+   * environment this lab already declares.
+   *
+   * The same ladder as `serveEnvironmentCreate`, in the same order and for
+   * the same reasons — read by value, no live session no card, the card, the
+   * lab — and it stops one rung short of that one: nothing re-describes the
+   * session here. A create adds a NAME the session has never heard of, so the
+   * confinement has to be rebuilt before the agent can see it; this changes
+   * what a name it already holds will contain, which nothing in a
+   * confinement records. The re-describe that matters happens later, on the
+   * machine that carries out the rebuild, in `handleKernelEnvSetup`.
+   *
+   * **This does not wait for the rebuild**, and neither does the lab's own
+   * route. A `uv` resolve plus a materialize is minutes; held open, it would
+   * park an MCP tool call for the length of a package download, and the model
+   * on the other end would be blocked from doing anything else in the
+   * meantime — including the work it already has the packages for. What it
+   * returns instead is the lab's own answer, which says a build is running,
+   * and the host turns that into a sentence telling the model not to import
+   * anything yet.
+   */
+  async function serveEnvironmentAddPackages(params: unknown): Promise<unknown> {
+    const asked = (params ?? {}) as {
+      session_id?: unknown;
+      name?: unknown;
+      packages?: unknown;
+    };
+    const sessionId = asked.session_id;
+    const name = asked.name;
+    const packages = asked.packages;
+    // An empty list is refused HERE as well as at the host: adding nothing is
+    // not a state anybody can mean, and a card asking a researcher to approve
+    // installing no software is not a question they can answer.
+    if (
+      typeof sessionId !== "string" || sessionId === "" ||
+      typeof name !== "string" || name === "" ||
+      !Array.isArray(packages) ||
+      packages.length === 0 ||
+      !packages.every((entry): entry is string => typeof entry === "string" && entry !== "")
+    )
+      throw new Error(
+        "adding packages needs a session, an environment and at least one package name",
+      );
+    const session = liveSessions.get(sessionId);
+    if (session === undefined)
+      throw new Error(
+        `this machine is holding no live session for ${sessionId}, so there is nobody here to ask about ${name}`,
+      );
+    const answered = await session.askPermission(
+      // `packages` is what was ASKED FOR, never the list the environment
+      // ends up holding. A researcher approving "add scanpy" must not be
+      // shown the environment's entire contents as though all of it were
+      // being installed now — and the card's own disclosure renders this
+      // list open, so what is in it is what they read.
+      { kind: "environment", target: { name, packages } },
+      "manage_packages",
+      // What the transcript's row for this decision is called — see the same
+      // argument on `serveEnvironmentCreate`.
+      `Add ${packages.join(", ")} to the environment ${name}`,
+    );
+    // Every way `false` arrives, said as one thing, because this end cannot
+    // tell them apart: refused, answered with a scope this card does not
+    // take, or abandoned when the turn ended underneath it.
+    if (!answered.allowed)
+      throw new Error(
+        `adding packages to ${name} was not approved — the card was refused, or the turn ended before it was answered`,
+      );
+    const added = await postKernelEnvAddPackages(
+      options.lab,
+      options.token,
+      sessionId,
+      name,
+      packages,
+      eventsController.signal,
+    );
+    // After the lab wrote it, for the reason `serveEnvironmentCreate` mints
+    // its own here: this call can be refused too — 404 for a declaration
+    // deleted between the card being shown and the answer arriving, 403 for a
+    // session that ended underneath it — and a grant minted off a change that
+    // never happened would stand for the rest of the conversation with
+    // nothing to point at.
+    answered.remember();
+    return added;
+  }
+
+  /** One environment a session's kernels may start in, in the shape the host
+   *  is handed on the wire: a language, a name, the interpreter, and the
+   *  boundary prefix in front of it, with at most one per language marked
+   *  `default` for a cell that names none. */
+  interface EnvironmentEntry {
+    language: string; name: string; interpreter: string;
+    prefix: string[]; default?: boolean;
+  }
+
+  /**
+   * What this machine would tell the kernel host about a session's
+   * environments right now: one entry per environment its kernels may start
+   * in, and — separately — every name this lab has declared at all.
+   *
+   * One definition, read from two places. `kernelsFor` sends this when a
+   * session is opened, and that same session's `reconfigure` sends it again
+   * once this machine has built something new. The two have to agree exactly,
+   * down to every case the loops below exist for: a base the baseline already
+   * grants, a floor whose reads will not render, a declaration in a language
+   * this machine does not run, a lab that would not answer. A second copy of
+   * this computation would drift from this one, and the drift would be a
+   * researcher told `crispr` is "not built on this machine yet" on the machine
+   * that just built it.
+   *
+   * Raises only for the two conditions that are about the MACHINE rather than
+   * about one environment: a host speaking a protocol this daemon does not,
+   * and a machine on which not one boundary could be rendered. Everything
+   * narrower costs its own entry and nothing else.
+   */
+  async function kernelEnvironmentsFor(
+    host: KernelHost,
+    cwd: string,
+    taskId: string,
+    grants: StandingGrant[],
+  ): Promise<{ environments: EnvironmentEntry[]; declared?: string[] }> {
+    const hello = (await host.call("host.hello", {})) as {
+      protocol?: unknown;
+      languages?: Array<{
+        language: string;
+        environment: string;
+        interpreter: string;
+        reads: string[];
+      }>;
+    };
+    // Read rather than merely declared at both ends. The wire shapes below
+    // are written twice, once here and once in the host, and this number is
+    // what a host says when it is no longer describing the same ones — a
+    // machine whose host was replaced under a daemon that was not.
+    if (hello.protocol !== PROTOCOL_VERSION)
+      throw new Error(
+        `this machine's kernel host speaks protocol ${JSON.stringify(hello.protocol)} ` +
+          `and this daemon speaks ${PROTOCOL_VERSION}`,
+      );
+    // One boundary per language, not one shared. Each descriptor's reads
+    // render their own policy, so a kernel confined for one language is
+    // never reused for another.
+    //
+    // What a shared union would actually cost is narrower than it first
+    // looks, and worth writing down as measured rather than as assumed. On
+    // the common install, most of R's library tree is already reachable
+    // from a Python cell whatever this does: `SYSTEM_READ` grants `/opt`,
+    // and a Python kernel inside a real boundary lists
+    // /opt/homebrew/lib/R/4.6/site-library and reads
+    // /opt/homebrew/Cellar/r/4.6.1/lib/R/library/stats/DESCRIPTION today.
+    // Splitting the boundary does not take that away and was never going
+    // to.
+    //
+    // The entry it does separate is the one R puts under the researcher's
+    // own home — R_LIBS_USER, which is where install.packages() writes by
+    // default and therefore where a researcher's own packages, and
+    // whatever data sits beside them, actually live. That path is denied by
+    // default and reachable only because R's descriptor named it. Union the
+    // two and a Python cell inherits it; keep them apart and it does not.
+    // Measured both ways in sandbox.kernel.test.ts, against the operating
+    // system rather than against the profile text.
+    //
+    // Keyed by `(language, name)`, which is the identity the host itself
+    // files these under (`built[(language, name)]` in `_environments_from`,
+    // registry.py). A list with two entries sharing that pair would leave
+    // which one survives to whichever the host happened to read last —
+    // an unwritten contract, and one the host's own comment beside that
+    // line rejects for defaults in almost these words: a session's kernels
+    // landing wherever they happened to be sorted. So the replacement
+    // happens HERE, by explicit key, and what goes on the wire has one
+    // entry per pair by construction.
+    const entries = new Map<string, EnvironmentEntry>();
+    /** Files one entry under its `(language, name)`, replacing whatever
+     *  stood for that pair before — and keeping the `default` that pair
+     *  already carried, since the default is a fact about the NAME and not
+     *  about which interpreter is behind it. Written once and used by both
+     *  loops below, so the floor and a built environment cannot come to
+     *  disagree about what replacing an entry means. */
+    const place = (entry: EnvironmentEntry): void => {
+      // Refused HERE, per entry, and it is the second half of a fix whose
+      // first half is `config.ts` resolving `--work-dir`. The host's
+      // `_environments_from` refuses a relative interpreter — rightly, since
+      // it would be resolved against the HOST's working directory and put a
+      // directory of its choosing in front of every cell's `PATH` — but it
+      // refuses the WHOLE confinement on the first bad entry, floor included,
+      // and the session then gets no kernel tools at all. Both callers of
+      // this are inside a `try` that costs a bad entry one environment, which
+      // is the difference between one odd environment and every kernel on the
+      // machine. Written as the guard and not only as the resolve above it
+      // because a `workDir` is not the only way a path reaches here.
+      if (!isAbsolute(entry.interpreter))
+        throw new Error(
+          `${entry.interpreter} is not an absolute path, and an environment's interpreter has to be one`,
+        );
+      const key = `${entry.language} ${entry.name}`;
+      const inherited = entries.get(key)?.default;
+      entries.set(key, {
+        ...(inherited === undefined ? {} : { default: inherited }),
+        ...entry,
+      });
+    };
+    // What each language's floor is read out of, kept for the built
+    // environments below: a venv's own `bin/python3` is a link out to the
+    // base interpreter, and a boundary is written where the operating
+    // system will look. The default descriptor's reads, since that is the
+    // one the machine's floor for that language actually is.
+    //
+    // It also answers "is this a language this machine actually has",
+    // which is the only question the built loop below needs asked — one
+    // structure, since a second set tracking the same predicate could
+    // only ever drift out of agreement with this one.
+    const floorReads = new Map<string, string[]>();
+    // How many boundaries this machine tried to render and could not. Read
+    // once at the end, and only to tell "this language is unusable" from
+    // "this machine cannot confine a kernel at all" — see below.
+    let unrenderable = 0;
+    for (const descriptor of hello.languages ?? []) {
+      // A read the baseline already grants is left to the baseline — the same
+      // filter, and the same argument, as the built loop applies to a venv's
+      // base below; the reasoning is written out in full above `ownBase`
+      // (`const ownBase =`, the built loop). A kernel host running on a system
+      // python reports a `sys.base_prefix` of `/usr`, and `/usr` is one of the
+      // paths `renderSeatbeltProfile` puts in EVERY profile unconditionally.
+      // Naming it a second time buys the kernel nothing, and is the only
+      // reason `policyFor` refuses the boundary — leaving a machine that would
+      // run python perfectly offering no python kernel at all, and, once it is
+      // the only language, no kernel server whatsoever (the guard below).
+      //
+      // Entry by entry rather than descriptor by descriptor, because this is a
+      // list where the built loop's `base` was a single path: a floor reading
+      // out of both `/usr` and somewhere the baseline does not reach keeps the
+      // second. A descriptor every one of whose reads is covered renders with
+      // an empty list of its own, which is right — the baseline is already
+      // carrying all of it.
+      //
+      // Absent is not zero, here as there: what is dropped stays readable
+      // through `SYSTEM_READ`, a grant rendered into this very profile.
+      // Restoring it would take the language's kernel away, not give it reach.
+      try {
+        const reads = (descriptor.reads ?? []).filter((read) => !alreadySystemReadable(read));
+        const { prefix } = kernelConfinementFor({
+          platform: options.platform ?? process.platform,
+          workspace: cwd,
+          dataDir: options.dataDir,
+          grants,
+          reads,
+        });
+        // At most one default per language, and it is the FIRST floor
+        // descriptor of that language. The host refuses a whole confinement
+        // carrying two defaults for one language (`_environments_from` in
+        // registry.py), and a refused confinement is a session with no
+        // kernels at all rather than one degraded kernel — so marking every
+        // descriptor was harmless only for as long as the floor happened to
+        // report one per language, and nothing here is left resting on that.
+        //
+        // Recorded only once the boundary is rendered, so this stays the
+        // reads of a descriptor a kernel can actually be started under — and
+        // the FILTERED list, since the built loop composes this into its own
+        // reads. Keeping the baseline's paths here would hand a path back to
+        // `policyFor` one loop down and refuse every built environment of a
+        // language whose floor happens to sit under `/usr`.
+        const isDefault = !floorReads.has(descriptor.language);
+        if (isDefault) floorReads.set(descriptor.language, reads);
+        place({
+          language: descriptor.language,
+          name: descriptor.environment,
+          interpreter: descriptor.interpreter,
+          prefix,
+          ...(isDefault ? { default: true } : {}),
+        });
+      } catch (err) {
+        // A boundary this machine will not render around what that language
+        // reads out of — `policyFor` refuses a readable path that swallows
+        // the boundary. Not `/usr`, which the filter above leaves to the
+        // baseline: what reaches here is a floor reading out of a place the
+        // baseline does NOT cover and which is still somebody's whole world —
+        // a one-segment prefix like Fink's `/sw`, or the researcher's home
+        // itself. Raised, it leaves the session with NO kernel tools at all,
+        // so one language this machine cannot confine would cost the
+        // researcher every kernel on the machine. It costs that language its
+        // kernel instead.
+        unrenderable += 1;
+        console.error(
+          `this machine could not confine a ${descriptor.language} kernel for ${taskId}, ` +
+            `so ${descriptor.environment} is not offered: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+        continue;
+      }
+    }
+    // Every name this lab has declared, which is a different list from the
+    // one above: `environments` is what this machine has built and can
+    // start a kernel in, and this is what exists at all. The host needs
+    // both to tell a cell naming an environment a colleague declared and
+    // this machine has not downloaded apart from a cell naming one nothing
+    // in this lab has ever heard of — two different absences, owed two
+    // different sentences.
+    //
+    // A lab that will not answer must not be a machine that starts no
+    // kernels, so a failed ask leaves the key off the message entirely
+    // rather than sending an empty list. Absent is "nobody here knows what
+    // this lab declared"; `[]` is "the lab declared nothing", and the host
+    // says different things for the two. The same policy `reportIfChanged`
+    // applies to `environments` in its own report, for the same reason.
+    let declarations: KernelEnvDeclaration[] | undefined;
+    try {
+      declarations = await fetchKernelEnvDeclarations(
+        options.lab, options.token, eventsController.signal,
+      );
+    } catch (err) {
+      console.error(
+        `could not read this lab's declared environments before confining ${taskId}'s kernels: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    const declared = declarations?.map((declaration) => declaration.name);
+    // And now the other half of that pair: one entry per environment this
+    // machine has actually BUILT, which is what makes a named environment
+    // reachable at all. Without these the map every other piece resolves a
+    // name against holds nothing but the language floor, and `crispr` is
+    // refused as "not built on this machine yet" on the machine that built
+    // it.
+    //
+    // Read from disk rather than from anything tracked, the same couple of
+    // `stat`s the report already makes, and only `ready` sends anything.
+    // An `absent` or `broken` copy sends NO entry: its absence from the map
+    // is what produces the correct refusal downstream, and offering a
+    // half-built one would hand a kernel an interpreter with no packages
+    // behind it.
+    //
+    // Nothing here CLAIMS a default. A built environment is reached only
+    // by being named — anything else would make "which environment did
+    // this cell run in" depend on what happens to be built on that
+    // machine, which is the implicitness the environment was put into the
+    // kernel identity to remove.
+    //
+    // What it does do is inherit one. Where a built name and a floor
+    // descriptor's name collide — the lab's own `python` starter, once a
+    // machine builds it — the built copy is the more specific fact about
+    // the same name and replaces that entry, default and all. The default
+    // is a fact about the NAME, not about which interpreter is behind it:
+    // a cell that said nothing ran in `python` before the starter was
+    // built and runs in `python` after, and the only thing that changed is
+    // which interpreter that name resolves to. Taking the default away
+    // here would leave the language with none the moment a machine built
+    // its own starter.
+    //
+    // Nothing at all when the ask above failed: a declaration list that
+    // could not be fetched is not an empty one, and inventing a list to
+    // walk here would be the same absent-is-not-zero error one level down.
+    // The floor still goes out, so kernels still start.
+    for (const declaration of declarations ?? []) {
+      // A language this machine's own floor reported, or nothing. The lab
+      // is a different trust domain and its list arrives shape-checked but
+      // not field-checked, so `language` here can be a string this floor
+      // has never heard of — or, from an older or a broken lab, not a
+      // string at all. Either one goes straight through `readEnvStatus`
+      // into `configure_session`, where `_environments_from` refuses the
+      // WHOLE confinement and the session ends up with no kernel tools at
+      // all: one malformed row anywhere in the lab costing every session
+      // on every machine its kernels, which is the same failure the guard
+      // below was added to prevent, arriving through the door beside it.
+      //
+      // It also keeps a declaration to the language it says it is. This
+      // probe is `bin/python3` for every declaration regardless — so an
+      // `r` row with a python venv on disk would otherwise replace the R
+      // floor entry and hand the R driver a python interpreter.
+      if (!floorReads.has(declaration.language)) {
+        console.error(
+          `this machine runs no ${JSON.stringify(declaration.language)}, ` +
+            `so the environment ${declaration.name} is not offered to ${taskId}'s kernels`,
+        );
+        continue;
+      }
+      // Everything it takes to turn one declaration into one entry, inside
+      // one `try`: the name resolved to a path, the boundary rendered around
+      // what that environment reads, and the entry filed. Every one of them
+      // can raise about THIS environment — a name `envRoot` will not resolve
+      // (`envRoot`'s own guard, which the lab does not apply when a
+      // declaration is created), a base that swallows the boundary
+      // (`policyFor`, for a venv built on a prefix like `/sw` or one equal to
+      // the researcher's home) — and none of them is a reason to raise about
+      // the session. Unguarded, one such declaration anywhere in the lab
+      // leaves every session on every machine with no kernel tools at all,
+      // which is a whole machine's kernels lost to one odd environment.
+      try {
+        const status: KernelEnvStatus = readEnvStatus(options.workDir, declaration);
+        if (status.state !== "ready") continue;
+        // The prefix of the base THIS venv's `bin/python3` links out to,
+        // read off its own `pyvenv.cfg` rather than assumed to be whatever
+        // the host process was started from. `uv venv` runs with no
+        // `--python` on purpose — an environment's Python is a fact about
+        // its lockfile's `requires-python`, not about this daemon — so the
+        // two genuinely differ, and a boundary written from the wrong one
+        // refuses the kernel before its first instruction.
+        //
+        // The prefix and not the `bin` directory `pyvenv.cfg` records: the
+        // standard library sits at `<prefix>/lib/pythonX.Y`, a sibling of
+        // that directory rather than anything beneath it, and a grant is a
+        // subpath under a `(deny default)` — so granting `bin` alone gives
+        // the kernel its executable and refuses it `os.py`. See `envBase`.
+        //
+        // `undefined` when the file cannot be read or names no usable
+        // `home`, and that is not "this venv has no base": it is this
+        // machine unable to say what the base is, so the reads fall back to
+        // the composition that was here before rather than dropping the base
+        // silently.
+        const base = envBase(options.workDir, declaration.name);
+        // A base the baseline already grants is left to the baseline. Every
+        // profile this renders carries `SYSTEM_READ` — /usr, /bin, /opt,
+        // /Library and the rest — unconditionally (`renderSeatbeltProfile`,
+        // sandbox.ts), so a venv built on a system python, whose `home` is
+        // `/usr/bin` and whose prefix is therefore `/usr`, is READ THROUGH
+        // THAT GRANT whatever this does. Naming it a second time buys the
+        // kernel nothing and costs it the environment: `/usr` is one segment,
+        // which `policyFor` refuses as a path that swallows the boundary.
+        //
+        // Dropped, and the kernel loses no reach: this is not "absent is
+        // zero". The base stays readable through `SYSTEM_READ`, which is a
+        // grant rendered into this very profile a few lines above the ones
+        // this list produces. Restoring it here would take the environment
+        // away, not give the kernel anything.
+        const ownBase = base !== undefined && !alreadySystemReadable(base) ? [base] : [];
+        const { prefix } = kernelConfinementFor({
+          platform: options.platform ?? process.platform,
+          workspace: cwd,
+          dataDir: options.dataDir,
+          grants,
+          // The environment's own root, the prefix of the base it links out
+          // to, AND the floor's reads for the same language: the interpreter
+          // inside a venv is a link out of it, and a boundary granting only
+          // the root refuses the kernel before its first instruction.
+          reads: [status.root, ...ownBase, ...(floorReads.get(declaration.language) ?? [])],
+        });
+        // No `default` of its own, and `place` carries over the one the
+        // entry it replaces had — see the note above.
+        place({
+          language: declaration.language,
+          name: declaration.name,
+          interpreter: envInterpreter(options.workDir, declaration.name),
+          prefix,
+        });
+      } catch (err) {
+        unrenderable += 1;
+        console.error(
+          `this machine could not offer the environment ${declaration.name} ` +
+            `to ${taskId}'s kernels: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        continue;
+      }
+    }
+    // The two loops above cost a failure ONE entry, which is the whole
+    // point of them — but a machine on which every one of them failed is
+    // not a session with fewer kernels, it is a machine that cannot confine
+    // a kernel at all: no backend for this platform, a workspace that will
+    // not resolve. That is the case this function's own contract already
+    // answers by naming no server ("a machine that cannot confine a kernel
+    // … names no server"), and it stays answered that way rather than
+    // becoming a notebook tool the agent can call and no kernel behind it.
+    //
+    // `unrenderable > 0` and not `entries.size === 0` alone: a host that
+    // reports no languages and a lab that declared nothing is a machine with
+    // nothing to offer, which is not the same as one that tried and could
+    // not. It sends the empty list, as it did before any of this.
+    if (entries.size === 0 && unrenderable > 0)
+      throw new Error("no kernel on this machine has a boundary that could be rendered");
+    return {
+      // In the order they were first named: the floor, then whatever this
+      // machine has built that the floor did not already stand for. One
+      // entry per `(language, name)` by construction, not by whichever the
+      // host reads last.
+      environments: [...entries.values()],
+      // Absent rather than empty when the ask above failed, all the way out
+      // to the wire: `[]` would tell the host this lab declared nothing.
+      ...(declared === undefined ? {} : { declared }),
+    };
+  }
+
+  /**
    * Puts a kernel within reach of the session about to open, and answers with
    * the tool server to name to it.
    *
@@ -718,6 +1447,14 @@ export function startRuns(options: {
    * Degraded quietly it would be a lab that never holds a kernel and never
    * says so; raised, it ends this turn in words naming the path and its size,
    * where whoever can move the directory will read them.
+   *
+   * `reconfigure` comes back beside the server: the same configuration, sent
+   * again over the same socket and the same token, for whoever needs this
+   * session's kernels to know something the machine has learned since. A
+   * fresh token would be a bridge this session's kernels do not talk over, so
+   * it is this closure that is kept rather than the arguments to rebuild one.
+   * Absent wherever no server is named — a session that was told about no
+   * kernels has none to re-describe.
    */
   async function kernelsFor(
     cwd: string,
@@ -725,14 +1462,14 @@ export function startRuns(options: {
     sessionId: string,
     agent: string,
     grants: StandingGrant[],
-  ): Promise<McpServer[]> {
-    if (options.kernelHost === undefined) return [];
+  ): Promise<{ servers: McpServer[]; reconfigure?: () => Promise<void> }> {
+    if (options.kernelHost === undefined) return { servers: [] };
     const token = kernelSessionToken();
     // Decided before anything is asked of the host, and outside the catch
     // below, so a name that cannot be bound leaves this as a refusal rather
     // than as a session quietly opened with no tools.
     const socket = kernelSocketPath(cwd);
-    const reaching = async (): Promise<void> => {
+    const configure = async (): Promise<void> => {
       const host = options.kernelHost!();
       if (cellRoutingHost !== host) {
         forwardKernelCells(
@@ -741,56 +1478,21 @@ export function startRuns(options: {
           emit,
           (sid, source) => liveSessions.get(sid)?.claimKernelCall(source),
         );
+        // On the same guard, and for the same reason it is here: what is
+        // registered belongs to the HOST rather than to any one session.
+        // Re-registering per session would be harmless in itself — `serve`
+        // replaces a method's handler rather than stacking one, and
+        // `serveEnvironmentCreate` closes over this subsystem's own maps and
+        // not over a session — but it would be work done per session for a
+        // fact about the process pair, and it would say the opposite of what
+        // is true about the handler's lifetime to whoever read it next.
+        host.serve("environment.create", serveEnvironmentCreate);
+        // Beside it, on the same guard and for the same reason: what is
+        // registered belongs to the HOST rather than to any one session.
+        host.serve("environment.add_packages", serveEnvironmentAddPackages);
         cellRoutingHost = host;
       }
-      const hello = (await host.call("host.hello", {})) as {
-        protocol?: unknown;
-        languages?: Array<{ language: string; environment: string; reads: string[] }>;
-      };
-      // Read rather than merely declared at both ends. The wire shapes below
-      // are written twice, once here and once in the host, and this number is
-      // what a host says when it is no longer describing the same ones — a
-      // machine whose host was replaced under a daemon that was not.
-      if (hello.protocol !== PROTOCOL_VERSION)
-        throw new Error(
-          `this machine's kernel host speaks protocol ${JSON.stringify(hello.protocol)} ` +
-            `and this daemon speaks ${PROTOCOL_VERSION}`,
-        );
-      // One boundary per language, not one shared. Each descriptor's reads
-      // render their own policy, so a kernel confined for one language is
-      // never reused for another.
-      //
-      // What a shared union would actually cost is narrower than it first
-      // looks, and worth writing down as measured rather than as assumed. On
-      // the common install, most of R's library tree is already reachable
-      // from a Python cell whatever this does: `SYSTEM_READ` grants `/opt`,
-      // and a Python kernel inside a real boundary lists
-      // /opt/homebrew/lib/R/4.6/site-library and reads
-      // /opt/homebrew/Cellar/r/4.6.1/lib/R/library/stats/DESCRIPTION today.
-      // Splitting the boundary does not take that away and was never going
-      // to.
-      //
-      // The entry it does separate is the one R puts under the researcher's
-      // own home — R_LIBS_USER, which is where install.packages() writes by
-      // default and therefore where a researcher's own packages, and
-      // whatever data sits beside them, actually live. That path is denied by
-      // default and reachable only because R's descriptor named it. Union the
-      // two and a Python cell inherits it; keep them apart and it does not.
-      // Measured both ways in sandbox.kernel.test.ts, against the operating
-      // system rather than against the profile text.
-      const prefixes: Record<string, string[]> = {};
-      const environments: Record<string, string> = {};
-      for (const descriptor of hello.languages ?? []) {
-        const { prefix } = kernelConfinementFor({
-          platform: options.platform ?? process.platform,
-          workspace: cwd,
-          dataDir: options.dataDir,
-          grants,
-          reads: descriptor.reads ?? [],
-        });
-        prefixes[descriptor.language] = prefix;
-        environments[descriptor.language] = descriptor.environment;
-      }
+      const { environments, declared } = await kernelEnvironmentsFor(host, cwd, taskId, grants);
       // The directory the socket goes in, before the host is asked to bind
       // one inside it.
       ensureKernelSocketDir();
@@ -798,24 +1500,31 @@ export function startRuns(options: {
         session_id: sessionId,
         task_id: taskId,
         workspace: cwd,
-        prefixes,
         environments,
         socket,
         token,
+        ...(declared === undefined ? {} : { declared }),
       });
     };
     try {
       await withDeadline(
-        reaching(),
+        configure(),
         options.kernelReachMs ?? KERNEL_REACH_MS,
         "this machine's kernels did not answer in time",
       );
-      return [kernelBridgeFor({ workspace: cwd, sessionId, taskId, agent, token })];
+      return {
+        servers: [kernelBridgeFor({ workspace: cwd, sessionId, taskId, agent, token })],
+        // Handed back rather than filed here: this runs before the session
+        // exists, and a session that never opens must leave nothing behind
+        // to re-configure. `runTurn` files it at the same line it files the
+        // session itself.
+        reconfigure: configure,
+      };
     } catch (err) {
       console.error(
         `this machine could not put a kernel within reach of ${taskId}: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return [];
+      return { servers: [] };
     }
   }
 
@@ -876,6 +1585,7 @@ export function startRuns(options: {
     if (live && live.boundary !== boundary) {
       liveSessions.delete(sessionId);
       sessionDirs.delete(sessionId);
+      sessionConfigures.delete(sessionId);
       if (runOfSession.get(sessionId) === runId) runOfSession.delete(sessionId);
       await live.close();
       live = undefined;
@@ -911,8 +1621,18 @@ export function startRuns(options: {
       // Before the session opens, so no tool call can reach a kernel this
       // machine has not yet described a boundary for.
       let mcpServers: McpServer[];
+      // Held until the session is actually installed below, and filed with
+      // it: a session that never opens — cancelled, or stopped, while ACP
+      // was still initialising — must leave nothing behind to re-configure.
+      let reconfigure: (() => Promise<void>) | undefined;
       try {
-        mcpServers = await kernelsFor(cwd, taskId, sessionId, agent, grants);
+        ({ servers: mcpServers, reconfigure } = await kernelsFor(
+          cwd,
+          taskId,
+          sessionId,
+          agent,
+          grants,
+        ));
       } catch (err) {
         refuse(runId, err instanceof Error ? err.message : String(err));
         if (sessionOfRun.delete(runId)) publishQueue(sessionId);
@@ -1005,6 +1725,7 @@ export function startRuns(options: {
       }
       liveSessions.set(sessionId, live);
       sessionDirs.set(sessionId, cwd);
+      if (reconfigure !== undefined) sessionConfigures.set(sessionId, reconfigure);
     }
 
     runOfSession.set(sessionId, runId);
@@ -1111,6 +1832,7 @@ export function startRuns(options: {
           const live = liveSessions.get(sessionId);
           liveSessions.delete(sessionId);
           sessionDirs.delete(sessionId);
+          sessionConfigures.delete(sessionId);
           if (runOfSession.get(sessionId) === runId) runOfSession.delete(sessionId);
           if (live) await live.close();
         }
@@ -1271,6 +1993,235 @@ export function startRuns(options: {
   }
 
   /**
+   * Builds (or replays) `name` on this machine, answered back to the lab's
+   * own `kernel-env-setup` ask.
+   *
+   * Two shapes, decided entirely by whether `command` carries a `lockfile`:
+   * one carrying none means this machine is the first to build `name` and
+   * must RESOLVE — its own resolve's lockfile is then handed to the lab
+   * through `/daemon/kernel-env/lock`, which is the one call that learns
+   * the revision this machine's own completion marker has to record, since
+   * nothing here can know it before that lab-side write happens. One
+   * carrying a lockfile means a later machine replaying an already-pinned
+   * environment (D4): it MATERIALIZES from exactly that text and never
+   * calls `resolveEnvironment` at all — the only line in this function that
+   * makes D4 true rather than merely stated. `uv`'s own output reaches the
+   * lab as it happens, through `/daemon/kernel-env/progress`, from either
+   * step; the final outcome — this machine's own `readEnvStatus`, or the
+   * reason it failed — settles the lab's own wait through
+   * `/daemon/kernel-env/result`, which nothing here proceeds without
+   * eventually calling, success or failure: the lab's own promise has
+   * nothing else that will ever release it.
+   */
+  function handleKernelEnvSetup(command: RunCommand): void {
+    const requestId = command.runId;
+    const name = command.name;
+    if (name === undefined) {
+      // Answered, never dropped. This lab holds the caller's promise open
+      // until something settles it, and the only other thing that will is a
+      // forty-minute timeout — so returning silently here turns a malformed
+      // command into a researcher watching a Setup that was never going to
+      // happen. The same reasoning the kernel host's own loop applies to a
+      // method it does not recognize: a request that gets no reply reads as
+      // a hung machine rather than as a refused message.
+      void postKernelEnvResult(
+        options.lab,
+        options.token,
+        requestId,
+        { ok: false, error: "this machine was asked to set up an environment with no name" },
+        eventsController.signal,
+      ).catch(() => {});
+      return;
+    }
+    const onLine = (line: string): void => {
+      void postKernelEnvProgress(
+        options.lab,
+        options.token,
+        requestId,
+        name,
+        line,
+        eventsController.signal,
+      ).catch(
+        () => {
+          // Best-effort, unlike the final result below: a progress line
+          // this lab never receives costs nothing but itself.
+        },
+      );
+    };
+    void (async () => {
+      try {
+        let lockfile = command.lockfile;
+        let lockRevision = command.lockRevision;
+        if (lockfile === undefined) {
+          const resolved = await resolveEnvironment({
+            workDir: options.workDir,
+            dataDir: options.dataDir,
+            name,
+            packages: command.packages ?? [],
+            ...(options.platform === undefined ? {} : { platform: options.platform }),
+            onLine,
+          });
+          lockfile = resolved.lockfile;
+          ({ lockRevision } = await postKernelEnvLock(
+            options.lab,
+            options.token,
+            requestId,
+            name,
+            lockfile,
+            eventsController.signal,
+          ));
+        }
+        if (lockRevision === undefined)
+          throw new Error(`${name}'s setup command carried a lockfile with no revision to build it under`);
+        await materializeEnvironment({
+          workDir: options.workDir,
+          dataDir: options.dataDir,
+          name,
+          lockfile,
+          lockRevision,
+          ...(options.platform === undefined ? {} : { platform: options.platform }),
+          onLine,
+        });
+        // Read back from disk rather than assembled from what was just
+        // built: this is the same fact `readEnvStatus` reports on this
+        // machine's own regular report, so the lab's answer and the
+        // machine's own next report can never disagree about it.
+        // `language`/`manager` are this phase's own constants everywhere
+        // outside a declaration this daemon does not otherwise hold; only
+        // `readEnvStatus`'s base fields carry them at all.
+        const status: KernelEnvStatus = readEnvStatus(options.workDir, {
+          name,
+          language: command.language ?? "python",
+          manager: command.manager ?? "uv",
+          packages: [],
+          createdTs: 0,
+          lockRevision,
+        });
+        // Before the result and not after. The result is what releases the
+        // lab's own wait and unblocks the researcher's Setup, and a session
+        // still confined by the map it was opened with would refuse the very
+        // cell the build was for — "not built on this machine yet", about an
+        // environment this function has just finished building. The opposite
+        // order leaves exactly that window open.
+        //
+        // A second `configure_session` is what the host is built for: it
+        // replaces what the earlier one said, and deliberately restarts
+        // NOTHING of its own (see `configure_session`, registry.py) — which
+        // is why every session's kernels in every OTHER environment survive a
+        // build untouched, notebook state and all. That is this call's whole
+        // contribution and the reason this is not just "retire the session".
+        //
+        // The kernels in the environment that was actually rebuilt are a
+        // different matter, and the next step ends them deliberately: their
+        // interpreter is gone. Do not read the paragraph above as saying this
+        // function restarts nothing — it restarts exactly the kernels whose
+        // ground `uv venv --clear` has removed, and no others.
+        await retellLiveSessions(
+          (sessionId) =>
+            `${name} is built on this machine, but ${sessionId}'s kernels were not told about it ` +
+            `and will need a restart to use it`,
+        );
+        // Then the kernels that were already running in it, and AFTER the
+        // re-describe above rather than before: a relaunch reads the
+        // confinement this host currently holds, so a kernel restarted ahead
+        // of the new boundary would be started inside the old one.
+        //
+        // This is correctness, not courtesy. `materializeEnvironment` runs
+        // `uv venv --clear`, which removes everything already at the target
+        // path — so a kernel still running against a rebuilt environment is a
+        // process whose interpreter and site-packages have been deleted out
+        // from under it. It answers out of what it has already imported and
+        // then fails on the first thing it needs the disk for, which reads to
+        // a researcher as their own code breaking for no reason.
+        //
+        // Every successful setup, not only the ones carrying a `reason`: the
+        // directory is cleared whoever asked for the build. What `reason`
+        // decides is only what the ending SAYS — an agent's `manage_packages`
+        // has a sentence worth carrying, a researcher's own Setup click does
+        // not, and the first build of an environment nothing is bound to
+        // restarts nothing either way.
+        //
+        // Best-effort, like `retellLiveSessions` and for the same reason:
+        // this machine has already built what it was asked to build, and the
+        // lab's own wait is about that. A host that will not take this news
+        // costs the kernels in that environment a restart the researcher can
+        // perform themselves; reporting a build that happened as a failure
+        // would cost them the build.
+        try {
+          await options.kernelHost?.().call("kernel.restart_environment", {
+            name,
+            ...(command.reason === undefined ? {} : { reason: command.reason }),
+          });
+        } catch {
+          // See above.
+        }
+        await postKernelEnvResult(
+          options.lab,
+          options.token,
+          requestId,
+          { ok: true, status },
+          eventsController.signal,
+        );
+      } catch (err) {
+        await postKernelEnvResult(
+          options.lab,
+          options.token,
+          requestId,
+          { ok: false, error: err instanceof Error ? err.message : String(err) },
+          eventsController.signal,
+        ).catch(() => {
+          // The lab's own wait times out on this the same way it would on a
+          // machine that vanished mid-build — there is nothing more this
+          // call can do about a lab it cannot currently reach.
+        });
+      }
+    })();
+  }
+
+  /**
+   * Frees this machine's own copy of `name`, answered back to nothing: a
+   * researcher freeing disk on their own machine is not a build with
+   * progress to watch, and the next report this machine sends is what
+   * tells `computeSnapshot` the copy is gone. Silent on failure, the same
+   * as `handleKernelInterrupt`/`handleKernelStop`: there is no run to
+   * attach a failure frame to.
+   *
+   * Then every open session is told, for the mirror of the reason a
+   * finished build tells them. A session confined by the map it was opened
+   * with goes on OFFERING an environment whose interpreter this function
+   * has just deleted, and `identity_for` resolves a name against that map
+   * without ever asking the filesystem — so the next cell naming it mints a
+   * kernel and execs a path that is not there. That is worse than the
+   * refusal it replaces: an environment that is not built refuses in a
+   * sentence a researcher can act on, while this fails to launch with
+   * nothing useful said. Once the re-send lands, `readEnvStatus` reads
+   * `absent`, the entry is dropped, and the lab's own declaration still
+   * names it — so the host produces exactly that honest refusal again.
+   */
+  function handleKernelEnvReclaim(command: RunCommand): void {
+    const name = command.name;
+    if (name === undefined) return;
+    void (async () => {
+      try {
+        removeEnvironment(options.workDir, name);
+      } catch {
+        // Silent — see the doc comment above.
+      }
+      // Whether or not that threw. A remove that failed part way leaves a
+      // `broken` environment, which the re-sent map drops exactly as it
+      // drops an absent one; a map left stale after a partial delete is the
+      // worst of the three outcomes, and skipping this on failure is how it
+      // would happen. Nothing here answers the lab, so there is no result to
+      // order against — this is simply the last thing a reclaim does.
+      await retellLiveSessions(
+        (sessionId) =>
+          `${name} is gone from this machine, but ${sessionId}'s kernels were not told, so that ` +
+          `session will go on offering it until it restarts`,
+      );
+    })();
+  }
+
+  /**
    * Summarize a Task's opening message into a name for it, answered back to
    * the lab's own `name-task` ask.
    *
@@ -1336,6 +2287,8 @@ export function startRuns(options: {
     if (command.type === "kernel-restart") return handleKernelRestart(command);
     if (command.type === "kernel-execute") return handleKernelExecute(command);
     if (command.type === "kernel-list") return handleKernelList(command);
+    if (command.type === "kernel-env-setup") return handleKernelEnvSetup(command);
+    if (command.type === "kernel-env-reclaim") return handleKernelEnvReclaim(command);
     if (command.type === "name-task") return handleNameTask(command);
   }
 
@@ -1412,6 +2365,7 @@ export function startRuns(options: {
         delay(FINAL_FLUSH_GRACE_MS),
       ]);
       liveSessions.clear();
+      sessionConfigures.clear();
       retainedSessions.clear();
       sessionDirs.clear();
       retainedSessionDirs.clear();

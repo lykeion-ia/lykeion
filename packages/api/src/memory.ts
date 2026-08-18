@@ -21,6 +21,7 @@ import type {
   StudyDetail,
   Task,
 } from "./types";
+import type { KernelEnvCreateInput, KernelEnvDeclaration } from "./machine";
 import type {
   Conversation,
   ConversationSummary,
@@ -876,6 +877,26 @@ export function emptySeed(): Seed {
   };
 }
 
+/**
+ * A name every machine will be able to build: one path segment, and nothing
+ * else — the same shape the workspace server refuses anything else against
+ * (`packages/server/src/api/environments.ts`), which is in turn the shape
+ * the daemon's own `envRoot` enforces, because a declaration's name becomes
+ * a directory `<workDir>/envs/<name>` that `uv venv --clear` is pointed at
+ * and a sandbox policy is rendered around.
+ *
+ * Held here even though this core has no machines at all. It is not that
+ * `../etc` would break something in the browser — nothing here ever builds
+ * anything — it is that `kernelEnvCreate` is one contract, exposed to agents
+ * as `kernel_env_create` (`index.ts`), and a contract with two answers to the
+ * same input is one an agent learns the wrong half of: it names an
+ * environment against this core, is told yes, and is told no by the lab that
+ * would have had to build it. `environmentDeclarationsConformance` asserts
+ * the rule against both cores, which is what actually keeps them together —
+ * this constant is only one core's copy of it.
+ */
+const BUILDABLE_NAME = /^[A-Za-z0-9_-]+$/;
+
 /** Options for {@link createInMemoryApi}. */
 export interface InMemoryApiOptions {
   /**
@@ -934,6 +955,14 @@ export function createInMemoryLab(
   const workflows: Workflow[] = clone(seed.workflows);
   const connectors: Connector[] = clone(seed.connectors);
   const researchGroups: ResearchGroup[] = clone(seed.researchGroups);
+
+  // The lab's environment declarations. No seed carries any — an
+  // environment appears only once something declares it, on a fresh
+  // install or a seeded one alike. Machine-free by construction, like the
+  // real store: this array holds no path and no build state, only what was
+  // asked for and the lockfile revision (always 0 here — this core cannot
+  // resolve a lockfile, so nothing here ever raises it).
+  const kernelEnvs: KernelEnvDeclaration[] = [];
 
   // Seeded artifact blobs for the viewers, keyed by Study-relative path.
   const artifacts: Record<string, ArtifactBlob> = fixtureArtifacts();
@@ -1498,33 +1527,68 @@ export function createInMemoryLab(
     async listMachines() {
       return [];
     },
-    async kernelEnvStatus() {
-      // The browser core can't provision or probe a Python env — it reports
-      // the honest first-install default; a real implementation would report
-      // the actual state.
-      return {
-        state: "absent" as const,
-        name: "python",
-        language: "python" as const,
-        manager: "uv" as const,
-        platform: "unknown",
-        root: "",
-      };
-    },
     async kernelEnvList() {
-      // No filesystem in the browser core to enumerate `machine/envs` — an
-      // honest empty list; a real env appears only once provisioned.
-      return [];
+      // The declaration is pure metadata — no filesystem or machine
+      // involved — so unlike `kernelEnvSetup` this core answers it for
+      // real rather than with a fixed empty list.
+      return clone(kernelEnvs);
     },
-    async kernelEnvSetup() {
-      // No `uv` and no filesystem in the browser core: provisioning isn't
-      // possible here, and a resolved answer would report an install that
-      // never happened. The refusal a machineless lab gives — same code,
-      // same reason — so the two cores stay one contract.
-      throw new LykeionError(
-        "unsupported",
-        "no machine is connected to this lab — install the Lykeion daemon on the machine you want to run on.",
-      );
+    async kernelEnvCreate(input: KernelEnvCreateInput) {
+      // Python only, this phase (D1) — the same refusal the real lab gives.
+      if (input.language !== "python") {
+        throw new LykeionError(
+          "unsupported",
+          "Lykeion manages Python environments only for now — an R kernel uses the machine's own R.",
+        );
+      }
+      // Refused in front of whoever typed it, in the same words a real lab
+      // uses — see `BUILDABLE_NAME`. Before the conflict check rather than
+      // after: a name that could never be built is not a better answer for
+      // being unclaimed.
+      if (!BUILDABLE_NAME.test(input.name)) {
+        throw new LykeionError(
+          "invalid",
+          // Quoted, unlike the refusals around it: the names this turns away
+          // are the ones whose spaces, slashes or emptiness are the whole
+          // problem, and bare in a sentence they are invisible.
+          `${JSON.stringify(input.name)} cannot be an environment name — use only letters, numbers, ` +
+            "dashes and underscores, since each machine builds an environment into a folder of that name.",
+        );
+      }
+      if (kernelEnvs.some((e) => e.name === input.name))
+        throw new LykeionError(
+          "conflict",
+          `this lab already has an environment named ${input.name}`,
+        );
+      const declared: KernelEnvDeclaration = {
+        name: input.name,
+        language: input.language,
+        manager: "uv",
+        packages: input.packages,
+        createdBy: me,
+        createdTs: tick(),
+        lockRevision: 0,
+      };
+      kernelEnvs.push(declared);
+      return clone(declared);
+    },
+    async kernelEnvDelete(name: string) {
+      const index = kernelEnvs.findIndex((e) => e.name === name);
+      if (index === -1) throw new LykeionError("not-found", `no such environment: ${name}`);
+      kernelEnvs.splice(index, 1);
+    },
+    async kernelEnvSetup(machineId: string) {
+      // No `uv` and no filesystem in the browser core, and no machine ever
+      // paired to it either: `listMachines` here always answers `[]`, so
+      // any `machineId` a caller names is honestly one this core has never
+      // heard of, precisely — not a vaguer "nothing is online" now that the
+      // caller must name a specific machine.
+      throw new LykeionError("not-found", `no such machine: ${machineId}`);
+    },
+    async kernelEnvReclaim(machineId: string) {
+      // Same reasoning as `kernelEnvSetup`: no machine behind a browser
+      // core, ever, so there is nothing named `machineId` to free.
+      throw new LykeionError("not-found", `no such machine: ${machineId}`);
     },
     async listRunningKernels() {
       // No machine behind a browser core, so nothing is holding a kernel.

@@ -29,7 +29,9 @@ export interface RunCommand {
     | "kernel-stop"
     | "kernel-restart"
     | "kernel-list"
-    | "name-task";
+    | "name-task"
+    | "kernel-env-setup"
+    | "kernel-env-reclaim";
   runId: string;
   studyId?: string;
   taskId?: string;
@@ -63,6 +65,42 @@ export interface RunCommand {
    *  could ever be told. Carried by `kernel-stop` for the same reason: the
    *  member who ended a kernel is named to whatever cell was in it. */
   by?: string;
+  /** Which provisioner a `kernel-env-setup` command builds with — the
+   *  declaration's own `manager`, this phase always `"uv"` (D1). `language`
+   *  above carries the declaration's language the same way. */
+  manager?: "uv" | "conda";
+  /** What a `kernel-env-setup` command asks the machine to RESOLVE — the
+   *  declaration's own `packages` — present only when there is nothing to
+   *  replay yet (the declaration's `lockRevision` is `0`). Absent whenever
+   *  `lockfile` is present: a machine handed a lockfile materializes from
+   *  it and never resolves (D4). */
+  packages?: string[];
+  /** The lockfile a `kernel-env-setup` command asks the machine to
+   *  MATERIALIZE from, replayed from this lab's own store rather than
+   *  resolved again — D4's whole point. Absent only on the very first
+   *  setup of a declaration (`lockRevision` still `0`), which is what tells
+   *  the machine to resolve instead. */
+  lockfile?: string;
+  /** Which revision `lockfile` is, carried alongside it so the machine can
+   *  stamp its own completion marker with the revision it actually built
+   *  from (`materializeEnvironment`'s `lockRevision`). Absent exactly when
+   *  `lockfile` is: the machine that resolves learns its own revision from
+   *  `/daemon/kernel-env/lock`'s reply instead, since nothing here can name
+   *  it before that resolve has even run. */
+  lockRevision?: number;
+  /** Why a `kernel-env-setup` is happening, in words — "scanpy was added to
+   *  python". The machine carries it into the ending of every kernel the
+   *  rebuild displaces, so a namespace that vanishes says what took it.
+   *
+   *  Absent for a plain Setup click, which is a rebuild nobody needs a
+   *  sentence for: the researcher is looking at the button they pressed.
+   *  Its absence does NOT make the restart optional — `uv venv --clear`
+   *  removes the interpreter whoever asked for the build — so what it
+   *  decides is only what the ending says. The daemon's own copy of this
+   *  field (`packages/daemon/src/lab.ts`) says the same thing; two comments
+   *  on one wire field disagreeing is drift this branch has already paid
+   *  for. */
+  reason?: string;
 }
 
 /** How many of a run's most recent event frames stay available to replay.

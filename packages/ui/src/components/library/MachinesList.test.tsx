@@ -2,7 +2,14 @@ import type { ReactElement } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { render as rtlRender, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createInMemoryApi, type LykeionApi, type Machine, type RunningKernel } from "@lykeion/api";
+import {
+  createInMemoryApi,
+  type KernelEnvDeclaration,
+  type KernelEnvStatus,
+  type LykeionApi,
+  type Machine,
+  type RunningKernel,
+} from "@lykeion/api";
 import { ApiProvider } from "../../api/ApiContext";
 import { MachinesList } from "./MachinesList";
 
@@ -387,4 +394,243 @@ it("shows a header figure that is the sum of the rows under it", () => {
   expect(screen.getByText("6.0 MB of 8.0 GB")).toBeInTheDocument();
   expect(screen.getByText("4.0 MB")).toBeInTheDocument();
   expect(screen.getByText("2.0 MB")).toBeInTheDocument();
+});
+
+/** One declared environment as a machine holds it. `absent` deliberately
+ *  carries no `version`, no `packageCount` and no `lockRevision` — those are
+ *  measurements of a build that never happened here, and inventing zeros for
+ *  them is the thing this screen must not do. */
+function envStatus(overrides: Partial<KernelEnvStatus> = {}): KernelEnvStatus {
+  return {
+    state: "absent",
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    platform: "macos-aarch64",
+    root: "",
+    ...overrides,
+  };
+}
+
+/** The lab's own declaration of one environment. `createdBy` is present by
+ *  default: an absent one means Lykeion declared it, which is the starter,
+ *  and the starter may not be deleted. */
+function declaration(
+  overrides: Partial<KernelEnvDeclaration> = {},
+): KernelEnvDeclaration {
+  return {
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    packages: ["scanpy"],
+    createdBy: "u_you",
+    createdTs: 1_700_000_000,
+    lockRevision: 1,
+    ...overrides,
+  };
+}
+
+it("shows a declared environment under a machine that has never built it", () => {
+  render(
+    <MachinesList
+      {...props}
+      compute={[{ machineId: "rt_1", environments: [envStatus()] }]}
+      declarations={[declaration()]}
+    />,
+  );
+  expect(screen.getByText("crispr")).toBeInTheDocument();
+  expect(screen.getByText(/not built here/i)).toBeInTheDocument();
+  // Information, not a call to action: setting up happens where the work is
+  // blocked, which is the Notebook, never here.
+  expect(screen.queryByRole("button", { name: /set up/i })).not.toBeInTheDocument();
+});
+
+it("opens a machine that holds environments but is running nothing", () => {
+  // The disclosure used to be gated on kernels alone, which left a machine
+  // that has built gigabytes and is running nothing with no way to show them
+  // — on the one screen that exists to say what a machine holds.
+  render(
+    <MachinesList
+      {...props}
+      kernels={[]}
+      compute={[{ machineId: "rt_1", environments: [envStatus({ state: "ready" })] }]}
+      declarations={[declaration()]}
+    />,
+  );
+  expect(screen.getByText("crispr")).toBeInTheDocument();
+});
+
+it("tells a half-built copy apart from one that was never built", () => {
+  // Different states, different fixes: `broken` is an interrupted provision
+  // and wants building again; `absent` was never started here. Given the same
+  // word, a researcher watching a build die would see it settle into
+  // something that looks like it never began.
+  render(
+    <MachinesList
+      {...props}
+      compute={[
+        {
+          machineId: "rt_1",
+          environments: [
+            envStatus({ name: "crispr", state: "broken" }),
+            envStatus({ name: "atacseq", state: "absent" }),
+          ],
+        },
+      ]}
+      declarations={[declaration(), declaration({ name: "atacseq" })]}
+    />,
+  );
+  expect(screen.getByText(/half-built/i)).toBeInTheDocument();
+  expect(screen.getByText(/not built here/i)).toBeInTheDocument();
+});
+
+it("renders no figure for a build that never happened here", () => {
+  // Absent is not zero. An `absent` row measured nothing, so it says nothing
+  // — never `0 packages`, which is a real state a real build can be in.
+  render(
+    <MachinesList
+      {...props}
+      compute={[{ machineId: "rt_1", environments: [envStatus()] }]}
+      declarations={[declaration()]}
+    />,
+  );
+  expect(screen.queryByText(/0 packages/)).not.toBeInTheDocument();
+  // Scoped to the environment's own row: the machine row above it renders an
+  // em dash for every figure IT could not measure, so an unscoped query here
+  // would pass on the machine's unreported memory and never look at the
+  // environment at all.
+  const row = screen.getByText("crispr").closest("li");
+  expect(row).not.toBeNull();
+  expect(within(row as HTMLElement).getByText("—")).toBeInTheDocument();
+});
+
+it("says when a machine's copy is a revision behind the lab's own pin", () => {
+  render(
+    <MachinesList
+      {...props}
+      compute={[
+        {
+          machineId: "rt_1",
+          environments: [
+            envStatus({ state: "ready", packageCount: 12, version: "3.12.7", lockRevision: 1 }),
+          ],
+        },
+      ]}
+      declarations={[declaration({ lockRevision: 3 })]}
+    />,
+  );
+  expect(screen.getByText(/a revision behind/i)).toBeInTheDocument();
+  expect(screen.getByText(/12 packages/)).toBeInTheDocument();
+});
+
+it("says nothing about revisions for a machine holding the lab's current pin", () => {
+  // The other half, and the half that keeps the line above honest: a test
+  // that only asserts the warning appears would pass against a row that
+  // always warns.
+  render(
+    <MachinesList
+      {...props}
+      compute={[
+        { machineId: "rt_1", environments: [envStatus({ state: "ready", lockRevision: 3 })] },
+      ]}
+      declarations={[declaration({ lockRevision: 3 })]}
+    />,
+  );
+  expect(screen.queryByText(/a revision behind/i)).not.toBeInTheDocument();
+});
+
+it("keeps freeing a machine's copy apart from deleting the environment", async () => {
+  // Two different actions with two different blast radii. The row action is
+  // the small, local, reversible one, and choosing it must never reach the
+  // lab-wide delete.
+  const onReclaim = vi.fn();
+  const onDelete = vi.fn();
+  render(
+    <MachinesList
+      {...props}
+      compute={[{ machineId: "rt_1", environments: [envStatus({ state: "ready" })] }]}
+      declarations={[declaration()]}
+      onReclaim={onReclaim}
+      onDelete={onDelete}
+    />,
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: /free ana-macbook's copy of crispr/i }),
+  );
+  // Inline, in the row — the pattern the Stop control established — and it
+  // names both the environment and the machine, so the answer is not given
+  // from memory of which row was clicked.
+  expect(screen.getByText(/free crispr from ana-macbook/i)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Free" }));
+  expect(onReclaim).toHaveBeenCalledWith("rt_1", "crispr");
+  expect(onDelete).not.toHaveBeenCalled();
+});
+
+it("asks before it frees anything, and frees nothing if the answer is no", async () => {
+  const onReclaim = vi.fn();
+  render(
+    <MachinesList
+      {...props}
+      compute={[{ machineId: "rt_1", environments: [envStatus({ state: "ready" })] }]}
+      declarations={[declaration()]}
+      onReclaim={onReclaim}
+    />,
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: /free ana-macbook's copy of crispr/i }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(onReclaim).not.toHaveBeenCalled();
+});
+
+it("offers nothing to free on a machine that has built nothing", () => {
+  render(
+    <MachinesList
+      {...props}
+      compute={[{ machineId: "rt_1", environments: [envStatus()] }]}
+      declarations={[declaration()]}
+      onReclaim={vi.fn()}
+    />,
+  );
+  expect(screen.queryByRole("button", { name: /free ana-macbook's copy/i })).not.toBeInTheDocument();
+});
+
+it("offers no delete for Lykeion's own starter environment", async () => {
+  // An absent `createdBy` means Lykeion declared it, not a person — and the
+  // core refuses to delete it (D7), so a control here could only ever fail.
+  const onDelete = vi.fn();
+  render(
+    <MachinesList
+      {...props}
+      compute={[
+        { machineId: "rt_1", environments: [envStatus({ name: "python", state: "ready" })] },
+      ]}
+      declarations={[declaration({ name: "python", createdBy: undefined })]}
+      onDelete={onDelete}
+    />,
+  );
+  expect(
+    screen.queryByRole("button", { name: /delete the environment python/i }),
+  ).not.toBeInTheDocument();
+});
+
+it("deletes an environment for the whole lab only after saying so", async () => {
+  const onDelete = vi.fn();
+  const onReclaim = vi.fn();
+  render(
+    <MachinesList
+      {...props}
+      compute={[{ machineId: "rt_1", environments: [envStatus({ state: "ready" })] }]}
+      declarations={[declaration()]}
+      onDelete={onDelete}
+      onReclaim={onReclaim}
+    />,
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: /delete the environment crispr for the whole lab/i }),
+  );
+  expect(screen.getByText(/delete crispr for the whole lab/i)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+  expect(onDelete).toHaveBeenCalledWith("crispr");
+  expect(onReclaim).not.toHaveBeenCalled();
 });
