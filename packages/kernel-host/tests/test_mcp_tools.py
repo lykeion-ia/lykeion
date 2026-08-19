@@ -32,7 +32,6 @@ from mcp.client.session import ClientSession
 from mcp.shared.exceptions import MCPError
 from mcp.shared.memory import create_client_server_memory_streams
 
-from lykeion_kernel.interpreters import runnables
 from lykeion_kernel.kernels import KernelIdentity
 from lykeion_kernel.mcp.endpoint import (
     Endpoints,
@@ -41,7 +40,7 @@ from lykeion_kernel.mcp.endpoint import (
     _greeting as opening_line,
 )
 from lykeion_kernel.mcp.server import Reach, server_for, tools_for
-from lykeion_kernel.registry import Registry
+from lykeion_kernel.registry import LAUNCHERS, Registry
 
 
 def python_environment() -> list[dict[str, Any]]:
@@ -312,13 +311,16 @@ def test_both_calls_reach_the_same_kernel(mcp: Calling):
     assert first["kernelId"] == second["kernelId"]
 
 
-def test_a_tool_names_nothing_a_caller_could_point_at_another_kernel(mcp: Calling):
+def test_a_tool_names_nothing_a_caller_could_point_at_another_kernel(
+    mcp: Calling, registry: Registry
+):
     published = {tool.name: tool.input_schema for tool in mcp.tools().tools}
     # The shell tool, the two tools that answer about environments rather than
-    # running anything, and one runner per language this machine can start a
-    # kernel in — so a machine with R publishes five and one without four.
+    # running anything, and one runner per language this host has a launcher
+    # for AT ALL — capability in principle, not this machine's own discovered
+    # runnables, so every machine running this code publishes the same five.
     expected = ["execute_shell_cell", "manage_environments", "manage_packages"] + [
-        f"execute_{runnable.language}_cell" for runnable in runnables()
+        f"execute_{language}_cell" for language in registry.capable_languages
     ]
     assert sorted(published) == sorted(expected)
     # `environment` is the one thing a call may say about where it lands, and
@@ -336,30 +338,36 @@ def test_a_tool_names_nothing_a_caller_could_point_at_another_kernel(mcp: Callin
     assert published["execute_shell_cell"]["required"] == ["command"]
 
 
-def test_the_r_tool_neither_publishes_an_environment_nor_honours_one(
+def test_the_r_tool_publishes_an_environment_and_runs_the_cell_there(
     mcp: Calling, registry: Registry, tmp_path
 ):
-    """The R tool offers no `environment`, and does not act on one sent anyway.
+    """The R tool offers an `environment`, and a cell that names one lands in it.
 
-    This phase builds Python environments only — the provisioner installs from
-    PyPI with `uv` and calls a build ready by probing its `bin/python3` — so an
-    `environment` on the R tool would publish an argument whose every value can
-    only ever be refused.
+    This asserts the inverse of what it used to. While the provisioner built
+    Python environments alone, an `environment` on the R tool would have
+    published an argument whose every value could only ever be refused. It
+    builds R ones now, so the argument is real and its absence would be the
+    defect: D9's identity carries an environment axis, and a language that
+    cannot address it can reach only one environment ever.
 
-    Nothing between an agent and the handler checks arguments against a tool's
-    schema, so an unpublished property arrives looking exactly like a published
-    one. That is why the omission has to be asserted as behaviour and not only
-    as a schema: a handler reading the argument for every tool would run this
-    cell in `bioc` and say so, which is a working capability behind a surface
-    this machine never published.
+    Both halves are asserted, and the schema is the lesser one. Nothing
+    between an agent and the handler checks arguments against a schema —
+    `addressable` is DERIVED from the published properties, and it is that
+    derivation, not the schema entry, that decides whether the argument is
+    read at all. A schema saying yes over a handler that ignores it is the
+    exact shape this test was written to catch, in the other direction.
 
-    The second R environment below is one nothing in this phase can build. It
-    is here so that honouring the argument would visibly *succeed* — against a
-    session holding only one, the argument being read would be indistinguishable
-    from it being ignored.
+    The second R environment is what makes the difference visible: against a
+    session holding one, an argument being honoured is indistinguishable from
+    an argument being ignored.
     """
-    r = next((runnable for runnable in runnables() if runnable.language == "r"), None)
-    if r is None:
+    # `execute_r_cell` is published unconditionally (`capable_languages`, not
+    # machine discovery) — what this test still needs from the machine is a
+    # real Rscript to hand this session's confinement, so an actual R process
+    # answers the call below. `runnables()` never discovers one any more
+    # (Task 6), so this asks the machine directly rather than through it.
+    rscript = shutil.which("Rscript")
+    if rscript is None:
         pytest.skip("this machine has no Rscript, so it holds no R kernels")
     registry.configure_session(
         session_id="se_1",
@@ -367,20 +375,65 @@ def test_the_r_tool_neither_publishes_an_environment_nor_honours_one(
         workspace=str(tmp_path),
         environments=python_environment()
         + [
-            {"language": "r", "name": "r", "interpreter": r.interpreter, "prefix": ["/usr/bin/env"], "default": True},
-            {"language": "r", "name": "bioc", "interpreter": r.interpreter, "prefix": ["/usr/bin/env"]},
+            {"language": "r", "name": "r", "interpreter": rscript, "prefix": ["/usr/bin/env"], "default": True},
+            {"language": "r", "name": "bioc", "interpreter": rscript, "prefix": ["/usr/bin/env"]},
         ],
         declared=["python", "r", "bioc"],
     )
     published = {tool.name: tool.input_schema for tool in mcp.tools().tools}
-    assert "environment" not in published["execute_r_cell"]["properties"]
+    assert "environment" in published["execute_r_cell"]["properties"]
+    # Optional, like every other tool that takes one: a cell that names none
+    # runs in this Task's default rather than being refused for not choosing.
+    assert published["execute_r_cell"]["required"] == ["code"]
 
     answer = mcp.call("execute_r_cell", {"code": "1 + 1", "environment": "bioc"})
 
-    # It ran, and it ran where an R cell has always run: in this session's
-    # default for R, exactly as if the argument had not been sent.
+    # It ran, and it ran where it was sent — not in this session's R default,
+    # which is what an ignored argument would have produced.
     assert answer["cell"]["ok"] is True
-    assert answer["cell"]["environment"] == "r"
+    assert answer["cell"]["environment"] == "bioc"
+
+
+def test_an_r_cell_whose_environment_is_unreachable_is_refused_by_that_value(
+    mcp: Calling, registry: Registry, tmp_path
+):
+    """The other half of the promise the published description makes.
+
+    "An environment that does not exist is refused by name rather than run
+    somewhere else" is now on the R tool too, and a promise a tool makes in
+    its own description is a thing to test rather than to trust. Neither an
+    unknown name nor a value that is not a name at all may fall back to the
+    default.
+
+    No Rscript is needed and none is used: both refusals happen while
+    resolving the identity, before a kernel is minted, which is the property
+    being pinned as much as the sentence is.
+    """
+    registry.configure_session(
+        session_id="se_1",
+        task_id="tk_1",
+        workspace=str(tmp_path),
+        environments=python_environment()
+        + [
+            {"language": "r", "name": "r", "interpreter": "/nonexistent/bin/Rscript",
+             "prefix": ["/usr/bin/env"], "default": True},
+        ],
+        declared=["python", "r"],
+    )
+    before = len(registry.list())
+
+    unknown = mcp.call("execute_r_cell", {"code": "1", "environment": "nosuch"})
+    assert unknown["isError"] is True
+    assert "nosuch" in unknown["text"]
+    assert unknown["cell"] is None
+
+    not_a_name = mcp.call("execute_r_cell", {"code": "1", "environment": 7})
+    assert not_a_name["isError"] is True
+    assert "7" in not_a_name["text"]
+    assert not_a_name["cell"] is None
+
+    # Neither refusal left an entry behind for a kernel that never started.
+    assert len(registry.list()) == before
 
 
 def test_a_machine_with_no_r_publishes_no_way_to_run_it():
@@ -416,15 +469,21 @@ def test_calling_the_r_tool_resolves_rs_own_environment_not_pythons(
     started. This is exactly the failure the daemon's own
     `bridge.test.ts` caught end to end; this is the fast version of it.
     """
-    r = next((runnable for runnable in runnables() if runnable.language == "r"), None)
-    if r is None:
+    # `execute_r_cell` is published unconditionally now (`capable_languages`,
+    # not machine discovery) — what this test still needs from the machine is
+    # a real Rscript to hand this session's confinement, so an actual R
+    # process is what answers the call below. `runnables()` never discovers
+    # one any more (Task 6), so this asks the machine directly rather than
+    # through it.
+    rscript = shutil.which("Rscript")
+    if rscript is None:
         pytest.skip("this machine has no Rscript, so it holds no R kernels")
     registry.configure_session(
         session_id="se_1",
         task_id="tk_1",
         workspace=str(tmp_path),
         environments=python_environment()
-        + [{"language": "r", "name": "r", "interpreter": r.interpreter, "prefix": ["/usr/bin/env"], "default": True}],
+        + [{"language": "r", "name": "r", "interpreter": rscript, "prefix": ["/usr/bin/env"], "default": True}],
     )
 
     cell = mcp.call("execute_r_cell", {"code": "1 + 1"})["cell"]
@@ -887,9 +946,74 @@ def test_creating_an_environment_asks_the_daemon_about_this_sessions_own_id(
     assert daemon.asks == [
         (
             "environment.create",
-            {"session_id": "se_1", "name": "crispr", "packages": ["scanpy", "anndata"]},
+            {
+                "session_id": "se_1",
+                "name": "crispr",
+                "packages": ["scanpy", "anndata"],
+                # Sent even though the call named no language, and sent as the
+                # word rather than left out: two ends defaulting separately is
+                # two places to change the default, and the wire saying what is
+                # being created is what lets the daemon refuse a language it
+                # does not know rather than infer one it does.
+                "language": "python",
+            },
         )
     ]
+
+
+def test_creating_an_r_environment_carries_that_language_to_the_daemon(
+    host_that_can_ask: Calling, daemon: StubDaemon
+):
+    """The whole point of the argument: an agent asked for R and R is what the
+    lab is asked to declare.
+
+    Before this, `create` could only ever produce a Python environment —
+    the daemon's route hard-coded the language and nothing on this wire
+    carried one. An agent asked for an R environment got a Python one wearing
+    that name, which is worse than a refusal: a refusal is a thing a model can
+    act on, and a plausible wrong object is not.
+    """
+    answer = host_that_can_ask.call(
+        "manage_environments",
+        {"action": "create", "name": "rstats", "packages": ["ggplot2"], "language": "r"},
+    )
+
+    assert answer["isError"] is False
+    assert daemon.asks == [
+        (
+            "environment.create",
+            {"session_id": "se_1", "name": "rstats", "packages": ["ggplot2"], "language": "r"},
+        )
+    ]
+
+
+def test_creating_an_environment_refuses_a_language_by_value(
+    host_that_can_ask: Calling, daemon: StubDaemon
+):
+    """Refused HERE, in code, and before the daemon is asked anything.
+
+    The MCP client does not validate arguments against `inputSchema`, so the
+    enum published on this tool is a thing a model reads and not a thing that
+    holds — every one of these arrives looking exactly like a valid one. A
+    language nothing can build must not reach `ask_daemon`, because what
+    happens there is a card in front of a researcher: they would be asked to
+    approve creating an environment in a language this lab has no provisioner
+    for, and whatever they answered would be the wrong question.
+
+    The refusal carries the offending value for the same reason every other
+    reader on this surface does — the agent wrote it and has to write the next
+    call.
+    """
+    for wrong in ("ruby", "Python", 7, "", None):
+        answer = host_that_can_ask.call(
+            "manage_environments",
+            {"action": "create", "name": "x", "packages": [], "language": wrong},
+        )
+        assert answer["isError"] is True, wrong
+        assert repr(wrong) in answer["text"], (wrong, answer["text"])
+
+    # Not one of them reached the daemon, so not one of them raised a card.
+    assert daemon.asks == []
 
 
 def test_the_answer_to_a_create_says_it_is_not_built_on_this_machine_yet(
@@ -1073,12 +1197,10 @@ def test_a_create_the_researcher_refused_comes_back_naming_the_environment(
 def host_with_r_and_python(registry: Registry, tmp_path, daemon: StubDaemon) -> Iterator[Calling]:
     """A session holding an R environment beside its Python one.
 
-    The state every machine with R is in: `kernelEnvironmentsFor` sends an
-    entry for the language floor R runs behind, which is an environment a
-    caller can name — and the only thing `manage_packages` could do with one
-    is add PYTHON packages to it, since the provisioner's sources are `uv`
-    and PyPI. D1 says there are no R environments this phase; this is the
-    name that makes that refusable rather than theoretical.
+    The state every machine with a built R environment is in. It used to be
+    the state that made the old R refusal testable; it is now what makes the
+    absence of that refusal testable, and the two languages side by side are
+    what stop a fix for one from quietly answering for the other.
     """
     registry.configure_session(
         session_id="se_1",
@@ -1278,24 +1400,83 @@ def test_a_session_with_no_python_environment_is_told_that_rather_than_a_guess(
     assert daemon.asks == []
 
 
-def test_adding_packages_to_an_r_environment_is_refused_by_name(
+def test_adding_packages_to_a_built_r_environment_reaches_the_lab(
     host_with_r_and_python: Calling, daemon: StubDaemon
 ):
-    """D1, said out loud rather than by silently doing something else.
+    """The inverse of what this asserted, and the inversion is the point.
 
-    There are no R environments this phase, and what this tool installs comes
-    from `uv` and PyPI. Left unchecked, naming the R floor here would add
-    Python packages to it — which is not what the caller asked for and not
-    something anything would report.
+    While the provisioner built Python environments alone, naming the R floor
+    here would have added PyPI packages to it, so it was refused by name.
+    Both halves of that reasoning are gone: R environments are declared and
+    built, and what rebuilds one is decided by the lab from the declaration's
+    own `manager`, not here.
+
+    Refusing was also the wrong way round in practice. A row for an
+    environment this machine has BUILT carries `language`, so the old guard
+    refused exactly the environments an R cell can run in — while a declared
+    but unbuilt row carries no `language` at all and sailed through. And
+    `execute_r_cell`'s own published description tells a model to use this
+    tool for a permanent R package, which made the refusal a promise the same
+    process broke.
     """
-    refused = host_with_r_and_python.call(
-        "manage_packages", {"packages": ["scanpy"], "environment": "r"}
+    answer = host_with_r_and_python.call(
+        "manage_packages", {"packages": ["ggplot2"], "environment": "r"}
     )
 
-    assert refused["isError"] is True
-    assert "r" in refused["text"]
-    assert "Python" in refused["text"]
-    assert daemon.asks == []
+    assert answer["isError"] is False, answer["text"]
+    # It reached the daemon, which is what "the lab was asked" means here —
+    # a refusal that answered nicely would still leave nothing declared.
+    assert [method for method, _ in daemon.asks] == ["environment.add_packages"]
+    assert daemon.asks[0][1]["name"] == "r"
+    assert daemon.asks[0][1]["packages"] == ["ggplot2"]
+
+
+def test_an_add_naming_no_environment_uses_this_connections_own_language(
+    registry: Registry, tmp_path, daemon: StubDaemon
+):
+    """Whose default, when the call names none.
+
+    `manage_packages` has no language argument — the environment is the whole
+    of what it addresses — so the default has to come from somewhere, and the
+    somewhere is this connection's own kernel. An agent working in R that
+    names nothing means its R environment; answering with Python's would add
+    R packages to a Python environment, and refusing with "this Task has no
+    Python environment" would be true and useless.
+
+    Both languages are declared here so a hard-coded "python" cannot pass by
+    happening to be the only thing present.
+    """
+    registry.configure_session(
+        session_id="se_1",
+        task_id="tk_1",
+        workspace=str(tmp_path),
+        environments=python_environment()
+        + [
+            {"language": "r", "name": "rstats", "interpreter": sys.executable,
+             "prefix": ["/usr/bin/env"], "default": True},
+        ],
+        declared=["python", "rstats"],
+    )
+    registry.ask_daemon = daemon
+    reaching = Reach(
+        registry=registry,
+        identity=KernelIdentity(
+            session_id="se_1", task_id="tk_1", name="main",
+            language="r", environment="rstats",
+        ),
+        agent="claude",
+    )
+    # `_talking` is a generator other fixtures delegate to, so it is driven
+    # here the way a fixture drives it rather than as a context manager.
+    talking = _talking(reaching)
+    calling = next(talking)
+    try:
+        answer = calling.call("manage_packages", {"packages": ["ggplot2"]})
+    finally:
+        next(talking, None)
+
+    assert answer["isError"] is False, answer["text"]
+    assert daemon.asks[0][1]["name"] == "rstats"
 
 
 def test_the_answer_to_an_add_says_the_build_has_not_finished_and_where_to_look(
@@ -1815,17 +1996,24 @@ def _wrong_values(spec: dict[str, Any]) -> list[Any]:
 # tool without a value here fails rather than being silently skipped.
 _ARGUMENTS: dict[str, dict[str, Any]] = {
     "execute_python_cell": {"code": "1", "environment": "python"},
-    "execute_r_cell": {"code": "1"},
+    # A REACHABLE R environment, not a plausible-looking name: every case
+    # below spoils one argument and expects the refusal to be about THAT
+    # argument, so the others have to be values this session can actually
+    # resolve. `host_reading_shapes` declares this one for exactly that.
+    "execute_r_cell": {"code": "1", "environment": "r"},
     "execute_shell_cell": {"command": "true", "environment": "python"},
-    "manage_environments": {"action": "create", "name": "crispr", "packages": ["scanpy"]},
+    "manage_environments": {
+        "action": "create", "name": "crispr", "packages": ["scanpy"], "language": "python",
+    },
     "manage_packages": {"packages": ["scanpy"], "environment": "python"},
 }
 
-# Exactly what `server_for` publishes on the machine running this suite —
-# `tools_for` over this machine's own runnables, which is the same call the
-# server makes. Walked at import so each case is its own test with its own
-# name, and so a machine with no R does not walk a tool it never offered.
-_PUBLISHED = tools_for(tuple(runnable.language for runnable in runnables()))
+# Exactly what `server_for` publishes, on this machine and every other one —
+# `tools_for` over `LAUNCHERS`, the same capability-in-principle set
+# `Registry.capable_languages` reads, since publication no longer depends on
+# what a machine happens to have discovered (Task 6's follow-up). Walked at
+# import so each case is its own test with its own name.
+_PUBLISHED = tools_for(tuple(LAUNCHERS))
 _SHAPES = [
     (tool.name, key, wrong)
     for tool in _PUBLISHED
@@ -1851,8 +2039,17 @@ def host_reading_shapes(registry: Registry, tmp_path, daemon: StubDaemon) -> Ite
         session_id="se_1",
         task_id="tk_1",
         workspace=str(tmp_path),
-        environments=python_environment(),
-        declared=["python"],
+        # An R environment as well, because `execute_r_cell` publishes an
+        # `environment` now and the walk needs a valid value for it. The
+        # interpreter is a path that does not exist, which costs nothing:
+        # every case in this walk is a refusal, so no kernel of either
+        # language is ever launched from this fixture.
+        environments=python_environment()
+        + [
+            {"language": "r", "name": "r", "interpreter": "/nonexistent/bin/Rscript",
+             "prefix": ["/usr/bin/env"], "default": True},
+        ],
+        declared=["python", "r"],
     )
     registry.ask_daemon = daemon
     yield from _talking(_agent_reaching(registry), raise_exceptions=False)
@@ -1910,31 +2107,30 @@ def test_an_argument_of_a_shape_a_tool_never_published_is_refused_and_nothing_ru
 
 
 def test_a_tool_name_this_machine_never_published_is_refused_before_anything_is_resolved(
-    registry: Registry, tmp_path, daemon: StubDaemon
+    registry: Registry, tmp_path, daemon: StubDaemon, monkeypatch
 ):
     """`runners` is not filtered by what was published, so this is the gate.
 
-    `_BY_LANGUAGE` holds a runner per language this host KNOWS ABOUT, and
-    `server_for` builds `runners` from it unconditionally — while `published`
-    is built from the languages this machine can actually start a kernel in.
-    So on a machine with no R, `execute_r_cell` is absent from every list an
-    agent was shown and still present in `runners`, and `params.name not in
-    named` is the only thing between a call naming it and
-    `identity_for(..., "r", None)`. A working capability behind an unpublished
-    surface is this machine's reachability rule in reverse.
+    `_BY_LANGUAGE` (in `server.py`) holds a runner per language this host
+    KNOWS ABOUT, and `server_for` builds `runners` from it unconditionally —
+    while `published` is built from `capable_languages`, i.e. `LAUNCHERS` (in
+    `registry.py`). The two independently-hardcoded dicts name the same two
+    languages today, so proving the gate still does something requires a
+    genuine mismatch between them — manufactured here by deleting R from
+    `LAUNCHERS` itself, since publication no longer moves with what a machine
+    happens to have discovered (Task 6's follow-up made trimming
+    `registry._runnables`, the old way to fake this, do nothing at all).
+    `params.name not in named` is the only thing between a call naming the
+    removed language and `identity_for(..., "r", None)`. A working
+    capability behind an unpublished surface is this machine's reachability
+    rule in reverse.
 
-    The machine is made R-less here rather than assumed to be: this suite runs
-    on machines with R and on machines without, and a test that only asserted
-    something on the second kind would assert nothing on the first. The
-    session is given an R environment for the same reason — without one the
-    call would be refused by `identity_for` even with the gate gone, and the
-    test would pass for a reason that is not the gate.
+    The session is given an R environment anyway, for the same reason as
+    before: without one the call would be refused by `identity_for` even
+    with the gate gone, and the test would pass for a reason that is not the
+    gate.
     """
-    python_only = tuple(
-        runnable for runnable in registry.runnables if runnable.language == "python"
-    )
-    assert python_only, "this machine runs no python, so it publishes no runner to speak of"
-    registry._runnables = python_only  # noqa: SLF001 - a machine without R, made deliberately
+    monkeypatch.delitem(LAUNCHERS, "r")
     registry.configure_session(
         session_id="se_1",
         task_id="tk_1",

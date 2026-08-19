@@ -66,8 +66,7 @@ export function Rail({ onOpenPalette }: { onOpenPalette: () => void }) {
     // Studies nav item lit.
     (r.name === "studies" &&
       (route.name === "study" || route.name === "task")) ||
-    (r.name === "agents" && route.name === "agent") ||
-    (r.name === "workflows" && route.name === "workflow");
+    (r.name === "agents" && route.name === "agent");
 
   return (
     <aside className="flex h-full w-56 shrink-0 flex-col bg-sidebar px-2 pb-2 pt-2.5">

@@ -66,7 +66,8 @@ export interface RunCommand {
    *  member who ended a kernel is named to whatever cell was in it. */
   by?: string;
   /** Which provisioner a `kernel-env-setup` command builds with — the
-   *  declaration's own `manager`, this phase always `"uv"` (D1). `language`
+   *  declaration's own `manager`, derived from its language rather than
+   *  chosen (`python` is always `"uv"`, `r` is always `"conda"`). `language`
    *  above carries the declaration's language the same way. */
   manager?: "uv" | "conda";
   /** What a `kernel-env-setup` command asks the machine to RESOLVE — the

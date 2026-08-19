@@ -59,12 +59,12 @@ describe("tab store", () => {
     navigate({ name: "inbox" });
     navigate({ name: "machines" });
     back();
-    navigate({ name: "workflows" });
+    navigate({ name: "agents" });
 
     expect(active().stack.map((e) => e.route.name)).toEqual([
       "studies",
       "inbox",
-      "workflows",
+      "agents",
     ]);
   });
 
@@ -93,14 +93,14 @@ describe("tab store", () => {
     const middle = tabsSnapshot().tabs[1];
     activateTab(middle.id);
 
-    openTab({ name: "workflows" });
+    openTab({ name: "agents" });
 
     const s = tabsSnapshot();
     expect(s.tabs.map((t) => t.stack[t.index].route.name)).toEqual([
       "studies",
       "inbox",
       "machines",
-      "workflows",
+      "agents",
     ]);
     expect(s.tabs[3].id).toBe(s.activeId);
   });
@@ -189,7 +189,7 @@ describe("tab store", () => {
   it("falls back behind the cut entry, never ahead of it", () => {
     navigate({ name: "inbox" });
     navigate({ name: "study", studyId: "s_1" });
-    navigate({ name: "workflows" });
+    navigate({ name: "agents" });
     back(); // sitting on the Study itself
 
     closeTabsForStudy("s_1");

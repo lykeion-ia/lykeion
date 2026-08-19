@@ -24,7 +24,12 @@ describe("parseHash", () => {
 
   it("parses the new top-level routes", () => {
     expect(parseHash("#/my-tasks")).toEqual({ name: "my-tasks" });
-    expect(parseHash("#/research-groups")).toEqual({ name: "research-groups" });
+    expect(parseHash("#/groups")).toEqual({ name: "groups" });
+  });
+
+  it("still lands the old research-groups hash on Groups", () => {
+    expect(parseHash("#/research-groups")).toEqual({ name: "groups" });
+    expect(routeHash({ name: "groups" })).toBe("#/groups");
   });
 
   it("parses a Settings tab, and General as the bare route", () => {
@@ -117,15 +122,13 @@ describe("parseHash", () => {
       { name: "my-work" },
       { name: "agents" },
       { name: "agent", agentId: "statistician" },
-      { name: "workflows" },
-      { name: "workflow", workflowId: "diffexpr" },
       { name: "machines" },
       { name: "settings" },
       { name: "settings", tab: "skills" },
       { name: "settings", tab: "connectors" },
       { name: "settings", tab: "profile" },
       { name: "my-tasks" },
-      { name: "research-groups" },
+      { name: "groups" },
       { name: "join", code: "inv_9" },
       { name: "pair", params: {} },
       { name: "pair", params: { name: "demo-machine", state: "xyz" } },
@@ -144,17 +147,6 @@ describe("parseHash", () => {
       "#/agents/statistician",
     );
     expect(parseHash("#/agents")).toEqual({ name: "agents" });
-  });
-
-  it("round-trips the workflow detail route", () => {
-    expect(parseHash("#/workflows/diffexpr")).toEqual({
-      name: "workflow",
-      workflowId: "diffexpr",
-    });
-    expect(routeHash({ name: "workflow", workflowId: "diffexpr" })).toBe(
-      "#/workflows/diffexpr",
-    );
-    expect(parseHash("#/workflows")).toEqual({ name: "workflows" });
   });
 
   it("round-trips the setup route, so a step survives a reload", () => {

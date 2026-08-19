@@ -24,11 +24,10 @@ describe("Rail", () => {
     for (const label of [
       "Inbox",
       "My Tasks",
-      "Research Groups",
+      "Groups",
       "Tasks",
       "Studies",
       "Experts",
-      "Workflows",
       "Machines",
       "Settings",
     ]) {

@@ -52,9 +52,8 @@ import type {
   McpTool,
   Skill,
   SkillEntry,
-  Workflow,
 } from "./customization";
-import type { ResearchGroup } from "./research-group";
+import type { Group } from "./group";
 import type { Invite, Member, Role, User } from "./account";
 import type { Usage } from "./usage";
 import type { WorkspaceSettings } from "./settings";
@@ -80,8 +79,8 @@ export interface NewTask {
   assignees?: Assignee[];
 }
 
-/** Fields accepted when creating a Research Group. */
-export interface NewResearchGroup {
+/** Fields accepted when creating a Group. */
+export interface NewGroup {
   name: string;
   description?: string;
   leadAgent?: string;
@@ -494,16 +493,6 @@ export interface LykeionApi {
   /** Create or replace an Agent (keyed by name). */
   upsertAgent(agent: Agent): Promise<void>;
 
-  /** Every Workflow template in the Lab, id-sorted. */
-  listWorkflows(): Promise<Workflow[]>;
-  /** Create or replace a Workflow (keyed by id). */
-  upsertWorkflow(workflow: Workflow): Promise<void>;
-  /**
-   * "Run" a Workflow: expand its prompt template with `values` and return the
-   * filled prompt. A missing required placeholder (with no default) rejects.
-   */
-  runWorkflow(id: string, values: Record<string, string>): Promise<string>;
-
   /** Every attached Connector in the Lab, name-sorted. */
   listConnectors(): Promise<Connector[]>;
   /** Attach a Connector (an MCP server config). */
@@ -520,12 +509,12 @@ export interface LykeionApi {
    */
   listConnectorTools(name: string): Promise<McpTool[]>;
 
-  // ---- research groups ----
+  // ---- groups ----
 
-  /** Every Research Group, newest first (empty on a fresh install). */
-  listResearchGroups(): Promise<ResearchGroup[]>;
-  /** Create a Research Group; returns the created group. */
-  createResearchGroup(input: NewResearchGroup): Promise<ResearchGroup>;
+  /** Every Group, newest first (empty on a fresh install). */
+  listGroups(): Promise<Group[]>;
+  /** Create a Group; returns the created group. */
+  createGroup(input: NewGroup): Promise<Group>;
 
   // ---- account ----
 

@@ -123,8 +123,10 @@ def test_a_notification_naming_an_unknown_method_is_not_answered_either():
 def test_a_handler_that_raises_is_answered_with_what_went_wrong():
     stdout = io.StringIO()
 
-    # A language nothing here has a launcher for. R was that until this machine
-    # grew one, and a handler asked for a language that runs raises nothing.
+    # A language nothing here has a launcher for. R is never this any more —
+    # `LAUNCHERS` holds it unconditionally regardless of the machine, since
+    # Task 6 — so `julia`, which no LAUNCHERS row will ever name, is what
+    # still proves a handler asked for a language that runs raises nothing.
     serve(request("kernel.execute", {**CELL, "language": "julia", "source": "1"}, 9), stdout)
 
     reply = replies(stdout)[0]

@@ -1635,6 +1635,32 @@ def test_a_declared_but_unbuilt_environment_says_so(registry):
         registry.identity_for("s1", "t1", "main", "python", "nonesuch")
 
 
+def test_an_unbuilt_r_environment_is_refused_by_name(registry):
+    """The same refusal `identity_for` already gives Python, proven for R.
+
+    `_environments_from` needed no change to route an R entry (it was always
+    language-agnostic), and this is what that buys: a lab's `rstats`
+    declared and not yet built here is refused BY NAME, through the exact
+    mechanism a colleague's unbuilt `crispr` already was above — not through
+    a blanket "this machine holds no r kernels" that cannot say which
+    environment was meant. That blanket refusal is what a bare `Rscript` on
+    this machine used to earn every R cell before Task 6; a declared-but-
+    unbuilt name earning the same one instead of `identity_for`'s three would
+    be the manufacturing bug back under a different door.
+    """
+    registry.configure_session(
+        session_id="s1", task_id="t1", workspace="/tmp",
+        environments=[
+            {"language": "python", "name": "python", "interpreter": sys.executable,
+             "prefix": ["/usr/bin/env"], "default": True},
+        ],
+        declared=["python", "rstats"],
+    )
+    with pytest.raises(ValueError, match="rstats"):
+        registry.identity_for("s1", "t1", "main", "r", "rstats")
+    assert registry.list() == []
+
+
 def test_a_lab_that_declared_nothing_is_not_a_lab_nobody_asked(registry):
     """An empty declaration list is an answer. `declared=[]` says this lab
     holds no environments at all, which is why every name is refused as one
@@ -1820,3 +1846,92 @@ def test_a_second_default_for_one_language_is_refused_rather_than_silently_repla
                  "interpreter": sys.executable, "prefix": ["/usr/bin/env"], "default": True},
             ],
         )
+
+
+def test_each_language_has_a_launcher_and_its_own_overlay_spelling():
+    """What this asserts, and what it deliberately does not.
+
+    It asserts that both languages are launchable at all, and that each
+    language's overlay is expressed in ITS OWN variables with no overlap —
+    Python's `PIP_TARGET`/`PYTHONPATH` against R's `R_LIBS_USER`. Handing one
+    language the other's mapping is the mistake worth catching cheaply, and
+    it is caught here.
+
+    It does NOT assert that the registry hands each kernel the right one.
+    That decision lives inside `_replace`, behind a real launch, and cannot
+    be reached without starting a process. An earlier draft of this test
+    monkeypatched `LAUNCHERS` to capture what was passed and then never
+    triggered a launch — it would have passed identically with the routing
+    deleted. Said plainly here rather than left as scaffolding that looks
+    like coverage: the routing itself is covered by the test below, which
+    reaches `_replace` through a real launch.
+    """
+    from lykeion_kernel.overlay import launch_env, launch_env_r
+
+    from lykeion_kernel.registry import LAUNCHERS
+
+    assert set(LAUNCHERS) >= {"python", "r"}
+    overlay = "/tmp/overlay/1"
+    assert set(launch_env_r(overlay)) == {"R_LIBS_USER"}
+    assert set(launch_env(overlay, {})) == {"PIP_TARGET", "PYTHONPATH"}
+    assert set(launch_env_r(overlay)).isdisjoint(set(launch_env(overlay, {})))
+
+
+def test_the_registry_hands_each_language_its_own_overlay(registry, monkeypatch, tmp_path):
+    """The routing itself, reached through a real launch.
+
+    `_replace` chooses between `launch_env` and `launch_env_r` per language,
+    and that ternary is what this pins. The test above deliberately stops
+    short of it; this one goes through `execute`, so the decision is made by
+    the registry rather than by the test.
+
+    Both fake launchers start a PYTHON kernel whatever the identity says.
+    What is under test is the mapping the registry composed and handed over,
+    not what the process on the other end does with it — and starting a real
+    R kernel would need an `Rscript` this suite cannot assume is installed.
+    Delete either arm of the ternary and one of the two assertions below
+    fails: the R kernel is handed `PIP_TARGET`/`PYTHONPATH`, which
+    `install.packages()` has never heard of.
+    """
+    captured: dict[str, dict[str, str] | None] = {}
+
+    def recording(language: str):
+        def fake(identity, prefix, interpreter, workspace, env_extra=None):
+            captured[language] = env_extra
+            return launch_python(identity, prefix, sys.executable, workspace, None)
+
+        return fake
+
+    monkeypatch.setitem(registry_module.LAUNCHERS, "python", recording("python"))
+    monkeypatch.setitem(registry_module.LAUNCHERS, "r", recording("r"))
+
+    workspace = str(tmp_path)
+    registry.configure_session(
+        session_id="ses_1",
+        task_id="tk_1",
+        workspace=workspace,
+        environments=[
+            {"language": "python", "name": "python", "interpreter": sys.executable,
+             "prefix": ["/usr/bin/env"], "default": True},
+            # An interpreter that does not exist is enough: the fake launcher
+            # never runs it, and the registry does not probe it before
+            # deciding what to pass.
+            {"language": "r", "name": "r", "interpreter": "/nonexistent/bin/Rscript",
+             "prefix": ["/usr/bin/env"], "default": True},
+        ],
+    )
+
+    registry.execute(an_identity("py"), "1 + 1", origin=ORIGIN)
+    registry.execute(
+        KernelIdentity(
+            session_id="ses_1", task_id="tk_1", name="rk",
+            language="r", environment="r",
+        ),
+        "1 + 1",
+        origin=ORIGIN,
+    )
+
+    assert set(captured["python"] or {}) == {"PIP_TARGET", "PYTHONPATH"}
+    assert set(captured["r"] or {}) == {"R_LIBS_USER"}
+    # And it is this incarnation's directory, not some other kernel's.
+    assert captured["r"]["R_LIBS_USER"].startswith(workspace)

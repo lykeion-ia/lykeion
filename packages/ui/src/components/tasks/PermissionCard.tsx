@@ -68,16 +68,45 @@ function accessTitle(access: AccessKind, tool: string): string {
       return `Use ${access.target.server} · ${access.target.tool}?`;
     case "remote-job":
       return `Submit a remote job to ${access.target}?`;
-    case "environment":
+    case "environment": {
+      // How this lab says the language, or nothing at all. Empty where the
+      // daemon sent none — a session this machine never described that
+      // environment to, or one configured by a daemon older than the field —
+      // because a card naming a language it was never told is worse than one
+      // naming none.
+      const said =
+        access.target.language === undefined
+          ? ""
+          : access.target.language === "r"
+            ? "R"
+            : "Python";
       if (tool === "manage_environments")
-        return `Create environment ${access.target.name}?`;
+        // The language leads the noun where the daemon sent one, because
+        // the name does not carry it. `crispr` is a name a researcher chose
+        // and says nothing about which package set is about to be installed
+        // on every machine in this lab. The list below usually hints — and
+        // an environment holding only its interpreter has no list at all,
+        // which is the card with the least on it and the most to get wrong.
+        // Silent where nothing was sent, rather than guessing Python: a
+        // daemon older than the R phase says nothing, and a card that
+        // named a language it was never told would be worse than one that
+        // names none.
+        return said === ""
+          ? `Create environment ${access.target.name}?`
+          : `Create ${said} environment ${access.target.name}?`;
       // Adding to an environment that already exists. An empty package list
       // is not a request anything raises — `manage_packages` refuses one by
       // value — but it must still not render as "Add  to python?", so the
       // environment's own name carries the question instead.
+      //
+      // The language belongs on THIS card at least as much as on the create
+      // one: creating declares a name and installs nothing, while this puts
+      // software on every machine in the lab. It read "Add ggplot2 to
+      // rstats?" and said nothing about what `rstats` is.
       return access.target.packages.length === 0
-        ? `Change the ${access.target.name} environment?`
-        : `Add ${spoken(access.target.packages)} to ${access.target.name}?`;
+        ? `Change the ${said === "" ? "" : `${said} `}${access.target.name} environment?`
+        : `Add ${spoken(access.target.packages)} to ${said === "" ? "" : `the ${said} environment `}${access.target.name}?`;
+    }
   }
 }
 

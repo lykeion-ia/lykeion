@@ -724,6 +724,23 @@ function kernelEnvCreate(req: DaemonRequest): DaemonResult {
   const sessionId = field(req.body, "sessionId");
   const name = field(req.body, "name");
   const packages = arrayField(req.body, "packages");
+  // Read by hand rather than through `optionalStringField`, and the
+  // difference is the guard: that helper answers `undefined` for anything
+  // that is not a string, so `language: 7` and `language: null` would arrive
+  // here indistinguishable from absent and be quietly built as Python. This
+  // has to tell "not sent" from "sent wrong" — the first is a daemon older
+  // than the field, the second is a caller to refuse.
+  //
+  // ABSENT is python, and absent is the only thing that is. A daemon old
+  // enough to predate this field still declares the Python environments it
+  // always did; anything else it sends — including a language this lab has
+  // no provisioner for — is refused rather than coerced, because the
+  // manager is DERIVED from this word and a wrong one builds the wrong kind
+  // of thing under the right name.
+  const language = req.body === null || typeof req.body !== "object" ||
+    (req.body as Record<string, unknown>).language === undefined
+    ? "python"
+    : (req.body as Record<string, unknown>).language;
   // An absent `packages` is not an empty one — an environment holding only
   // its interpreter is something a caller says, not something inferred from
   // a field nobody sent. A list holding anything but a package name is
@@ -739,15 +756,23 @@ function kernelEnvCreate(req: DaemonRequest): DaemonResult {
       status: 400,
       json: { error: "a sessionId, a name and a list of package names are required" },
     };
+  if (language !== "python" && language !== "r")
+    return {
+      status: 400,
+      json: { error: `an environment is for python or r, and ${JSON.stringify(language)} is neither` },
+    };
   const session = researcherOfSession(req.store, machine, sessionId);
   if (!session) return NOT_THIS_MACHINES_SESSION;
   try {
     const declaration = declareEnvironment(
       req.store,
       (kind, payload, ownerId) => req.changes.record(kind, payload, ownerId),
-      // Python only, this phase (D1) — there is no R environment for a
-      // caller to name, so nothing on this wire carries a language.
-      { name, language: "python", packages },
+      // The language the daemon was asked for, not a constant. This wire
+      // carried none while the provisioner built Python environments alone;
+      // it carries one now, and `declareEnvironment` derives the package
+      // manager from it (`python` → uv, `r` → conda) so that deriving it is
+      // done once, here, for every caller.
+      { name, language, packages },
       session.openedBy,
       req.now,
     );

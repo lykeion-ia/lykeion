@@ -1,4 +1,4 @@
-import { catalogueWorkflows, methodSkills } from "@lykeion/api";
+import { methodSkills } from "@lykeion/api";
 import type { Store } from "./store";
 import { nextSeq } from "./migrations";
 import { environmentStore } from "./environments";
@@ -22,19 +22,11 @@ export function seedLabContent(store: Store): void {
         [skill.name, skill.description, skill.body, nextSeq(store)],
       );
     }
-    for (const workflow of catalogueWorkflows()) {
-      store.run(
-        `INSERT INTO workflows (id, payload, seq)
-         VALUES (?, ?, ?)
-         ON CONFLICT(id) DO NOTHING`,
-        [workflow.id, JSON.stringify(workflow), nextSeq(store)],
-      );
-    }
-    // The starter, declared on a fresh lab so a researcher has something to
+    // The starters, declared on a fresh lab so a researcher has something to
     // set up rather than an empty list and no way to make one. NOT built:
     // nothing downloads a gigabyte until somebody asks, which is the whole
-    // of D3. Its six packages are the ones `tools-and-environments.md:13-16`
-    // names.
+    // of D3. Their packages are the ones `tools-and-environments.md:13-16`
+    // names for each language.
     //
     // No `createdBy` (R14): `environmentStore.declare` has no `ON CONFLICT`
     // of its own, unlike the two loops above, so this checks for the row
@@ -51,6 +43,21 @@ export function seedLabContent(store: Store): void {
         language: "python",
         manager: "uv",
         packages: ["numpy", "pandas", "scipy", "matplotlib", "seaborn", "pillow"],
+        createdTs: Math.floor(Date.now() / 1000),
+      });
+    }
+    // `r` beside `python`, same shape and same reasoning above — `conda`,
+    // not `uv`, because an R environment pins R itself rather than a
+    // library resolved by some other interpreter (the derivation
+    // `declareEnvironment`'s `MANAGER_FOR` makes for every caller; written
+    // by hand here because a seed inserts directly and is never routed
+    // through that gate).
+    if (!store.get(`SELECT 1 FROM kernel_envs WHERE name = 'r'`)) {
+      environmentStore(store).declare({
+        name: "r",
+        language: "r",
+        manager: "conda",
+        packages: ["tidyverse", "ggplot2", "jsonlite"],
         createdTs: Math.floor(Date.now() / 1000),
       });
     }

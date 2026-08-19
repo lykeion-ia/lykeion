@@ -27,6 +27,7 @@ from .overlay import (
     drop_overlay,
     installed_between,
     launch_env,
+    launch_env_r,
     overlay_for,
     snapshot,
     sweep_overlays,
@@ -487,6 +488,24 @@ class Registry:
         """Every language this host can start a kernel in, as the greeting
         reports them."""
         return self._runnables
+
+    @property
+    def capable_languages(self) -> tuple[str, ...]:
+        """Every language this host has a launcher for, in principle — read
+        off `LAUNCHERS` itself, live, rather than off `self._runnables`
+        (what THIS machine happened to discover when it started).
+
+        This is what `server_for` publishes a tool for. `execute_r_cell` is
+        offered on every machine running this code, whether or not this one
+        has ever built an R environment: the MCP server this answers
+        advertises `tools.listChanged: false`, so a tool set that grew or
+        shrank as environments were provisioned is a contract it does not
+        offer. Whether a CALL against it succeeds is a separate question,
+        answered later and by name — `identity_for`'s own three-valued
+        refusal, the same one `_runnable_for` was widened to let R reach in
+        the first place.
+        """
+        return tuple(LAUNCHERS)
 
     def configure_session(
         self,
@@ -1096,9 +1115,12 @@ class Registry:
         if confinement.declared is not None:
             # By name alone, because a declaration IS a name: the lab declares
             # environments, not (language, name) pairs, so a declared row
-            # carries no language rather than a guessed one. D1 makes them all
-            # Python today, and a language invented here would be the sort of
-            # fact this file refuses to invent everywhere else.
+            # carries no language rather than a guessed one. Not because they
+            # are all one language — the lab declares both now — but because
+            # this process learns a language by BUILDING an environment, and a
+            # row for one it has not built is a row it knows only the name of.
+            # A language invented here would be the sort of fact this file
+            # refuses to invent everywhere else.
             here = {name for _, name in confinement.environments}
             rows += [
                 {"name": name, "builtHere": False}
@@ -1240,17 +1262,26 @@ class Registry:
         with self._lock:
             return self._sessions.get(session_id, self._unconfigured)
 
-    def _runnable_for(self, language: str) -> Runnable:
-        """What this machine would start a kernel of this language with.
+    def _runnable_for(self, language: str) -> Runnable | None:
+        """What this machine discovered for this language at boot, if this
+        language is one this host has a launcher for at all.
 
-        Refused here rather than at a launch that has already stopped whatever
-        was running: a language this machine cannot run is not a kernel that
-        starts late.
+        Checked against `LAUNCHERS` alone, and no longer against
+        `self._by_language` also being non-empty: `_replace` never reads what
+        this returns — a kernel is started from the `Confinement` a session
+        holds, never from what this process found on its own machine when it
+        started. R is why the two must stay apart. It has a row in
+        `LAUNCHERS` and, since Task 6, none in `self._by_language` — `_r()`
+        discovers nothing any more — so gating on both would refuse every R
+        cell here, before a session's own confinement is ever consulted, with
+        a sentence that cannot name what was actually asked for. Refused here
+        rather than at a launch that has already stopped whatever was
+        running: a language this host has no row in `LAUNCHERS` for is not a
+        kernel that starts late.
         """
-        runnable = self._by_language.get(language)
-        if runnable is None or language not in LAUNCHERS:
+        if language not in LAUNCHERS:
             raise ValueError(f"this machine holds no {language} kernels")
-        return runnable
+        return self._by_language.get(language)
 
     def _replace(self, entry: Entry, reason: str | None = None) -> Kernel:
         # `reason` is why THIS process is being started, and it is recorded on
@@ -1288,17 +1319,19 @@ class Registry:
         # not survive a restart" actually happens — the packages are gone
         # from the disk, not merely unreachable from a fresh namespace.
         #
-        # Python only. The overlay is `PIP_TARGET` and a `PYTHONPATH`, and
-        # neither means anything to R — see `launch_env`. And nothing at all
+        # Both languages now, and each with its own spelling: Python's overlay
+        # is `PIP_TARGET` plus a `PYTHONPATH`, R's is `R_LIBS_USER`, and the
+        # directory underneath is the same idea either way. Nothing at all
         # without a workspace: a confinement the daemon builds always carries
         # one, and a kernel that refused to start for want of somewhere to
-        # put pip's output would make every kernel depend on a feature about
-        # installing things.
+        # put an install's output would make every kernel depend on a feature
+        # about installing things.
         overlay = (
             overlay_for(
                 confinement.workspace, kernel_id_for(entry.identity), entry.incarnation + 1
             )
-            if confinement.workspace is not None and entry.identity.language == "python"
+            if confinement.workspace is not None
+            and entry.identity.language in ("python", "r")
             else None
         )
         # Written before the launch rather than after it: a launch that
@@ -1317,7 +1350,13 @@ class Registry:
             # stops being true, the composition moves to wherever the swept
             # answer is, because what has to lead is the path the kernel
             # actually gets rather than the one this process was started with.
-            None if overlay is None else launch_env(overlay, os.environ),
+            None
+            if overlay is None
+            else (
+                launch_env(overlay, os.environ)
+                if entry.identity.language == "python"
+                else launch_env_r(overlay)
+            ),
         )
         entry.probe = Probe(entry.kernel.pid)
         entry.latest = Sample()

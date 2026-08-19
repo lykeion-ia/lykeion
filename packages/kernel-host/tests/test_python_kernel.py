@@ -571,6 +571,31 @@ def test_a_kernel_is_not_handed_the_researchers_own_pip_prefix(prefix, tmp_path,
         kernel.stop()
 
 
+def test_r_library_variables_are_effaced():
+    """`R_LIBS_USER`, `R_LIBS` and `R_LIBS_SITE` removed, not merely shadowed.
+
+    R's `library()` reads all three and `install.packages()` writes to the
+    first, so an inherited value puts the researcher's own personal library on
+    `.libPaths()` inside an environment that is supposed to be pinned — a
+    script that only works because THIS machine happens to hold a package
+    there is the exact irreproducibility a built R environment exists to
+    remove.
+
+    Unit-level like the `PATH` tests above it rather than a launched kernel:
+    `environment_of` is the one place that does the removing, whichever
+    kernel later reads the mapping it returns, and R has no launched-kernel
+    fixture in this file to reuse the way `PIP_PREFIX`'s test above does.
+    """
+    described = environment_of(
+        "/env/bin/Rscript",
+        {"R_LIBS_USER": "/home/me/R", "R_LIBS": "/x", "R_LIBS_SITE": "/y"},
+    )
+
+    assert "R_LIBS_USER" not in described
+    assert "R_LIBS" not in described
+    assert "R_LIBS_SITE" not in described
+
+
 def test_a_kernel_inside_a_conda_environment_is_told_which_one(prefix, tmp_path, monkeypatch):
     """`CONDA_PREFIX` names the root the interpreter is really in.
 

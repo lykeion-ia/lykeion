@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { KernelEnvManager } from "@lykeion/api";
 import {
   PACKAGE_SOURCES,
   envRoot,
   materializeEnvironment,
+  provisionerFor,
   readEnvStatus,
   removeEnvironment,
   resolveEnvironment,
@@ -13,11 +15,19 @@ import {
 import { runConfinedIn } from "./probe";
 
 describe("the machine's own copy of an environment", () => {
-  it("names exactly one source, and only the one this phase spawns", () => {
+  it("names exactly two sources, and only the ones this phase spawns", () => {
     // Asserted by equality so a new source is a failing test rather than a
-    // silent new place packages come from. Conda and CRAN are deliberately
-    // absent: nothing in this phase spawns them.
-    expect(PACKAGE_SOURCES).toEqual({ uv: ["https://pypi.org/simple"] });
+    // silent new place packages come from. CRAN is deliberately absent:
+    // nothing in this phase spawns it.
+    expect(PACKAGE_SOURCES).toEqual({
+      uv: ["https://pypi.org/simple"],
+      conda: ["https://conda.anaconda.org/conda-forge"],
+    });
+  });
+
+  it("names conda-forge as the only conda source, and pypi as the only uv one", () => {
+    expect(PACKAGE_SOURCES.conda).toEqual(["https://conda.anaconda.org/conda-forge"]);
+    expect(PACKAGE_SOURCES.uv).toEqual(["https://pypi.org/simple"]);
   });
 
   it("reports absent for a declaration this machine has never built", () => {
@@ -74,6 +84,20 @@ describe("the machine's own copy of an environment", () => {
     // name would hand both of those to wherever it points, so this is
     // refused at the one function both are derived from.
     expect(() => envRoot(work, "../../Documents")).toThrow(/not a usable environment name/);
+  });
+});
+
+describe("provisionerFor", () => {
+  it("has a provisioner for every manager the API can name", () => {
+    // Exhaustive by construction: a union member with no arm is a compile
+    // error, and this asserts the runtime record agrees with the type.
+    const managers: KernelEnvManager[] = ["uv", "conda"];
+    for (const manager of managers) expect(provisionerFor(manager)).toBeDefined();
+  });
+
+  it("routes a uv environment to bin/python3 and a conda one to bin/Rscript", () => {
+    expect(provisionerFor("uv").interpreter("/w", "python")).toBe("/w/envs/python/bin/python3");
+    expect(provisionerFor("conda").interpreter("/w", "r")).toBe("/w/envs/r/bin/Rscript");
   });
 });
 
@@ -304,6 +328,7 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
     const built = await materializeEnvironment({
       workDir: work,
       name: "crispr",
+      manager: "uv",
       lockfile: "tinypkg==1.0.0\n    # via -r requirements.in\n",
       lockRevision: 3,
       dataDir: stateDir(),
@@ -336,6 +361,7 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
       materializeEnvironment({
         workDir: work,
         name: "crispr",
+        manager: "uv",
         lockfile: "tinypkg==1.0.0\n    # via -r requirements.in\n",
         lockRevision: 3,
         dataDir: stateDir(),
@@ -365,6 +391,7 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
       materializeEnvironment({
         workDir: work,
         name: "crispr",
+        manager: "uv",
         lockfile,
         lockRevision: 3,
         dataDir: stateDir(),
@@ -387,6 +414,7 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
     await materializeEnvironment({
       workDir: work,
       name: "crispr",
+      manager: "uv",
       lockfile,
       lockRevision: 4,
       dataDir: stateDir(),
@@ -412,6 +440,7 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
     const resolved = await resolveEnvironment({
       workDir: work,
       name: "crispr",
+      manager: "uv",
       packages: ["tinypkg"],
       dataDir: stateDir(),
       path: uv,
@@ -439,6 +468,7 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
     const resolved = await resolveEnvironment({
       workDir: work,
       name: "crispr",
+      manager: "uv",
       packages: ["tinypkg"],
       dataDir: stateDir(),
       path: uv,
@@ -460,6 +490,7 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
     await resolveEnvironment({
       workDir: work,
       name: "crispr",
+      manager: "uv",
       packages: ["tinypkg"],
       dataDir: stateDir(),
       path: uv,
@@ -489,6 +520,7 @@ const integration = process.env.LYKEION_INTEGRATION === "1";
     const resolved = await resolveEnvironment({
       workDir: work,
       name: declaration.name,
+      manager: "uv",
       packages: declaration.packages,
       dataDir: stateDir(),
       timeoutMs: 5 * 60_000,
@@ -498,6 +530,7 @@ const integration = process.env.LYKEION_INTEGRATION === "1";
     const built = await materializeEnvironment({
       workDir: work,
       name: declaration.name,
+      manager: "uv",
       lockfile: resolved.lockfile,
       lockRevision: 1,
       dataDir: stateDir(),

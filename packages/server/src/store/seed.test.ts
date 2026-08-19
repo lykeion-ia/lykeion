@@ -46,27 +46,23 @@ afterEach(() => {
 const countOf = (store: Store, table: string): number =>
   store.get(`SELECT COUNT(*) AS n FROM ${table}`)!.n as number;
 
-it("puts the method skills and the workflow catalogue in an empty database", () => {
+it("seeds no workflows, because the table is gone", () => {
   const store = freshStore();
-  expect(countOf(store, "skills")).toBe(0);
-  expect(countOf(store, "workflows")).toBe(0);
-
   seedLabContent(store);
-
-  expect(countOf(store, "skills")).toBe(methodSkills().length);
-  expect(countOf(store, "workflows")).toBeGreaterThan(0);
+  const table = store.get(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workflows'`,
+  );
+  expect(table).toBeUndefined();
 });
 
 it("seeds the same content twice without duplicating it", () => {
   const store = freshStore();
   seedLabContent(store);
   const skills = countOf(store, "skills");
-  const workflows = countOf(store, "workflows");
 
   seedLabContent(store);
 
   expect(countOf(store, "skills")).toBe(skills);
-  expect(countOf(store, "workflows")).toBe(workflows);
 });
 
 it("leaves a skill disabled between boots disabled", () => {
@@ -91,21 +87,12 @@ it("leaves an edited record as the researcher left it", () => {
     "Rewritten.",
     first.name,
   ]);
-  const workflow = store.get(`SELECT id FROM workflows LIMIT 1`)!.id as string;
-  store.run(`UPDATE workflows SET payload = ? WHERE id = ?`, [
-    JSON.stringify({ id: workflow, name: "Renamed" }),
-    workflow,
-  ]);
 
   seedLabContent(store);
 
   expect(
     store.get(`SELECT body FROM skills WHERE name = ?`, [first.name])!.body,
   ).toBe("Rewritten.");
-  expect(
-    store.get(`SELECT payload FROM workflows WHERE id = ?`, [workflow])!
-      .payload,
-  ).toContain("Renamed");
 });
 
 // R14: the starter environment has no author. On a fresh lab there is no
@@ -135,14 +122,32 @@ it("seeds the python starter on a fresh lab with nobody signed up yet, attribute
   ]);
 });
 
-it("does not duplicate the starter across boots", () => {
+it("seeds an r starter beside python on a fresh lab", () => {
+  const store = freshStore();
+
+  seedLabContent(store);
+
+  const r = environmentStore(store).get("r");
+  expect(r).toBeDefined();
+  // Absent for the same reason `python`'s is: Lykeion declared this, not a
+  // person (R14).
+  expect(r!.createdBy).toBeUndefined();
+  expect(r!.language).toBe("r");
+  // `conda`, not `uv` — an R environment pins R itself rather than a
+  // library resolved by some other interpreter.
+  expect(r!.manager).toBe("conda");
+  expect(r!.lockRevision).toBe(0);
+  expect(r!.packages).toEqual(["tidyverse", "ggplot2", "jsonlite"]);
+});
+
+it("does not duplicate the starters across boots", () => {
   const store = freshStore();
   seedLabContent(store);
-  expect(countOf(store, "kernel_envs")).toBe(1);
+  expect(countOf(store, "kernel_envs")).toBe(2);
 
   // A second boot must not throw on the PRIMARY KEY the first boot wrote —
   // `environmentStore.declare` has no `ON CONFLICT` of its own, unlike the
-  // skills/workflows loops above.
+  // skills loop above.
   seedLabContent(store);
-  expect(countOf(store, "kernel_envs")).toBe(1);
+  expect(countOf(store, "kernel_envs")).toBe(2);
 });

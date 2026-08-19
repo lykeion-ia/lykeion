@@ -1124,6 +1124,75 @@ it("declares an environment under the session's own researcher, not the machine'
   });
 });
 
+it("declares an R environment when the daemon asks for one, with R's own manager", () => {
+  // The whole of the agent-facing R path, at the end that writes. Until this
+  // phase the route hard-coded `language: "python"`, so an agent asked for an
+  // R environment got a Python one wearing that name — a plausible wrong
+  // object, which is worse than a refusal because nothing downstream can tell
+  // it apart from the right one.
+  //
+  // The manager is asserted rather than the language alone: `conda` is what
+  // makes this a real R environment on every machine that later builds it,
+  // and it is DERIVED here from the language rather than sent, so a language
+  // that arrived and was ignored would still show up as `uv`.
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  insertSession(store, "se_1", machineId, "u_ben");
+
+  const result = post(
+    store,
+    "/daemon/kernel-env/create",
+    { sessionId: "se_1", name: "rstats", packages: ["ggplot2"], language: "r" },
+    "Bearer a-real-token",
+  );
+
+  expect(result!.status).toBe(200);
+  const declaration = environmentStore(store).get("rstats")!;
+  expect(declaration.language).toBe("r");
+  expect(declaration.manager).toBe("conda");
+});
+
+it("refuses a language this lab has no provisioner for, and writes nothing", () => {
+  // By value, in code. Nothing between the agent and this route validates an
+  // argument against a schema, and the two guards before this one (the host's
+  // and the daemon's) are not a reason to omit the third: this route is
+  // reachable from anything holding a machine token, and what it does is
+  // WRITE.
+  //
+  // Measured, so it is not overstated: with this route's own guard deleted
+  // the store is STILL untouched — `declareEnvironment` refuses an unknown
+  // language by value too, and answers 422. So what this route's guard adds
+  // is the status and a sentence naming the offending value, and what this
+  // test pins is both halves: the contract this endpoint answers with, and
+  // the write that does not happen. The nothing-written half would pass
+  // against the deeper guard alone, and says so here rather than reading as
+  // proof of a guard it does not exercise.
+  const store = freshStore();
+  const { machineId } = insertPairedMachine(store, "a-real-token");
+  insertSession(store, "se_1", machineId, "u_ben");
+
+  // A DIFFERENT name per case, against one store. Sharing one would mean
+  // that if the first value leaked past the guard and was written, every
+  // later case would come back 400 for the wrong reason — a name collision,
+  // which is 409 — and the test would still be green on four of five while
+  // pointing at the wrong guard.
+  for (const [i, wrong] of ["ruby", "Python", 7, null, ["r"]].entries()) {
+    const result = post(
+      store,
+      "/daemon/kernel-env/create",
+      { sessionId: "se_1", name: `nope${i}`, packages: [], language: wrong },
+      "Bearer a-real-token",
+    );
+    expect(result!.status).toBe(400);
+  }
+
+  // Not one of them wrote a declaration or a change.
+  expect(environmentStore(store).list()).toEqual([]);
+  expect(changeLogEntries(store).map((entry) => entry.kind)).not.toContain(
+    "environment-created",
+  );
+});
+
 it("refuses to declare an environment for a session belonging to another machine", () => {
   // A bearer token proves that SOME paired machine is calling and nothing
   // more. Without this check, any machine in the lab could declare

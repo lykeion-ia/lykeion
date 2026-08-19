@@ -16,7 +16,6 @@ import {
   FlaskIcon,
   InboxIcon,
   SparkleIcon,
-  WorkflowIcon,
 } from "../components/icons";
 import { NAV_ALL } from "./nav";
 import type { Route } from "../router";
@@ -41,8 +40,6 @@ export function routeLabel(route: Route): string {
     // afterwards would change under the reader for the length of one fetch.
     case "agent":
       return route.agentId;
-    case "workflow":
-      return route.workflowId;
     default:
       return navEntry(route)?.label ?? "Inbox";
   }
@@ -55,12 +52,10 @@ export function routeGlyph(route: Route): IconType {
     case "unfiled-task":
     case "study":
       return FlaskIcon;
-    // Singular route names the rail has no entry for — its entries are the
-    // sections, `agents` and `workflows`.
+    // A singular route name the rail has no entry for — its entry is the
+    // section, `agents`.
     case "agent":
       return SparkleIcon;
-    case "workflow":
-      return WorkflowIcon;
     default:
       return navEntry(route)?.icon ?? InboxIcon;
   }

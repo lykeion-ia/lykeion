@@ -50,6 +50,7 @@ import type { RunEvent } from "./run";
 import { MAX_TURNS_OUTSTANDING } from "./run";
 import { MAX_AVATAR_BYTES } from "./account";
 import { titleFromPrompt } from "./task-title";
+import type { Language } from "./machine";
 
 /** A real 1×1 PNG, as a data URL. The avatar tests need bytes an
  *  implementation would actually accept, not a plausible-looking string. */
@@ -1618,65 +1619,6 @@ export function customizationConformance(makeApi: () => Promise<LykeionApi>): vo
       expect(gsea?.enabled).toBe(true);
     });
 
-    it("runWorkflow expands with defaults and errors on a missing required value", async () => {
-      const api = await makeApi();
-      await api.upsertWorkflow({
-        id: "scratch-workflow",
-        name: "Scratch workflow",
-        description: "A workflow created for this test.",
-        discipline: "biology",
-        icon: "flask",
-        prompt:
-          "Load {counts_file} and run differential expression between {group_a} and {group_b}. Report the top {top_n} genes.",
-        placeholders: [
-          { key: "counts_file", label: "Counts matrix", required: true },
-          { key: "group_a", label: "Group A", required: true },
-          { key: "group_b", label: "Group B", required: true },
-          { key: "top_n", label: "Top N", required: false, default: "20" },
-        ],
-        phases: ["frame", "design-analysis", "execute"],
-        suggestedSkills: [],
-        requiresFiles: true,
-      });
-      const prompt = await api.runWorkflow("scratch-workflow", {
-        counts_file: "counts.csv",
-        group_a: "control",
-        group_b: "treated",
-      });
-      // group_a/group_b substituted, top_n falls back to its default (20).
-      expect(prompt).toBe(
-        "Load counts.csv and run differential expression between control and treated. Report the top 20 genes.",
-      );
-
-      // Missing a required placeholder rejects.
-      await expect(
-        api.runWorkflow("scratch-workflow", {}),
-      ).rejects.toThrow(/missing required placeholder/i);
-    });
-
-    it("a workflow's discipline and phases survive a write and read back", async () => {
-      const api = await makeApi();
-      const written = {
-        id: "spine-workflow",
-        name: "Spine workflow",
-        description: "A workflow whose phases skip part of the spine.",
-        discipline: "chemistry" as const,
-        icon: "flask",
-        prompt: "Do the thing to {subject}.",
-        placeholders: [{ key: "subject", label: "Subject", required: true }],
-        // A subsequence of the spine, not the whole of it: what comes back
-        // has to be this list, in this order, rather than a normalized ten.
-        phases: ["frame", "execute", "report"] as const,
-        suggestedSkills: [],
-        requiresFiles: false,
-      };
-      await api.upsertWorkflow({ ...written, phases: [...written.phases] });
-
-      const read = (await api.listWorkflows()).find((w) => w.id === written.id);
-      expect(read?.discipline).toBe(written.discipline);
-      expect(read?.phases).toEqual([...written.phases]);
-    });
-
     it("connectorCatalog returns the curated scientific databases", async () => {
       const api = await makeApi();
       const catalog = await api.connectorCatalog();
@@ -1743,23 +1685,23 @@ export function customizationConformance(makeApi: () => Promise<LykeionApi>): vo
   });
 }
 
-export function researchGroupsConformance(makeApi: () => Promise<LykeionApi>): void {
-  describe("research groups", () => {
+export function groupsConformance(makeApi: () => Promise<LykeionApi>): void {
+  describe("groups", () => {
     it("is empty on a fresh core", async () => {
       const api = await makeApi();
-      expect(await api.listResearchGroups()).toEqual([]);
+      expect(await api.listGroups()).toEqual([]);
     });
 
-    it("createResearchGroup then listResearchGroups includes it, newest first", async () => {
+    it("createGroup then listGroups includes it, newest first", async () => {
       const api = await makeApi();
-      await api.createResearchGroup({ name: "Structural Biology" });
-      const second = await api.createResearchGroup({
+      await api.createGroup({ name: "Structural Biology" });
+      const second = await api.createGroup({
         name: "Climate Attribution",
         description: "Heatwave causal chains",
         leadAgent: "atlas",
         memberAgents: ["scout", "sage"],
       });
-      const groups = await api.listResearchGroups();
+      const groups = await api.listGroups();
       expect(groups).toHaveLength(2);
       expect(groups[0].id).toBe(second.id);
       expect(groups[0].name).toBe("Climate Attribution");
@@ -1782,12 +1724,13 @@ export function absentCapabilityConformance(makeApi: () => Promise<LykeionApi>):
       expect(await api.listAgentClis()).toEqual([]);
     });
 
-    it("kernelEnvList invents nothing beyond the python starter a fresh lab may seed", async () => {
-      // Not asserted as strictly empty: a real lab seeds exactly one
-      // declaration on every boot — the `python` starter (D3's "something
-      // to set up rather than an empty list and no way to make one") — and
-      // that is real, declared content, not a fake one. What must still
-      // never happen is a SECOND name nothing here ever asked for.
+    it("kernelEnvList invents nothing beyond the starters a fresh lab may seed", async () => {
+      // Not asserted as strictly empty: a real lab seeds two declarations on
+      // every boot — the `python` and `r` starters (D3's "something to set
+      // up rather than an empty list and no way to make one", one per
+      // language this lab can build) — and those are real, declared
+      // content, not a fake one. What must still never happen is a THIRD
+      // name nothing here ever asked for.
       const api = await makeApi();
       const list = await api.kernelEnvList();
       // Asserted as a set, not with `.every()`: `[].every(...)` is `true`,
@@ -1795,14 +1738,16 @@ export function absentCapabilityConformance(makeApi: () => Promise<LykeionApi>):
       // nothing AND for one that had started inventing names — which is the
       // opposite of what this test is for. A length bound is the strongest
       // claim that holds honestly across both cores, since one seeds the
-      // starter and one seeds nothing.
+      // starters and one seeds nothing.
       //
       // The stricter half — that a core seeding NOTHING lists nothing — is
       // asserted directly against the in-memory core in `index.test.ts`,
       // where the expected set is known exactly rather than having to hold
       // for every implementation at once.
-      expect(list.length).toBeLessThanOrEqual(1);
-      expect(list.map((env) => env.name).filter((name) => name !== "python")).toEqual([]);
+      expect(list.length).toBeLessThanOrEqual(2);
+      expect(
+        list.map((env) => env.name).filter((name) => name !== "python" && name !== "r"),
+      ).toEqual([]);
     });
 
     it("kernelEnvSetup refuses a machine nothing here has ever heard of", async () => {
@@ -1967,12 +1912,28 @@ export function environmentDeclarationsConformance(makeApi: () => Promise<Lykeio
       expect(declared.name).toBe("crispr_v2-final");
     });
 
-    it("refuses anything but Python, this phase", async () => {
+    it("declares an R environment, deriving conda from the language", async () => {
+      const api = await makeApi();
+      const declared = await api.kernelEnvCreate({
+        name: "r-stats",
+        language: "r",
+        packages: [],
+      });
+      expect(declared.language).toBe("r");
+      // An R environment pins R itself, which is what makes it a conda one
+      // rather than a uv one — a caller never chooses; it is derived.
+      expect(declared.manager).toBe("conda");
+    });
+
+    it("refuses a language this lab cannot build, naming it", async () => {
       const api = await makeApi();
       await expectRejection(
-        api.kernelEnvCreate({ name: "r-stats", language: "r", packages: [] }),
+        // Cast past the closed `Language` union the same way a real caller
+        // arrives here — over the wire, where nothing has validated the
+        // value against it, which is why the refusal is written in code.
+        api.kernelEnvCreate({ name: "j", language: "julia" as unknown as Language, packages: [] }),
         "unsupported",
-        /Python environments only/,
+        /julia/,
       );
     });
 
@@ -2415,7 +2376,7 @@ const AREAS = [
   conversationsUsageSettingsConformance,
   conversationWritesConformance,
   customizationConformance,
-  researchGroupsConformance,
+  groupsConformance,
   absentCapabilityConformance,
   pairingUnsupportedConformance,
   kernelAxisConformance,

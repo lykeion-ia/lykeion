@@ -176,6 +176,7 @@ async function reachingAKernel() {
     languages: Array<{
       language: string; environment: string; interpreter: string; reads: string[];
     }>;
+    capable: string[];
   };
   // The one place the two constants meet with nothing stubbed between them.
   // Each package declares this number for itself, and a bump that landed on one
@@ -279,7 +280,15 @@ onDarwin("publishes one runner per language and a shell, and neither names a ker
     // either: a session can add packages to an environment this machine has
     // never built, since the declaration is the lab's (D2).
     "manage_packages",
-    ...hello.languages.map((descriptor) => `execute_${descriptor.language}_cell`),
+    // Off `capable`, not off `languages`. What this host PUBLISHES is every
+    // language it has a launcher for, whether or not this machine has
+    // discovered an interpreter for it — `execute_r_cell` is offered on a
+    // machine that has never built an R environment, and answers a call
+    // against it with a refusal naming the environment. Written against
+    // `languages` this asserted a one-to-one mirror that stopped being true
+    // the moment publication was split from discovery, and it is the split
+    // that is correct.
+    ...hello.capable.map((language) => `execute_${language}_cell`),
   ];
   expect(published.tools.map((tool) => tool.name).sort()).toEqual(expected.sort());
   // The point of the test, unchanged: no tool has a field naming a kernel.

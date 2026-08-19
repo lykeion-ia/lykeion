@@ -40,7 +40,36 @@ export type AccessKind =
    *  a new one and `manage_packages` adding to one that exists — because
    *  what is being consented to is the same fact either way. Which of them
    *  asked is read off the card's own `tool`, not off this kind. */
-  | { kind: "environment"; target: { name: string; packages: string[] } };
+  | {
+      kind: "environment";
+      target: {
+        name: string;
+        packages: string[];
+        /** Which language the environment is for, where the daemon said.
+         *  OPTIONAL because absent is a real answer and not a default: a
+         *  daemon older than the R phase sends no language, and a card
+         *  rendering "Python" over its silence would be this lab asserting
+         *  something it was not told.
+         *
+         *  Sent on BOTH cards that carry this kind — the create, and the
+         *  add-packages one. The second matters more: creating declares a
+         *  name and installs nothing, while adding puts software on every
+         *  machine in this lab, and that card used to say less about what it
+         *  was changing than the card for an empty environment did. The
+         *  daemon fills it from the very list it hands its kernel host, so
+         *  no fetch stands between a researcher and the question.
+         *
+         *  Where it IS sent, the card says it, because a NAME does not say
+         *  what will be installed. `rstats` could be either language, and
+         *  the language decides which package set lands on every machine in
+         *  this lab. The package list usually hints — and an environment
+         *  holding only its interpreter has no list at all, which is exactly
+         *  the card where a researcher has least to go on. (Names are unique
+         *  lab-wide across both languages, so this is never about telling two
+         *  same-named environments apart; there cannot be two.) */
+        language?: "python" | "r";
+      };
+    };
 
 /** A permission card. */
 export interface PermissionRequest {

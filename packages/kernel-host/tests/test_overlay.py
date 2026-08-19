@@ -19,6 +19,7 @@ from lykeion_kernel.overlay import (
     SCRATCH_DIR,
     installed_between,
     launch_env,
+    launch_env_r,
     overlay_for,
     overlays_root,
     snapshot,
@@ -665,3 +666,52 @@ def test_a_sweep_finishes_deleting_what_a_host_that_died_had_renamed_aside(
     assert sweep_overlays(str(tmp_path), claim) == []
     assert asked == [], "a sweep asked its caller about a tree already out of reach"
     assert not left.exists(), "bytes a dead host renamed aside were never reclaimed"
+
+
+def test_an_r_kernel_is_given_the_overlay_as_its_only_user_library():
+    """R's whole overlay is one variable, and it SETS rather than prepends.
+
+    `R_LIBS_USER` is both where `install.packages()` writes and a directory
+    R puts on `.libPaths()`, so there is no way to wire the write side
+    without the read side — the install-that-cannot-be-imported failure
+    `launch_env` has to work to avoid cannot arise here.
+    """
+    given = launch_env_r("/tmp/overlay/3")
+    assert given == {"R_LIBS_USER": "/tmp/overlay/3"}
+
+
+def test_an_r_kernel_does_not_inherit_the_researchers_own_library():
+    """The counterpart of `EFFACED` stripping R_LIBS_USER, and the reason
+    this SETS where Python's PYTHONPATH prepends.
+
+    Python's path is something a researcher put on their own machine and a
+    feature about pip is no reason to take it away. R's is the thing a pinned
+    environment exists to remove: a script that works here because this
+    machine happens to hold a package in the personal library. Prepending
+    would hand back exactly what the sweep took.
+    """
+    given = launch_env_r("/tmp/overlay/3")
+    assert given["R_LIBS_USER"] == "/tmp/overlay/3"
+    # Whatever the researcher had is absent, not appended to.
+    assert os.pathsep not in given["R_LIBS_USER"]
+
+
+def test_an_r_overlay_is_emptied_by_a_restart_the_same_way_pythons_is(tmp_path):
+    """C-023's R half, resting on the same construction rather than a second
+    one: `overlay_for` empties, so the guarantee is the directory's, not the
+    language's.
+
+    Written as R's own test anyway. The claim "install inline, restart,
+    import fails" is made about R now too, and a claim nobody asserts for R
+    is one that survives on the strength of a Python test.
+    """
+    workspace = str(tmp_path)
+    first = overlay_for(workspace, "k_r1", 1)
+    open(os.path.join(first, "somepkg"), "w").close()
+    assert os.path.exists(os.path.join(first, "somepkg"))
+
+    # A new host counts from one again — the case that made emptying rather
+    # than numbering the guarantee.
+    again = overlay_for(workspace, "k_r1", 1)
+    assert again == first
+    assert not os.path.exists(os.path.join(first, "somepkg"))

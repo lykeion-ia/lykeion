@@ -45,10 +45,10 @@ describe("Lykeion shell", () => {
   it("Projects screen: the Rail and every project line", async () => {
     renderApp();
 
-    // Top + Laboratory + Configure nav. "Studies" is anchored so it doesn't
-    // also match "Research Groups" or similar, and "Tasks" so it doesn't also
-    // match "My Tasks" — an unanchored one of either matches two links, and
-    // `findByRole` throws on the ambiguity rather than picking one.
+    // Top + Laboratory + Configure nav. "Tasks" is anchored so it doesn't also
+    // match "My Tasks", and "Studies" is anchored against the same hazard — an
+    // unanchored one of either matches two links, and `findByRole` throws on
+    // the ambiguity rather than picking one.
     for (const name of [
       /Inbox/i,
       /My Tasks/i,
@@ -60,9 +60,8 @@ describe("Lykeion shell", () => {
     }
     // Remaining Laboratory + Configure nav.
     for (const label of [
-      "Research Groups",
+      "Groups",
       "Experts",
-      "Workflows",
       "Machines",
     ]) {
       expect(

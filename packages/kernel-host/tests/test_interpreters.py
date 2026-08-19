@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
 
-from lykeion_kernel import interpreters
-from lykeion_kernel.interpreters import runnables
+from lykeion_kernel.interpreters import _r, runnables
 from lykeion_kernel.kernels.python import DRIVER
 
 
@@ -64,97 +61,88 @@ def test_a_place_named_twice_is_carried_once_and_keeps_its_place():
     assert list(python.reads) == list(dict.fromkeys(python.reads))
 
 
-def test_r_is_reported_only_where_this_machine_has_it():
-    languages = [runnable.language for runnable in runnables()]
-    assert ("r" in languages) == (shutil.which("Rscript") is not None)
+def test_bare_rscript_no_longer_manufactures_an_environment(tmp_path, monkeypatch):
+    """A machine having R is not a lab having declared one.
+
+    `r` is a declaration now. A discovered interpreter answering to that name
+    would let a cell run in an unpinned R that no colleague can reproduce —
+    which is the whole failure this subsystem exists to prevent (D-R2).
+
+    A real, WORKING executable is planted on PATH — via `_standing_in_for_
+    rscript`, not a monkeypatched `shutil.which` returning a path that does
+    not exist. A nonexistent path discriminates nothing: pre-fix `_r()` would
+    have hit `subprocess.run`'s `OSError` branch and returned `None` too, for
+    a reason that has nothing to do with discovery being removed. A real
+    script that actually runs is what pre-fix `_r()` would have resolved,
+    executed, and built a genuine `Runnable` from.
+    """
+    _standing_in_for_rscript(tmp_path, monkeypatch, "#!/bin/sh\necho /fake/r-home\n")
+    assert _r() is None
 
 
-def test_an_r_that_never_answers_does_not_take_the_whole_host_with_it(
+def test_r_is_never_reported_regardless_of_what_this_machine_has(tmp_path, monkeypatch):
+    """The old contract varied with the machine: `"r" in languages` tracked
+    `shutil.which("Rscript") is not None`. The new one does not vary at all —
+    proven with a real, WORKING Rscript planted on PATH, the one case the old
+    test could not tell apart from genuine discovery succeeding.
+    """
+    _standing_in_for_rscript(tmp_path, monkeypatch, "#!/bin/sh\necho ok\n")
+    assert "r" not in [runnable.language for runnable in runnables()]
+
+
+def test_an_r_that_would_have_hung_no_longer_can_because_nothing_asks_it_anything(
     tmp_path, monkeypatch, capsys
 ):
-    # Where this runs is the whole reason it is bounded. `_r()` is called from
-    # Registry.__init__, which serve() calls BEFORE the loop that reads the
-    # daemon's messages — so an Rscript that never returns is not a slow
-    # answer about R, it is a host that never answers anything: no host.hello,
-    # the daemon's reach deadline expires, and every Task opened on this
-    # machine comes up with no kernels at all, Python ones included. The host
-    # is never restarted, by design, so that lasts as long as the machine is
-    # up. `.libPaths()` on an unreachable mount is the ordinary way there.
-    #
-    # The deadline is shortened rather than waited out: what is being asserted
-    # is that there IS one, and a test that took ten real seconds to say so
-    # would be paid for on every run by everyone.
-    #
-    # `/bin/sleep` by its full path, and that is not fussiness. PATH is
-    # replaced outright above so that no real R answers this, which also means
-    # the shell running this script can look nothing up — written `sleep 60`
-    # it exits 127 instantly and the test measures an R that FAILED rather
-    # than one that hung, which is a different finding wearing this one's
-    # name. Caught by inverting this very test: with the timeout taken out it
-    # still failed, but on the wrong assertion.
-    hanging = _standing_in_for_rscript(tmp_path, monkeypatch, "#!/bin/sh\nexec /bin/sleep 60\n")
-    monkeypatch.setattr(interpreters, "R_ASK_S", 0.5)
+    # The old bound on this was a timeout: Registry.__init__ calls this before
+    # serve()'s own loop starts reading the daemon, so a wedged subprocess
+    # call here used to cost the whole host its first answer, not merely R's.
+    # The new bound is stronger — there is no subprocess call left to wedge.
+    # `/bin/sleep`, by its full path, would still hang a shell that ran it;
+    # the point is that nothing here runs it at all.
+    _standing_in_for_rscript(tmp_path, monkeypatch, "#!/bin/sh\nexec /bin/sleep 60\n")
 
     began = time.monotonic()
     found = runnables()
     spent = time.monotonic() - began
 
-    assert spent < 30, "this host waited on an R that was never going to answer"
+    assert spent < 1, "this host asked a process it no longer has any reason to ask"
     assert [runnable.language for runnable in found] == ["python"]
-    # And Python is still reported, which is the half that matters most: a
-    # machine whose R hangs still runs the language the host is written in.
-    said = capsys.readouterr().err
-    assert str(hanging) in said
-    assert "did not answer" in said
+    # Nothing was inspected, so nothing was said about it — contrast the old
+    # behaviour just below, which spoke about R specifically because it had
+    # gone and looked.
+    assert capsys.readouterr().err == ""
 
 
-def test_an_r_that_is_broken_says_so_rather_than_looking_like_an_r_that_is_absent(
+def test_an_r_that_is_broken_is_never_distinguished_from_one_that_is_absent(
     tmp_path, monkeypatch, capsys
 ):
-    # Two facts arrive above here as the identical empty list of languages,
-    # and a researcher meets both as the same missing chip. The only place
-    # they can be told apart is this line, on the stream the daemon keeps a
-    # tail of — so what R itself said is carried into it rather than dropped.
+    # The old contract kept "broken" and "absent" apart on stderr, because
+    # `_r()` had gone and asked R something and could report what it said.
+    # Nothing here asks R anything any more, so the two collapse to the same
+    # silent outcome — there is no finding left to distinguish.
     _standing_in_for_rscript(
         tmp_path, monkeypatch, "#!/bin/sh\necho 'error: unable to load libRblas' >&2\nexit 1\n"
     )
 
     assert [runnable.language for runnable in runnables()] == ["python"]
-    said = capsys.readouterr().err
-    assert "unable to load libRblas" in said
-    assert "exited 1" in said
+    assert capsys.readouterr().err == ""
 
 
 def test_a_machine_with_no_r_on_it_says_nothing_at_all(tmp_path, monkeypatch, capsys):
-    # The absence that is not a fault. An operator reading this stream must be
-    # able to take a line on it as meaning something is wrong, which it cannot
-    # if every machine without R writes one.
+    # The absence that was never a fault, and still is not: silence here
+    # means nothing was discovered, which is now true of every machine.
     monkeypatch.setenv("PATH", str(tmp_path))
     assert [runnable.language for runnable in runnables()] == ["python"]
     assert capsys.readouterr().err == ""
 
 
 @pytest.mark.integration
-def test_rs_reads_are_asked_of_r_itself_and_include_its_library_paths():
-    rscript = shutil.which("Rscript")
-    if rscript is None:
-        pytest.skip("this machine has no Rscript, so it holds no R kernels")
-    r = next(runnable for runnable in runnables() if runnable.language == "r")
-    assert r.environment == "r"
-    assert r.interpreter == rscript
-    # R.home() alone would deny every package a researcher ever installed:
-    # on a homebrew install the site-library sits outside it. Asked of R again
-    # here rather than derived, and named rather than counted: a resolver that
-    # kept R.home() and dropped the libraries still answers with three paths,
-    # so a count alone would go green on the very boundary this is about.
-    asked = subprocess.run(
-        [rscript, "--vanilla", "-e", "cat(.libPaths(), sep='\\n')"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    libraries = [line for line in asked.stdout.splitlines() if line]
-    assert libraries, "this machine's R named no library paths at all"
-    for library in libraries:
-        assert library in r.reads
-    assert len(r.reads) > 2
+def test_a_real_machines_r_is_still_never_reported():
+    # The strongest case left to make, run against whatever is actually
+    # installed on the machine running this suite rather than a stand-in: a
+    # genuine, healthy, real Rscript — R.home(), library paths and all — is
+    # still absent from what `runnables()` reports. Discovery is gone, not
+    # merely unreliable; a real interpreter proves that as well as a fake one
+    # does, and this is the one test in the file that can reach for a real
+    # one at all.
+    assert "r" not in [runnable.language for runnable in runnables()]

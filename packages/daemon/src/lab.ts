@@ -623,13 +623,19 @@ export async function postKernelEnvCreate(
   sessionId: string,
   name: string,
   packages: string[],
+  // Which language the declaration is for. Required rather than defaulted
+  // here: the lab derives the package manager from it (`python` → uv,
+  // `r` → conda), and a default living in two places is a default that can
+  // disagree with itself. The caller has already refused anything else by
+  // value, so the type is the whole of what can arrive.
+  language: "python" | "r",
   signal?: AbortSignal,
 ): Promise<KernelEnvDeclaration> {
   const res = await callLab(
     lab,
     "/daemon/kernel-env/create",
     token,
-    { sessionId, name, packages },
+    { sessionId, name, packages, language },
     signal,
   );
   const body = (await res.json().catch(() => ({}))) as { declaration?: unknown };

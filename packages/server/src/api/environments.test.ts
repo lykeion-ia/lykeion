@@ -8,6 +8,7 @@ import {
   KERNEL_SETUP_CHANNEL,
   type KernelEnvStatus,
   type KernelSetupProgress,
+  type Language,
   type LykeionApi,
 } from "@lykeion/api";
 import { expectRejection } from "@lykeion/api/conformance";
@@ -121,7 +122,7 @@ function waitingOnly(timeoutMs: number): EnvSetupRegistry {
   };
 }
 
-it("declares with the actor who asked, when, and this phase's one manager", async () => {
+it("declares with the actor who asked, when, and the manager derived for python", async () => {
   const store = freshStore();
   addOwner(store, "u_ana");
   const envs = environmentsApi(depsFor(store));
@@ -134,21 +135,41 @@ it("declares with the actor who asked, when, and this phase's one manager", asyn
 
   expect(declared.createdBy).toBe("u_ana");
   expect(declared.createdTs).toBe(NOW);
-  // Not asked for on the input — this phase has exactly one manager (D1) —
-  // but a declaration always carries one.
+  // Not asked for on the input — the manager is derived from the language,
+  // never a caller's choice — but a declaration always carries one.
   expect(declared.manager).toBe("uv");
   expect(declared.lockRevision).toBe(0);
 });
 
-it("refuses anything but Python with the reason D1 gives", async () => {
+it("declares an R environment, deriving conda from the language", async () => {
+  const store = freshStore();
+  addOwner(store, "u_ana");
+  const envs = environmentsApi(depsFor(store));
+
+  const declared = await envs.kernelEnvCreate({
+    name: "rstats",
+    language: "r",
+    packages: ["jsonlite"],
+  });
+
+  expect(declared.language).toBe("r");
+  // An R environment pins R itself, which is what makes it a conda one
+  // rather than a uv one — the same derivation `python` gets, in reverse.
+  expect(declared.manager).toBe("conda");
+});
+
+it("refuses a language this lab cannot build, naming it", async () => {
   const store = freshStore();
   addOwner(store, "u_ana");
   const envs = environmentsApi(depsFor(store));
 
   await expectRejection(
-    envs.kernelEnvCreate({ name: "r-stats", language: "r", packages: [] }),
+    // Cast past the closed `Language` union the same way a wire caller
+    // would arrive here — nothing on that path validates against it, which
+    // is why the refusal below has to be written in code, not types.
+    envs.kernelEnvCreate({ name: "j", language: "julia" as unknown as Language, packages: [] }),
     "unsupported",
-    /^Lykeion manages Python environments only for now — an R kernel uses the machine's own R\.$/,
+    /julia/,
   );
 });
 

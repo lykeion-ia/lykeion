@@ -292,16 +292,6 @@ export const GraduationCapIcon = (p: IconProps) => (
   </Base>
 );
 
-// Branching flowchart nodes — "Workflows" nav (a pipeline of steps).
-export const WorkflowIcon = (p: IconProps) => (
-  <Base {...p}>
-    <rect x="8.5" y="3" width="7" height="5" rx="1.5" />
-    <rect x="3" y="16" width="7" height="5" rx="1.5" />
-    <rect x="14" y="16" width="7" height="5" rx="1.5" />
-    <path d="M12 8v4M6.5 12h11M6.5 12v4M17.5 12v4" />
-  </Base>
-);
-
 // Three bars of unequal height — short, tall, middling (Properties rail
 // "Priority" row).
 export const PriorityIcon = (p: IconProps) => (
@@ -340,7 +330,7 @@ export const TagIcon = (p: IconProps) => (
   </Base>
 );
 
-// Two-person group — "Research Groups" nav + empty-state glyph.
+// Two-person group — "Groups" nav + empty-state glyph.
 export const UsersIcon = (p: IconProps) => (
   <Base {...p}>
     <circle cx="9" cy="8" r="3.5" />

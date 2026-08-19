@@ -79,10 +79,12 @@ it(
   async () => {
     const floor = await probeKernelFloor({
       dataDir: stateDir(),
-      path: pathRunning({ uv: 'echo "uv 0.9.0"' }),
+      path: pathRunning({ uv: 'echo "uv 0.9.0"', micromamba: 'echo "micromamba 1.5.0"' }),
     });
     expect(floor.ready).toBe(true);
     expect(floor.reason).toBeUndefined();
+    expect(floor.rReady).toBe(true);
+    expect(floor.rReason).toBeUndefined();
   },
   30_000,
 );
@@ -98,7 +100,7 @@ it(
     // never looks for anything under that name.
     const floor = await probeKernelFloor({
       dataDir: stateDir(),
-      path: pathRunning({ uv: 'echo "uv 0.9.0"', R: "exit 1" }),
+      path: pathRunning({ uv: 'echo "uv 0.9.0"', micromamba: 'echo "micromamba 1.5.0"', R: "exit 1" }),
     });
     expect(floor.ready).toBe(true);
   },
@@ -116,7 +118,7 @@ it("names the missing kernel host when this installation does not ship one, with
   const floor = await probeKernelFloor({
     dataDir: stateDir(),
     projectDir: join(tmpdir(), `lykeion-no-kernel-host-${Date.now()}-${Math.random().toString(36).slice(2)}`),
-    path: pathRunning({ uv: 'echo "uv 0.9.0"' }),
+    path: pathRunning({ uv: 'echo "uv 0.9.0"', micromamba: 'echo "micromamba 1.5.0"' }),
   });
   expect(floor.ready).toBe(false);
   expect(floor.reason).toBe("this installation is missing its kernel host");
@@ -128,3 +130,21 @@ it("names the missing kernel host when this installation does not ship one, with
   // already told it.
   expect(runConfined).not.toHaveBeenCalled();
 });
+
+it(
+  "holds no R environments when micromamba is missing, but still hosts Python",
+  async () => {
+    const floor = await probeKernelFloor({
+      path: pathRunning({ uv: 'echo "uv 0.9.0"' }),
+      dataDir: stateDir(),
+    });
+    // Python kernels work without micromamba, so `ready` is true.
+    expect(floor.ready).toBe(true);
+    expect(floor.reason).toBeUndefined();
+    // R environments need micromamba, so `rReady` is false.
+    expect(floor.rReady).toBe(false);
+    expect(floor.rReason).toContain("micromamba");
+    expect(floor.rReason).toContain("brew install micromamba");
+  },
+  30_000,
+);

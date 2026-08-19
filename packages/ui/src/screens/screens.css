@@ -172,7 +172,7 @@ a.crumb:hover {
   flex-shrink: 0;
 }
 
-/* Milestone stubs (Agents / Skills / Workflows / Runtimes / Settings). */
+/* Milestone stubs (Agents / Skills / Runtimes / Settings). */
 .stub {
   padding: 24px 20px;
 }

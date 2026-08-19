@@ -42,6 +42,12 @@ export interface Machine {
 /** A kernel language. */
 export type Language = "python" | "r";
 
+/** Which provisioner builds an environment. Named rather than repeated as an
+ *  inline union, because `provisionerFor`'s record is keyed by it and an
+ *  exhaustive switch over a type written in three places is three places to
+ *  forget. */
+export type KernelEnvManager = "uv" | "conda";
+
 /**
  * Provisioning state of one of Lykeion's own managed kernel environments:
  * - `absent`  — never provisioned; the honest first-install default.
@@ -62,7 +68,7 @@ export interface KernelEnvStatus {
   /** Which language a kernel bound to this environment runs. */
   language: Language;
   /** Which provisioner built it. */
-  manager: "uv" | "conda";
+  manager: KernelEnvManager;
   /** Resolved interpreter version (e.g. "3.12.7") when `ready`. */
   version?: string;
   /** "{os}-{arch}", e.g. "macos-aarch64". */
@@ -91,7 +97,7 @@ export interface KernelEnvStatus {
 export interface KernelEnvDeclaration {
   name: string;
   language: Language;
-  manager: "uv" | "conda";
+  manager: KernelEnvManager;
   /** What was asked for — `["scanpy"]` — not the ninety-package closure
    *  that satisfies it. That is the lockfile, and it is not carried here. */
   packages: string[];

@@ -12,7 +12,12 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
-import type { ExecutionLogEntry, RunEvent, TurnState } from "@lykeion/api";
+import type {
+  ExecutionLogEntry,
+  PermissionRequest,
+  RunEvent,
+  TurnState,
+} from "@lykeion/api";
 import { backoffDelayMs } from "./lab";
 import type { KernelHost } from "./kernel-host";
 import { PROTOCOL_VERSION } from "./kernel-protocol";
@@ -257,6 +262,23 @@ function markerIn(dataDir: string, name: string): string {
  * this machine cannot say what the base is, which is not the same fact as
  * there being none.
  */
+/** An R environment as micromamba leaves one: `bin/Rscript` rather than
+ *  `bin/python3`, and the same completion marker. Separate from `envOnDisk`
+ *  rather than a flag on it, because the difference between the two shapes
+ *  IS what several of these tests are about — a helper that could produce
+ *  either from one argument invites a test asserting the wrong one. */
+function rEnvOnDisk(workDir: string, name: string, finished: boolean): string {
+  const root = envRoot(workDir, name);
+  mkdirSync(join(root, "bin"), { recursive: true });
+  writeFileSync(join(root, "bin", "Rscript"), "");
+  if (finished)
+    writeFileSync(
+      join(root, ".lykeion-env.json"),
+      JSON.stringify({ lockRevision: 3, packageCount: 99, version: "4.4.1" }),
+    );
+  return root;
+}
+
 function envOnDisk(workDir: string, name: string, finished: boolean, base?: string): string {
   const root = envRoot(workDir, name);
   mkdirSync(join(root, "bin"), { recursive: true });
@@ -439,6 +461,11 @@ function stubKernelHost(
   languages: Array<{
     language: string; environment: string; interpreter: string; reads: string[];
   }> = [{ language: "python", environment: "python", interpreter: "/usr/bin/python3", reads: [] }],
+  /** What the host says it could LAUNCH, as against what it discovered.
+   *  Defaults to the discovered languages, which is what a host reported
+   *  before the two were told apart — so every existing caller is unchanged
+   *  and a test that cares passes them separately. */
+  capable: string[] = languages.map((descriptor) => descriptor.language),
 ) {
   const asked: string[] = [];
   const answering: { configured?: { token?: string }; refusing: boolean } = { refusing: false };
@@ -480,7 +507,7 @@ function stubKernelHost(
   const host: KernelHost = {
     call: async (method, params) => {
       asked.push(method);
-      if (method === "host.hello") return { protocol, languages };
+      if (method === "host.hello") return { protocol, languages, capable };
       if (method === "kernel.restart_environment") {
         environmentRestarts.push((params ?? {}) as Record<string, unknown>);
         return { restarted: [] };
@@ -906,6 +933,161 @@ it("replaces the floor's own entry when its name is built here, default and all"
   expect(only.interpreter).toBe(join(root, "bin", "python3"));
   // And still the language's default, because the name still is.
   expect(only.default).toBe(true);
+});
+
+it("offers a built R environment, and launches it through Rscript", async () => {
+  // The end of the chain this phase exists to build, and the case that was
+  // dark on every machine until now. Three separate layers had to agree:
+  // the host must report R as launchable, the daemon's gate must admit a
+  // declaration on that rather than on what the machine discovered, and the
+  // reader must probe the MANAGER's interpreter. Any one of them wrong and
+  // this is silent — which is exactly how it shipped twice.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "rstats", language: "r", manager: "conda", packages: [], createdTs: 1, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  const root = rEnvOnDisk(workDir, "rstats", true);
+  const kernels = stubKernelHost(
+    0,
+    PROTOCOL_VERSION,
+    // Discovered: python only — a real machine, where R is never discovered.
+    [
+      {
+        language: "python", environment: "python",
+        interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+      },
+    ],
+    ["python", "r"],
+  );
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_built_r"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ language: string; name: string; interpreter: string }>;
+  };
+  const r = configured.environments.find((entry) => entry.name === "rstats");
+  expect(r).toBeDefined();
+  expect(r!.language).toBe("r");
+  // Through the manager's interpreter, not python's. This is the assertion
+  // that would have caught an R environment being handed the R driver a
+  // python binary.
+  expect(r!.interpreter).toBe(join(root, "bin", "Rscript"));
+});
+
+it("does not offer an R declaration whose build on disk is a python one", async () => {
+  // The protection the declaration gate used to give away for free. It
+  // refused any language this machine had not discovered, which incidentally
+  // stopped this; it now asks about capability instead, so the manager's own
+  // interpreter probe is what has to catch it.
+  //
+  // Reachable through name reuse: a python environment named `rstats`,
+  // deleted, later re-declared as R, on a machine that has not rebuilt it.
+  // The stale `bin/python3` and a valid marker would read `ready` to a
+  // language-blind probe, and the R driver would be started on a python
+  // binary.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "rstats", language: "r", manager: "conda", packages: [], createdTs: 1, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  // A python-shaped build under an R declaration's name.
+  envOnDisk(workDir, "rstats", true, "/nowhere/base/bin");
+  const kernels = stubKernelHost(
+    0,
+    PROTOCOL_VERSION,
+    [
+      {
+        language: "python", environment: "python",
+        interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+      },
+    ],
+    ["python", "r"],
+  );
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_mismatched_r"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ language: string; name: string }>;
+  };
+  expect(configured.environments.find((entry) => entry.name === "rstats")).toBeUndefined();
+});
+
+it("offers a declaration in a language this host can launch but this machine never discovered", async () => {
+  // The regression test for a CRITICAL this branch shipped and caught: an R
+  // environment was withheld on every machine, forever.
+  //
+  // `floorReads` records what this machine DISCOVERED at startup, and R is
+  // deliberately no longer discovered from a bare `Rscript` — it reaches a
+  // cell only through an environment the lab declared and this machine
+  // built. So a gate asking `floorReads.has("r")` answered no everywhere,
+  // and every R environment ever built was reported "not built on this
+  // machine yet" while it sat there built. False is worse than absent.
+  //
+  // Asserted as a SILENCE, deliberately, and that is the whole care in this
+  // test. A positive "R is offered" assertion is not honestly available
+  // here: `envOnDisk` builds a python-shaped root, so making one READY
+  // would prove a language-mismatched interpreter got through rather than
+  // that R works. What IS honestly available is that the gate no longer
+  // rejects on discovery — the declaration below is simply never built, so
+  // after the gate it is dropped one line down by `state !== "ready"`,
+  // quietly and correctly. Before the fix this same case was rejected AT
+  // the gate, loudly and wrongly, which is what makes the silence
+  // discriminating.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "genome", language: "r", manager: "conda", packages: [], createdTs: 1, lockRevision: 1 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  // Never built here — nothing calls `envOnDisk` for it. That is the point.
+  const kernels = stubKernelHost(
+    0,
+    PROTOCOL_VERSION,
+    // Discovered: python only, which is every real machine now that R is not
+    // discovered at all.
+    [
+      {
+        language: "python", environment: "python",
+        interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+      },
+    ],
+    // Capable: both, which is every real machine — `LAUNCHERS` carries an R
+    // launcher whether or not this machine ever built an R environment.
+    ["python", "r"],
+  );
+  const said: string[] = [];
+  const reporting = console.error;
+  console.error = (line: unknown) => said.push(String(line));
+  try {
+    subsystem(lab.base, data, () => kernels.host);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(startRunOn("run_capable_undiscovered"));
+    await until(() => kernels.configured !== undefined, "the boundary landing");
+  } finally {
+    console.error = reporting;
+  }
+
+  // Not turned away for being a language this machine does not run. Both
+  // spellings are checked — the one the old gate used and the one the new
+  // gate uses — so this keeps failing if either is reintroduced.
+  const turnedAway = said.filter(
+    (line) => line.includes("genome") && (line.includes("runs no") || line.includes("cannot launch")),
+  );
+  expect(turnedAway).toEqual([]);
 });
 
 it("leaves out a declaration in a language this machine does not run", async () => {
@@ -5111,7 +5293,10 @@ it("sends this machine's open sessions their new boundary together, not one afte
 /** Every permission card this machine has published, in order. */
 function cardsOf(lab: {
   events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }>;
-}): Array<{ id: string }> {
+  // The whole request, not just its id. The narrower annotation this
+  // replaced described less than the value it returns, so a test wanting to
+  // assert what a card actually ASKS had to reach past the helper.
+}): PermissionRequest[] {
   return lab.events
     .flatMap((post) => post.frames)
     .map((frame) => frame.event)
@@ -5231,11 +5416,91 @@ it("declares an allowed environment and only then re-describes the session", asy
 
   expect(await asked).toMatchObject({ name: "crispr", packages: ["scanpy"] });
   expect(lab.kernelEnvCreates).toEqual([
-    { sessionId: "se_1", name: "crispr", packages: ["scanpy"] },
+    // The language is on this body now, and `toEqual` is what caught it
+    // arriving — the whole body is asserted rather than a subset, so a field
+    // added to this wire cannot land unnoticed.
+    //
+    // `python` because SOMETHING on this path defaulted, and it is worth
+    // being exact about which: the stub host calls the daemon's handler
+    // directly, so the kernel-host's own reader never ran here and the
+    // default that fired is `serveEnvironmentCreate`'s. There are three of
+    // them on the full path — the host's `_created_language`, this one, and
+    // the lab route's — each defaulting for a caller older than the field.
+    // An earlier version of this comment said there was exactly one, which
+    // would make this test prove something it cannot see.
+    { sessionId: "se_1", name: "crispr", packages: ["scanpy"], language: "python" },
   ]);
   const declaredAt = kernels.asked.indexOf("the lab declared it");
   expect(declaredAt).toBeGreaterThan(-1);
   expect(kernels.asked.lastIndexOf("kernel.configure_session")).toBeGreaterThan(declaredAt);
+});
+
+it("carries an R create through the card and on to the lab as R", async () => {
+  // The agent-facing R path, end to end through this process. Until this
+  // phase nothing on this wire carried a language and the lab hard-coded
+  // python, so an agent asking for an R environment got a Python one wearing
+  // that name — and neither the card the researcher answered nor the body the
+  // lab stored said which kind it was.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_r"));
+  await until(() => turnStarted(lab, "run_env_r"), "the turn starting");
+
+  const asked = kernels.ask("environment.create", {
+    session_id: "se_1",
+    name: "rstats",
+    packages: ["ggplot2"],
+    language: "r",
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+  // The CARD carries it, not only the lab call. What a researcher is
+  // approving is software on every machine in this lab, and which software
+  // follows from the language rather than from the name — `rstats` says
+  // nothing about whether conda-forge or PyPI is about to be read.
+  expect(cardsOf(lab)[0]!.access).toEqual({
+    kind: "environment",
+    target: { name: "rstats", packages: ["ggplot2"], language: "r" },
+  });
+  lab.send(decideOn("run_env_r", cardsOf(lab)[0]!.id, { decision: "allow", scope: "once" }));
+
+  await asked;
+  expect(lab.kernelEnvCreates).toEqual([
+    { sessionId: "se_1", name: "rstats", packages: ["ggplot2"], language: "r" },
+  ]);
+});
+
+it("refuses a language nothing can build before a researcher is asked anything", async () => {
+  // Refused BEFORE the card, and that is the half worth asserting. A guard
+  // that refused after raising one would have put a question in front of a
+  // researcher that has no right answer — approve an environment in a
+  // language this lab has no provisioner for, or decline something that was
+  // never going to happen either way.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_bad_lang"));
+  await until(() => turnStarted(lab, "run_env_bad_lang"), "the turn starting");
+
+  await expect(
+    kernels.ask("environment.create", {
+      session_id: "se_1",
+      name: "nope",
+      packages: [],
+      language: "ruby",
+    }),
+  ).rejects.toThrow(/ruby/);
+
+  expect(cardsOf(lab)).toEqual([]);
+  expect(lab.kernelEnvCreates).toEqual([]);
 });
 
 it("refuses an environment card answered for the Study or globally", async () => {
@@ -5637,6 +5902,74 @@ it("does not ask the lab for packages the researcher denied", async () => {
   expect(lab.kernelEnvPackages).toEqual([]);
 });
 
+it("tells the add-packages card which language the environment is in", async () => {
+  // The card that changes what is installed on every machine in this lab
+  // used to say only a name. `serveEnvironmentAddPackages` holds the name
+  // and nothing else, so this reads the language off the very list this
+  // machine handed its kernel host when it configured the session — no
+  // fetch, and no second answer that could disagree with what a cell finds.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_pkg_lang"));
+  await until(() => turnStarted(lab, "run_pkg_lang"), "the turn starting");
+
+  const asked = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "python",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+
+  expect(cardsOf(lab)[0]!.access).toEqual({
+    kind: "environment",
+    target: { name: "python", packages: ["scanpy"], language: "python" },
+  });
+  // Answered, and the refusal awaited. This test is about what the card SAYS
+  // rather than about the decision, so it would read fine leaving the ask
+  // hanging — and it would leave a rejected promise nobody handled behind it.
+  // Vitest counts those: every assertion here passes and `vitest run` still
+  // exits non-zero, which is a green suite and a failed build.
+  lab.send(decideOn("run_pkg_lang", cardsOf(lab)[0]!.id, { decision: "deny" }));
+  await expect(asked).rejects.toThrow(/python/);
+});
+
+it("names no language on an add for an environment this machine never described", async () => {
+  // The absent half, and it is the common one: a name the lab declares that
+  // this machine has not built has no entry in the session's own environment
+  // list, so nothing here knows its language. The card says nothing rather
+  // than guessing Python — the same "absent is not zero" rule the rest of
+  // this product applies to numbers, applied to a sentence.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_pkg_nolang"));
+  await until(() => turnStarted(lab, "run_pkg_nolang"), "the turn starting");
+
+  const asked = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card");
+
+  expect(cardsOf(lab)[0]!.access).toEqual({
+    kind: "environment",
+    target: { name: "crispr", packages: ["scanpy"] },
+  });
+  // Answered for the same reason as the test above — see the note there.
+  lab.send(decideOn("run_pkg_nolang", cardsOf(lab)[0]!.id, { decision: "deny" }));
+  await expect(asked).rejects.toThrow(/crispr/);
+});
+
 it("raises the card under manage_packages, carrying what was asked for and not what results", async () => {
   // The card's own wording comes off `request.tool`, so the tool name is what
   // makes "Add scanpy to python?" rather than "Create environment python?".
@@ -5665,7 +5998,16 @@ it("raises the card under manage_packages, carrying what was asked for and not w
   await until(() => cardsOf(lab).length > 0, "a permission card");
   const card = cardsOf(lab)[0]! as { id: string; tool?: string; access?: unknown };
   expect(card.tool).toBe("manage_packages");
-  expect(environmentTargetOf(card)).toEqual({ name: "python", packages: ["scanpy"] });
+  // `language` joined this target when the add card started naming what it
+  // installs into. Asserted whole rather than loosened to a subset: this
+  // test's whole point is that `packages` is what was ASKED FOR and not what
+  // the environment ends up holding, and a `toMatchObject` here would stop
+  // noticing a third field arriving with the wrong contents.
+  expect(environmentTargetOf(card)).toEqual({
+    name: "python",
+    packages: ["scanpy"],
+    language: "python",
+  });
 
   lab.send(decideOn("run_pkg_card", card.id, { decision: "allow", scope: "once" }));
   await asked;

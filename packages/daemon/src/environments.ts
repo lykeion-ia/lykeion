@@ -1,22 +1,20 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
-import type { KernelEnvDeclaration, KernelEnvStatus } from "@lykeion/api";
+import type { KernelEnvDeclaration, KernelEnvManager, KernelEnvStatus } from "@lykeion/api";
+import { condaProvisioner } from "./environments-conda";
 import { platformTag, runConfinedIn } from "./probe";
 
 /**
- * Where each manager resolves packages from, one array per manager. Asserted
- * by equality in `environments.test.ts` so an addition is a failing test
- * rather than a silent new place packages come from.
- *
- * Only `uv` is here, and only PyPI is under it — D1 cuts R environments from
- * this phase, so nothing here spawns conda or an R installer, and a constant
- * naming conda-forge, bioconda, pytorch, CRAN or Bioconductor while no code
- * reaches them would be finished-looking declaration with nothing on the
- * wire behind it. Those names arrive in the follow-on commit that spawns
- * them. A package-mirror setting, if one is ever added, redirects this
- * constant rather than bypassing it.
- */
-export const PACKAGE_SOURCES = { uv: ["https://pypi.org/simple"] } as const;
+ * Where each manager is allowed to fetch from, and the only place a source
+ * is named (C-022). `conda` is conda-forge alone for the same reason `uv`
+ * is PyPI alone: a set a resolver is told, rather than whatever it picks
+ * up. The caveat recorded against C-022 still applies to both — this bounds
+ * what the resolver is TOLD, and a lockfile line naming another host is
+ * still replayed as written. */
+export const PACKAGE_SOURCES = {
+  uv: ["https://pypi.org/simple"],
+  conda: ["https://conda.anaconda.org/conda-forge"],
+} as const;
 
 /** `--default-index`/`--index` arguments for `uv`, built from
  *  `PACKAGE_SOURCES.uv` rather than a literal flag anywhere else in this
@@ -130,7 +128,7 @@ const MARKER_NAME = ".lykeion-env.json";
 /** What the marker records about the build that finished: which lockfile
  *  revision it was built from, how many packages that lockfile named, and
  *  which interpreter `uv venv` produced. */
-interface EnvMarker {
+export interface EnvMarker {
   lockRevision: number;
   packageCount: number;
   version: string;
@@ -160,6 +158,23 @@ function readMarker(path: string): EnvMarker | undefined {
 }
 
 /**
+ * Writes the completion marker, and it is written LAST by every manager for
+ * the same reason: an interpreter with no marker beside it is exactly what an
+ * interrupted provision looks like from outside, which is what makes `broken`
+ * reachable at all.
+ *
+ * Exported, and one function rather than one per arm, because both managers
+ * must write the file `readEnvStatus` reads. Two independent `writeFileSync`
+ * calls naming the same filename is a filename that can drift in one place
+ * and not the other — and the failure that produces is an environment this
+ * machine built reporting itself `broken` forever, with nothing wrong on
+ * disk.
+ */
+export function writeMarker(workspace: string, marker: EnvMarker): void {
+  writeFileSync(join(workspace, MARKER_NAME), JSON.stringify(marker));
+}
+
+/**
  * What this machine currently holds of `declaration`, read from disk rather
  * than tracked anywhere — a couple of `stat`s, safe to call on every render.
  *
@@ -177,10 +192,9 @@ function readMarker(path: string): EnvMarker | undefined {
  *   current one. Comparing the two is how "a revision behind" is derived;
  *   there is no fourth `KernelEnvState` for it.
  *
- * Hard-coded to `bin/python3`, and to it through `envInterpreter` — the one
+ * The interpreter is the manager's, through `provisionerFor` — the one
  * definition a kernel is also launched from, so `ready` cannot mean a
- * different file than the one that gets run. R has no environments this
- * phase (D1), so there is no second interpreter shape to branch on yet.
+ * different file than the one that gets run.
  */
 export function readEnvStatus(workDir: string, declaration: KernelEnvDeclaration): KernelEnvStatus {
   const root = envRoot(workDir, declaration.name);
@@ -192,7 +206,21 @@ export function readEnvStatus(workDir: string, declaration: KernelEnvDeclaration
     root,
   };
 
-  if (!existsSync(envInterpreter(workDir, declaration.name))) return { ...base, state: "absent" };
+  // The MANAGER's interpreter, not python's. `bin/python3` for a uv venv,
+  // `bin/Rscript` for a conda prefix — and asking the wrong one is not a
+  // near miss: an R environment probed for `bin/python3` reads `absent`
+  // however completely it is built, which is the shape of a bug this branch
+  // already shipped once at a different layer.
+  //
+  // It also carries the protection the daemon's own declaration gate used to
+  // provide and no longer does. That gate refused any language this machine
+  // had not discovered, which incidentally stopped an `r` row with a python
+  // venv under it from being offered; the gate now asks about capability
+  // instead, so THIS is what keeps a declaration to the language it claims.
+  // A conda declaration with only `bin/python3` on disk is `absent`, and the
+  // R driver is never handed a python interpreter.
+  const interpreter = provisionerFor(declaration.manager).interpreter(workDir, declaration.name);
+  if (!existsSync(interpreter)) return { ...base, state: "absent" };
 
   const marker = readMarker(join(root, MARKER_NAME));
   if (marker === undefined) return { ...base, state: "broken" };
@@ -246,6 +274,10 @@ export interface ResolveEnvironmentOptions extends ProvisionOptions {
   /** What was asked for — `declaration.packages`. Not the resolved closure;
    *  that is what this call produces. */
   packages: string[];
+  /** Which backend resolves `name` — `provisionerFor`'s own key. A caller
+   *  assembling this object is the one place that has to know which manager
+   *  `name` belongs to; nothing below this point falls back to guessing. */
+  manager: KernelEnvManager;
 }
 
 export interface ResolvedEnvironment {
@@ -253,41 +285,6 @@ export interface ResolvedEnvironment {
    *  the declaration, and what every later machine replays rather than
    *  resolving afresh (D4's whole point). */
   lockfile: string;
-}
-
-/**
- * Turns a requested package list into a lockfile, by asking `uv` to resolve
- * it against `PACKAGE_SOURCES.uv` and nothing else. Confined the same way
- * `materializeEnvironment` is (D5): the one writable directory is this
- * environment's own root, even though nothing has been built there yet —
- * `runConfinedIn` is what makes that directory exist before the boundary is
- * rendered around it.
- *
- * Resolution only, never an install: this does not touch `bin/python3` or
- * the completion marker, so calling this alone leaves `readEnvStatus`
- * reporting `absent`, exactly as it should for a machine that has resolved a
- * lockfile but not yet materialized it.
- *
- * `onLine` is wired to stderr only, never stdout: `uv pip compile` writes
- * the lockfile it resolved — the very thing this call returns — to stdout,
- * and `execConfined` otherwise feeds both streams into the same callback.
- * Left unrestricted, a caller's progress channel would receive the whole
- * lockfile, one line at a time, dressed up as build progress.
- */
-export async function resolveEnvironment(opts: ResolveEnvironmentOptions): Promise<ResolvedEnvironment> {
-  const workspace = envRoot(opts.workDir, opts.name);
-  mkdirSync(workspace, { recursive: true });
-  const requirementsPath = join(workspace, "requirements.in");
-  writeFileSync(requirementsPath, `${opts.packages.join("\n")}\n`);
-
-  const result = await runConfinedIn(
-    workspace,
-    "uv",
-    ["pip", "compile", requirementsPath, ...uvIndexArgs(PACKAGE_SOURCES.uv)],
-    { ...uvOpts(opts), onLineStreams: ["stderr"] },
-  );
-  if (!result.ok) throw new Error(`uv pip compile failed: ${(result.stderr || result.stdout).trim()}`);
-  return { lockfile: result.stdout };
 }
 
 export interface MaterializeEnvironmentOptions extends ProvisionOptions {
@@ -302,6 +299,8 @@ export interface MaterializeEnvironmentOptions extends ProvisionOptions {
    *  `readEnvStatus` answers "which revision THIS MACHINE built from" rather
    *  than assuming it matches whatever the lab currently holds. */
   lockRevision: number;
+  /** Which backend materializes `name` — see `ResolveEnvironmentOptions.manager`. */
+  manager: KernelEnvManager;
 }
 
 export interface MaterializedEnvironment {
@@ -310,67 +309,161 @@ export interface MaterializedEnvironment {
 }
 
 /**
- * Builds `<workDir>/envs/<name>` from `lockfile`: `uv venv` for the
- * interpreter, then `uv pip sync` to install exactly what the lockfile
- * pins — never a fresh resolve, which is D4's whole point. Confined per D5,
- * through the same `runConfinedIn` `resolveEnvironment` uses.
- *
- * The completion marker is written LAST, and only once `uv pip sync` has
- * itself returned successfully. That ordering is what makes `broken`
- * reachable at all: a provision that dies between `uv venv` and a
- * successful `uv pip sync` leaves an interpreter with no marker beside it,
- * which `readEnvStatus` reads as `broken` rather than `ready` — recovery is
- * simply calling this again with the same lockfile.
- *
- * Returns only what changed here, not a full `KernelEnvStatus`: this
- * function does not know a declaration's `packages`, `createdBy` or
- * `createdTs`, and it should not need to — reading the whole status back is
- * `readEnvStatus`'s job, from what this call left on disk.
+ * What a backend supplies to build and probe one manager's own environments.
+ * Deliberately four members and no more: no `version` or `countPackages` arm,
+ * because those are facts about a FINISHED build, written into the
+ * completion marker by `materialize` itself — `readEnvStatus` reads that
+ * marker back off disk rather than asking a provisioner to state them a
+ * second time. Widening this interface to carry them would give two places
+ * a build's own numbers could disagree.
  */
-export async function materializeEnvironment(
-  opts: MaterializeEnvironmentOptions,
-): Promise<MaterializedEnvironment> {
-  const workspace = envRoot(opts.workDir, opts.name);
-  const provision = uvOpts(opts);
+export interface Provisioner {
+  resolve(opts: ResolveEnvironmentOptions): Promise<ResolvedEnvironment>;
+  materialize(opts: MaterializeEnvironmentOptions): Promise<MaterializedEnvironment>;
+  interpreter(workDir: string, name: string): string;
+  base(workDir: string, name: string): string | undefined;
+}
 
-  // No `mkdirSync` here: unlike `resolveEnvironment`, nothing is written into
-  // `workspace` before the first confined call, so `runConfinedIn`'s own
-  // creation of it (R10) is all this needs.
-  //
-  // `--clear` so a re-provision over a `broken` leftover — an earlier
-  // interpreter with no marker beside it — starts from nothing rather than
-  // building on top of whatever an interrupted run left behind. And run
-  // FIRST, before anything else is written into `workspace`: `--clear`
-  // means what it says and removes everything already at the target path,
-  // not merely what `uv venv` itself would have written there — including a
-  // lockfile this call had already written, the one time this was tried the
-  // other way round.
-  const venv = await runConfinedIn(workspace, "uv", ["venv", workspace, "--clear"], provision);
-  if (!venv.ok) throw new Error(`uv venv failed: ${(venv.stderr || venv.stdout).trim()}`);
+/**
+ * uv's own arm of `Provisioner` — every line of `resolve` and `materialize`
+ * this file had before this seam existed, moved here unchanged. `interpreter`
+ * and `base` are `envInterpreter`/`envBase` themselves, not a second
+ * definition of either: `runs.ts`'s own kernel launch calls those same two
+ * functions directly, so a build routed through this record and a launch
+ * that is not still agree on one path.
+ */
+const uvProvisioner: Provisioner = {
+  /**
+   * Turns a requested package list into a lockfile, by asking `uv` to resolve
+   * it against `PACKAGE_SOURCES.uv` and nothing else. Confined the same way
+   * `materialize` is (D5): the one writable directory is this environment's
+   * own root, even though nothing has been built there yet — `runConfinedIn`
+   * is what makes that directory exist before the boundary is rendered
+   * around it.
+   *
+   * Resolution only, never an install: this does not touch `bin/python3` or
+   * the completion marker, so calling this alone leaves `readEnvStatus`
+   * reporting `absent`, exactly as it should for a machine that has resolved
+   * a lockfile but not yet materialized it.
+   *
+   * `onLine` is wired to stderr only, never stdout: `uv pip compile` writes
+   * the lockfile it resolved — the very thing this call returns — to stdout,
+   * and `execConfined` otherwise feeds both streams into the same callback.
+   * Left unrestricted, a caller's progress channel would receive the whole
+   * lockfile, one line at a time, dressed up as build progress.
+   */
+  async resolve(opts: ResolveEnvironmentOptions): Promise<ResolvedEnvironment> {
+    const workspace = envRoot(opts.workDir, opts.name);
+    mkdirSync(workspace, { recursive: true });
+    const requirementsPath = join(workspace, "requirements.in");
+    writeFileSync(requirementsPath, `${opts.packages.join("\n")}\n`);
 
-  const lockPath = join(workspace, "uv.lock.txt");
-  writeFileSync(lockPath, opts.lockfile);
-  // The same one definition the probe and the launch both use: what this
-  // installs into is the file `readEnvStatus` calls `ready` and the file a
-  // kernel is started from, or the build is finished somewhere neither of
-  // them looks.
-  const pythonPath = envInterpreter(opts.workDir, opts.name);
-  const sync = await runConfinedIn(
-    workspace,
-    "uv",
-    ["pip", "sync", lockPath, "--python", pythonPath, ...uvIndexArgs(PACKAGE_SOURCES.uv)],
-    provision,
-  );
-  // Nothing below this line runs when the install failed — the marker is
-  // written last, and only once this has actually returned successfully.
-  if (!sync.ok) throw new Error(`uv pip sync failed: ${(sync.stderr || sync.stdout).trim()}`);
+    const result = await runConfinedIn(
+      workspace,
+      "uv",
+      ["pip", "compile", requirementsPath, ...uvIndexArgs(PACKAGE_SOURCES.uv)],
+      { ...uvOpts(opts), onLineStreams: ["stderr"] },
+    );
+    if (!result.ok) throw new Error(`uv pip compile failed: ${(result.stderr || result.stdout).trim()}`);
+    return { lockfile: result.stdout };
+  },
 
-  const version = readVenvVersion(workspace);
-  const packageCount = countLockedPackages(opts.lockfile);
-  const marker: EnvMarker = { lockRevision: opts.lockRevision, packageCount, version };
-  writeFileSync(join(workspace, MARKER_NAME), JSON.stringify(marker));
+  /**
+   * Builds `<workDir>/envs/<name>` from `lockfile`: `uv venv` for the
+   * interpreter, then `uv pip sync` to install exactly what the lockfile
+   * pins — never a fresh resolve, which is D4's whole point. Confined per D5,
+   * through the same `runConfinedIn` `resolve` uses.
+   *
+   * The completion marker is written LAST, and only once `uv pip sync` has
+   * itself returned successfully. That ordering is what makes `broken`
+   * reachable at all: a provision that dies between `uv venv` and a
+   * successful `uv pip sync` leaves an interpreter with no marker beside it,
+   * which `readEnvStatus` reads as `broken` rather than `ready` — recovery is
+   * simply calling this again with the same lockfile.
+   *
+   * Returns only what changed here, not a full `KernelEnvStatus`: this
+   * function does not know a declaration's `packages`, `createdBy` or
+   * `createdTs`, and it should not need to — reading the whole status back is
+   * `readEnvStatus`'s job, from what this call left on disk.
+   */
+  async materialize(opts: MaterializeEnvironmentOptions): Promise<MaterializedEnvironment> {
+    const workspace = envRoot(opts.workDir, opts.name);
+    const provision = uvOpts(opts);
 
-  return { version, packageCount };
+    // No `mkdirSync` here: unlike `resolve`, nothing is written into
+    // `workspace` before the first confined call, so `runConfinedIn`'s own
+    // creation of it (R10) is all this needs.
+    //
+    // `--clear` so a re-provision over a `broken` leftover — an earlier
+    // interpreter with no marker beside it — starts from nothing rather than
+    // building on top of whatever an interrupted run left behind. And run
+    // FIRST, before anything else is written into `workspace`: `--clear`
+    // means what it says and removes everything already at the target path,
+    // not merely what `uv venv` itself would have written there — including a
+    // lockfile this call had already written, the one time this was tried the
+    // other way round.
+    const venv = await runConfinedIn(workspace, "uv", ["venv", workspace, "--clear"], provision);
+    if (!venv.ok) throw new Error(`uv venv failed: ${(venv.stderr || venv.stdout).trim()}`);
+
+    const lockPath = join(workspace, "uv.lock.txt");
+    writeFileSync(lockPath, opts.lockfile);
+    // The same one definition the probe and the launch both use: what this
+    // installs into is the file `readEnvStatus` calls `ready` and the file a
+    // kernel is started from, or the build is finished somewhere neither of
+    // them looks.
+    const pythonPath = envInterpreter(opts.workDir, opts.name);
+    const sync = await runConfinedIn(
+      workspace,
+      "uv",
+      ["pip", "sync", lockPath, "--python", pythonPath, ...uvIndexArgs(PACKAGE_SOURCES.uv)],
+      provision,
+    );
+    // Nothing below this line runs when the install failed — the marker is
+    // written last, and only once this has actually returned successfully.
+    if (!sync.ok) throw new Error(`uv pip sync failed: ${(sync.stderr || sync.stdout).trim()}`);
+
+    const version = readVenvVersion(workspace);
+    const packageCount = countLockedPackages(opts.lockfile);
+    writeMarker(workspace, { lockRevision: opts.lockRevision, packageCount, version });
+
+    return { version, packageCount };
+  },
+
+  interpreter: envInterpreter,
+  base: envBase,
+};
+
+/** Which backend builds an environment of this manager.
+ *
+ *  A record rather than a branch inside each function, because the risk is
+ *  in the READERS: a reader that forgot conda would parse a `pyvenv.cfg`
+ *  that was never written and report a built R environment as `broken` —
+ *  a missing branch wearing the face of a broken build. Keyed by the API's
+ *  own union, so an arm that does not exist is a compile error. */
+const PROVISIONERS: Record<KernelEnvManager, Provisioner> = {
+  uv: uvProvisioner,
+  conda: condaProvisioner,
+};
+
+export function provisionerFor(manager: KernelEnvManager): Provisioner {
+  return PROVISIONERS[manager];
+}
+
+/**
+ * The one `resolve` every caller goes through — `runs.ts`'s own
+ * `handleKernelEnvSetup`, or a test naming its manager directly — dispatched
+ * to whichever backend `opts.manager` names. Kept as a standalone exported
+ * function, rather than asking every caller to spell
+ * `provisionerFor(opts.manager).resolve(opts)` itself, so `resolveEnvironment`
+ * stays the one name this file has always exported for it.
+ */
+export function resolveEnvironment(opts: ResolveEnvironmentOptions): Promise<ResolvedEnvironment> {
+  return provisionerFor(opts.manager).resolve(opts);
+}
+
+/** The `materialize` half of the same dispatch — see `resolveEnvironment`. */
+export function materializeEnvironment(opts: MaterializeEnvironmentOptions): Promise<MaterializedEnvironment> {
+  return provisionerFor(opts.manager).materialize(opts);
 }
 
 /** Where this machine keeps `uv`'s own HTTP and build cache for every

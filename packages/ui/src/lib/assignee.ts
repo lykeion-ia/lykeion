@@ -97,7 +97,7 @@ export function assigneeAvatar(
 /**
  * An agent's avatar, keyed on its name alone. An agent is never looked up in
  * the member directory, so callers outside a Task's assignees — an Agent
- * persona, a Research Group's lead, a usage row — don't need one.
+ * persona, a Group's lead, a usage row — don't need one.
  */
 export function agentAvatar(name: string): AssigneeAvatar {
   return assigneeAvatar({ kind: "agent", name }, directoryOf([]));

@@ -163,13 +163,7 @@ function NotebookPanelForTask({
 
   const refreshEnvs = useCallback(async () => {
     try {
-      const list = await api.kernelEnvList();
-      setEnvs(list);
-      // Default to the first env; keep the current selection if it's still
-      // in the list, so a live poll doesn't yank the researcher's choice.
-      setActiveEnv((cur) =>
-        cur && list.some((e) => e.name === cur) ? cur : (list[0]?.name ?? null),
-      );
+      setEnvs(await api.kernelEnvList());
     } catch {
       /* transient — the next poll retries */
     }
@@ -232,6 +226,10 @@ function NotebookPanelForTask({
       : all.filter((cell) => cell.language === activeLang);
   }, [selectedContext, activeLang]);
 
+  /** The environments a cell of the language now being viewed could actually
+   *  run in. `kernelEnvList` is lab-wide and carries both languages, and an
+   *  R environment is not a thing a Python cell can be run in — offering it
+   *  is offering a choice whose only outcome is a refusal by name. */
   /** The distinct machines this Task's own kernels are running on. One of
    *  them is an answer; two of them are a question. Taking the first of two
    *  would be the same silent pick this surface exists to refuse, wearing a
@@ -258,6 +256,57 @@ function NotebookPanelForTask({
       return machines[0]?.machineId ?? null;
     return machines?.find((m) => m.machineId === pickedMachine)?.machineId ?? null;
   }, [runningMachines, machines, pickedMachine]);
+
+  /** What this machine has NOT built, by name — read off the same snapshot
+   *  `setupOffer` reads, so the picker and the Setup button below it cannot
+   *  disagree about which environments are missing. Empty until a machine is
+   *  settled on and has reported: a machine that has said nothing is not a
+   *  machine holding nothing, and guessing here would put build targets in
+   *  front of a researcher for environments nobody knows are absent. */
+  const unbuiltHere = useMemo(() => {
+    const held = machines?.find((m) => m.machineId === chosenMachineId)?.environments;
+    if (held === undefined) return new Set<string>();
+    return new Set(
+      held.filter((e) => e.state === "absent" || e.state === "broken").map((e) => e.name),
+    );
+  }, [machines, chosenMachineId]);
+
+  const envsHere = useMemo(
+    () =>
+      shownLang === null
+        ? envs
+        : envs.filter(
+            (e) =>
+              e.language === shownLang ||
+              // Plus anything this machine has not built, whatever language
+              // it is in. Selecting one is the ONLY route to building it:
+              // `neededEnvs` is this notebook's cells plus the selection, an
+              // environment that was never built can be in no cell, and this
+              // panel holds the product's only `kernelEnvSetup` call. Scoped
+              // to the viewed language alone, a Task with one Python cell
+              // could not build the lab's `r` starter at all.
+              //
+              // Safe to offer to a cell, because there is no cell to offer it
+              // to: nothing runs in an environment that does not exist here,
+              // so naming one can only ever produce the refusal it already
+              // produces — while leaving it out produces an environment
+              // nobody can build. It leaves this list the moment it is built.
+              unbuiltHere.has(e.name),
+          ),
+    [envs, shownLang, unbuiltHere],
+  );
+
+  // Keeps the selection inside `envsHere`. Reconciled here rather than in
+  // `refreshEnvs` so switching the language lens re-picks a valid
+  // environment rather than leaving the previous language's selection
+  // standing. The `cur && envsHere.some(...)` guard makes this a no-op
+  // whenever the current pick is already valid for the language being
+  // viewed, so it does not fight the picker's own `onClick`.
+  useEffect(() => {
+    setActiveEnv((cur) =>
+      cur && envsHere.some((e) => e.name === cur) ? cur : (envsHere[0]?.name ?? null),
+    );
+  }, [envsHere]);
 
   /** Which environments this Task needs: every one its own cells have named,
    *  and whichever one the researcher currently has selected. Derived from
@@ -436,12 +485,13 @@ function NotebookPanelForTask({
           building happens.
 
           Bounded, because this panel is dense and keyboard-first: one
-          declared environment is already the selected one, so a permanent
-          row for it would be a control with nothing to choose between. */}
-      {envs.length > 1 && (
+          declared environment for the language being viewed is already the
+          selected one, so a permanent row for it would be a control with
+          nothing to choose between. */}
+      {envsHere.length > 1 && (
         <div className="nbp-envrow">
           <div className="nbp-envpick" role="tablist" aria-label="Kernel environment">
-            {envs.map((env) => (
+            {envsHere.map((env) => (
               <button
                 key={env.name}
                 type="button"

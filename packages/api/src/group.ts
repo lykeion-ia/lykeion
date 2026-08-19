@@ -1,9 +1,9 @@
 /**
- * A Research Group — a collaborative unit with a lead Agent and optional
- * additional members. Lead/members reference `Agent.name` (agents are
- * name-keyed; there is no agent id).
+ * A Group — a collaborative unit with a lead Agent and optional additional
+ * members. Lead/members reference `Agent.name` (agents are name-keyed; there
+ * is no agent id).
  */
-export interface ResearchGroup {
+export interface Group {
   id: string;
   name: string;
   description: string;

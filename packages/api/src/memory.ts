@@ -8,7 +8,7 @@ import { LykeionError } from "./errors";
 import type {
   LykeionApi,
   NameTaskInput,
-  NewResearchGroup,
+  NewGroup,
   NewStudy,
   NewTask,
   PairMachineInput,
@@ -21,7 +21,7 @@ import type {
   StudyDetail,
   Task,
 } from "./types";
-import type { KernelEnvCreateInput, KernelEnvDeclaration } from "./machine";
+import type { KernelEnvCreateInput, KernelEnvDeclaration, KernelEnvManager, Language } from "./machine";
 import type {
   Conversation,
   ConversationSummary,
@@ -37,12 +37,9 @@ import type {
   McpTool,
   Skill,
   SkillEntry,
-  Workflow,
 } from "./customization";
-import { expandPrompt } from "./customization";
 import { methodSkills } from "./method-skills";
-import { catalogueWorkflows } from "./workflow-catalogue";
-import type { ResearchGroup } from "./research-group";
+import type { Group } from "./group";
 import { assertAvatarDataUrl } from "./account";
 import type { Invite, Member, Role, User } from "./account";
 import type { Usage } from "./usage";
@@ -98,9 +95,8 @@ interface Seed {
   /** Customization-engine starter content. */
   skills: SkillEntry[];
   agents: Agent[];
-  workflows: Workflow[];
   connectors: Connector[];
-  researchGroups: ResearchGroup[];
+  groups: Group[];
   /**
    * Turns the store starts life with, given per Task. Replaying them through
    * `appendTurn` is what makes a seeded transcript and a run one the same
@@ -693,9 +689,9 @@ export function defaultSeed(): Seed {
   };
 
   // Customization-engine starters: domain Skills (one of them disabled, so the
-  // surface shows both states), the method Skills every Workflow's phases name,
-  // Agents, Workflows, and a Connector — the set the browser opens with, so it
-  // shows real content without a backend.
+  // surface shows both states), the method Skills, Agents, and a Connector —
+  // the set the browser opens with, so it shows real content without a
+  // backend.
   const skills: SkillEntry[] = [
     {
       name: "rnaseq",
@@ -738,8 +734,6 @@ export function defaultSeed(): Seed {
       connectors: [],
     },
   ];
-
-  const workflows: Workflow[] = catalogueWorkflows();
 
   const connectors: Connector[] = [
     {
@@ -791,9 +785,8 @@ export function defaultSeed(): Seed {
     me,
     skills,
     agents,
-    workflows,
     connectors,
-    researchGroups: [],
+    groups: [],
     transcripts,
   };
 
@@ -870,9 +863,8 @@ export function emptySeed(): Seed {
     me: owner.id,
     skills: [],
     agents: [],
-    workflows: [],
     connectors: [],
-    researchGroups: [],
+    groups: [],
     transcripts: [],
   };
 }
@@ -896,6 +888,16 @@ export function emptySeed(): Seed {
  * this constant is only one core's copy of it.
  */
 const BUILDABLE_NAME = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Which manager builds which language — this core's own copy of the
+ * derivation `declareEnvironment` makes (`packages/server/src/api/
+ * environments.ts`), for the same reason `BUILDABLE_NAME` above is a second
+ * copy rather than a shared import: `environmentDeclarationsConformance`
+ * holds both cores to one answer, and that is what actually keeps them from
+ * drifting apart, not the source location.
+ */
+const MANAGER_FOR: Record<Language, KernelEnvManager> = { python: "uv", r: "conda" };
 
 /** Options for {@link createInMemoryApi}. */
 export interface InMemoryApiOptions {
@@ -952,9 +954,8 @@ export function createInMemoryLab(
   // or toggle content never leak across API instances.
   const skills: SkillEntry[] = clone(seed.skills);
   const agents: Agent[] = clone(seed.agents);
-  const workflows: Workflow[] = clone(seed.workflows);
   const connectors: Connector[] = clone(seed.connectors);
-  const researchGroups: ResearchGroup[] = clone(seed.researchGroups);
+  const groups: Group[] = clone(seed.groups);
 
   // The lab's environment declarations. No seed carries any — an
   // environment appears only once something declares it, on a fresh
@@ -1534,13 +1535,20 @@ export function createInMemoryLab(
       return clone(kernelEnvs);
     },
     async kernelEnvCreate(input: KernelEnvCreateInput) {
-      // Python only, this phase (D1) — the same refusal the real lab gives.
-      if (input.language !== "python") {
+      // Checked by VALUE against `MANAGER_FOR`'s own keys, not by trusting
+      // the declared type — the same reason `declareEnvironment` does, and
+      // for the same reason: a caller reaching this core through
+      // `kernel_env_create` sends JSON no schema has validated, so
+      // `Language` being a closed union does not make this branch
+      // unreachable in practice, only in the type checker.
+      const named = (input as { language?: unknown }).language;
+      if (typeof named !== "string" || !(named in MANAGER_FOR)) {
         throw new LykeionError(
           "unsupported",
-          "Lykeion manages Python environments only for now — an R kernel uses the machine's own R.",
+          `Lykeion builds Python and R environments — it has no provisioner for ${String(named)}.`,
         );
       }
+      const manager = MANAGER_FOR[named as Language];
       // Refused in front of whoever typed it, in the same words a real lab
       // uses — see `BUILDABLE_NAME`. Before the conflict check rather than
       // after: a name that could never be built is not a better answer for
@@ -1563,7 +1571,7 @@ export function createInMemoryLab(
       const declared: KernelEnvDeclaration = {
         name: input.name,
         language: input.language,
-        manager: "uv",
+        manager,
         packages: input.packages,
         createdBy: me,
         createdTs: tick(),
@@ -2052,21 +2060,6 @@ export function createInMemoryLab(
       else agents.push(next);
     },
 
-    async listWorkflows() {
-      return clone(workflows.slice().sort((a, b) => a.id.localeCompare(b.id)));
-    },
-    async upsertWorkflow(workflow: Workflow) {
-      const next = clone(workflow);
-      const at = workflows.findIndex((w) => w.id === next.id);
-      if (at >= 0) workflows[at] = next;
-      else workflows.push(next);
-    },
-    async runWorkflow(id: string, values: Record<string, string>) {
-      const wf = workflows.find((w) => w.id === id);
-      if (!wf) throw new LykeionError("not-found", `no such workflow: ${id}`);
-      return expandPrompt(wf, values);
-    },
-
     async listConnectors() {
       return clone(
         connectors.slice().sort((a, b) => a.name.localeCompare(b.name)),
@@ -2110,16 +2103,16 @@ export function createInMemoryLab(
       return clone(tools);
     },
 
-    // ---- research groups ----
+    // ---- groups ----
 
-    async listResearchGroups() {
+    async listGroups() {
       return clone(
-        researchGroups.slice().sort((a, b) => b.updatedTs - a.updatedTs),
+        groups.slice().sort((a, b) => b.updatedTs - a.updatedTs),
       );
     },
-    async createResearchGroup(input: NewResearchGroup) {
+    async createGroup(input: NewGroup) {
       const now = tick();
-      const group: ResearchGroup = {
+      const group: Group = {
         id: nextId("rg"),
         name: input.name,
         description: input.description ?? "",
@@ -2128,7 +2121,7 @@ export function createInMemoryLab(
         createdTs: now,
         updatedTs: now,
       };
-      researchGroups.push(group);
+      groups.push(group);
       return clone(group);
     },
 

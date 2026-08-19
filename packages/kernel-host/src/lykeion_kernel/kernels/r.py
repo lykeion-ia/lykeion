@@ -317,12 +317,21 @@ def launch(
     is denied and reporting startup noise for a boundary working correctly.
 
     `env_extra` is on this signature because it is on every launcher's — the
-    registry calls one function type, not a per-language one. Nothing sends R
-    any today: the overlay it would carry is `PIP_TARGET` and a `PYTHONPATH`,
-    and R's own inline installs are `install.packages()`, which reads
-    `R_LIBS_USER` and has never heard of either. It is merged rather than
-    ignored so that an R overlay, when there is one, arrives here rather than
-    at a second decision about what an R kernel is started with.
+    registry calls one function type, not a per-language one. It now carries
+    R's own overlay: `R_LIBS_USER`, from `launch_env_r`, pointing at the
+    per-incarnation directory `overlay_for` made. That is the whole of R's
+    inline lifetime — one variable where Python needs two, since
+    `R_LIBS_USER` is both where `install.packages()` writes and a directory R
+    puts on `.libPaths()`.
+
+    Merged over `environment_of`'s answer, and the order is NOT what makes
+    that safe — an earlier version of this docstring claimed it was, and it
+    was wrong. `EFFACED` strips `R_LIBS_USER` out of the inherited
+    environment INSIDE `environment_of`, so what comes back structurally has
+    no such key for either spread to overwrite; measured both ways round,
+    both produce the overlay. What keeps a researcher's personal library out
+    of a pinned kernel is that filter alone, on the way in, and it holds
+    whatever this line does.
     """
     argv = confined(prefix, [interpreter, "--vanilla", DRIVER])
     # The same rule the Python kernel is started under, and for the same

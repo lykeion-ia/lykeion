@@ -1,25 +1,22 @@
-import type { ResearchGroup } from "@lykeion/api";
+import type { Group } from "@lykeion/api";
 import { UsersIcon } from "../icons";
 import { agentAvatar } from "../../lib/assignee";
 import { formatAgo } from "../../lib/task-meta";
 
-export interface ResearchGroupsViewProps {
-  groups: ResearchGroup[];
+export interface GroupsViewProps {
+  groups: Group[];
   loading?: boolean;
 }
 
-/** The Research Groups surface: a faithful empty state until groups exist,
+/** The Groups surface: a faithful empty state until groups exist,
  *  then a simple list. Lead avatars are derived from the real agent name. */
-export function ResearchGroupsView({
-  groups,
-  loading,
-}: ResearchGroupsViewProps) {
+export function GroupsView({ groups, loading }: GroupsViewProps) {
   if (!loading && groups.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3">
         <UsersIcon width={40} height={40} className="text-fg-tertiary" />
         <p className="text-ui text-fg-subtle">
-          No research groups yet. Create one to get started.
+          No groups yet. Create one to get started.
         </p>
       </div>
     );
@@ -70,4 +67,4 @@ export function ResearchGroupsView({
   );
 }
 
-export default ResearchGroupsView;
+export default GroupsView;

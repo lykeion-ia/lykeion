@@ -13,7 +13,6 @@ import {
   ListIcon,
   MonitorIcon,
   SparkleIcon,
-  WorkflowIcon,
 } from "../components/icons";
 import { routeGlyph, routeLabel } from "./route-chrome";
 
@@ -39,13 +38,10 @@ describe("routeLabel", () => {
     expect(routeLabel({ name: "study", studyId: "s" })).toBe("Study");
   });
 
-  it("names an Expert and a Workflow by the id, which needs no read", () => {
+  it("names an Expert by the id, which needs no read", () => {
     // Deliberate: the name would take a fetch, and a tab that filled in
     // afterwards would change under the reader for the length of it.
     expect(routeLabel({ name: "agent", agentId: "claude" })).toBe("claude");
-    expect(routeLabel({ name: "workflow", workflowId: "triage" })).toBe(
-      "triage",
-    );
   });
 
   it("falls back rather than rendering an unnamed tab", () => {
@@ -72,11 +68,8 @@ describe("routeGlyph", () => {
   });
 
   it("marks a detail route with its section's glyph, not the section's", () => {
-    // `agent`/`workflow` are singular route names the rail has no entry for.
+    // `agent` is a singular route name the rail has no entry for.
     expect(routeGlyph({ name: "agent", agentId: "claude" })).toBe(SparkleIcon);
-    expect(routeGlyph({ name: "workflow", workflowId: "triage" })).toBe(
-      WorkflowIcon,
-    );
   });
 
   it("falls back rather than rendering a tab with no glyph", () => {

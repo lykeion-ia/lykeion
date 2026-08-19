@@ -121,6 +121,42 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/** Boilerplate for the language-scoping tests below: a lab whose
+ *  `kernelEnvList` answers with the given declarations and whose notebook
+ *  holds the given cells, with nothing else this task's tests care about. */
+function renderPanel({
+  envs,
+  cells,
+  built,
+}: {
+  envs: KernelEnvDeclaration[];
+  cells: NotebookCell[];
+  /** Which of `envs` this machine reports as BUILT. Given explicitly because
+   *  the picker also offers what is unbuilt — that is the only route to
+   *  building it — so a fixture that says nothing about build state is a
+   *  fixture whose picker contents depend on when the compute snapshot
+   *  happens to land. Omitted means "all of them", the settled state most of
+   *  these tests are about. */
+  built?: string[];
+}) {
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    kernelEnvList: async () => envs,
+    taskNotebook: async () => cells,
+    // No kernel stub on purpose: one machine in the snapshot is enough for
+    // the panel to settle on it, and a running kernel would also decide
+    // `shownLang` — a Python one here would scope the picker to Python and
+    // quietly defeat every test below that views R.
+    computeSnapshot: async () => [
+      machine(
+        "rt_1",
+        envs.map((e) => env(e.name, built === undefined || built.includes(e.name) ? "ready" : "absent")),
+      ),
+    ],
+  };
+  return render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+}
+
 it("withdraws the previous Task's cells and kernel authority immediately", async () => {
   const pendingCells = deferred<NotebookCell[]>();
   const pendingKernels = deferred<RunningKernel[]>();
@@ -692,6 +728,63 @@ it("reaches a declared environment no cell of this Task has used yet", async () 
   expect(await screen.findByRole("button", { name: "Set up crispr" })).toBeInTheDocument();
 });
 
+it("keeps an unbuilt environment of another language selectable, so it can be built", async () => {
+  // The picker shows one language at a time, and it is also the only route
+  // to `kernelEnvSetup` — the single call in this product that builds
+  // anything. Scoped to the viewed language alone, those two facts combine
+  // into a trap: an environment that was never built can be in no cell,
+  // `neededEnvs` is cells plus the selection, so a Task holding one Python
+  // cell could not build the lab's `r` starter from the only screen that
+  // builds. Offering it costs nothing — a cell naming an environment this
+  // machine lacks is refused by name either way.
+  const user = userEvent.setup();
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("python"), envDecl("r")],
+    taskNotebook: async () => [cell({ name: "main", language: "python", environment: "python" })],
+    listRunningKernels: async () => [
+      kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
+    ],
+    computeSnapshot: async () => [
+      machine("rt_1", [env("python", "ready"), env("r", "absent")]),
+    ],
+  };
+  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+
+  // Offered even though this notebook is being viewed as Python and holds no
+  // R cell — because it is not built here.
+  const chip = await screen.findByRole("tab", { name: "r" });
+  await user.click(chip);
+
+  expect(await screen.findByRole("button", { name: "Set up r" })).toBeInTheDocument();
+});
+
+it("drops an environment of another language from the picker once it is built", async () => {
+  // The other half, and what keeps the rule above from undoing the language
+  // scoping entirely: an environment that EXISTS here is a real cell target
+  // in its own language and a guaranteed refusal in any other, so once it is
+  // built it goes back to being none of a Python notebook's business.
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("python"), envDecl("r")],
+    taskNotebook: async () => [cell({ name: "main", language: "python", environment: "python" })],
+    listRunningKernels: async () => [
+      kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
+    ],
+    computeSnapshot: async () => [
+      machine("rt_1", [env("python", "ready"), env("r", "ready")]),
+    ],
+  };
+  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+
+  // Settled on the CELL, not on the Setup surface: with everything built
+  // there is nothing to set up, so that surface never appears here and
+  // waiting for it would time out. Asserting the absence before the panel
+  // loads would pass against any implementation at all.
+  await screen.findByText("1 + 1");
+  expect(screen.queryByRole("tab", { name: "r" })).not.toBeInTheDocument();
+});
+
 it("shows a Task's cells and its kernel while an environment it needs is still absent", async () => {
   // The environment a machine has yet to build and the kernels it is already
   // holding are two different facts. The gate is narrow on purpose: the
@@ -791,6 +884,77 @@ it("draws no environment row when the lab declares only one (nothing to choose)"
   // on a control with nothing to do.
   expect(screen.queryByRole("tablist", { name: "Kernel environment" })).toBeNull();
   expect(screen.queryByRole("tab")).toBeNull();
+});
+
+it("offers only environments of the language being viewed", async () => {
+  renderPanel({
+    envs: [
+      { name: "python", language: "python", manager: "uv", packages: [], createdTs: 0, lockRevision: 1 },
+      { name: "r", language: "r", manager: "conda", packages: [], createdTs: 0, lockRevision: 1 },
+      { name: "rstats", language: "r", manager: "conda", packages: [], createdTs: 0, lockRevision: 1 },
+    ],
+    cells: [cell({ language: "r" })],
+  });
+  // Settled first. `shownLang` is null until the cells arrive, and with no
+  // language to scope by the picker legitimately shows the whole lab-wide
+  // list for that moment — so a `findByRole` that resolves on the tablist's
+  // first appearance can read the pre-settle state and see `python`. Under a
+  // full-suite load that is not hypothetical: it is how this test failed
+  // once before being written this way.
+  //
+  // Anchored on the CELL rather than on the Setup surface, because these
+  // fixtures build everything: with nothing to set up, that surface never
+  // renders and waiting for it only times out.
+  await screen.findByText("1 + 1");
+  const picker = await screen.findByRole("tablist", { name: "Kernel environment" });
+  expect(within(picker).getByRole("tab", { name: "r" })).toBeInTheDocument();
+  expect(within(picker).getByRole("tab", { name: "rstats" })).toBeInTheDocument();
+  await waitFor(() =>
+    expect(within(picker).queryByRole("tab", { name: "python" })).not.toBeInTheDocument(),
+  );
+});
+
+it("defaults to an environment of the viewed language, not merely the first declared", async () => {
+  // THREE declarations, two of them R, and the third is not decoration: the
+  // picker only renders where the viewed language has something to choose
+  // between, so a fixture of one-per-language hides the very control this
+  // assertion reads. The default is only observable where a choice exists.
+  renderPanel({
+    envs: [
+      { name: "python", language: "python", manager: "uv", packages: [], createdTs: 0, lockRevision: 1 },
+      { name: "r", language: "r", manager: "conda", packages: [], createdTs: 0, lockRevision: 1 },
+      { name: "rstats", language: "r", manager: "conda", packages: [], createdTs: 0, lockRevision: 1 },
+    ],
+    cells: [cell({ language: "r" })],
+  });
+  // The R cell must not open onto the python environment because it happened
+  // to be declared first — `python` leads the lab-wide list and led the
+  // selection before this change.
+  expect(await screen.findByRole("tab", { name: "r", selected: true })).toBeInTheDocument();
+});
+
+it("hides the picker when the viewed language has only one environment", async () => {
+  renderPanel({
+    envs: [
+      { name: "python", language: "python", manager: "uv", packages: [], createdTs: 0, lockRevision: 1 },
+      { name: "r", language: "r", manager: "conda", packages: [], createdTs: 0, lockRevision: 1 },
+    ],
+    cells: [cell({ language: "python" })],
+  });
+  // Awaited BEFORE the absence is asserted, and that is the whole of whether
+  // this test says anything: `queryBy` on a panel that has not finished
+  // loading finds nothing whatever the code does, so the first draft of this
+  // passed identically against the unfixed component.
+  //
+  // Both environments are BUILT here, which the fixture now says out loud.
+  // Left unbuilt, `r` is offered in the picker however the language lens is
+  // set — that is the only way to build one — and whether this assertion saw
+  // it depended on when the compute snapshot landed. It passed on timing and
+  // failed in the public repo's gate.
+  await screen.findByText("1 + 1");
+  // Two declared, one per language: a control with nothing to choose between
+  // is not a control. This is the gate that has never rendered until now.
+  expect(screen.queryByRole("tablist", { name: "Kernel environment" })).not.toBeInTheDocument();
 });
 
 it("provisions the R env (not Python) when Setup runs from the R tab", async () => {

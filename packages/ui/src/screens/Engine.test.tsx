@@ -7,9 +7,6 @@
  *  - Connectors (Settings › Connectors): Add a catalog entry and it appears
  *    under Your connectors.
  * Role/text-based, so it's agnostic to the markup.
- *
- * Workflows has its own file: it is a section screen with a detail route
- * rather than a panel, and what it needs asserted is navigation.
  */
 
 import { describe, expect, it, beforeEach } from "vitest";

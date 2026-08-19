@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Agent, NewResearchGroup } from "@lykeion/api";
+import type { Agent, NewGroup } from "@lykeion/api";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -139,19 +139,19 @@ function AgentSelect({
   );
 }
 
-export interface CreateResearchGroupModalProps {
+export interface CreateGroupModalProps {
   agents: Agent[];
   onClose: () => void;
-  onCreate: (input: NewResearchGroup) => Promise<void>;
+  onCreate: (input: NewGroup) => Promise<void>;
 }
 
-/** Create Research Group — a real create surface: persists a group with a
- *  lead and optional members chosen from the workspace agents. */
-export function CreateResearchGroupModal({
+/** Create Group — a real create surface: persists a group with a lead and
+ *  optional members chosen from the workspace agents. */
+export function CreateGroupModal({
   agents,
   onClose,
   onCreate,
-}: CreateResearchGroupModalProps) {
+}: CreateGroupModalProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [leadId, setLeadId] = useState<string[]>([]);
@@ -191,13 +191,13 @@ export function CreateResearchGroupModal({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Create research group"
+        aria-label="Create group"
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-[560px] overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between px-5 pb-1 pt-4">
           <h2 className="text-read font-semibold text-fg">
-            Create Research Group
+            Create Group
           </h2>
           <button
             type="button"
@@ -209,7 +209,7 @@ export function CreateResearchGroupModal({
           </button>
         </div>
         <p className="px-5 text-ui text-fg-subtle">
-          Create a collaborative research group with a lead expert and optional
+          Create a collaborative group with a lead expert and optional
           additional members.
         </p>
 
@@ -309,7 +309,7 @@ export function CreateResearchGroupModal({
             onClick={submit}
             className="rounded-md bg-fg px-3.5 py-1.5 text-ui font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
           >
-            Create research group
+            Create group
           </button>
         </div>
       </div>
@@ -317,4 +317,4 @@ export function CreateResearchGroupModal({
   );
 }
 
-export default CreateResearchGroupModal;
+export default CreateGroupModal;

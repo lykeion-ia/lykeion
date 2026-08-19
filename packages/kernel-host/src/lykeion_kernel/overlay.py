@@ -289,6 +289,35 @@ def installed_between(before: Iterable[str], after: Iterable[str]) -> list[str]:
     return sorted(named)
 
 
+def launch_env_r(overlay: str) -> dict[str, str]:
+    """What an R kernel is given so an `install.packages()` inside a cell can
+    work, and stop working when the host restarts.
+
+    One variable where Python needs two. `R_LIBS_USER` is both where
+    `install.packages()` writes by default AND a directory R puts on
+    `.libPaths()` at startup — so unlike `PIP_TARGET`/`PYTHONPATH`, there is
+    no way to set the write side without the read side and produce the
+    install-that-cannot-be-imported failure. It only counts if the directory
+    EXISTS when R starts, which is why this takes a path `overlay_for` has
+    already made rather than composing one.
+
+    **Nothing is inherited into it, and that is the difference from
+    `launch_env`.** Python's `PYTHONPATH` is prepended to whatever the
+    researcher had, because that is something they put on their own machine.
+    R's equivalent is deliberately swept: `EFFACED` strips `R_LIBS_USER`,
+    `R_LIBS` and `R_LIBS_SITE` from a kernel's inheritance, so that a script
+    cannot work here because this machine happens to hold a package in the
+    researcher's personal library. Prepending here would hand back exactly
+    what that sweep exists to take away — so this SETS, and the overlay is
+    the only user library an R kernel has.
+
+    The environment's own library is untouched and still found: it lives
+    inside the conda prefix R is started from, on `.libPaths()` by virtue of
+    being that R's own site library rather than by any variable.
+    """
+    return {"R_LIBS_USER": overlay}
+
+
 def launch_env(overlay: str, inherited: Mapping[str, str]) -> dict[str, str]:
     """What a Python kernel is given so an install inside a cell can work.
 

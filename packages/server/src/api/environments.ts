@@ -2,7 +2,9 @@ import {
   LykeionError,
   type KernelEnvCreateInput,
   type KernelEnvDeclaration,
+  type KernelEnvManager,
   type KernelEnvStatus,
+  type Language,
   type LykeionApi,
 } from "@lykeion/api";
 import type { Deps } from "./index";
@@ -325,6 +327,12 @@ async function oneSetup(
  *  it. */
 const BUILDABLE_NAME = /^[A-Za-z0-9_-]+$/;
 
+/** Which manager builds which language. Derived rather than supplied: a
+ *  caller does not choose a package manager, because the two are not
+ *  independent — an R environment that pins R itself is a conda one, and a
+ *  Python environment resolved by uv is a uv one. */
+const MANAGER_FOR: Record<Language, KernelEnvManager> = { python: "uv", r: "conda" };
+
 /**
  * One declaration, made once — whoever asked for it.
  *
@@ -350,14 +358,20 @@ export function declareEnvironment(
   ownerId: string,
   now: number,
 ): KernelEnvDeclaration {
-  // Python only, this phase (D1). An R kernel keeps the machine's own R
-  // rather than something this lab provisions and pins.
-  if (input.language !== "python") {
+  // Checked by VALUE against the record's own keys, not by trusting the
+  // declared type. `input` arrives over the wire, and nothing on that path
+  // validates it against a schema — the same reason every refusal on the MCP
+  // surface is written in code. `Language` being a closed union makes this
+  // branch unreachable to a TypeScript caller and reachable to every other
+  // one, which is exactly the set of callers that matters here.
+  const named = (input as { language?: unknown }).language;
+  if (typeof named !== "string" || !(named in MANAGER_FOR)) {
     throw new LykeionError(
       "unsupported",
-      "Lykeion manages Python environments only for now — an R kernel uses the machine's own R.",
+      `Lykeion builds Python and R environments — it has no provisioner for ${String(named)}.`,
     );
   }
+  const manager = MANAGER_FOR[named as Language];
   // Refused here, in front of whoever asked, rather than on whichever
   // machine is first asked to build it — every machine turns this name into
   // a directory of its own, and one that cannot be a directory is a
@@ -416,7 +430,7 @@ export function declareEnvironment(
     const declared = envs.declare({
       name: input.name,
       language: input.language,
-      manager: "uv",
+      manager,
       packages: input.packages,
       createdBy: ownerId,
       createdTs: now,

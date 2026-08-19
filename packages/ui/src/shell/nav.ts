@@ -9,7 +9,6 @@ import {
   SparkleIcon,
   UserIcon,
   UsersIcon,
-  WorkflowIcon,
 } from "../components/icons";
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
@@ -37,9 +36,9 @@ export const laboratoryItems: NavEntry[] = [
   { label: "Tasks", icon: ListIcon, route: { name: "tasks" } },
   { label: "Studies", icon: FlaskIcon, route: { name: "studies" } },
   {
-    label: "Research Groups",
+    label: "Groups",
     icon: UsersIcon,
-    route: { name: "research-groups" },
+    route: { name: "groups" },
   },
   // "Experts", not "Agents": a coding agent is the thing a Task runs ON, and
   // the Lab already says "agent" for that all over the Task surface. What this
@@ -48,7 +47,6 @@ export const laboratoryItems: NavEntry[] = [
   // route keeps its name: it is a URL people have bookmarked, and unlike
   // Machines' there is no alias standing behind a rename here.
   { label: "Experts", icon: SparkleIcon, route: { name: "agents" } },
-  { label: "Workflows", icon: WorkflowIcon, route: { name: "workflows" } },
 ];
 
 // Usage left the Rail with Skills and Connectors, for the same reason: it

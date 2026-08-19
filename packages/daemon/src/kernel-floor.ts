@@ -16,6 +16,14 @@ export interface KernelFloor {
   /** Written for a person, the way `rememberHeldBack` writes one: this is
    *  the sentence a researcher reads on the Machines screen. */
   reason?: string;
+  /** Whether this machine can build R environments (requires micromamba).
+   *  Separate from `ready` because a machine may host Python kernels without
+   *  R capability — phase 2's own principle. The R field is deliberately
+   *  ahead of its consumer: a later task routes this to the UI. */
+  rReady: boolean;
+  /** Why R environments are unavailable, if `rReady` is false. Written for a
+   *  person, the same way `reason` is. */
+  rReason?: string;
 }
 
 /** Where this machine's own `packages/kernel-host` sits, built from this
@@ -57,21 +65,26 @@ export interface KernelFloorOptions {
 }
 
 export async function probeKernelFloor(opts: KernelFloorOptions): Promise<KernelFloor> {
-  // The kernel host is run as `uv run --project <dir> lykeion-kernel-host`
-  // — see `kernelHostLaunch()` at main.ts. Both halves of that have to be
-  // true before this machine can claim it hosts kernels: the package this
-  // daemon ships beside itself, and the tool that runs it.
+  // Three things must be true for a machine to host kernels, each with its own
+  // sentence: the kernel host package shipped by this daemon, the `uv` tool
+  // that starts kernels, and (separately, since it is language-specific)
+  // `micromamba` to build R environments. A machine lacking micromamba still
+  // hosts Python; one lacking uv or the kernel host hosts nothing.
   //
-  // `reason`, below and two lines further down, is daemon-authored free
-  // text that the lab now shows to every member who can see this machine —
-  // not merely its owner (see `machines.ts`'s `kernelsReason`). Its
-  // vocabulary has to stay closed and path-free: never something like
-  // "uv not found in /Users/ana/…", which would leak a colleague's own
-  // filesystem to the rest of the lab. Both reasons below honour that;
-  // whoever adds a third should too.
+  // All reason strings are daemon-authored free text that the lab shows to
+  // every member who can see this machine — not merely its owner (see
+  // `machines.ts`'s `kernelsReason` and `rEnvironmentsReason`). The vocabulary
+  // has to stay closed and path-free: never something like "uv not found in
+  // /Users/ana/…", which would leak a colleague's own filesystem to the rest
+  // of the lab. All reasons below honour that.
   const project = opts.projectDir ?? kernelHostDir();
   if (!existsSync(project))
-    return { ready: false, reason: "this installation is missing its kernel host" };
+    return {
+      ready: false,
+      reason: "this installation is missing its kernel host",
+      rReady: false,
+      rReason: "this installation is missing its kernel host",
+    };
 
   // Spawned through `probe.ts`'s own confined spawner — DO NOT write a
   // second one. The one there was taught at 159d0f2 to pass the `cwd` its
@@ -82,9 +95,20 @@ export async function probeKernelFloor(opts: KernelFloorOptions): Promise<Kernel
     return {
       ready: false,
       reason: "uv is not installed, and Lykeion starts kernels with it",
+      rReady: false,
+      rReason: "uv is not installed, and Lykeion builds R environments with it",
     };
 
-  return { ready: true };
+  // Micromamba is only needed for R environments, not for Python kernels. A
+  // machine with `uv` but no `micromamba` is still ready to host Python but
+  // cannot build R environments — a per-language fact, per phase 2.
+  const mamba = await runConfined("micromamba", ["--version"], opts);
+  const rReady = mamba.ok;
+  const rReason = !mamba.ok
+    ? "micromamba is not installed, and Lykeion builds R environments with it — install it with `brew install micromamba`"
+    : undefined;
+
+  return { ready: true, rReady, rReason };
 }
 
 /**

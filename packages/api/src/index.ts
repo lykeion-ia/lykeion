@@ -15,12 +15,10 @@ export * from "./run";
 export * from "./review";
 export * from "./customization";
 export * from "./method-skills";
-export * from "./workflow-catalogue";
-export * from "./workflow-catalogue";
 export * from "./artifact";
 export * from "./machine";
 export * from "./agent-cli";
-export * from "./research-group";
+export * from "./group";
 export * from "./account";
 export * from "./usage";
 export * from "./settings";
@@ -76,9 +74,6 @@ export const Commands = {
   setSkillEnabled: "set_skill_enabled",
   listAgents: "list_agents",
   upsertAgent: "upsert_agent",
-  listWorkflows: "list_workflows",
-  upsertWorkflow: "upsert_workflow",
-  runWorkflow: "run_workflow",
   listConnectors: "list_connectors",
   addConnector: "add_connector",
   setConnectorEnabled: "set_connector_enabled",
@@ -103,8 +98,8 @@ export const Commands = {
   kernelRestart: "kernel_restart",
   listAgentClis: "list_agent_clis",
   runHistory: "run_history",
-  listResearchGroups: "list_research_groups",
-  createResearchGroup: "create_research_group",
+  listGroups: "list_groups",
+  createGroup: "create_group",
   currentUser: "current_user",
   setAvatar: "set_avatar",
   listMembers: "list_members",

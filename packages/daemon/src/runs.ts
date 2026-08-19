@@ -43,8 +43,7 @@ import { alreadySystemReadable, boundaryOf, policyFor } from "./sandbox";
 import { restoreSnapshot, takeSnapshot } from "./snapshot";
 import { startSession, type LiveSession, type McpServer, type StandingGrant } from "./session";
 import {
-  envBase,
-  envInterpreter,
+  provisionerFor,
   materializeEnvironment,
   readEnvStatus,
   removeEnvironment,
@@ -273,6 +272,24 @@ export function startRuns(options: {
   // Only sessions that were actually given a kernel appear — a session told
   // about no tool server has no kernels to re-describe.
   const sessionConfigures = new Map<string, () => Promise<void>>();
+  // Which language each of a live session's environments is in, by name.
+  // Kept alongside `liveSessions` on the same terms as `sessionConfigures`,
+  // and written from the very list this machine hands the kernel host — so
+  // it is what a cell would actually find, not a second answer derived
+  // somewhere else.
+  //
+  // It exists for the permission card. `serveEnvironmentAddPackages` holds
+  // an environment's NAME and nothing else, and a card asking a researcher
+  // to approve installing software on every machine in this lab should say
+  // what it is installing INTO. The alternative was fetching the lab's
+  // declarations on the path that raises the card — a network round trip in
+  // front of a person waiting to answer — for a fact this process already
+  // had and was throwing away.
+  //
+  // Absent is absent: a session configured by an older daemon, or one whose
+  // environments this machine never described, has no entry and the card
+  // says no language rather than guessing one.
+  const sessionEnvLanguages = new Map<string, Map<string, "python" | "r">>();
   /** The tail of the retell queue — what the next `retellLiveSessions` waits
    *  on before it reads anything. See that function for why. */
   let retells: Promise<void> = Promise.resolve();
@@ -525,6 +542,7 @@ export function startRuns(options: {
       const live = liveSessions.get(sessionId);
       liveSessions.delete(sessionId);
       sessionConfigures.delete(sessionId);
+      sessionEnvLanguages.delete(sessionId);
       try {
         if (live) await live.close();
       } finally {
@@ -806,6 +824,7 @@ export function startRuns(options: {
     if (liveSessions.get(sessionId) !== session) return;
     liveSessions.delete(sessionId);
     sessionConfigures.delete(sessionId);
+    sessionEnvLanguages.delete(sessionId);
     retainedSessions.add(session);
     const dir = sessionDirs.get(sessionId);
     sessionDirs.delete(sessionId);
@@ -879,6 +898,7 @@ export function startRuns(options: {
       session_id?: unknown;
       name?: unknown;
       packages?: unknown;
+      language?: unknown;
     };
     const sessionId = asked.session_id;
     const name = asked.name;
@@ -892,22 +912,44 @@ export function startRuns(options: {
       throw new Error(
         "creating an environment needs a session, a name and a list of package names",
       );
+    // Refused here as well as in the host, and not because the host's guard
+    // is doubted: this method is reachable from anything holding the host
+    // socket, and the next thing it does is raise a card in front of a
+    // researcher. A language nothing can build must not become a question
+    // somebody is asked, because every answer to it is an answer to the
+    // wrong question.
+    //
+    // ABSENT is python — an older host that predates this field still
+    // creates the Python environments it always did, rather than having
+    // every create refused by a daemon it did not know had changed.
+    const language = asked.language === undefined ? "python" : asked.language;
+    if (language !== "python" && language !== "r")
+      throw new Error(
+        `the environment ${name} was not created: an environment is for python or r, ` +
+          `and ${JSON.stringify(asked.language)} is neither`,
+      );
     const session = liveSessions.get(sessionId);
     if (session === undefined)
       throw new Error(
         `this machine is holding no live session for ${sessionId}, so there is nobody here to ask about ${name}`,
       );
     const answered = await session.askPermission(
-      { kind: "environment", target: { name, packages } },
+      { kind: "environment", target: { name, packages, language } },
       "manage_environments",
       // What the transcript's row for this decision is called. The card
       // itself shows the name and every package below it, so this is not for
       // the screen — it is so that a researcher reading back what they
       // allowed sees which environment they allowed rather than a row saying
       // only that something was.
+      // The language is named in the row as well as the name, because the
+      // name alone does not say what was installed. A row saying only
+      // "Create the environment rstats" leaves a researcher reading back a
+      // month later with no way to tell whether they approved a conda R
+      // environment or a uv Python one — and the two put different software
+      // on every machine in this lab.
       packages.length === 0
-        ? `Create the environment ${name}, holding only its interpreter`
-        : `Create the environment ${name} with ${packages.join(", ")}`,
+        ? `Create the ${language === "r" ? "R" : "Python"} environment ${name}, holding only its interpreter`
+        : `Create the ${language === "r" ? "R" : "Python"} environment ${name} with ${packages.join(", ")}`,
     );
     // Every way `false` arrives, said as one thing, because this end cannot
     // tell them apart: refused, answered with a scope this card does not
@@ -924,6 +966,7 @@ export function startRuns(options: {
       sessionId,
       name,
       packages,
+      language,
       eventsController.signal,
     );
     // AFTER the lab wrote the declaration, and this order is the whole of it.
@@ -992,13 +1035,30 @@ export function startRuns(options: {
       throw new Error(
         `this machine is holding no live session for ${sessionId}, so there is nobody here to ask about ${name}`,
       );
+    // `undefined` where this machine never described that environment to its
+    // host — a name the lab declared and nothing here built, or a session
+    // configured before this map existed. The card then reads exactly as it
+    // did before, which is the "absent is not zero" rule applied to a
+    // sentence: say nothing rather than guess Python.
+    const language = sessionEnvLanguages.get(sessionId)?.get(name);
     const answered = await session.askPermission(
       // `packages` is what was ASKED FOR, never the list the environment
       // ends up holding. A researcher approving "add scanpy" must not be
       // shown the environment's entire contents as though all of it were
       // being installed now — and the card's own disclosure renders this
       // list open, so what is in it is what they read.
-      { kind: "environment", target: { name, packages } },
+      // The language where this machine knows it. The create card has said
+      // it since R landed, and this one — the card that changes what is
+      // installed on every machine in this lab — said less about what it was
+      // changing than the card that declares an empty environment.
+      {
+        kind: "environment",
+        target: {
+          name,
+          packages,
+          ...(language === undefined ? {} : { language }),
+        },
+      },
       "manage_packages",
       // What the transcript's row for this decision is called — see the same
       // argument on `serveEnvironmentCreate`.
@@ -1072,6 +1132,11 @@ export function startRuns(options: {
         interpreter: string;
         reads: string[];
       }>;
+      /** Which languages this host could launch AT ALL, as against which
+       *  ones this machine happened to discover an interpreter for. The
+       *  gate on a lab's declarations reads this one — see the comment
+       *  where it is used. */
+      capable?: string[];
     };
     // Read rather than merely declared at both ends. The wire shapes below
     // are written twice, once here and once in the host, and this number is
@@ -1096,14 +1161,29 @@ export function startRuns(options: {
     // Splitting the boundary does not take that away and was never going
     // to.
     //
-    // The entry it does separate is the one R puts under the researcher's
-    // own home — R_LIBS_USER, which is where install.packages() writes by
-    // default and therefore where a researcher's own packages, and
-    // whatever data sits beside them, actually live. That path is denied by
-    // default and reachable only because R's descriptor named it. Union the
-    // two and a Python cell inherits it; keep them apart and it does not.
-    // Measured both ways in sandbox.kernel.test.ts, against the operating
-    // system rather than against the profile text.
+    // The entry the split used to separate out was the one R puts under the
+    // researcher's own home — R_LIBS_USER, where install.packages() writes
+    // by default and therefore where a researcher's own packages, and
+    // whatever data sits beside them, actually live. That was true back when
+    // "R" meant this machine's own Rscript: `_r()` (interpreters.py) named
+    // `R.home()` plus `.libPaths()` as R's reads, and R_LIBS_USER rode in
+    // among them.
+    //
+    // `_r()` is gone. R now reaches a cell only through a lab-declared
+    // environment this machine has built, and a built environment's reads
+    // are its own root and the base its interpreter links out to — never a
+    // path under the researcher's home, so there is no personal-library
+    // entry left for this split (or a union) to do anything about. What
+    // still keeps R_LIBS_USER out of a cell is `EFFACED`
+    // (kernels/__init__.py, kernel-host): it strips R_LIBS_USER, R_LIBS and
+    // R_LIBS_SITE from what a kernel inherits, so the researcher's own
+    // shell profile can't even set the value a boundary would otherwise
+    // have to deny. `EFFACED`'s own guarantee is measured where it lives —
+    // `test_python_kernel.py::test_r_library_variables_are_effaced`, over
+    // `environment_of`'s answer. What sandbox.kernel.test.ts measures is
+    // the `reads` boundary, which this paragraph has just finished saying
+    // is a different mechanism; pointing at it for EFFACED would name the
+    // wrong evidence for the claim.
     //
     // Keyed by `(language, name)`, which is the identity the host itself
     // files these under (`built[(language, name)]` in `_environments_from`,
@@ -1155,6 +1235,14 @@ export function startRuns(options: {
     // structure, since a second set tracking the same predicate could
     // only ever drift out of agreement with this one.
     const floorReads = new Map<string, string[]>();
+    // Which languages the host could launch at all. Separate from
+    // `floorReads`, which records what this machine DISCOVERED — see the
+    // gate below for why conflating the two skipped every R environment.
+    // Falls back to the discovered languages when a host does not report
+    // capability, which is today's behaviour rather than a wider one.
+    const capable = new Set<string>(
+      hello.capable ?? (hello.languages ?? []).map((descriptor) => descriptor.language),
+    );
     // How many boundaries this machine tried to render and could not. Read
     // once at the end, and only to tell "this language is unusable" from
     // "this machine cannot confine a kernel at all" — see below.
@@ -1306,13 +1394,31 @@ export function startRuns(options: {
       // on every machine its kernels, which is the same failure the guard
       // below was added to prevent, arriving through the door beside it.
       //
-      // It also keeps a declaration to the language it says it is. This
-      // probe is `bin/python3` for every declaration regardless — so an
-      // `r` row with a python venv on disk would otherwise replace the R
-      // floor entry and hand the R driver a python interpreter.
-      if (!floorReads.has(declaration.language)) {
+      // It also keeps a declaration to the language it says it is —
+      // belt and braces, now that `readEnvStatus` routes through
+      // `provisionerFor` and probes the manager's own interpreter rather
+      // than `bin/python3` for everything. This comment used to give that
+      // blind probe as the reason, and stopped being true in the same
+      // commit that made the reader manager-aware.
+      //
+      // Capability, not discovery — and the difference is the whole of a
+      // bug this branch shipped and caught. `floorReads` is keyed off what
+      // this machine DISCOVERED at startup, and R is deliberately no longer
+      // discovered from a bare `Rscript`: it reaches a cell only through an
+      // environment the lab declared and this machine built. So a gate
+      // asking `floorReads.has("r")` answered no on every machine, forever,
+      // and skipped every R environment ever built — reporting it as "not
+      // built on this machine yet" while it sat there built, which is worse
+      // than a refusal because it is false.
+      //
+      // What this actually needs to know is whether the host could launch
+      // the language at all, which is what `capable` says. The floor's
+      // reads are still composed in below where they exist, and their
+      // absence is not a reason to withhold the environment: a conda R root
+      // is self-contained, so its own root IS the read set.
+      if (!capable.has(declaration.language)) {
         console.error(
-          `this machine runs no ${JSON.stringify(declaration.language)}, ` +
+          `this machine's kernel host cannot launch ${JSON.stringify(declaration.language)}, ` +
             `so the environment ${declaration.name} is not offered to ${taskId}'s kernels`,
         );
         continue;
@@ -1350,7 +1456,13 @@ export function startRuns(options: {
         // machine unable to say what the base is, so the reads fall back to
         // the composition that was here before rather than dropping the base
         // silently.
-        const base = envBase(options.workDir, declaration.name);
+        // The MANAGER's, not uv's. A conda prefix is self-contained and
+        // answers `undefined` here by design — there is no base outside it
+        // to grant — where a uv venv's interpreter is a link out and the
+        // base must be read off `pyvenv.cfg`. Asking uv's reader about a
+        // conda root would parse a file that was never written.
+        const provisioner = provisionerFor(declaration.manager);
+        const base = provisioner.base(options.workDir, declaration.name);
         // A base the baseline already grants is left to the baseline. Every
         // profile this renders carries `SYSTEM_READ` — /usr, /bin, /opt,
         // /Library and the rest — unconditionally (`renderSeatbeltProfile`,
@@ -1382,7 +1494,7 @@ export function startRuns(options: {
         place({
           language: declaration.language,
           name: declaration.name,
-          interpreter: envInterpreter(options.workDir, declaration.name),
+          interpreter: provisioner.interpreter(options.workDir, declaration.name),
           prefix,
         });
       } catch (err) {
@@ -1493,6 +1605,21 @@ export function startRuns(options: {
         cellRoutingHost = host;
       }
       const { environments, declared } = await kernelEnvironmentsFor(host, cwd, taskId, grants);
+      // Recorded from the same list the host is about to be given, so the
+      // card and the kernel cannot disagree about what `rstats` is.
+      sessionEnvLanguages.set(
+        sessionId,
+        // Only the two the card knows how to say. A host describing some
+        // third language is not something to render on a permission card as
+        // a raw token a researcher has never seen — it gets no entry, and
+        // the card falls back to naming no language at all.
+        new Map(
+          environments
+            .filter((entry): entry is typeof entry & { language: "python" | "r" } =>
+              entry.language === "python" || entry.language === "r")
+            .map((entry) => [entry.name, entry.language]),
+        ),
+      );
       // The directory the socket goes in, before the host is asked to bind
       // one inside it.
       ensureKernelSocketDir();
@@ -2058,6 +2185,11 @@ export function startRuns(options: {
             dataDir: options.dataDir,
             name,
             packages: command.packages ?? [],
+            // Same fallback `readEnvStatus`'s own `manager` field gets below —
+            // D1 means this is always `"uv"` today, but the default lives
+            // here rather than upstream so a command that predates this
+            // field builds exactly what it always built.
+            manager: command.manager ?? "uv",
             ...(options.platform === undefined ? {} : { platform: options.platform }),
             onLine,
           });
@@ -2079,6 +2211,7 @@ export function startRuns(options: {
           name,
           lockfile,
           lockRevision,
+          manager: command.manager ?? "uv",
           ...(options.platform === undefined ? {} : { platform: options.platform }),
           onLine,
         });
@@ -2086,9 +2219,11 @@ export function startRuns(options: {
         // built: this is the same fact `readEnvStatus` reports on this
         // machine's own regular report, so the lab's answer and the
         // machine's own next report can never disagree about it.
-        // `language`/`manager` are this phase's own constants everywhere
-        // outside a declaration this daemon does not otherwise hold; only
-        // `readEnvStatus`'s base fields carry them at all.
+        // `language` is this phase's own constant everywhere outside a
+        // declaration this daemon does not otherwise hold; `manager` is the
+        // same `command.manager ?? "uv"` just handed to the two calls above,
+        // repeated rather than hoisted because each of the three needs it at
+        // a different point in this function.
         const status: KernelEnvStatus = readEnvStatus(options.workDir, {
           name,
           language: command.language ?? "python",

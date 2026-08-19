@@ -490,7 +490,7 @@ export function Composer({
             <button
               type="button"
               className="composer-icon-btn"
-              title="Notebook — the Study's shared Python kernel"
+              title="Notebook — the Study's shared kernels"
               aria-label="Open notebook"
               disabled={disabled}
               onClick={onOpenNotebook}

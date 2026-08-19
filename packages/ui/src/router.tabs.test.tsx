@@ -72,12 +72,12 @@ describe("router over tabs", () => {
     const before = tabsSnapshot().tabs.length;
 
     await act(async () => {
-      window.location.hash = "#/workflows";
+      window.location.hash = "#/machines";
       window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
 
     expect(tabsSnapshot().tabs).toHaveLength(before);
-    expect(screen.getByRole("button")).toHaveTextContent("#/workflows");
+    expect(screen.getByRole("button")).toHaveTextContent("#/machines");
   });
 
   it("never makes a tab out of a pairing link", async () => {

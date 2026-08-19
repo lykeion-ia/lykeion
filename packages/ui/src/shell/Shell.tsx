@@ -17,11 +17,9 @@ import { MyWorkScreen } from "../screens/MyWorkScreen";
 import { SettingsScreen } from "../screens/SettingsScreen";
 import { AgentsScreen } from "../screens/AgentsScreen";
 import { AgentDetailScreen } from "../screens/AgentDetailScreen";
-import { WorkflowsScreen } from "../screens/WorkflowsScreen";
-import { WorkflowDetailScreen } from "../screens/WorkflowDetailScreen";
 import { MachinesScreen } from "../screens/MachinesScreen";
 import { MyTasksScreen } from "../screens/MyTasksScreen";
-import { ResearchGroupsScreen } from "../screens/ResearchGroupsScreen";
+import { GroupsScreen } from "../screens/GroupsScreen";
 import "./shell.css";
 
 /** The app frame: left Rail, top TabBar, rounded content pane, global
@@ -196,15 +194,11 @@ function ScreenSwitch({
       return <AgentsScreen />;
     case "agent":
       return <AgentDetailScreen agentId={route.agentId} />;
-    case "workflows":
-      return <WorkflowsScreen />;
-    case "workflow":
-      return <WorkflowDetailScreen workflowId={route.workflowId} />;
     case "machines":
       return <MachinesScreen />;
     case "my-tasks":
       return <MyTasksScreen />;
-    case "research-groups":
-      return <ResearchGroupsScreen />;
+    case "groups":
+      return <GroupsScreen />;
   }
 }

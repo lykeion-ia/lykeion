@@ -14,8 +14,8 @@ import type { ReactNode } from "react";
 export const screenTitleClass = "text-title font-semibold text-fg";
 
 /**
- * The fixed title row every section screen uses — Studies, Research Groups,
- * Experts, Skills, Workflows, Connectors, My Tasks, Machines, Usage, Settings.
+ * The fixed title row every section screen uses — Studies, Groups, Experts,
+ * Skills, Connectors, My Tasks, Machines, Usage, Settings.
  *
  * This is the single definition of the header's geometry (padding, height,
  * title size) and of where the primary action sits: hard right, on the title

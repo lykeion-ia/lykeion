@@ -23,7 +23,28 @@ from typing import Any, Mapping, Protocol
 # because there is no value of it that could be right: the answer to "where
 # does an install in a cell land" is the overlay, and that is `PIP_TARGET`'s
 # to say.
-EFFACED = ("VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV", "PIP_PREFIX")
+#
+# `R_LIBS_USER`, `R_LIBS` and `R_LIBS_SITE` are R's own three, and the harm
+# they do is narrower than the six above — none of them names an environment
+# at all. `install.packages()` writes to `R_LIBS_USER` and `library()` reads
+# all three, so a value inherited from the researcher's own shell profile
+# puts their personal library on `.libPaths()` inside an environment that is
+# supposed to be pinned — and a script that works here only because THIS
+# machine happens to hold a package in that library is the exact
+# irreproducibility a built R environment exists to remove. Effaced here
+# rather than left to whatever boundary the daemon renders around the
+# kernel, because a variable arrives by INHERITANCE: a boundary can deny a
+# researcher's home as a path and still do nothing to stop `R_LIBS_USER`
+# from being SET to a path inside it, which is what this list is for.
+EFFACED = (
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "CONDA_DEFAULT_ENV",
+    "PIP_PREFIX",
+    "R_LIBS_USER",
+    "R_LIBS",
+    "R_LIBS_SITE",
+)
 
 
 def environment_of(interpreter: str, inherited: Mapping[str, str]) -> dict[str, str]:

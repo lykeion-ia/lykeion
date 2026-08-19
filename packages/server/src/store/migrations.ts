@@ -1045,6 +1045,17 @@ export const MIGRATIONS: Migration[] = [
       store.run(`ALTER TABLE cells ADD COLUMN installed TEXT`);
     },
   },
+  {
+    version: 30,
+    up(store) {
+      // Workflows are gone from the product. The table goes with them rather
+      // than being left unread: a table nothing writes and nothing reads is
+      // one the next person has to work out the status of before they can
+      // touch anything near it. Nothing referenced `workflows` by foreign
+      // key, so this drops cleanly and needs no rebuild.
+      store.run(`DROP TABLE IF EXISTS workflows`);
+    },
+  },
 ];
 
 assertAscending(MIGRATIONS);

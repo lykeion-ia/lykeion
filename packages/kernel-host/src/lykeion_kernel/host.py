@@ -70,6 +70,23 @@ def _hello(holding: Holding, _params: dict[str, Any], _place: Place | None) -> d
             }
             for runnable in holding.registry.runnables
         ],
+        # What this host could launch, as against what THIS machine happened
+        # to discover at startup. The two are different questions and the
+        # daemon needs both: `languages` answers "is there an interpreter
+        # here already", which is what decides whether a cell can run right
+        # now; `capable` answers "may an environment of this language exist
+        # at all", which is what decides whether a lab's declaration is even
+        # offered to a session.
+        #
+        # Kept apart rather than folded together, because folding them was
+        # the bug. `languages` is empty of R on every machine — R is no
+        # longer discovered from a bare `Rscript` — so a daemon gating a
+        # declaration on it skipped every R environment ever built, and told
+        # the researcher it was "not built on this machine yet" while it sat
+        # there built. Redefining `languages` instead would have fixed that
+        # and broken the other consumer, which guards RUNNING an R cell on
+        # whether this machine has a real interpreter for it.
+        "capable": list(holding.registry.capable_languages),
     }
 
 

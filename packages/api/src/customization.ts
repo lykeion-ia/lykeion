@@ -3,13 +3,10 @@
  * format exactly (camelCase).
  *
  * Everything here is a first-class on-disk file under the Lab, agent-agnostic
- * by nature: Skills (SKILL.md packs), Agents (persona Markdown), Workflows
- * (JSON prompt-templates), and Connectors (MCP server configs) + a curated
- * catalog of scientific databases.
+ * by nature: Skills (SKILL.md packs), Agents (persona Markdown), and
+ * Connectors (MCP server configs) + a curated catalog of scientific
+ * databases.
  */
-
-import { LykeionError } from "./errors";
-import type { Discipline, MethodPhase } from "./types";
 
 /** A Skill: reusable instructions the agent can load. */
 export interface Skill {
@@ -44,64 +41,6 @@ export interface Agent {
    * inherits every enabled connector (narrowing, not additive).
    */
   connectors: string[];
-}
-
-/** One fillable slot in a Workflow's prompt template. */
-export interface Placeholder {
-  /** The `{key}` token in the prompt. */
-  key: string;
-  label: string;
-  required: boolean;
-  default?: string;
-}
-
-/** A Workflow: a research procedure, cut from the method spine. */
-export interface Workflow {
-  id: string;
-  name: string;
-  description: string;
-  /** The field this procedure belongs to. The Workflows list groups on it. */
-  discipline: Discipline;
-  icon: string;
-  /** The prompt, with `{placeholder}` tokens. */
-  prompt: string;
-  placeholders: Placeholder[];
-  /**
-   * This procedure's own ordered subset of `METHOD_PHASES` — a subsequence,
-   * never a reordering. `METHOD_PHASE_SKILL` names the Skill behind each.
-   */
-  phases: MethodPhase[];
-  suggestedSkills: string[];
-  requiresFiles: boolean;
-}
-
-/**
- * Expand a Workflow's prompt against `values`: value, then default, then an
- * error when a required placeholder has neither. Unknown `{tokens}` are left
- * untouched.
- *
- * One definition rather than one per implementation — what a missing optional
- * placeholder expands to is a rule the browser core and the workspace server
- * have to agree on exactly, and two copies agree only by inspection.
- */
-export function expandPrompt(
-  workflow: Pick<Workflow, "prompt" | "placeholders">,
-  values: Record<string, string>,
-): string {
-  let prompt = workflow.prompt;
-  for (const ph of workflow.placeholders) {
-    let value: string;
-    if (values[ph.key] !== undefined) value = values[ph.key];
-    else if (ph.default !== undefined) value = ph.default;
-    else if (ph.required)
-      throw new LykeionError(
-        "invalid",
-        `missing required placeholder ${ph.key}`,
-      );
-    else value = "";
-    prompt = prompt.split(`{${ph.key}}`).join(value);
-  }
-  return prompt;
 }
 
 /**

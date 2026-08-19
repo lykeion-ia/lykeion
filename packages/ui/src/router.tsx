@@ -32,8 +32,6 @@ export type Route =
   | { name: "my-work" }
   | { name: "agents" }
   | { name: "agent"; agentId: string }
-  | { name: "workflows" }
-  | { name: "workflow"; workflowId: string }
   | { name: "machines" }
   /**
    * Settings, optionally deep-linked to one of its nav tabs
@@ -42,7 +40,7 @@ export type Route =
    */
   | { name: "settings"; tab?: string }
   | { name: "my-tasks" }
-  | { name: "research-groups" }
+  | { name: "groups" }
   /**
    * A redeemable invite, addressed by its code. Reachable with nobody signed
    * in — `AuthGate` reads this route directly, ahead of the workbench,
@@ -154,10 +152,6 @@ export function parseHash(hash: string): Route {
       if (a !== undefined)
         return { name: "agent", agentId: decodeURIComponent(a) };
       return { name: "agents" };
-    case "workflows":
-      if (a !== undefined)
-        return { name: "workflow", workflowId: decodeURIComponent(a) };
-      return { name: "workflows" };
     case "machines":
       return { name: "machines" };
     // What this screen was addressed as for as long as it was called Runtimes.
@@ -186,8 +180,14 @@ export function parseHash(hash: string): Route {
       return { name: "settings", tab: a === "preferences" ? "appearance" : a };
     case "my-tasks":
       return { name: "my-tasks" };
+    case "groups":
+      return { name: "groups" };
+    // What this screen was addressed as while it was called Research Groups.
+    // Parse-only, like the aliases above: the mirror rewrites it to `#/groups`,
+    // so a bookmark still lands and the address bar stops saying the old words
+    // the moment it does.
     case "research-groups":
-      return { name: "research-groups" };
+      return { name: "groups" };
     case "join":
       return a !== undefined ? { name: "join", code: a } : { name: "studies" };
     case "pair":
@@ -235,18 +235,14 @@ export function routeHash(route: Route): string {
       return "#/agents";
     case "agent":
       return `#/agents/${encodeURIComponent(route.agentId)}`;
-    case "workflows":
-      return "#/workflows";
-    case "workflow":
-      return `#/workflows/${encodeURIComponent(route.workflowId)}`;
     case "machines":
       return "#/machines";
     case "settings":
       return route.tab ? `#/settings/${route.tab}` : "#/settings";
     case "my-tasks":
       return "#/my-tasks";
-    case "research-groups":
-      return "#/research-groups";
+    case "groups":
+      return "#/groups";
     case "join":
       return `#/join/${route.code}`;
     case "pair": {

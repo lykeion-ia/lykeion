@@ -1,18 +1,11 @@
 import {
-  CORE_PHASES,
   curatedCatalog,
-  DISCIPLINES,
-  expandPrompt,
   LykeionError,
-  METHOD_PHASES,
   type Agent,
   type Connector,
-  type Discipline,
   type LykeionApi,
-  type MethodPhase,
-  type ResearchGroup,
+  type Group,
   type SkillEntry,
-  type Workflow,
 } from "@lykeion/api";
 import type { Deps } from "./index";
 import type { Row } from "../store/store";
@@ -22,10 +15,9 @@ export type ConfigSurfaceApi = Pick<
   LykeionApi,
   | "listSkills" | "createSkill" | "setSkillEnabled"
   | "listAgents" | "upsertAgent"
-  | "listWorkflows" | "upsertWorkflow" | "runWorkflow"
   | "listConnectors" | "addConnector" | "setConnectorEnabled" | "setConnectorSkipApprovals"
   | "connectorCatalog" | "listConnectorTools"
-  | "listResearchGroups" | "createResearchGroup"
+  | "listGroups" | "createGroup"
 >;
 
 function toSkillEntry(row: Row): SkillEntry {
@@ -37,12 +29,12 @@ function toSkillEntry(row: Row): SkillEntry {
   };
 }
 
-/** Agents and workflows keep their whole record in a JSON `payload` column
- *  beside the primary key. Nothing queries into an agent's tool list or a
- *  workflow's placeholders, so a column per field would mean a migration
- *  every time the contract grows one; `JSON.stringify`/`JSON.parse` round
- *  a field that was never set back to an absent key, not one holding
- *  `undefined`, because neither function ever materializes one. */
+/** Agents keep their whole record in a JSON `payload` column beside the
+ *  primary key. Nothing queries into an agent's tool list, so a column per
+ *  field would mean a migration every time the contract grows one;
+ *  `JSON.stringify`/`JSON.parse` round a field that was never set back to an
+ *  absent key, not one holding `undefined`, because neither function ever
+ *  materializes one. */
 /**
  * Read one stored record, or say which one could not be read. A payload
  * that will not parse — a truncated write, a hand-edited row — would
@@ -62,59 +54,6 @@ function toAgent(row: Row): Agent {
   return parsePayload<Agent>(row, row.name as string);
 }
 
-/**
- * What a stored workflow payload may hold: the contract's shape, plus the
- * free-text grouping key and the two absent fields a record written against an
- * earlier contract carries instead.
- */
-type StoredWorkflow = Omit<Workflow, "discipline" | "phases"> & {
-  discipline?: string;
-  phases?: string[];
-  category?: string;
-};
-
-/** The nearest discipline for a free-text grouping key. Anything unrecognised
- *  is `general`, which is truthful — nobody said which field it was. */
-const CATEGORY_DISCIPLINE: Record<string, Discipline> = {
-  biology: "biology",
-  genomics: "biology",
-  rnaseq: "biology",
-  chemistry: "chemistry",
-  physics: "physics",
-  neuroscience: "neuroscience",
-  clinical: "medicine",
-  medicine: "medicine",
-  climate: "earth-science",
-  literature: "general",
-  general: "general",
-};
-
-/**
- * A workflow's payload is JSON off disk, so that it typechecks says nothing
- * about what is in it. Both fields the list groups and renders on are checked
- * against their unions rather than cast into them: an unlabelled group and a
- * phase with no label are both worse than a value that reads as `general`.
- */
-function toWorkflow(row: Row): Workflow {
-  const { category, ...stored } = parsePayload<StoredWorkflow>(
-    row,
-    row.id as string,
-  );
-  const discipline = DISCIPLINES.includes(stored.discipline as Discipline)
-    ? (stored.discipline as Discipline)
-    : (CATEGORY_DISCIPLINE[category ?? ""] ?? "general");
-  // Order is preserved because a workflow's phases are a subsequence of the
-  // spine, and dropping an unknown one keeps the rest reading correctly.
-  const phases = (stored.phases ?? []).filter((phase): phase is MethodPhase =>
-    METHOD_PHASES.includes(phase as MethodPhase),
-  );
-  return {
-    ...stored,
-    discipline,
-    phases: phases.length > 0 ? phases : CORE_PHASES,
-  };
-}
-
 /** A connector's `enabled`/`skipApprovals` are read from their own columns,
  *  never from the payload: `setConnectorEnabled` and
  *  `setConnectorSkipApprovals` update only the column, so a stored payload's
@@ -128,7 +67,7 @@ function toConnector(row: Row): Connector {
   };
 }
 
-function toResearchGroup(row: Row): ResearchGroup {
+function toGroup(row: Row): Group {
   return {
     id: row.id as string,
     name: row.name as string,
@@ -136,7 +75,7 @@ function toResearchGroup(row: Row): ResearchGroup {
     ...(row.lead_agent === null ? {} : { leadAgent: row.lead_agent as string }),
     memberAgents: JSON.parse(row.member_agents as string) as string[],
     createdTs: row.created_ts as number,
-    // Stored separately even though nothing revises a Research Group yet.
+    // Stored separately even though nothing revises a Group yet.
     // The contract's other implementation orders this list on `updatedTs`,
     // so the day an edit lands, a server that had folded the two together
     // would keep answering in creation order and no test would notice,
@@ -229,33 +168,6 @@ export function configSurfaceApi(deps: Deps): ConfigSurfaceApi {
       });
     },
 
-    // ---- workflows ----
-
-    async listWorkflows() {
-      return byName(
-        store.all(`SELECT * FROM workflows ORDER BY seq ASC`).map(toWorkflow),
-        (workflow) => workflow.id,
-      );
-    },
-
-    async upsertWorkflow(workflow) {
-      store.tx(() => {
-        const seq = nextSeq(store);
-        store.run(
-          `INSERT INTO workflows (id, payload, seq) VALUES (?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET payload = excluded.payload`,
-          [workflow.id, JSON.stringify(workflow), seq],
-        );
-        record("workflow-updated", { id: workflow.id });
-      });
-    },
-
-    async runWorkflow(id, values) {
-      const row = store.get(`SELECT * FROM workflows WHERE id = ?`, [id]);
-      if (!row) throw new LykeionError("not-found", `no such workflow: ${id}`);
-      return expandPrompt(toWorkflow(row), values);
-    },
-
     // ---- connectors ----
 
     async listConnectors() {
@@ -313,17 +225,17 @@ export function configSurfaceApi(deps: Deps): ConfigSurfaceApi {
       );
     },
 
-    // ---- research groups ----
+    // ---- groups ----
 
-    async listResearchGroups() {
+    async listGroups() {
       // Newest first, insertion sequence breaking the tie — the same rule
       // `listStudies` follows.
       return store
         .all(`SELECT * FROM research_groups ORDER BY updated_ts DESC, seq DESC`)
-        .map(toResearchGroup);
+        .map(toGroup);
     },
 
-    async createResearchGroup(input) {
+    async createGroup(input) {
       const ts = now();
       // One sequence number serves both the id and the seq column, for the
       // same reason createStudy and createTask use only one: a second
@@ -348,8 +260,8 @@ export function configSurfaceApi(deps: Deps): ConfigSurfaceApi {
             seq,
           ],
         );
-        record("research-group-created", { id });
-        return toResearchGroup(store.get(`SELECT * FROM research_groups WHERE id = ?`, [id])!);
+        record("group-created", { id });
+        return toGroup(store.get(`SELECT * FROM research_groups WHERE id = ?`, [id])!);
       });
     },
   };

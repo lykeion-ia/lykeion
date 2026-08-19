@@ -638,6 +638,53 @@ onDarwin("a boundary around something that declared no home", () => {
     expect(pythons.stdout).not.toContain("Package: somepkg");
     expect(pythons.code).not.toBe(0);
   });
+
+  it("denies an R kernel the researcher's own library", async () => {
+    // The test above stands the split up by hand, `readable: [join(home, "R")]`
+    // written in the test rather than produced by anything runs.ts runs. This
+    // one instead builds the boundary the way an R kernel actually gets it —
+    // `kernelConfinementFor` against a built environment's own root, the same
+    // call runs.ts's built loop makes for a declared environment (see
+    // `envRoot`/`kernelConfinementFor` above, and the "inline install" test's
+    // own use of the pair for python). A policy that granted `readable: []`
+    // would deny the cat below regardless of what runs.ts hands it — that
+    // proves nothing — so this also opens a file inside the environment's own
+    // root, which only a policy that grants the RIGHT thing, not merely a
+    // narrow one, can pass.
+    const workDir = fresh();
+    const environment = envRoot(workDir, "r");
+    const owned = join(environment, "library", "insideThePin");
+    mkdirSync(owned, { recursive: true });
+    writeFileSync(join(owned, "DESCRIPTION"), "Package: insideThePin\n");
+
+    // Stands in for R_LIBS_USER's target — install.packages()'s default
+    // destination under the researcher's own home — never named among a
+    // built environment's reads and so never granted.
+    const home = fresh();
+    const personal = join(home, "R", "arm64", "4.6", "library", "somepkg");
+    mkdirSync(personal, { recursive: true });
+    writeFileSync(join(personal, "DESCRIPTION"), "Package: somepkg\n");
+
+    const task = ensureTaskDir(workDir, "s_1", "t_1");
+    const dataDir = join(fresh(), "daemon-state");
+    mkdirSync(dataDir, { recursive: true });
+
+    const { policy } = kernelConfinementFor({
+      platform: "darwin",
+      workspace: task,
+      dataDir,
+      grants: [],
+      reads: [environment],
+    });
+
+    const inPin = await inside(policy, `cat ${owned}/DESCRIPTION`);
+    expect(inPin.stdout).toContain("Package: insideThePin");
+    expect(inPin.code).toBe(0);
+
+    const ownLibrary = await inside(policy, `cat ${personal}/DESCRIPTION`);
+    expect(ownLibrary.stdout).not.toContain("Package: somepkg");
+    expect(ownLibrary.code).not.toBe(0);
+  });
   /**
    * The relay is a TWO-file program, and that is the whole of this test.
    *

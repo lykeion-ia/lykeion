@@ -1,7 +1,12 @@
 """The tools this machine publishes, and the kernels they run in.
 
-One runner per language this machine can start a kernel in, and the shell — so
-a machine with R publishes three and a machine without it two.
+One runner per language this host has a launcher for AT ALL, and the shell —
+every machine running this code publishes the same set, python and R both,
+whether or not this particular one has ever built an R environment. This
+server advertises `tools.listChanged: false`, so a set that grew or shrank as
+environments were provisioned live is a contract it does not offer; what a
+machine's own R actually is decides whether a CALL against `execute_r_cell`
+succeeds, not whether the tool was ever shown.
 
 Every one of them is bound to one `Reach` when the server is built — the
 context, the Task, and who is running the cell — so no tool takes a session, a
@@ -238,27 +243,48 @@ EXECUTE_PYTHON_CELL = types.Tool(
     },
 )
 
-# No `environment` here, deliberately. This phase builds Python environments
-# only — the provisioner's sources are `uv` and PyPI, and the daemon calls a
-# build ready by probing its `bin/python3` — so there is no R environment for
-# any value of one to name. Published, it would be an argument every value of
-# which can only ever be refused, which is worse than an absent one: it tells
-# an agent that naming an R environment is a thing this machine does. R
-# environments are a scheduled follow-on, and this is where to add it.
+# R's half of `_INSTALLING`, and a separate constant rather than a shared one
+# because the two languages do not install the same way. Python's paragraph
+# names `pip`, `uv pip` and the boundary that refuses the second; none of that
+# is true of R, and a model told about `pip` here would be told about a tool
+# its cells do not have.
 #
-# The omission is load-bearing rather than documentary: `on_call_tool` reads
-# `environment` only off the tools whose schema carries it, so adding it here
-# is what would make it work, and sending one to this tool today does nothing.
+# One sentence about a lifetime, like Python's, because this is the only place
+# a model is told the difference between the two — an `install.packages()`
+# that lasts until this kernel restarts, and a package added to the
+# environment, which every machine in this lab gets and keeps.
+_INSTALLING_R = (
+    " Installing: `install.packages()` works and lasts only until this kernel "
+    "restarts — it goes into this kernel alone and no colleague's machine has "
+    "it. Use manage_packages to add a package to the environment for good, "
+    "pinned for every machine in this lab."
+)
+
+# `environment` is here now, and its absence used to be load-bearing: while
+# the provisioner built Python environments alone there was no R environment
+# for any value of one to name, so publishing the argument would have told an
+# agent that naming one is a thing this machine does. The lab declares R
+# environments now and machines build them, so the argument is real — and its
+# absence would be the defect, leaving R able to reach exactly one environment
+# for ever while D9's identity carries an environment axis for both languages.
+#
+# Nothing had to change in `on_call_tool` for this to work: `addressable` is
+# derived from the published schemas, so a tool that gains the property says
+# so once, here, and is read for it everywhere.
 EXECUTE_R_CELL = types.Tool(
     name="execute_r_cell",
     title="Execute R cell",
     description=(
         "Run R in this Task's R kernel. The namespace is held open between "
         "calls, so a name bound by one call is still bound in the next."
+        + _INSTALLING_R
     ),
     inputSchema={
         "type": "object",
-        "properties": {"code": {"type": "string", "description": "The R to run."}},
+        "properties": {
+            "code": {"type": "string", "description": "The R to run."},
+            "environment": _ENVIRONMENT,
+        },
         "required": ["code"],
     },
 )
@@ -343,6 +369,18 @@ MANAGE_ENVIRONMENTS = types.Tool(
                     "which asks for a package with no name."
                 ),
             },
+            "language": {
+                "type": "string",
+                "enum": ["python", "r"],
+                "description": (
+                    "Which language the new environment is for. Omit for "
+                    "Python. The two are not interchangeable: an R "
+                    "environment holds R packages and only R cells run in "
+                    "it, a Python one holds Python packages and only Python "
+                    "cells run in it — a cell naming the other language's "
+                    "environment is refused by name."
+                ),
+            },
         },
         "required": ["action"],
     },
@@ -421,11 +459,14 @@ _BY_LANGUAGE = {"python": EXECUTE_PYTHON_CELL, "r": EXECUTE_R_CELL}
 
 
 def tools_for(languages: tuple[str, ...]) -> list[types.Tool]:
-    """What this machine publishes: one runner per language it can start a
-    kernel in, the shell, and the two tools that answer about environments
-    rather than running anything. A machine with no R publishes no
-    `execute_r_cell`; every machine publishes the others, since a session
-    holds environments whatever this machine can run."""
+    """One runner per language named, the shell, and the two tools that
+    answer about environments rather than running anything. Generic in
+    `languages` so a test can ask it about a hypothetical machine; the one
+    real caller, `server_for`, always passes every language this host has a
+    launcher for at all (`Registry.capable_languages`), so no machine running
+    this code actually publishes a proper subset of the runners any more — a
+    language missing from what is passed here is one this host's own code has
+    no launcher for, not one a particular machine merely lacks."""
     return [_BY_LANGUAGE[language] for language in languages if language in _BY_LANGUAGE] + [
         EXECUTE_SHELL_CELL,
         MANAGE_ENVIRONMENTS,
@@ -599,6 +640,38 @@ def _created_name(arguments: dict[str, Any] | None) -> str:
     return value
 
 
+def _created_language(arguments: dict[str, Any] | None) -> str:
+    """Which language the environment is for, refused by value.
+
+    The enum published beside this is a thing a model READS, not a thing that
+    holds: nothing between an agent and this handler checks an argument
+    against a schema, so `"ruby"` and `7` arrive looking exactly like
+    `"python"`. Refused here, and refused before `ask_daemon` is reached,
+    because what happens there is a card in front of a researcher — asked to
+    approve an environment in a language this lab has no provisioner for,
+    every answer they could give is an answer to the wrong question.
+
+    ABSENT is `python`, and absent is the only thing that is. An explicit
+    `None` is a value the agent chose to send and is refused like any other
+    wrong one — the two are told apart by asking whether the key is there
+    rather than by what `.get` returns, which is the same distinction
+    "absent is not zero" draws everywhere else in this product.
+
+    What each language MEANS — which provisioner, which package source — is
+    the lab's and is derived there, from this word. Deciding it here as well
+    would be a second copy of that rule, drifting.
+    """
+    args = arguments or {}
+    if "language" not in args:
+        return "python"
+    value = args["language"]
+    if value not in ("python", "r"):
+        raise ValueError(
+            f"an environment is created for python or r, and {value!r} is neither"
+        )
+    return value
+
+
 def _created_packages(arguments: dict[str, Any] | None) -> list[str]:
     """The packages the new environment is to hold.
 
@@ -644,6 +717,7 @@ async def _created(reach: Reach, arguments: dict[str, Any] | None) -> types.Call
     try:
         name = _created_name(arguments)
         packages = _created_packages(arguments)
+        language = _created_language(arguments)
     except ValueError as refused:
         return _refused(str(refused))
     ask = reach.registry.ask_daemon
@@ -670,6 +744,11 @@ async def _created(reach: Reach, arguments: dict[str, Any] | None) -> types.Call
                 "session_id": reach.identity.session_id,
                 "name": name,
                 "packages": packages,
+                # Always sent, including when the call named none. A default
+                # agreed separately at each end is two places to change it,
+                # and a wire that states the language is what lets the daemon
+                # refuse one it cannot build rather than infer one it can.
+                "language": language,
             },
         )
     except Exception as failure:  # noqa: BLE001 - reported, never swallowed
@@ -741,28 +820,45 @@ def _addressed_environment(reach: Reach, arguments: dict[str, Any] | None) -> st
     same reason it gives three — which of them it is decides what a researcher
     is told to do about it.
 
-    An R environment is refused by name. There are no R environments this
-    phase (D1) and the provisioner's sources are `uv` and PyPI, so the only
-    thing that could happen to one is Python packages being added to it.
+    R environments are addressable here, and were not until R had a
+    provisioner. The refusal this replaced was written under D1 — "there are
+    no R environments this phase" — and every layer below it is already
+    language-agnostic: the lab appends to the declaration and dispatches a
+    `kernel-env-setup` carrying that declaration's own `language` and
+    `manager`, so an add to an R declaration rebuilds through conda without
+    anything here choosing it. Keeping the refusal would have left
+    `execute_r_cell`'s own description telling a model to use a tool that
+    refuses the only environments an R cell can run in.
+
+    The DEFAULT is this connection's own language, not Python. An agent
+    working in R that names no environment means its R one; answering with
+    Python's would add R packages to a Python environment, and answering
+    "this Task has no Python environment" would be true and useless.
     """
     named = _optional_text(arguments, "environment", "package change")
     if named is None:
-        named = reach.registry.default_environment_for(reach.identity.session_id, "python")
+        language = reach.identity.language
+        named = reach.registry.default_environment_for(reach.identity.session_id, language)
         if named is None:
             raise ValueError(
-                "this Task has no Python environment to add packages to, and this call named none"
+                # Capitalised for the sentence rather than passed through raw:
+                # `"python".capitalize()` is "Python" and `"r".capitalize()` is
+                # "R", which are the two spellings a researcher and a model
+                # both already read everywhere else.
+                f"this Task has no {language.capitalize()} environment to add "
+                "packages to, and this call named none"
             )
     listed = reach.registry.environments_for(reach.identity.session_id)
     for row in listed["environments"]:
         if row["name"] != named:
             continue
-        # `language` is carried only by a row this machine has actually
-        # built; a declared-but-unbuilt row has none, and D1 makes every
-        # declaration Python. So a missing language is not an R environment.
-        if row.get("language") == "r":
-            raise ValueError(
-                f"{named} is an R environment, and Lykeion manages Python packages only for now"
-            )
+        # Reachable is the whole test now. Which language the row is in
+        # decides which manager rebuilds it, and that decision is the lab's,
+        # made from the declaration — nothing here has to know it, and the
+        # guard that used to read `language` here refused exactly the
+        # environments an R cell can run in while accepting the ones it
+        # cannot: a built row carries `language`, and a declared-but-unbuilt
+        # row carries none at all.
         return named
     if not listed["declarationsKnown"]:
         # Nothing here knows what this lab has declared. The machine-scoped
@@ -932,10 +1028,18 @@ def cell_for(reach: Reach, source: str, tool_use_id: str | None) -> dict[str, An
 
 def server_for(reach: Reach) -> Server[Any]:
     """The MCP server one connection is answered by."""
-    # Settled when the connection is answered rather than per call: what this
-    # machine can run was resolved once, when the host started, and a set built
-    # on every call would be the same set every time.
-    published = tools_for(tuple(runnable.language for runnable in reach.registry.runnables))
+    # Settled once, when the connection is answered, off `capable_languages`
+    # — LAUNCHERS, unconditionally — rather than off what this particular
+    # machine happened to discover at boot. Machine discovery is exactly what
+    # decided this before Task 6's follow-up: `reach.registry.runnables`
+    # never grows an `r` entry back once an environment is built, so nothing
+    # could ever publish `execute_r_cell` in the first place — no MCP tool,
+    # no way to mint a first R cell, whatever a session's own confinement
+    # held. Capability in principle has no such gap: it is a fact about this
+    # host's own code, not about this run of it, so it needs settling only
+    # once for the same reason the old comment gave, and never needs
+    # resettling as environments come and go.
+    published = tools_for(reach.registry.capable_languages)
     named = {tool.name for tool in published}
     runners = {tool.name: language for language, tool in _BY_LANGUAGE.items()}
     # Which tools may be addressed at an environment, read off the very

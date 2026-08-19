@@ -21,7 +21,7 @@ export const NO_MACHINE =
  * `nameTask` belonging to `taskNamingApi`, and
  * so are the invite, offboarding and settings methods — `accountApi` and
  * `settingsApi` own those — and so are the customization-engine and
- * research-group methods, which `configSurfaceApi` owns, and so are pairing
+ * group methods, which `configSurfaceApi` owns, and so are pairing
  * and the machine list, which `machinesApi` owns, and so are `startRun`,
  * `submitRunDecision` and `runHistory`, which `sessionsApi` owns, and so are
  * the kernel and notebook methods, which `kernelsApi` owns, and so are the
@@ -49,10 +49,9 @@ export function absentApi(
   | "getSettings" | "setTheme"
   | "listSkills" | "createSkill" | "setSkillEnabled"
   | "listAgents" | "upsertAgent"
-  | "listWorkflows" | "upsertWorkflow" | "runWorkflow"
   | "listConnectors" | "addConnector" | "setConnectorEnabled" | "setConnectorSkipApprovals"
   | "connectorCatalog" | "listConnectorTools"
-  | "listResearchGroups" | "createResearchGroup"
+  | "listGroups" | "createGroup"
   | "listMachines" | "listAgentClis" | "pairMachine" | "removeMachine"
   | "startRun" | "submitRunDecision" | "runHistory" | "revertTurn"
   | "listRunningKernels" | "computeSnapshot" | "taskNotebook" | "kernelExecute" | "kernelInterrupt" | "kernelStop" | "kernelRestart"

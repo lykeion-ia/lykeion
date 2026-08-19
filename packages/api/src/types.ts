@@ -39,51 +39,9 @@ export const STAGE_LABELS: Record<Stage, string> = {
 };
 
 /**
- * The field a Workflow belongs to (kebab-case on the wire).
+ * The phases of the method spine (kebab-case on the wire).
  *
- * Closed, like `Stage`. The Workflows list groups on it, and a grouping keyed
- * on free text has as many groups as there are spellings of "genomics".
- */
-export type Discipline =
-  | "general"
-  | "biology"
-  | "chemistry"
-  | "physics"
-  | "neuroscience"
-  | "medicine"
-  | "earth-science"
-  | "computation";
-
-/** All disciplines, in the order the Workflows list groups them. `general`
- * leads because it is the cross-disciplinary bucket rather than a field. */
-export const DISCIPLINES: Discipline[] = [
-  "general",
-  "biology",
-  "chemistry",
-  "physics",
-  "neuroscience",
-  "medicine",
-  "earth-science",
-  "computation",
-];
-
-/** Human labels for the disciplines. */
-export const DISCIPLINE_LABELS: Record<Discipline, string> = {
-  general: "General",
-  biology: "Biology",
-  chemistry: "Chemistry",
-  physics: "Physics",
-  neuroscience: "Neuroscience",
-  medicine: "Medicine",
-  "earth-science": "Earth science",
-  computation: "Computation",
-};
-
-/**
- * The phases of the method spine a Workflow is cut from (kebab-case on the
- * wire).
- *
- * A Workflow declares its own ordered subset. A literature summary has no
+ * A procedure declares its own ordered subset. A literature summary has no
  * pre-registration and no reproducible-compute setup, and showing those greyed
  * out would assert a step that was skipped rather than one that does not apply.
  */
@@ -102,7 +60,7 @@ export type MethodPhase =
 /**
  * Every phase, in canonical spine order.
  *
- * A Workflow's own `phases` is a subsequence of this, never a reordering: a
+ * A procedure's own `phases` is a subsequence of this, never a reordering: a
  * procedure that verified before it executed would describe work nobody does.
  */
 export const METHOD_PHASES: MethodPhase[] = [
@@ -136,8 +94,8 @@ export const METHOD_PHASE_LABELS: Record<MethodPhase, string> = {
  * The Skill each phase runs on, by `Skill.name`.
  *
  * A phase carries no instructions of its own — it names a Skill that does, so
- * editing that Skill changes every Workflow reaching that phase. One place to
- * write the method down.
+ * editing that Skill changes every procedure reaching that phase. One place
+ * to write the method down.
  */
 export const METHOD_PHASE_SKILL: Record<MethodPhase, string> = {
   frame: "framing-questions",
@@ -152,7 +110,7 @@ export const METHOD_PHASE_SKILL: Record<MethodPhase, string> = {
   report: "reporting-and-archiving",
 };
 
-/** The phases that apply to any procedure at all: what a new Workflow starts
+/** The phases that apply to any procedure at all: what a new procedure starts
  * with, and what a stored record carrying no phases reads as. */
 export const CORE_PHASES: MethodPhase[] = [
   "frame",

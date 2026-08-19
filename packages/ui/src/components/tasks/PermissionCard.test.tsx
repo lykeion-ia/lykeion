@@ -297,6 +297,93 @@ describe("PermissionCard — an environment", () => {
     expect(screen.getByText(/anndata/)).toBeInTheDocument();
   });
 
+  it("names the language of the environment being created, where it was sent", () => {
+    // The name says nothing about which package set is about to be
+    // installed on every machine in this lab. This card is the empty-package
+    // case on purpose: with no list to read, the language is the only thing
+    // on the card that distinguishes a conda R environment from a uv Python
+    // one, and without it a researcher is approving a name.
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_environments",
+          access: {
+            kind: "environment",
+            target: { name: "rstats", packages: [], language: "r" },
+          },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    expect(screen.getByText("Create R environment rstats?")).toBeInTheDocument();
+  });
+
+  it("names the language on the card that installs software, not only the one that declares it", () => {
+    // This card is the consequential one: creating declares a name and
+    // installs nothing, while this puts packages on every machine in the
+    // lab. It read "Add ggplot2 to rstats?" and said nothing about what
+    // `rstats` was — less than the card for an empty environment said.
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_packages",
+          access: {
+            kind: "environment",
+            target: { name: "rstats", packages: ["ggplot2"], language: "r" },
+          },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    expect(
+      screen.getByText("Add ggplot2 to the R environment rstats?"),
+    ).toBeInTheDocument();
+  });
+
+  it("still asks the old question when no language reached the card", () => {
+    // A session this machine never described that environment to sends none,
+    // and the wording falls back exactly as it was rather than guessing.
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_packages",
+          access: { kind: "environment", target: { name: "crispr", packages: ["scanpy"] } },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    expect(screen.getByText("Add scanpy to crispr?")).toBeInTheDocument();
+  });
+
+  it("names no language on a card that carried none", () => {
+    // A daemon older than the R phase sends no language. Rendering "Python"
+    // over its silence would be this lab asserting something it was never
+    // told — absent is absent, and the card says only what it knows.
+    //
+    // Said plainly: this passes identically against the code before the
+    // language was added, and cannot be observed red. It is a
+    // no-regression guard on the old wording, not evidence for the new
+    // behaviour — the test above it is that.
+    render(
+      <PermissionCard
+        request={{
+          id: "p1",
+          tool: "manage_environments",
+          access: { kind: "environment", target: { name: "crispr", packages: ["scanpy"] } },
+        }}
+        onAllow={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    expect(screen.getByText("Create environment crispr?")).toBeInTheDocument();
+  });
+
   it("offers no standing grant to install software", async () => {
     const user = userEvent.setup();
     render(
