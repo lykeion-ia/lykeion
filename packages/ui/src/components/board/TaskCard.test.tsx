@@ -1,14 +1,14 @@
 import { afterEach, expect, it } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createInMemoryApi, type Study, type Task } from "@lykeion/api";
+import { createInMemoryApi, type Research, type Task } from "@lykeion/api";
 import { ApiProvider } from "../../api/ApiContext";
 import { RouterProvider } from "../../router";
 import { TaskCard } from "./TaskCard";
 
 afterEach(cleanup);
 
-const study: Study = {
+const research: Research = {
   id: "s1",
   key: "AAA",
   title: "Alpha",
@@ -21,7 +21,7 @@ function tk(over: Partial<Task> = {}): Task {
   return {
     id: "t1",
     number: 3,
-    studyId: "s1",
+    researchId: "s1",
     stage: "methods",
     title: "Preprocess traces",
     status: "in-progress",
@@ -49,7 +49,7 @@ it("renders code, title, label, links count, date and subtask progress", async (
   render(
     <ApiProvider api={createInMemoryApi()}>
       <RouterProvider>
-        <TaskCard task={tk()} study={study} />
+        <TaskCard task={tk()} research={research} />
       </RouterProvider>
     </ApiProvider>,
   );
@@ -73,7 +73,7 @@ it("omits the footer when a task has no metadata", async () => {
             subtasks: [],
             targetDate: undefined,
           })}
-          study={study}
+          research={research}
         />
       </RouterProvider>
     </ApiProvider>,
@@ -90,7 +90,7 @@ it("fires onEdit without navigating", async () => {
       <RouterProvider>
         <TaskCard
           task={tk()}
-          study={study}
+          research={research}
           onEdit={(t) => (editedId = t.id)}
         />
       </RouterProvider>

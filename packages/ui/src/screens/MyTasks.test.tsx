@@ -48,28 +48,28 @@ it("My Tasks shows an unfiled task assigned to me", async () => {
     title: "Book the confocal before the grant deadline",
     assignees: [{ kind: "user", userId: me.id }],
   });
-  expect(loose.studyId).toBeUndefined();
+  expect(loose.researchId).toBeUndefined();
 
   render(<App api={api} />);
   await user.click(await screen.findByRole("link", { name: /My Tasks/i }));
 
-  // A task with no Study resolves to no row in the study lookup. Rendering
+  // A task with no Research resolves to no row in the research lookup. Rendering
   // that as nothing would take assigned work off my own queue.
   expect(
     await screen.findByText("Book the confocal before the grant deadline"),
   ).toBeInTheDocument();
 });
 
-it("My Tasks keeps the work of an archived study", async () => {
+it("My Tasks keeps the work of an archived research", async () => {
   const user = userEvent.setup();
   const api = createInMemoryApi();
-  const cmp = (await api.listStudies()).find((s) => s.key === "CMP")!;
-  await api.archiveStudy(cmp.id);
+  const cmp = (await api.listResearches()).find((s) => s.key === "CMP")!;
+  await api.archiveResearch(cmp.id);
 
   render(<App api={api} />);
   await user.click(await screen.findByRole("link", { name: /My Tasks/i }));
 
-  // Archiving takes the Study out of the Studies list; the unfinished work
+  // Archiving takes the Research out of the Researches list; the unfinished work
   // assigned to me is still mine to do.
   expect(
     await screen.findByText("Quantify tuning drift after deprivation"),

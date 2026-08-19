@@ -13,9 +13,9 @@ import userEvent from "@testing-library/user-event";
 import { createInMemoryApi, type LykeionApi } from "@lykeion/api";
 import App from "../App";
 
-// A Study with several Tasks, opened on one of them, so the sidebar has rows
+// A Research with several Tasks, opened on one of them, so the sidebar has rows
 // and there is somewhere to land after the open Task is deleted.
-const ROUTE = "#/studies/s_cmp/tasks/t_3";
+const ROUTE = "#/researches/s_cmp/tasks/t_3";
 
 beforeEach(cleanup);
 
@@ -36,7 +36,7 @@ describe("deleting a Task from the sidebar", () => {
     render(<App api={{ ...api, deleteTask } as LykeionApi} />);
     await screen.findByTestId("task-surface");
 
-    const doomed = (await api.getStudy("s_cmp")).tasks[1]!;
+    const doomed = (await api.getResearch("s_cmp")).tasks[1]!;
     await chooseDelete(user, doomed.title);
 
     expect(
@@ -56,7 +56,7 @@ describe("deleting a Task from the sidebar", () => {
     render(<App api={api} />);
     await screen.findByTestId("task-surface");
 
-    const doomed = (await api.getStudy("s_cmp")).tasks[1]!;
+    const doomed = (await api.getResearch("s_cmp")).tasks[1]!;
     await chooseDelete(user, doomed.title);
 
     const dialog = await screen.findByRole("dialog", { name: /delete task/i });
@@ -72,8 +72,8 @@ describe("deleting a Task from the sidebar", () => {
     render(<App api={{ ...api, deleteTask } as LykeionApi} />);
     await screen.findByTestId("task-surface");
 
-    const doomed = (await api.getStudy("s_cmp")).tasks[1]!;
-    const before = (await api.getStudy("s_cmp")).tasks.length;
+    const doomed = (await api.getResearch("s_cmp")).tasks[1]!;
+    const before = (await api.getResearch("s_cmp")).tasks.length;
     await chooseDelete(user, doomed.title);
     await screen.findByRole("dialog", { name: /delete task/i });
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -82,7 +82,7 @@ describe("deleting a Task from the sidebar", () => {
       expect(screen.queryByRole("dialog", { name: /delete task/i })).toBeNull(),
     );
     expect(deleteTask).not.toHaveBeenCalled();
-    expect((await api.getStudy("s_cmp")).tasks.length).toBe(before);
+    expect((await api.getResearch("s_cmp")).tasks.length).toBe(before);
   });
 
   it("deletes the Task once the confirmation is answered", async () => {
@@ -92,14 +92,14 @@ describe("deleting a Task from the sidebar", () => {
     render(<App api={api} />);
     await screen.findByTestId("task-surface");
 
-    const doomed = (await api.getStudy("s_cmp")).tasks[1]!;
-    const before = (await api.getStudy("s_cmp")).tasks.length;
+    const doomed = (await api.getResearch("s_cmp")).tasks[1]!;
+    const before = (await api.getResearch("s_cmp")).tasks.length;
     await chooseDelete(user, doomed.title);
     const dialog = await screen.findByRole("dialog", { name: /delete task/i });
     await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     await waitFor(async () =>
-      expect((await api.getStudy("s_cmp")).tasks.length).toBe(before - 1),
+      expect((await api.getResearch("s_cmp")).tasks.length).toBe(before - 1),
     );
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: /delete task/i })).toBeNull(),
@@ -123,7 +123,7 @@ describe("deleting a Task from the sidebar", () => {
     render(<App api={refusing} />);
     await screen.findByTestId("task-surface");
 
-    const doomed = (await api.getStudy("s_cmp")).tasks[1]!;
+    const doomed = (await api.getResearch("s_cmp")).tasks[1]!;
     await chooseDelete(user, doomed.title);
     const dialog = await screen.findByRole("dialog", { name: /delete task/i });
     await user.click(within(dialog).getByRole("button", { name: "Delete" }));

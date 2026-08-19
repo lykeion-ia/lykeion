@@ -62,7 +62,7 @@ function renderWithSubmenu(onSelect: () => void) {
         {
           id: "move",
           icon: PlusIcon,
-          label: "Move to study",
+          label: "Move to research",
           submenu: [{ id: "s1", icon: PlusIcon, label: "Plasticity", onSelect }],
         },
       ]}
@@ -84,7 +84,7 @@ it("opens a submenu on hover and fires its nested item, closing both levels", as
 
   // The row announces the second level and keeps it shut until asked, so a
   // reader scanning the menu is not handed a list they did not open.
-  const parent = screen.getByRole("menuitem", { name: /Move to study/ });
+  const parent = screen.getByRole("menuitem", { name: /Move to research/ });
   expect(parent).toHaveAttribute("aria-haspopup", "menu");
   expect(parent).toHaveAttribute("aria-expanded", "false");
   expect(screen.queryByRole("menuitem", { name: /Plasticity/ })).toBeNull();
@@ -106,7 +106,7 @@ it("opens a submenu from the keyboard, so the flyout is not hover-only", async (
   renderWithSubmenu(onSelect);
   await user.click(screen.getByRole("button", { name: "Open" }));
 
-  screen.getByRole("menuitem", { name: /Move to study/ }).focus();
+  screen.getByRole("menuitem", { name: /Move to research/ }).focus();
   await user.keyboard("{ArrowRight}");
 
   // Focus follows the flyout open — otherwise the next key would go to the
@@ -122,7 +122,7 @@ it("opens an end-aligned menu's submenu to the right", async () => {
   const user = userEvent.setup();
   renderWithSubmenu(vi.fn());
   await user.click(screen.getByRole("button", { name: "Open" }));
-  await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+  await user.hover(screen.getByRole("menuitem", { name: /Move to research/ }));
 
   // `align` anchors the first panel to its trigger; it does not reverse the
   // flyout, which opens rightward until the viewport's right edge runs out.
@@ -139,7 +139,7 @@ it("floats its panels free of the pane they open in", async () => {
   const user = userEvent.setup();
   renderWithSubmenu(vi.fn());
   await user.click(screen.getByRole("button", { name: "Open" }));
-  await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+  await user.hover(screen.getByRole("menuitem", { name: /Move to research/ }));
 
   for (const panel of screen.getAllByRole("menu"))
     expect(panel.className).toContain("fixed");
@@ -152,7 +152,7 @@ it("portals its panels out of the trigger's tree", async () => {
   const user = userEvent.setup();
   const { container } = renderWithSubmenu(vi.fn());
   await user.click(screen.getByRole("button", { name: "Open" }));
-  await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+  await user.hover(screen.getByRole("menuitem", { name: /Move to research/ }));
 
   for (const panel of screen.getAllByRole("menu")) {
     expect(container).not.toContainElement(panel);
@@ -169,7 +169,7 @@ it("selects through a portaled panel instead of dismissing itself", async () => 
   const onSelect = vi.fn();
   renderWithSubmenu(onSelect);
   await user.click(screen.getByRole("button", { name: "Open" }));
-  await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+  await user.hover(screen.getByRole("menuitem", { name: /Move to research/ }));
   await user.click(screen.getByRole("menuitem", { name: /Plasticity/ }));
 
   expect(onSelect).toHaveBeenCalledTimes(1);

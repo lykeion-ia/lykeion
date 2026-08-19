@@ -22,7 +22,7 @@ import {
 } from "@lykeion/api";
 import App from "../App";
 
-const ROUTE = "#/studies/s_cmp/tasks/t_3";
+const ROUTE = "#/researches/s_cmp/tasks/t_3";
 
 function cli(id: string, name: string): AgentCli {
   return {

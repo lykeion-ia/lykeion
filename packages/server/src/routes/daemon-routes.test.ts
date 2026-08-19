@@ -732,7 +732,7 @@ it("a report records the one entry when the kernel floor or the process-visibili
   expect(changeLogCount(store)).toBe(3);
 });
 
-it("names which of the Studies and Tasks a machine asked about are gone", () => {
+it("names which of the Researches and Tasks a machine asked about are gone", () => {
   const store = freshStore();
   insertPairedMachine(store, "a-real-token");
   const ownerId = store.get(`SELECT id FROM users LIMIT 1`)!.id as string;

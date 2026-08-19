@@ -1,8 +1,8 @@
 /**
- * A one-shot hand-off for a run started from a Study's composer: the Study
+ * A one-shot hand-off for a run started from a Research's composer: the Research
  * surface mints a Task, stashes the first prompt here, then navigates to that
  * Task's route, where the Task surface picks it up and auto-starts the run
- * (the transition from a composer on the Study page to the full chat). Keyed
+ * (the transition from a composer on the Research page to the full chat). Keyed
  * by task id — the Task is the chat, so there is nothing else to key on.
  */
 export interface PendingRun {

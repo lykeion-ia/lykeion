@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { createInMemoryApi, type LykeionApi, type RunDecision } from "@lykeion/api";
 import App from "../App";
 
-const ROUTE = "#/studies/s_cmp/tasks/t_3";
+const ROUTE = "#/researches/s_cmp/tasks/t_3";
 
 beforeEach(cleanup);
 

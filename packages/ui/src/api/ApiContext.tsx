@@ -36,7 +36,7 @@ export const DirectoryContext = createContext<Directory | null>(null);
  * The one cross-screen invalidation signal: a write happened somewhere in the
  * app, and any surface whose data could have changed should read again. A
  * screen too far from the write to be told directly (the Rail's global New
- * task button, for instance, has no idea a Studies row exists) still shares
+ * task button, for instance, has no idea a Researches row exists) still shares
  * this, because every screen sits under the same `<ApiProvider>`.
  *
  * `version` is a dependency-list value: put it where a `nonce` used to go.

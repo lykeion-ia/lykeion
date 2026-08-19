@@ -30,12 +30,12 @@ describe("routeLabel", () => {
     expect(routeLabel({ name: "settings", tab: "skills" })).toBe("Settings");
   });
 
-  it("gives a Task and a Study the generic name of their kind", () => {
+  it("gives a Task and a Research the generic name of their kind", () => {
     // A placeholder until the screen that read the subject calls
     // `reconcileLabel` with its real title. It shows on a cold entry only.
-    expect(routeLabel({ name: "task", studyId: "s", taskId: "t" })).toBe("Task");
+    expect(routeLabel({ name: "task", researchId: "s", taskId: "t" })).toBe("Task");
     expect(routeLabel({ name: "unfiled-task", taskId: "t" })).toBe("Task");
-    expect(routeLabel({ name: "study", studyId: "s" })).toBe("Study");
+    expect(routeLabel({ name: "research", researchId: "s" })).toBe("Research");
   });
 
   it("names an Expert by the id, which needs no read", () => {
@@ -58,10 +58,10 @@ describe("routeGlyph", () => {
     expect(routeGlyph({ name: "machines" })).toBe(MonitorIcon);
   });
 
-  it("marks a Study and its Tasks with the Study glyph", () => {
-    expect(routeGlyph({ name: "studies" })).toBe(FlaskIcon);
-    expect(routeGlyph({ name: "study", studyId: "s" })).toBe(FlaskIcon);
-    expect(routeGlyph({ name: "task", studyId: "s", taskId: "t" })).toBe(
+  it("marks a Research and its Tasks with the Research glyph", () => {
+    expect(routeGlyph({ name: "researches" })).toBe(FlaskIcon);
+    expect(routeGlyph({ name: "research", researchId: "s" })).toBe(FlaskIcon);
+    expect(routeGlyph({ name: "task", researchId: "s", taskId: "t" })).toBe(
       FlaskIcon,
     );
     expect(routeGlyph({ name: "unfiled-task", taskId: "t" })).toBe(FlaskIcon);

@@ -450,7 +450,7 @@ function heartbeat(req: DaemonRequest): DaemonResult {
 }
 
 /**
- * Which of the Studies and Tasks a machine holds a working directory for
+ * Which of the Researches and Tasks a machine holds a working directory for
  * this lab no longer has. A Task's directory holds the work of every turn
  * that Task has run, so a machine keeps it for as long as the Task exists
  * rather than ageing it out on a timer; this is how it finds out that one
@@ -462,6 +462,9 @@ function heartbeat(req: DaemonRequest): DaemonResult {
 function workspaces(req: DaemonRequest): DaemonResult {
   const machine = resolveMachine(req.store, req.authorization);
   if (!machine) return { status: 401, json: { error: "no such machine" } };
+  // `studyIds`, not `researchIds`: the daemon sends and reads this payload
+  // under the old name, and it names the on-disk workspaces it is asking
+  // about. Same boundary as `RunCommand.studyId`.
   const studyIds = stringArrayField(req.body, "studyIds").filter(
     (id) => !req.store.get(`SELECT id FROM studies WHERE id = ?`, [id]),
   );

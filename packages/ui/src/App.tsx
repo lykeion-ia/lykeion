@@ -140,7 +140,7 @@ export default function App({ api }: { api?: LykeionApi }) {
   // than in the gate because it is the only place that has both the API to
   // ask with and a single callback fired exactly once per sign-in — and
   // because a rule expressed as routing instead would be unable to tell
-  // `#/studies` typed by the router's default apart from `#/studies` clicked
+  // `#/researches` typed by the router's default apart from `#/researches` clicked
   // in the rail, and would bounce anyone who went there on purpose.
   const signedIn = useCallback(() => {
     identityChanged();

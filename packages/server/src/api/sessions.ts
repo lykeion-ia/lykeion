@@ -104,10 +104,10 @@ export function sessionsApi(deps: Deps): SessionsApi {
 
       const task = store.get(`SELECT study_id FROM tasks WHERE id = ?`, [input.taskId]);
       if (!task) throw new LykeionError("not-found", `no such task: ${input.taskId}`);
-      if (task.study_id !== input.studyId)
+      if (task.study_id !== input.researchId)
         throw new LykeionError(
           "invalid",
-          `task ${input.taskId} is not in a Study — file it into one before starting a run`,
+          `task ${input.taskId} is not in a Research — file it into one before starting a run`,
         );
 
       if (healthFor(resolved.lastSeenTs, now()) === "offline")
@@ -138,7 +138,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
           working?.sessionId ??
           liveSessionFor(store, input.taskId, resolved.machineId, resolved.agent) ??
           openSession(store, {
-            studyId: input.studyId,
+            researchId: input.researchId,
             machineId: resolved.machineId,
             agent: resolved.agent,
             openedBy: actor.userId,
@@ -162,11 +162,11 @@ export function sessionsApi(deps: Deps): SessionsApi {
         return { runId, sessionId };
       });
 
-      const grants = listGrants(store, input.studyId, resolved.machineId);
+      const grants = listGrants(store, input.researchId, resolved.machineId);
       const command: RunCommand = {
         type: "start-run",
         runId,
-        studyId: input.studyId,
+        studyId: input.researchId,
         taskId: input.taskId,
         sessionId,
         agent: resolved.agent,
@@ -287,7 +287,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
       const command: RunCommand = {
         type: "revert",
         runId,
-        studyId: session.studyId,
+        studyId: session.researchId,
         taskId,
         sessionId: turn.session_id as string,
       };
@@ -404,9 +404,9 @@ export function sessionsApi(deps: Deps): SessionsApi {
       if (!turnIsActive(store, runId)) return;
       // Refused by name here, on the way in, rather than narrowed to
       // something the researcher did not ask for: a "global" scope means
-      // every Study this lab holds, and the grant store this lab keeps is
-      // scoped to one Study at a time — there is no row it could write that
-      // would honestly mean "every Study."
+      // every Research this lab holds, and the grant store this lab keeps is
+      // scoped to one Research at a time — there is no row it could write that
+      // would honestly mean "every Research."
       if (
         decision.action === "permission" &&
         decision.decision.decision === "allow" &&
@@ -414,7 +414,7 @@ export function sessionsApi(deps: Deps): SessionsApi {
       )
         throw new LykeionError(
           "invalid",
-          `a "global" grant would reach every Study in this lab — grant one Study at a time instead`,
+          `a "global" grant would reach every Research in this lab — grant one Research at a time instead`,
         );
       runs.enqueue(machineForTurn(store, runId)!, { type: "decision", runId, decision });
     },

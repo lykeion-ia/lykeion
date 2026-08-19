@@ -9,13 +9,13 @@ afterEach(cleanup);
 
 async function seed() {
   const api = createInMemoryApi();
-  const [study] = await api.listStudies();
-  const task = (await api.getStudy(study.id)).tasks[0];
-  return { api, study, task };
+  const [research] = await api.listResearches();
+  const task = (await api.getResearch(research.id)).tasks[0];
+  return { api, research, task };
 }
 
 it("edits labels + subtasks and persists them through updateTask", async () => {
-  const { api, study, task } = await seed();
+  const { api, research, task } = await seed();
   const user = userEvent.setup();
   let saved: Task | null = null;
 
@@ -23,7 +23,7 @@ it("edits labels + subtasks and persists them through updateTask", async () => {
     <ApiProvider api={api}>
       <TaskDetailsModal
         task={task}
-        study={study}
+        research={research}
         onClose={() => {}}
         onSaved={(t) => (saved = t)}
       />
@@ -43,7 +43,7 @@ it("edits labels + subtasks and persists them through updateTask", async () => {
   expect(saved!.subtasks?.map((s) => s.title)).toContain("Write it up");
 
   // Persisted in the data layer, not just local state.
-  const reloaded = (await api.getStudy(study.id)).tasks.find(
+  const reloaded = (await api.getResearch(research.id)).tasks.find(
     (t) => t.id === task.id,
   );
   expect(reloaded?.labels).toContain("computational");

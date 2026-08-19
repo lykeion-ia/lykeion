@@ -34,7 +34,7 @@ const CLIS: AgentCli[] = [
 ];
 
 // A fresh (todo, never-run) task, opened straight on its conversation.
-const TODO_TASK = "#/studies/s_cmp/tasks/t_5";
+const TODO_TASK = "#/researches/s_cmp/tasks/t_5";
 
 /** A settled turn that ran on one named agent — the durable record the Task
  *  surface reads to know which conversation it is continuing. */
@@ -70,7 +70,7 @@ beforeEach(() => {
 
 describe("Agent selection", () => {
   /**
-   * The Task surface carries no agent dock — the dock lives on the Study's
+   * The Task surface carries no agent dock — the dock lives on the Research's
    * composer, which is where a piece of work is started from. With no turn
    * behind it there is nothing for this Task to be mid-conversation with, so
    * the opening send takes the first AVAILABLE CLI: a send that silently went
@@ -181,13 +181,13 @@ describe("Agent selection", () => {
 
   /**
    * A send from the STUDY composer takes a different path to the same
-   * effect: `StudyScreen.send()` mints a Task, stashes the prompt (and the
+   * effect: `ResearchScreen.send()` mints a Task, stashes the prompt (and the
    * CLI) via `stashRun`, and navigates to the Task surface, where
    * `useTaskRun`'s deferred handoff (`useTaskRun.ts:96-111`) auto-starts it.
    * The dock's own resolved CLI id, not the raw dock-selection state, is
    * what has to survive that whole handoff and reach `startRun`.
    */
-  it("routes a Study composer send to the effective CLI by default", async () => {
+  it("routes a Research composer send to the effective CLI by default", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
     const agents: (string | undefined)[] = [];
@@ -199,7 +199,7 @@ describe("Agent selection", () => {
         return api.startRun(input);
       },
     };
-    window.location.hash = "#/studies/s_cmp";
+    window.location.hash = "#/researches/s_cmp";
     render(<App api={spied} />);
 
     // No click in the dock — Claude Code is the default-selected pill.
@@ -213,7 +213,7 @@ describe("Agent selection", () => {
     expect(agents).toEqual(["claude"]);
   });
 
-  it("routes a Study composer send to the CLI picked in the dock", async () => {
+  it("routes a Research composer send to the CLI picked in the dock", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
     const agents: (string | undefined)[] = [];
@@ -225,7 +225,7 @@ describe("Agent selection", () => {
         return api.startRun(input);
       },
     };
-    window.location.hash = "#/studies/s_cmp";
+    window.location.hash = "#/researches/s_cmp";
     render(<App api={spied} />);
 
     await user.click(

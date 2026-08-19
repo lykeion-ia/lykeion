@@ -1,7 +1,7 @@
 /**
- * The Study page: what a research line shows when you open it.
+ * The Research page: what a research line shows when you open it.
  *
- * This page is a click-path to every Task a Study holds, whoever it is
+ * This page is a click-path to every Task a Research holds, whoever it is
  * assigned to and whether or not it is finished. My Tasks is scoped to your
  * own unfinished work, so it is not one. Role/text-based, agnostic to the
  * markup.
@@ -39,12 +39,12 @@ beforeEach(() => {
   resetTabs();
 });
 
-/** Open a Study directly, the way the URL bar does — including for a second
+/** Open a Research directly, the way the URL bar does — including for a second
  *  call within the same test (some of these re-open after a `cleanup()` to
- *  simulate landing fresh on another Study), which is why this resets the
+ *  simulate landing fresh on another Research), which is why this resets the
  *  once-per-load adopt flag itself rather than leaving that to `beforeEach`. */
-function openStudy(studyId: string, api = createInMemoryApi()) {
-  window.location.hash = `#/studies/${studyId}`;
+function openResearch(researchId: string, api = createInMemoryApi()) {
+  window.location.hash = `#/researches/${researchId}`;
   resetPageLoad();
   render(<App api={api} />);
   return api;
@@ -57,33 +57,33 @@ const taskList = () => screen.getByRole("region", { name: "All tasks" });
  * there is one destination — the work and the conversation about it are the
  * same page.
  */
-function rowHref(studyId: string, taskId: string) {
-  return `#/studies/${studyId}/tasks/${taskId}`;
+function rowHref(researchId: string, taskId: string) {
+  return `#/researches/${researchId}/tasks/${taskId}`;
 }
 
-describe("the Study page", () => {
-  it("heads the page with the Study's title and description", async () => {
-    const api = openStudy(CMP);
-    const { study } = await api.getStudy(CMP);
+describe("the Research page", () => {
+  it("heads the page with the Research's title and description", async () => {
+    const api = openResearch(CMP);
+    const { research } = await api.getResearch(CMP);
 
     expect(
-      await screen.findByRole("heading", { name: study.title, level: 1 }),
+      await screen.findByRole("heading", { name: research.title, level: 1 }),
     ).toBeInTheDocument();
-    expect(screen.getByText(study.description!)).toBeInTheDocument();
+    expect(screen.getByText(research.description!)).toBeInTheDocument();
   });
 
   it("carries the same breadcrumb the Task surface carries, so opening a Task does not move it", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
-    const { study, tasks } = await api.getStudy(CMP);
+    const api = openResearch(CMP);
+    const { research, tasks } = await api.getResearch(CMP);
     const crumb = () => screen.getByRole("navigation", { name: "Breadcrumb" });
 
     await waitFor(() =>
-      expect(within(crumb()).getByText(study.title)).toBeInTheDocument(),
+      expect(within(crumb()).getByText(research.title)).toBeInTheDocument(),
     );
     expect(
-      within(crumb()).getByRole("link", { name: "Studies" }),
-    ).toHaveAttribute("href", "#/studies");
+      within(crumb()).getByRole("link", { name: "Researches" }),
+    ).toHaveAttribute("href", "#/researches");
 
     // The strip the trail sits in, which is what fixes where it lands on the
     // page — its height, its padding, its alignment. Held across the click
@@ -102,50 +102,50 @@ describe("the Study page", () => {
     // unchanged across the click that opens a run.
     await user.click(within(taskList()).getByText(tasks[0].title).closest("a")!);
     expect(await screen.findByTestId("task-surface")).toBeInTheDocument();
-    expect(within(crumb()).getByText(study.title)).toBeInTheDocument();
+    expect(within(crumb()).getByText(research.title)).toBeInTheDocument();
     expect(
-      within(crumb()).getByRole("link", { name: "Studies" }),
-    ).toHaveAttribute("href", "#/studies");
+      within(crumb()).getByRole("link", { name: "Researches" }),
+    ).toHaveAttribute("href", "#/researches");
     expect(geometry(crumb().parentElement!)).toBe(strip);
   });
 
-  it("takes the Study's name in a Task's breadcrumb back up to the Study", async () => {
+  it("takes the Research's name in a Task's breadcrumb back up to the Research", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
-    const { study } = await api.getStudy(CMP);
-    window.location.hash = `#/studies/${CMP}/tasks/t_3`;
+    const { research } = await api.getResearch(CMP);
+    window.location.hash = `#/researches/${CMP}/tasks/t_3`;
     render(<App api={api} />);
     await screen.findByTestId("task-surface");
 
-    // The way back up from a run: the crumb names the Study it belongs to, and
+    // The way back up from a run: the crumb names the Research it belongs to, and
     // that name is the link to it.
     const crumb = screen.getByRole("navigation", { name: "Breadcrumb" });
-    const up = within(crumb).getByRole("link", { name: study.title });
-    expect(up).toHaveAttribute("href", `#/studies/${CMP}`);
+    const up = within(crumb).getByRole("link", { name: research.title });
+    expect(up).toHaveAttribute("href", `#/researches/${CMP}`);
 
     await user.click(up);
     expect(
-      await screen.findByRole("heading", { name: study.title, level: 1 }),
+      await screen.findByRole("heading", { name: research.title, level: 1 }),
     ).toBeInTheDocument();
   });
 
-  it("leaves the Study's name in its own breadcrumb unlinked — it is the page you are on", async () => {
-    const api = openStudy(CMP);
-    const { study } = await api.getStudy(CMP);
+  it("leaves the Research's name in its own breadcrumb unlinked — it is the page you are on", async () => {
+    const api = openResearch(CMP);
+    const { research } = await api.getResearch(CMP);
     const crumb = await screen.findByRole("navigation", { name: "Breadcrumb" });
 
     await waitFor(() =>
-      expect(within(crumb).getByText(study.title)).toBeInTheDocument(),
+      expect(within(crumb).getByText(research.title)).toBeInTheDocument(),
     );
     expect(
-      within(crumb).queryByRole("link", { name: study.title }),
+      within(crumb).queryByRole("link", { name: research.title }),
     ).not.toBeInTheDocument();
   });
 
-  it("lists every Task in the Study in number order, not only the ones assigned to me", async () => {
-    const api = openStudy(CMP);
-    const all = (await api.getStudy(CMP)).tasks;
-    const mine = (await api.myWork()).filter((t) => t.studyId === CMP);
+  it("lists every Task in the Research in number order, not only the ones assigned to me", async () => {
+    const api = openResearch(CMP);
+    const all = (await api.getResearch(CMP)).tasks;
+    const mine = (await api.myWork()).filter((t) => t.researchId === CMP);
 
     // The premise: My Tasks genuinely cannot reach all of them. Without this
     // the rest of the test would hold on a page that only showed my own work.
@@ -166,8 +166,8 @@ describe("the Study page", () => {
   });
 
   it("lists the Task nobody is assigned to alongside the rest", async () => {
-    const api = openStudy(CMP);
-    const all = (await api.getStudy(CMP)).tasks;
+    const api = openResearch(CMP);
+    const all = (await api.getResearch(CMP)).tasks;
     const orphans = all.filter((t) => !t.assignees);
     // The premise: exactly one seeded Task has no assignee, and My Tasks —
     // which reads assignment — cannot see it.
@@ -177,16 +177,16 @@ describe("the Study page", () => {
     await screen.findByRole("region", { name: "All tasks" });
     expect(
       within(taskList()).getByText(orphans[0].title).closest("a"),
-    ).toHaveAttribute("href", `#/studies/${CMP}/tasks/t_7`);
+    ).toHaveAttribute("href", `#/researches/${CMP}/tasks/t_7`);
   });
 
   it("opens a Task that is already finished", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
+    const api = openResearch(CMP);
     await screen.findByRole("region", { name: "All tasks" });
 
     // CMP-1 is done, so myWork() drops it.
-    const done = (await api.getStudy(CMP)).tasks.find((t) => t.id === "t_1")!;
+    const done = (await api.getResearch(CMP)).tasks.find((t) => t.id === "t_1")!;
     expect(done.status).toBe("done");
     expect((await api.myWork()).map((t) => t.id)).not.toContain("t_1");
 
@@ -199,10 +199,10 @@ describe("the Study page", () => {
 
   it("opens the Task nobody is assigned to", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
+    const api = openResearch(CMP);
     await screen.findByRole("region", { name: "All tasks" });
 
-    const orphan = (await api.getStudy(CMP)).tasks.find((t) => t.id === "t_7")!;
+    const orphan = (await api.getResearch(CMP)).tasks.find((t) => t.id === "t_7")!;
     expect(orphan.assignees).toBeUndefined();
     expect((await api.myWork()).map((t) => t.id)).not.toContain("t_7");
 
@@ -214,14 +214,14 @@ describe("the Study page", () => {
   });
 
   it("puts the Tasks under the composer, under the name", async () => {
-    openStudy(CMP);
+    openResearch(CMP);
     const tasks = await screen.findByRole("region", { name: "All tasks" });
-    const { study } = await createInMemoryApi().getStudy(CMP);
+    const { research } = await createInMemoryApi().getResearch(CMP);
 
-    // The whole main column, in reading order: the Study is named, then it
+    // The whole main column, in reading order: the Research is named, then it
     // offers the composer, then it shows the work. The composer carries no
     // heading of its own — the page's title is the only thing that asks.
-    const title = screen.getByRole("heading", { name: study.title, level: 1 });
+    const title = screen.getByRole("heading", { name: research.title, level: 1 });
     const composer = screen.getByRole("region", { name: "Start a task" });
     const before = (a: Node, b: Node) =>
       Boolean(
@@ -232,8 +232,8 @@ describe("the Study page", () => {
     expect(before(composer, tasks)).toBe(true);
   });
 
-  it("counts the Study's Tasks across the six scientific stages", async () => {
-    openStudy(CMP);
+  it("counts the Research's Tasks across the six scientific stages", async () => {
+    openResearch(CMP);
     const card = await screen.findByRole("region", {
       name: "Scientific stages",
     });
@@ -253,10 +253,10 @@ describe("the Study page", () => {
     ]);
   });
 
-  it("shows the instructions and writes an edit back to the Study", async () => {
+  it("shows the instructions and writes an edit back to the Research", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
-    const before = (await api.getStudy(CMP)).study.agentContext!;
+    const api = openResearch(CMP);
+    const before = (await api.getResearch(CMP)).research.agentContext!;
 
     const card = await screen.findByRole("region", { name: "Instructions" });
     expect(within(card).getByText(before)).toBeInTheDocument();
@@ -271,7 +271,7 @@ describe("the Study page", () => {
 
     // It reached the core, not just the card's own state.
     await waitFor(async () => {
-      expect((await api.getStudy(CMP)).study.agentContext).toBe(
+      expect((await api.getResearch(CMP)).research.agentContext).toBe(
         "Sessions are registered across days.",
       );
     });
@@ -281,7 +281,7 @@ describe("the Study page", () => {
   });
 
   it("stacks the rail's four cards in order beside the main column", async () => {
-    openStudy(CMP);
+    openResearch(CMP);
     await screen.findByRole("region", { name: "Instructions" });
 
     const labels = screen
@@ -295,7 +295,7 @@ describe("the Study page", () => {
   });
 
   it("offers no control on the cards that have nothing behind them", async () => {
-    openStudy(CMP);
+    openResearch(CMP);
 
     for (const name of ["Memory", "Files"]) {
       const card = await screen.findByRole("region", { name });
@@ -316,27 +316,27 @@ describe("the Study page", () => {
     // The one structural assertion in this file. The alignment the design
     // asks for is produced by where these two boxes sit — each the first
     // thing in its column — so text and roles cannot express it.
-    openStudy(CMP);
+    openResearch(CMP);
     await screen.findByRole("region", { name: "Instructions" });
 
-    const description = document.querySelector(".study-description");
-    const main = document.querySelector(".study-main");
-    const rail = document.querySelector(".study-rail");
+    const description = document.querySelector(".research-description");
+    const main = document.querySelector(".research-main");
+    const rail = document.querySelector(".research-rail");
     expect(description).not.toBeNull();
     expect(main?.firstElementChild).toBe(description);
-    expect(rail?.firstElementChild).toHaveClass("study-rail-panel");
+    expect(rail?.firstElementChild).toHaveClass("research-rail-panel");
 
     // …and the head above the columns keeps the name alone.
-    expect(document.querySelector(".study-head")).not.toContainElement(
+    expect(document.querySelector(".research-head")).not.toContainElement(
       description as HTMLElement,
     );
   });
 
-  it("puts every Task in the workbench on the page of the Study that holds it", async () => {
+  it("puts every Task in the workbench on the page of the Research that holds it", async () => {
     const reference = createInMemoryApi();
-    const studies = await reference.listStudies();
+    const researches = await reference.listResearches();
     const everyTask = (
-      await Promise.all(studies.map((s) => reference.getStudy(s.id)))
+      await Promise.all(researches.map((s) => reference.getResearch(s.id)))
     ).flatMap((d) => d.tasks);
     // Every filed Task in the seed, and the premise this page answers: My
     // Tasks is scoped to your own unfinished work, so some of them have no
@@ -351,15 +351,15 @@ describe("the Study page", () => {
     ).toBeGreaterThan(0);
 
     const seen = new Set<string>();
-    for (const study of studies) {
+    for (const research of researches) {
       cleanup();
-      const api = openStudy(study.id);
+      const api = openResearch(research.id);
       await screen.findByRole("region", { name: "All tasks" });
       const region = taskList();
-      for (const task of (await api.getStudy(study.id)).tasks) {
+      for (const task of (await api.getResearch(research.id)).tasks) {
         // A row, with an href — clicking it is the whole point.
         const row = within(region).getByText(task.title).closest("a");
-        expect(row).toHaveAttribute("href", rowHref(study.id, task.id));
+        expect(row).toHaveAttribute("href", rowHref(research.id, task.id));
         seen.add(task.id);
       }
     }
@@ -368,10 +368,10 @@ describe("the Study page", () => {
 
   it("opens a Task on the Task surface, talked-to or not", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
+    const api = openResearch(CMP);
     // The premise: t_3 has been talked to and t_4 has not — so if the two
     // rows could land in different places, these are the two that would.
-    const tasksOf = async () => (await api.getStudy(CMP)).tasks;
+    const tasksOf = async () => (await api.getResearch(CMP)).tasks;
     const t3 = (await tasksOf()).find((t) => t.id === "t_3")!;
     const t4 = (await tasksOf()).find((t) => t.id === "t_4")!;
     expect(t3.runCount).toBeGreaterThan(0);
@@ -383,79 +383,79 @@ describe("the Study page", () => {
     const talkedTo = within(taskList()).getByText(t3.title);
     expect(talkedTo.closest("a")).toHaveAttribute(
       "href",
-      `#/studies/${CMP}/tasks/t_3`,
+      `#/researches/${CMP}/tasks/t_3`,
     );
     await user.click(talkedTo.closest("a")!);
     expect(await screen.findByTestId("task-surface")).toBeInTheDocument();
 
     // …and so does the one nobody has spoken in. One row, one destination.
     cleanup();
-    openStudy(CMP, api);
+    openResearch(CMP, api);
     await screen.findByRole("region", { name: "All tasks" });
     expect(
       within(taskList()).getByText(t4.title).closest("a"),
-    ).toHaveAttribute("href", `#/studies/${CMP}/tasks/t_4`);
+    ).toHaveAttribute("href", `#/researches/${CMP}/tasks/t_4`);
   });
 
-  it("lists the one Task of a Study nothing has ever run in", async () => {
-    const api = openStudy(ECO);
+  it("lists the one Task of a Research nothing has ever run in", async () => {
+    const api = openResearch(ECO);
     // The premise: nothing here has been talked to at all, so nothing but its
     // Task list can put anything on the page.
     expect(
-      (await api.getStudy(ECO)).tasks.every((t) => t.runCount === 0),
+      (await api.getResearch(ECO)).tasks.every((t) => t.runCount === 0),
     ).toBe(true);
-    const [only] = (await api.getStudy(ECO)).tasks;
+    const [only] = (await api.getResearch(ECO)).tasks;
 
     await screen.findByRole("region", { name: "All tasks" });
     expect(
       within(taskList()).getByText(only.title).closest("a"),
-    ).toHaveAttribute("href", `#/studies/${ECO}/tasks/${only.id}`);
+    ).toHaveAttribute("href", `#/researches/${ECO}/tasks/${only.id}`);
   });
 });
 
 /**
- * What the Study's own name row offers: pinning it to the top of the list,
- * and the three things you can do to the Study itself.
+ * What the Research's own name row offers: pinning it to the top of the list,
+ * and the three things you can do to the Research itself.
  */
-describe("the Study's head actions", () => {
+describe("the Research's head actions", () => {
   const openMenu = async (user: ReturnType<typeof userEvent.setup>) => {
     await user.click(
-      await screen.findByRole("button", { name: "Study actions" }),
+      await screen.findByRole("button", { name: "Research actions" }),
     );
   };
 
-  it("pins the Study, and says so by offering to unpin it", async () => {
+  it("pins the Research, and says so by offering to unpin it", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
+    const api = openResearch(CMP);
 
-    await user.click(await screen.findByRole("button", { name: "Pin study" }));
+    await user.click(await screen.findByRole("button", { name: "Pin research" }));
 
-    // The pin reached the Study, not just the button.
+    // The pin reached the Research, not just the button.
     await waitFor(async () =>
-      expect((await api.getStudy(CMP)).study.pinned).toBe(true),
+      expect((await api.getResearch(CMP)).research.pinned).toBe(true),
     );
     expect(
-      await screen.findByRole("button", { name: "Unpin study" }),
+      await screen.findByRole("button", { name: "Unpin research" }),
     ).toBeInTheDocument();
   });
 
-  it("unpins a Study that was pinned", async () => {
+  it("unpins a Research that was pinned", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
-    await api.updateStudy(CMP, { pinned: true });
-    openStudy(CMP, api);
+    await api.updateResearch(CMP, { pinned: true });
+    openResearch(CMP, api);
 
     await user.click(
-      await screen.findByRole("button", { name: "Unpin study" }),
+      await screen.findByRole("button", { name: "Unpin research" }),
     );
     await waitFor(async () =>
-      expect("pinned" in (await api.getStudy(CMP)).study).toBe(false),
+      expect("pinned" in (await api.getResearch(CMP)).research).toBe(false),
     );
   });
 
   it("offers edit, archive and delete behind the one menu", async () => {
     const user = userEvent.setup();
-    openStudy(CMP);
+    openResearch(CMP);
     await openMenu(user);
 
     const menu = screen.getByRole("menu");
@@ -464,13 +464,13 @@ describe("the Study's head actions", () => {
     expect(within(menu).getByRole("menuitem", { name: /Delete/ })).toBeInTheDocument();
   });
 
-  it("edits every field of the Study through the same form that opens one", async () => {
+  it("edits every field of the Research through the same form that opens one", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
+    const api = openResearch(CMP);
     await openMenu(user);
     await user.click(screen.getByRole("menuitem", { name: /Edit/ }));
 
-    const dialog = await screen.findByRole("dialog", { name: "Edit study" });
+    const dialog = await screen.findByRole("dialog", { name: "Edit research" });
     await user.clear(within(dialog).getByLabelText("Name"));
     await user.type(within(dialog).getByLabelText("Name"), "Renamed line");
     await user.clear(within(dialog).getByLabelText("Description"));
@@ -478,9 +478,9 @@ describe("the Study's head actions", () => {
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(async () => {
-      const { study } = await api.getStudy(CMP);
-      expect(study.title).toBe("Renamed line");
-      expect(study.description).toBe("A new brief.");
+      const { research } = await api.getResearch(CMP);
+      expect(research.title).toBe("Renamed line");
+      expect(research.description).toBe("A new brief.");
     });
     // The page it was edited from shows the edit.
     expect(
@@ -488,18 +488,18 @@ describe("the Study's head actions", () => {
     ).toBeInTheDocument();
   });
 
-  it("archives the Study without throwing you off its page, and offers to restore it", async () => {
-    // `getStudy` still resolves for an archived Study, so ejecting the reader
+  it("archives the Research without throwing you off its page, and offers to restore it", async () => {
+    // `getResearch` still resolves for an archived Research, so ejecting the reader
     // would contradict the contract. It only leaves the list.
     const user = userEvent.setup();
-    const api = openStudy(CMP);
+    const api = openResearch(CMP);
     await openMenu(user);
     await user.click(screen.getByRole("menuitem", { name: /Archive/ }));
 
     await waitFor(async () =>
-      expect((await api.getStudy(CMP)).study.archivedTs).toBeDefined(),
+      expect((await api.getResearch(CMP)).research.archivedTs).toBeDefined(),
     );
-    expect(window.location.hash).toBe(`#/studies/${CMP}`);
+    expect(window.location.hash).toBe(`#/researches/${CMP}`);
 
     await openMenu(user);
     expect(
@@ -508,25 +508,25 @@ describe("the Study's head actions", () => {
     expect(screen.queryByRole("menuitem", { name: /Archive/ })).toBeNull();
   });
 
-  it("deletes the Study behind a confirmation, then lands on the list it left", async () => {
+  it("deletes the Research behind a confirmation, then lands on the list it left", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
+    const api = openResearch(CMP);
     await openMenu(user);
     await user.click(screen.getByRole("menuitem", { name: /Delete/ }));
 
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /Delete/ }));
 
-    await waitFor(() => expect(window.location.hash).toBe("#/studies"));
-    await expect(api.getStudy(CMP)).rejects.toThrow();
+    await waitFor(() => expect(window.location.hash).toBe("#/researches"));
+    await expect(api.getResearch(CMP)).rejects.toThrow();
   });
 });
 
-describe("the chat the Study ships", () => {
+describe("the chat the Research ships", () => {
   it("shows the transcript on the Task that holds it", async () => {
     const api = createInMemoryApi();
     const seeded = await api.getTask("t_3");
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={api} />);
 
     await screen.findByTestId("task-surface");
@@ -543,7 +543,7 @@ describe("the chat the Study ships", () => {
 
   it("names the open Task in the tab bar", async () => {
     const api = createInMemoryApi();
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={api} />);
 
     await screen.findByTestId("task-surface");
@@ -552,46 +552,46 @@ describe("the chat the Study ships", () => {
     ).toBeInTheDocument();
   });
 
-  it("lists the Study's other Tasks in the rail, and opens one", async () => {
+  it("lists the Research's other Tasks in the rail, and opens one", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={api} />);
 
     await screen.findByTestId("task-surface");
     const rail = screen.getByTestId("context-rail");
-    const other = (await api.getStudy(CMP)).tasks.find((t) => t.id === "t_4")!;
+    const other = (await api.getResearch(CMP)).tasks.find((t) => t.id === "t_4")!;
     await user.click(await within(rail).findByText(other.title));
 
     await waitFor(() =>
-      expect(window.location.hash).toBe(`#/studies/${CMP}/tasks/t_4`),
+      expect(window.location.hash).toBe(`#/researches/${CMP}/tasks/t_4`),
     );
   });
 
   it("mints another Task from the rail's New", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
-    const before = (await api.getStudy(CMP)).tasks.length;
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    const before = (await api.getResearch(CMP)).tasks.length;
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={api} />);
 
     await screen.findByTestId("task-surface");
     const rail = screen.getByTestId("context-rail");
     await user.click(within(rail).getByRole("button", { name: "New" }));
 
-    // A new chat in this Study is a new Task in it — one act, one record.
+    // A new chat in this Research is a new Task in it — one act, one record.
     await waitFor(async () =>
-      expect((await api.getStudy(CMP)).tasks.length).toBe(before + 1),
+      expect((await api.getResearch(CMP)).tasks.length).toBe(before + 1),
     );
   });
 });
 
 /**
- * The row menu the Study page's Task list carries: Pin · Rename · Move to
- * study · Delete. The same four the Task surface's sidebar offers, because a
+ * The row menu the Research page's Task list carries: Pin · Rename · Move to
+ * research · Delete. The same four the Task surface's sidebar offers, because a
  * Task row is a Task row wherever a reader meets one.
  */
-describe("a Task row's actions on the Study page", () => {
+describe("a Task row's actions on the Research page", () => {
   /** Open one row's kebab. */
   const openRowMenu = (
     user: ReturnType<typeof userEvent.setup>,
@@ -614,8 +614,8 @@ describe("a Task row's actions on the Study page", () => {
     const base = createInMemoryApi();
     const api: LykeionApi = {
       ...base,
-      async getStudy(studyId) {
-        const detail = await base.getStudy(studyId);
+      async getResearch(researchId) {
+        const detail = await base.getResearch(researchId);
         return {
           ...detail,
           tasks: detail.tasks.map((t, i) => ({
@@ -625,8 +625,8 @@ describe("a Task row's actions on the Study page", () => {
         };
       },
     };
-    openStudy(CMP, api);
-    const { tasks } = await api.getStudy(CMP);
+    openResearch(CMP, api);
+    const { tasks } = await api.getResearch(CMP);
     await screen.findByRole("region", { name: "All tasks" });
 
     const marks = [...taskList().querySelectorAll("[data-agent]")].map((el) =>
@@ -641,8 +641,8 @@ describe("a Task row's actions on the Study page", () => {
     // A Task is a chat before it is anything else, and the seeded lab's Tasks
     // have run on nothing a brand mark exists for — so every row here falls
     // back to the same glyph the rail's conversation control carries.
-    const api = openStudy(CMP);
-    const { tasks } = await api.getStudy(CMP);
+    const api = openResearch(CMP);
+    const { tasks } = await api.getResearch(CMP);
     await screen.findByRole("region", { name: "All tasks" });
 
     expect(taskList().querySelectorAll("[data-agent]")).toHaveLength(0);
@@ -653,8 +653,8 @@ describe("a Task row's actions on the Study page", () => {
 
   it("pins a Task into a Pinned group of its own, under the composer", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
-    const all = (await api.getStudy(CMP)).tasks;
+    const api = openResearch(CMP);
+    const all = (await api.getResearch(CMP)).tasks;
     const last = all[all.length - 1];
     await screen.findByRole("region", { name: "All tasks" });
 
@@ -667,7 +667,7 @@ describe("a Task row's actions on the Study page", () => {
 
     await waitFor(async () =>
       expect(
-        (await api.getStudy(CMP)).tasks.find((t) => t.id === last.id)!.pinned,
+        (await api.getResearch(CMP)).tasks.find((t) => t.id === last.id)!.pinned,
       ).toBe(true),
     );
 
@@ -691,9 +691,9 @@ describe("a Task row's actions on the Study page", () => {
   it("takes the Pinned group away again when the last pin is lifted", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
-    const all = (await api.getStudy(CMP)).tasks;
+    const all = (await api.getResearch(CMP)).tasks;
     await api.updateTask(all[0].id, { pinned: true });
-    openStudy(CMP, api);
+    openResearch(CMP, api);
 
     await screen.findByRole("region", { name: "Pinned" });
     await openRowMenu(user, all[0].title);
@@ -708,8 +708,8 @@ describe("a Task row's actions on the Study page", () => {
 
   it("renames a Task in place", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
-    const first = (await api.getStudy(CMP)).tasks[0];
+    const api = openResearch(CMP);
+    const first = (await api.getResearch(CMP)).tasks[0];
     await screen.findByRole("region", { name: "All tasks" });
 
     await openRowMenu(user, first.title);
@@ -724,29 +724,29 @@ describe("a Task row's actions on the Study page", () => {
 
     await waitFor(async () =>
       expect(
-        (await api.getStudy(CMP)).tasks.find((t) => t.id === first.id)!.title,
+        (await api.getResearch(CMP)).tasks.find((t) => t.id === first.id)!.title,
       ).toBe("Model routing spike"),
     );
   });
 
-  it("moves a Task to another Study, and it leaves this list", async () => {
+  it("moves a Task to another Research, and it leaves this list", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
-    const { study: eco } = await api.getStudy(ECO);
-    const moved = (await api.getStudy(CMP)).tasks[0];
+    const api = openResearch(CMP);
+    const { research: eco } = await api.getResearch(ECO);
+    const moved = (await api.getResearch(CMP)).tasks[0];
     await screen.findByRole("region", { name: "All tasks" });
 
     await openRowMenu(user, moved.title);
-    await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+    await user.hover(screen.getByRole("menuitem", { name: /Move to research/ }));
     await user.click(
       screen.getByRole("menuitem", { name: new RegExp(eco.title) }),
     );
 
-    // Filed under the other Study, and gone from this one — a Task has one
-    // Study, so the move is a move and not a copy.
+    // Filed under the other Research, and gone from this one — a Task has one
+    // Research, so the move is a move and not a copy.
     await waitFor(async () =>
       expect(
-        (await api.getStudy(ECO)).tasks.some((t) => t.id === moved.id),
+        (await api.getResearch(ECO)).tasks.some((t) => t.id === moved.id),
       ).toBe(true),
     );
     await waitFor(() =>
@@ -754,25 +754,25 @@ describe("a Task row's actions on the Study page", () => {
     );
   });
 
-  it("never offers to move a Task to the Study it is already in", async () => {
+  it("never offers to move a Task to the Research it is already in", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
-    const { study } = await api.getStudy(CMP);
-    const first = (await api.getStudy(CMP)).tasks[0];
+    const api = openResearch(CMP);
+    const { research } = await api.getResearch(CMP);
+    const first = (await api.getResearch(CMP)).tasks[0];
     await screen.findByRole("region", { name: "All tasks" });
 
     await openRowMenu(user, first.title);
-    await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+    await user.hover(screen.getByRole("menuitem", { name: /Move to research/ }));
 
     expect(
-      screen.queryByRole("menuitem", { name: new RegExp(study.title) }),
+      screen.queryByRole("menuitem", { name: new RegExp(research.title) }),
     ).toBeNull();
   });
 
   it("asks before deleting a Task, and deletes nothing until it is answered", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
-    const all = (await api.getStudy(CMP)).tasks;
+    const api = openResearch(CMP);
+    const all = (await api.getResearch(CMP)).tasks;
     const doomed = all[0];
     await screen.findByRole("region", { name: "All tasks" });
 
@@ -784,13 +784,13 @@ describe("a Task row's actions on the Study page", () => {
     ).toBeInTheDocument();
     // The Task is still there — a Task is its chat, and there is no archive
     // to recover one from, so the click alone must not be enough.
-    expect((await api.getStudy(CMP)).tasks.length).toBe(all.length);
+    expect((await api.getResearch(CMP)).tasks.length).toBe(all.length);
   });
 
   it("leaves the Task alone when the confirmation is dismissed", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
-    const all = (await api.getStudy(CMP)).tasks;
+    const api = openResearch(CMP);
+    const all = (await api.getResearch(CMP)).tasks;
     const doomed = all[0];
     await screen.findByRole("region", { name: "All tasks" });
 
@@ -802,14 +802,14 @@ describe("a Task row's actions on the Study page", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: /delete task/i })).toBeNull(),
     );
-    expect((await api.getStudy(CMP)).tasks.length).toBe(all.length);
+    expect((await api.getResearch(CMP)).tasks.length).toBe(all.length);
     expect(rowOrder()).toContain(rowHref(CMP, doomed.id));
   });
 
   it("deletes a Task from the list once the confirmation is answered", async () => {
     const user = userEvent.setup();
-    const api = openStudy(CMP);
-    const all = (await api.getStudy(CMP)).tasks;
+    const api = openResearch(CMP);
+    const all = (await api.getResearch(CMP)).tasks;
     const doomed = all[0];
     await screen.findByRole("region", { name: "All tasks" });
 
@@ -819,7 +819,7 @@ describe("a Task row's actions on the Study page", () => {
     await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     await waitFor(async () =>
-      expect((await api.getStudy(CMP)).tasks.length).toBe(all.length - 1),
+      expect((await api.getResearch(CMP)).tasks.length).toBe(all.length - 1),
     );
     await waitFor(() =>
       expect(rowOrder()).not.toContain(rowHref(CMP, doomed.id)),

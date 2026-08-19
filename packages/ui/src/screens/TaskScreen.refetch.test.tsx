@@ -34,7 +34,7 @@ describe("re-reading the open Task", () => {
       await api.resolveFinding(STUDY, TASK, f.id);
     }
 
-    window.location.hash = `#/studies/${STUDY}/tasks/${TASK}`;
+    window.location.hash = `#/researches/${STUDY}/tasks/${TASK}`;
     render(<App api={api} />);
 
     const stream = await screen.findByTestId("conv-stream");
@@ -59,7 +59,7 @@ describe("re-reading the open Task", () => {
   it("keeps them across a rename of the Task on screen", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
-    window.location.hash = `#/studies/${STUDY}/tasks/${TASK}`;
+    window.location.hash = `#/researches/${STUDY}/tasks/${TASK}`;
     render(<App api={api} />);
 
     const stream = await screen.findByTestId("conv-stream");

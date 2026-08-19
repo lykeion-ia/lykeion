@@ -1,8 +1,8 @@
 /**
- * Regression: the Study → Task hand-off must start the first prompt EXACTLY
+ * Regression: the Research → Task hand-off must start the first prompt EXACTLY
  * ONCE under <React.StrictMode>'s dev double-mount.
  *
- * `StudyHandoff.test.tsx` covers the other half of this — that the prompt is not
+ * `ResearchHandoff.test.tsx` covers the other half of this — that the prompt is not
  * DROPPED — and the ref latch that fixed it over-corrected: the latched run is
  * never cleared once started, and the hand-off effect has no "already started"
  * guard, so StrictMode's second effect invocation calls `start()` a second time
@@ -22,7 +22,7 @@ import userEvent from "@testing-library/user-event";
 import { createInMemoryApi, type LykeionApi } from "@lykeion/api";
 import App from "../App";
 
-const STUDY = "#/studies/s_cmp";
+const STUDY = "#/researches/s_cmp";
 
 /** The in-memory API, wrapped to count `startRun` calls. */
 function countingApi(): { api: LykeionApi; starts: () => number } {
@@ -40,7 +40,7 @@ function countingApi(): { api: LykeionApi; starts: () => number } {
 
 beforeEach(cleanup);
 
-describe("Study → Task hand-off under StrictMode", () => {
+describe("Research → Task hand-off under StrictMode", () => {
   it("starts the first prompt exactly once", async () => {
     const user = userEvent.setup();
     const { api, starts } = countingApi();

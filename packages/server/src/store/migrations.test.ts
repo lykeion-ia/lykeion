@@ -63,12 +63,13 @@ function tableExists(store: Store, table: string): boolean {
  * after it left to run. `users` is the minimum the foreign keys on both tables
  * need to resolve against.
  *
- * `cells` is here because a stand-in stamped at 26 is claiming to BE a lab at
- * 26, and every migration after that one is entitled to reach any table a
- * real lab of that vintage holds — 29 alters this one. A stand-in carrying
- * only the tables the migration originally under test touched fails the next
- * time somebody writes a migration about something else, and it fails as
- * "no such table" rather than as anything about the repair being tested.
+ * `cells` and `research_groups` are here because a stand-in stamped at 26 is
+ * claiming to BE a lab at 26, and every migration after that one is entitled
+ * to reach any table a real lab of that vintage holds — 29 alters the first
+ * and 31 the second. A stand-in carrying only the tables the migration
+ * originally under test touched fails the next time somebody writes a
+ * migration about something else, and it fails as "no such table" rather than
+ * as anything about the repair being tested.
  */
 function databaseAtBrokenTwentyFive(): Store {
   const store = openFresh();
@@ -112,6 +113,18 @@ function databaseAtBrokenTwentyFive(): Store {
       outputs         TEXT NOT NULL,
       tool_use_id     TEXT,
       seq             INTEGER NOT NULL UNIQUE
+    )`);
+  // As migration 3 created it, since that is what a lab at 26 has.
+  store.run(`
+    CREATE TABLE research_groups (
+      id            TEXT PRIMARY KEY,
+      name          TEXT NOT NULL,
+      description   TEXT NOT NULL DEFAULT '',
+      lead_agent    TEXT,
+      member_agents TEXT NOT NULL DEFAULT '[]',
+      created_ts    INTEGER NOT NULL,
+      updated_ts    INTEGER NOT NULL,
+      seq           INTEGER NOT NULL UNIQUE
     )`);
   store.run(`INSERT INTO schema_version (version) VALUES (26)`);
   return store;

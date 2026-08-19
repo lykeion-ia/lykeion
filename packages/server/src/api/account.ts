@@ -153,7 +153,7 @@ export function accountApi({ store, actor, now, changes, channel }: Deps): Accou
         const invite = store.get(`SELECT code, revoked_ts FROM invites WHERE code = ?`, [code]);
         if (!invite) throw new LykeionError("not-found", `no such invite: ${code}`);
         // Withdrawing a withdrawn invite is not an error, the same way
-        // archiving an archived Study is not: the state the caller asked
+        // archiving an archived Research is not: the state the caller asked
         // for already holds.
         if (invite.revoked_ts === null) {
           store.run(`UPDATE invites SET revoked_ts = ? WHERE code = ?`, [now(), code]);

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Study, Usage, User, WorkspaceSettings } from "@lykeion/api";
+import type { Research, Usage, User, WorkspaceSettings } from "@lykeion/api";
 import { useApi } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
 import { ChevronDownIcon, FlaskIcon } from "../components/icons";
@@ -67,7 +67,7 @@ function formatMillions(kUnits: number): string {
 
 interface UsageData {
   usage: Usage;
-  studies: Study[];
+  researches: Research[];
 }
 
 /**
@@ -102,15 +102,15 @@ export function ProfileScreen({
   const [range, setRange] = useState<(typeof RANGE_OPTIONS)[number]>("30d");
 
   const q = usePromise<UsageData>(async () => {
-    const [usage, studies] = await Promise.all([
+    const [usage, researches] = await Promise.all([
       api.usage(),
-      api.listStudies(),
+      api.listResearches(),
     ]);
-    return { usage, studies };
+    return { usage, researches };
   }, [api]);
 
   const usage = q.data?.usage ?? { series: [], agents: [], users: [] };
-  const studies = q.data?.studies ?? [];
+  const researches = q.data?.researches ?? [];
   const rows = toLeaderboardRows(usage.agents);
 
   const inputK = usage.series.reduce((sum, p) => sum + p.input, 0);
@@ -129,7 +129,7 @@ export function ProfileScreen({
           same `space-y-8` gap the General tab puts between its sections. */}
       <div className="mt-8">
         <SectionTitle>Usage</SectionTitle>
-        {/* The study/cadence/range controls lead the section, on the line its
+        {/* The research/cadence/range controls lead the section, on the line its
             description used to hold — not in the tab title's action slot. They
             narrow these figures and nothing else; hung off "Profile" they would
             sit level with the account block and read as filtering that.
@@ -142,7 +142,7 @@ export function ProfileScreen({
             className="inline-flex h-8 items-center gap-[7px] rounded-lg border border-line bg-surface px-[11px] text-sub text-fg"
           >
             <FlaskIcon width={14} height={14} className="text-fg-subtle" />
-            All studies
+            All researches
             <ChevronDownIcon
               width={14}
               height={14}
@@ -162,7 +162,7 @@ export function ProfileScreen({
           <StatCard
             label={`Cost · ${range}`}
             value={`$${totalCost.toFixed(2)}`}
-            sub={`Across ${studies.length} studies`}
+            sub={`Across ${researches.length} researches`}
           />
           <StatCard
             label={`Tokens · ${range}`}

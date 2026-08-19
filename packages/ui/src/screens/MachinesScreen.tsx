@@ -53,7 +53,7 @@ export function MachinesScreen() {
   // kernel, re-read on the roster's slower clock: a Task's title does not
   // change on the scale a kernel's state does.
   const tasks = usePromise(() => api.listTasks({ includeDone: true }), [api, tick]);
-  const studies = usePromise(() => api.listStudies({ includeArchived: true }), [api, tick]);
+  const researches = usePromise(() => api.listResearches({ includeArchived: true }), [api, tick]);
   // What the lab has declared, on the roster's slower clock: a declaration
   // changes when somebody creates or deletes an environment, which is nothing
   // like the rate a kernel changes state. The rows need it for two things
@@ -65,8 +65,8 @@ export function MachinesScreen() {
 
   const machines = q.data ?? [];
   const taskLabel = useMemo(
-    () => taskLabeller(tasks.data ?? [], studies.data ?? []),
-    [tasks.data, studies.data],
+    () => taskLabeller(tasks.data ?? [], researches.data ?? []),
+    [tasks.data, researches.data],
   );
 
   const onInterrupt = useCallback(

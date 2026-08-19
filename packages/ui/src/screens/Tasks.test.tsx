@@ -8,7 +8,7 @@ import { resetTabs } from "../lib/tabs";
 import { captureDownload } from "../test/download";
 
 // Seeded work, by whose it is: t_4 is Amara's, everything else in CMP is
-// mine, and t_8 lives in a different Study.
+// mine, and t_8 lives in a different Research.
 const AMARAS = "Register sessions across days";
 const MINE = "Quantify tuning drift after deprivation";
 const OTHER_STUDY = "Integrate 10x lanes and remove batch effects";
@@ -39,7 +39,7 @@ async function openTasks(api = createInMemoryApi()) {
   return user;
 }
 
-it("lists work from every Study, not just the one in view", async () => {
+it("lists work from every Research, not just the one in view", async () => {
   await openTasks();
   expect(await screen.findByText(MINE)).toBeInTheDocument();
   expect(screen.getByText(OTHER_STUDY)).toBeInTheDocument();
@@ -69,27 +69,27 @@ it("shows finished work, and the Status filter takes it away again", async () =>
   expect(screen.getByText(MINE)).toBeInTheDocument();
 });
 
-it("keeps the tasks of an archived Study", async () => {
+it("keeps the tasks of an archived Research", async () => {
   const api = createInMemoryApi();
-  const cmp = (await api.listStudies()).find((s) => s.key === "CMP")!;
-  await api.archiveStudy(cmp.id);
+  const cmp = (await api.listResearches()).find((s) => s.key === "CMP")!;
+  await api.archiveResearch(cmp.id);
 
   await openTasks(api);
 
-  // Archiving tidies the Studies list; it does not finish the work. A row
-  // whose Study is missing from the lookup would silently disappear.
+  // Archiving tidies the Researches list; it does not finish the work. A row
+  // whose Research is missing from the lookup would silently disappear.
   expect(await screen.findByText(MINE)).toBeInTheDocument();
 });
 
-it("shows an unfiled task with its own code and no Study", async () => {
+it("shows an unfiled task with its own code and no Research", async () => {
   const user = await openTasks();
-  // The Study cell is the list's column, so this is asked of the list.
+  // The Research cell is the list's column, so this is asked of the list.
   await user.click(screen.getByRole("button", { name: "List view" }));
   const title = await screen.findByText(UNFILED);
   const row = title.closest("a")!;
 
   // Unfiled work numbers on its own run, so it reads TSK-n rather than
-  // borrowing a Study's key, and its Study cell says so.
+  // borrowing a Research's key, and its Research cell says so.
   expect(within(row).getByText("TSK-1")).toBeInTheDocument();
   expect(within(row).getByText("Unfiled")).toBeInTheDocument();
 });
@@ -108,14 +108,14 @@ it("deep-links an unfiled task straight to its chat", async () => {
   expect(await screen.findByLabelText("Message the agent")).toBeEnabled();
 });
 
-it("files an unfiled task into a Study from its details", async () => {
+it("files an unfiled task into a Research from its details", async () => {
   const api = createInMemoryApi();
   const unfiled = (await api.listTasks()).find((t) => t.title === UNFILED)!;
-  const cmp = (await api.listStudies()).find((s) => s.key === "CMP")!;
+  const cmp = (await api.listResearches()).find((s) => s.key === "CMP")!;
 
   const user = await openTasks(api);
   // The details editor is the work-item view of a Task — every field at once,
-  // Study included. It hangs off the board card, so filing can happen without
+  // Research included. It hangs off the board card, so filing can happen without
   // opening the conversation.
   await user.click(screen.getByRole("button", { name: "Board view" }));
   const card = (await screen.findByText(UNFILED)).closest("a")!;
@@ -125,13 +125,13 @@ it("files an unfiled task into a Study from its details", async () => {
 
   const dialog = await screen.findByRole("dialog", { name: "Task details" });
   await user.selectOptions(
-    within(dialog).getByRole("combobox", { name: /file into a study/i }),
+    within(dialog).getByRole("combobox", { name: /file into a research/i }),
     cmp.id,
   );
   await user.click(within(dialog).getByRole("button", { name: /^save$/i }));
 
   // Filing is what gives the task a home — and a workspace to run in.
-  const filed = (await api.getStudy(cmp.id)).tasks.find(
+  const filed = (await api.getResearch(cmp.id)).tasks.find(
     (t) => t.id === unfiled.id,
   );
   expect(filed).toBeDefined();
@@ -191,7 +191,7 @@ it("imports tasks from a JSON file", async () => {
     new File([doc], "tasks.json", { type: "application/json" }),
   );
 
-  // A row with no studyId lands as unfiled, and Tasks is the surface that
+  // A row with no researchId lands as unfiled, and Tasks is the surface that
   // shows unfiled work — so what was imported is visible where it was asked for.
   expect(
     await screen.findByText("Reread the drift-correction paper"),

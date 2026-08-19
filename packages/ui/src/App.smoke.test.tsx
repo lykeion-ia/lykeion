@@ -1,7 +1,7 @@
 /**
  * The shell smoke test.
  *
- * Drives the three canonical screens (Studies · a Study · a Task) plus the
+ * Drives the three canonical screens (Researches · a Research · a Task) plus the
  * command palette, Inbox, and My Tasks, using only visible text / roles and
  * keyboard, so it is agnostic to the routing implementation. Runs headless
  * (jsdom) against the in-memory API — this is the "e2e smoke" for CI.
@@ -46,14 +46,14 @@ describe("Lykeion shell", () => {
     renderApp();
 
     // Top + Laboratory + Configure nav. "Tasks" is anchored so it doesn't also
-    // match "My Tasks", and "Studies" is anchored against the same hazard — an
+    // match "My Tasks", and "Researches" is anchored against the same hazard — an
     // unanchored one of either matches two links, and `findByRole` throws on
     // the ambiguity rather than picking one.
     for (const name of [
       /Inbox/i,
       /My Tasks/i,
       /^Tasks$/i,
-      /^Studies$/i,
+      /^Researches$/i,
       /Settings/i,
     ]) {
       expect(await screen.findByRole("link", { name })).toBeInTheDocument();
@@ -69,7 +69,7 @@ describe("Lykeion shell", () => {
       ).toBeInTheDocument();
     }
 
-    // All five seeded studies are listed.
+    // All five seeded researches are listed.
     expect(
       await screen.findByText("Cross-modal plasticity in the brain"),
     ).toBeInTheDocument();
@@ -79,7 +79,7 @@ describe("Lykeion shell", () => {
     expect(screen.getByText(/marine heatwaves/i)).toBeInTheDocument();
   });
 
-  it("a Study opens the chat entry", async () => {
+  it("a Research opens the chat entry", async () => {
     const user = userEvent.setup();
     renderApp();
 
@@ -87,7 +87,7 @@ describe("Lykeion shell", () => {
       await screen.findByText("Cross-modal plasticity in the brain"),
     );
 
-    // Opening a Study lands on the chat entry (not a task table).
+    // Opening a Research lands on the chat entry (not a task table).
     expect(
       await screen.findByRole("region", { name: "Start a task" }),
     ).toBeInTheDocument();
@@ -95,11 +95,11 @@ describe("Lykeion shell", () => {
 
   it("a Task opens the full chat interface", async () => {
     // CMP-3 is in-review, so it opens straight into the full chat.
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     renderApp();
 
     await screen.findByTestId("task-surface");
-    // The TabBar pill ties the task to its Study via the task code.
+    // The TabBar pill ties the task to its Research via the task code.
     expect(
       await screen.findByText(/CMP-3: Preprocess two-photon calcium traces/i),
     ).toBeVisible();
@@ -121,7 +121,7 @@ describe("Lykeion shell", () => {
 
     // Jump to a Task through the palette, by its code. Screens are not in here
     // — the rail is how you reach those — so what the palette navigates to is a
-    // Study or a Task.
+    // Research or a Task.
     await user.type(input, "CMP-7");
     await user.keyboard("{Enter}");
 
@@ -156,7 +156,7 @@ describe("Lykeion shell", () => {
     ).toBeInTheDocument();
   });
 
-  it("a study row is keyboard-activatable", async () => {
+  it("a research row is keyboard-activatable", async () => {
     const user = userEvent.setup();
     renderApp();
 
@@ -167,13 +167,13 @@ describe("Lykeion shell", () => {
     expect(row).toHaveFocus();
     await user.keyboard("{Enter}");
 
-    // Opening the study reveals the chat entry.
+    // Opening the research reveals the chat entry.
     expect(
       await screen.findByRole("region", { name: "Start a task" }),
     ).toBeInTheDocument();
   });
 
-  it("a Task created from the Rail's New task button updates that Study's row on Studies, with no navigation", async () => {
+  it("a Task created from the Rail's New task button updates that Research's row on Researches, with no navigation", async () => {
     const user = userEvent.setup();
     renderApp();
 
@@ -183,18 +183,18 @@ describe("Lykeion shell", () => {
     const [doneCount, totalCount] = before.split("/").map(Number);
     const after = `${doneCount}/${totalCount + 1}`;
 
-    // The Rail's own global button — not a screen's New task/New study
+    // The Rail's own global button — not a screen's New task/New research
     // affordance — is the one call site this defect is about.
     await user.click(screen.getByRole("button", { name: /^New Task/ }));
     const dialog = await screen.findByRole("dialog", { name: "Create task" });
 
-    // The Study field is the dialog's first select; pin it to CMP so the row
+    // The Research field is the dialog's first select; pin it to CMP so the row
     // being watched is the one the created Task lands in.
     const studySelect = within(dialog).getAllByRole("combobox")[0];
     await user.selectOptions(studySelect, "s_cmp");
     await user.type(
       within(dialog).getByPlaceholderText("Task title"),
-      "Confirm the Rail keeps Studies live",
+      "Confirm the Rail keeps Researches live",
     );
 
     const createBtn = within(dialog).getByRole("button", {
@@ -209,7 +209,7 @@ describe("Lykeion shell", () => {
       ).not.toBeInTheDocument(),
     );
 
-    // Still on Studies — nothing navigated — and the row's own task count
+    // Still on Researches — nothing navigated — and the row's own task count
     // moved without a manual refresh.
     const updatedRow = await screen.findByRole("link", {
       name: new RegExp(CMP),

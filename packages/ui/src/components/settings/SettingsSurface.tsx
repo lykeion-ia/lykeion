@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import type { Role, User, WorkspaceSettings } from "@lykeion/api";
+import type { User, WorkspaceSettings } from "@lykeion/api";
 import { useApi, useDataVersionIfAny } from "../../api/ApiContext";
 import { usePromise } from "../../hooks/usePromise";
 import { cn } from "../../lib/utils";
@@ -9,10 +9,6 @@ import { SettingsBody, SettingsNav } from "./SettingsView";
 interface SettingsData {
   user: User;
   settings: WorkspaceSettings;
-  /** The signed-in user's own standing in the lab, read off the roster
-   *  rather than assumed — `MembersPanel` decides what it shows an owner by
-   *  this, not by anything a caller guessed. */
-  role: Role;
 }
 
 // A fresh core has none of these set; the tabs render an honest "Not set"
@@ -80,22 +76,16 @@ export function SettingsSurface({
   };
 
   const q = usePromise<SettingsData>(async () => {
-    const [user, settings, members] = await Promise.all([
+    const [user, settings] = await Promise.all([
       api.currentUser(),
       api.getSettings(),
-      api.listMembers(),
     ]);
-    const role = members.find((m) => m.user.id === user.id)?.role ?? "member";
-    return { user, settings, role };
+    return { user, settings };
   }, [api, version]);
 
   const data = q.data ?? {
     user: { id: "", email: "", displayName: "You", createdTs: 0 },
     settings: EMPTY_SETTINGS,
-    // The safe default while the roster is still loading, and if the signed-in
-    // user is somehow not on it: hiding the owner-only controls is a courtesy
-    // that costs nothing to get wrong in this direction.
-    role: "member" as Role,
   };
 
   return (
@@ -130,7 +120,6 @@ export function SettingsSurface({
             tab={tab}
             user={data.user}
             settings={data.settings}
-            role={data.role}
           />
         </div>
       </div>

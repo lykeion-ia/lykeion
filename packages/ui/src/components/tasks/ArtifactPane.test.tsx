@@ -24,7 +24,7 @@ it("fetches an artifact and dispatches it to a content-type viewer", async () =>
 
   render(
     <ApiProvider api={api}>
-      <ArtifactPane studyId="st_1" path="notes/summary.txt" />
+      <ArtifactPane researchId="st_1" path="notes/summary.txt" />
     </ApiProvider>,
   );
 
@@ -47,7 +47,7 @@ it("surfaces a read error instead of a blank pane", async () => {
   };
   render(
     <ApiProvider api={api}>
-      <ArtifactPane studyId="st_1" path="missing.csv" />
+      <ArtifactPane researchId="st_1" path="missing.csv" />
     </ApiProvider>,
   );
   await waitFor(() =>

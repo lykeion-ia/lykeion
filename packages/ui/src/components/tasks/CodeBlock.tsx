@@ -25,7 +25,7 @@ const SUPPORTED_LANGS = [
   "json",
   "rust",
   "python",
-  // The notebook's second kernel language — a Study can run Python and R side
+  // The notebook's second kernel language — a Research can run Python and R side
   // by side, and each cell renders under its own grammar.
   "r",
   "bash",

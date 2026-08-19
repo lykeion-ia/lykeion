@@ -84,7 +84,7 @@ const clamp = (v: number, lo: number, hi: number) =>
  * `overflow-x` to `auto` too), so an absolutely positioned panel wider than
  * its pane was cut off at the pane's edge: the sidebar's 224px kebab menu lost
  * its leading 22px — icons and all — to the 208px list it opened in, and the
- * "Move to study" flyout, which opens past the pane's right edge, was shaved
+ * "Move to research" flyout, which opens past the pane's right edge, was shaved
  * to a sliver.
  *
  * `fixed` alone is not enough, which is why the panels are portaled too. A
@@ -315,7 +315,7 @@ function SubmenuRow({
             // the right edge has run out. Flush against that edge on purpose:
             // a gap here is dead space the pointer has to cross, and crossing
             // it leaves the row that owns the flyout. Capped and scrollable:
-            // the destination list is as long as the lab has Studies.
+            // the destination list is as long as the lab has Researches.
             data-side={flipped ? "left" : "right"}
             // The grace period lives on the row's wrapper, but this panel is no
             // longer inside it: `mouseenter`/`mouseleave` do not bubble, and

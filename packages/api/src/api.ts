@@ -11,8 +11,8 @@ import type {
   CoreInfo,
   Priority,
   Stage,
-  Study,
-  StudyDetail,
+  Research,
+  ResearchDetail,
   Subtask,
   Task,
   TaskStatus,
@@ -58,19 +58,21 @@ import type { Invite, Member, Role, User } from "./account";
 import type { Usage } from "./usage";
 import type { WorkspaceSettings } from "./settings";
 
-/** Fields accepted when creating a Study. */
-export interface NewStudy {
+/** Fields accepted when creating a Research. */
+export interface NewResearch {
   title: string;
   key: string;
   description?: string;
-  /** Context injected into every agent's system prompt for this Study. */
+  /** Context injected into every agent's system prompt for this Research. */
   agentContext?: string;
 }
 
 /** Fields accepted when creating a Task. */
 export interface NewTask {
-  /** Omit to capture an unfiled Task — one that belongs to no Study yet. */
-  studyId?: string;
+  /**
+   * Omit to capture an unfiled Task — one that belongs to no Research yet.
+   */
+  researchId?: string;
   stage: Stage;
   title: string;
   description?: string;
@@ -85,6 +87,8 @@ export interface NewGroup {
   description?: string;
   leadAgent?: string;
   memberAgents?: string[];
+  /** Colleagues to put in it, by `User.id`. */
+  memberUsers?: string[];
 }
 
 /** Fields accepted when approving a machine to pair with the lab. */
@@ -101,26 +105,26 @@ export interface PairMachineInput {
 }
 
 /**
- * Patch applied to a Study (absent fields unchanged). `key` is not editable: it
- * is the Study's stable short identifier and is baked into its on-disk
- * directory name at creation.
+ * Patch applied to a Research (absent fields unchanged). `key` is not
+ * editable: it is the Research's stable short identifier and is baked into
+ * its on-disk directory name at creation.
  */
-export interface StudyPatch {
+export interface ResearchPatch {
   /** Must not be blank — the core rejects it. */
   title?: string;
   /**
-   * What the Study is about, for whoever reads the list. An empty string
+   * What the Research is about, for whoever reads the list. An empty string
    * clears it.
    */
   description?: string;
   /**
-   * Context injected into every agent's system prompt for this Study. An empty
-   * string clears it.
+   * Context injected into every agent's system prompt for this Research. An
+   * empty string clears it.
    */
   agentContext?: string;
   /**
-   * Pin the Study to the top of the list, or unpin it. `false` clears the flag
-   * rather than storing one — see {@link Study.pinned}.
+   * Pin the Research to the top of the list, or unpin it. `false` clears the
+   * flag rather than storing one — see {@link Research.pinned}.
    */
   pinned?: boolean;
 }
@@ -134,10 +138,10 @@ export interface TaskPatch {
   title?: string;
   description?: string;
   /**
-   * File an unfiled Task into a Study, or move it between Studies. There is no
-   * un-filing: a Task that has a Study keeps one.
+   * File an unfiled Task into a Research, or move it between Researches.
+   * There is no un-filing: a Task that has a Research keeps one.
    */
-  studyId?: string;
+  researchId?: string;
   stage?: Stage;
   status?: TaskStatus;
   priority?: Priority;
@@ -146,7 +150,7 @@ export interface TaskPatch {
   labels?: string[];
   links?: string[];
   subtasks?: Subtask[];
-  /** Pinned to the top of the Study's Task list. Presentation only. */
+  /** Pinned to the top of the Research's Task list. Presentation only. */
   pinned?: boolean;
 }
 
@@ -169,41 +173,42 @@ export interface NameTaskInput {
 export interface LykeionApi {
   coreInfo(): Promise<CoreInfo>;
 
-  /** Studies, newest first. Archived ones are excluded unless asked for. */
-  listStudies(options?: { includeArchived?: boolean }): Promise<Study[]>;
-  getStudy(studyId: string): Promise<StudyDetail>;
-  createStudy(input: NewStudy): Promise<Study>;
-  /** Rename a Study (title only; the `key` badge never changes). */
-  updateStudy(studyId: string, patch: StudyPatch): Promise<Study>;
+  /** Researches, newest first. Archived ones are excluded unless asked for. */
+  listResearches(options?: { includeArchived?: boolean }): Promise<Research[]>;
+  getResearch(researchId: string): Promise<ResearchDetail>;
+  createResearch(input: NewResearch): Promise<Research>;
+  /** Rename a Research (title only; the `key` badge never changes). */
+  updateResearch(researchId: string, patch: ResearchPatch): Promise<Research>;
   /**
-   * Tidy the Study list without losing anything. `getStudy` still resolves.
-   * Archiving a Study that is already archived is not an error: it stays
-   * archived. Only an unknown id rejects.
+   * Tidy the Research list without losing anything. `getResearch` still
+   * resolves. Archiving a Research that is already archived is not an error:
+   * it stays archived. Only an unknown id rejects.
    */
-  archiveStudy(studyId: string): Promise<Study>;
+  archiveResearch(researchId: string): Promise<Research>;
   /**
-   * Put an archived Study back in the list. Restoring a Study that was never
-   * archived is not an error: it stays listed. Only an unknown id rejects.
+   * Put an archived Research back in the list. Restoring a Research that was
+   * never archived is not an error: it stays listed. Only an unknown id
+   * rejects.
    */
-  restoreStudy(studyId: string): Promise<Study>;
+  restoreResearch(researchId: string): Promise<Research>;
   /**
-   * Delete a Study: it leaves the registry and no longer lists or opens,
+   * Delete a Research: it leaves the registry and no longer lists or opens,
    * taking every Task and every Task's transcript with it. This is final —
    * nothing about it is recoverable from inside the workbench, and no
    * surface may offer recovery. Archive is the reversible operation.
    */
-  deleteStudy(studyId: string): Promise<void>;
+  deleteResearch(researchId: string): Promise<void>;
 
   /**
-   * Every Task in the Lab, across Studies — mine and everyone else's — plus
-   * the unfiled ones that belong to no Study. Done Tasks are excluded unless
-   * asked for.
+   * Every Task in the Lab, across Researches — mine and everyone else's —
+   * plus the unfiled ones that belong to no Research. Done Tasks are
+   * excluded unless asked for.
    *
    * Ordered by task number ascending, for the reason `myWork` is: numbers are
-   * the run a reader scans a Study's tasks by, so two Studies' work interleaves
-   * by number rather than by whichever Study happens to be stored first.
-   * Unfiled Tasks number on their own run, so they sort after the filed ones
-   * instead of interleaving two unrelated sequences.
+   * the run a reader scans a Research's tasks by, so two Researches' work
+   * interleaves by number rather than by whichever Research happens to be
+   * stored first. Unfiled Tasks number on their own run, so they sort after
+   * the filed ones instead of interleaving two unrelated sequences.
    *
    * Deliberately not ordered by recency: a core that stamps a batch of Tasks
    * with one clock reading could not honour that, and every caller that wants
@@ -216,8 +221,8 @@ export interface LykeionApi {
   deleteTask(taskId: string): Promise<void>;
   /**
    * One Task with its full transcript, turns ascending by ts. Takes no
-   * `studyId`: task ids are unique across the workspace, and an unfiled Task
-   * has no Study to name.
+   * `researchId`: task ids are unique across the workspace, and an unfiled Task
+   * has no Research to name.
    */
   getTask(taskId: string): Promise<TaskDetail>;
 
@@ -268,10 +273,11 @@ export interface LykeionApi {
    */
   markConversationRead(conversationId: string): Promise<void>;
   /**
-   * Tasks assigned to the current member, across studies, excluding the ones
-   * already done. Ordered by task number ascending — the same run of numbers
-   * a reader scans a Study's tasks by, so two studies' work interleaves by
-   * number rather than by whichever study happens to be stored first.
+   * Tasks assigned to the current member, across researches, excluding the
+   * ones already done. Ordered by task number ascending — the same run of
+   * numbers a reader scans a Research's tasks by, so two researches' work
+   * interleaves by number rather than by whichever research happens to be
+   * stored first.
    */
   myWork(): Promise<Task[]>;
 
@@ -468,13 +474,13 @@ export interface LykeionApi {
    * Read a saved artifact's bytes as a typed blob for the viewers. Text
    * arrives UTF-8, binary as base64; the UI dispatches on `contentType`.
    */
-  readArtifact(studyId: string, path: string): Promise<ArtifactBlob>;
+  readArtifact(researchId: string, path: string): Promise<ArtifactBlob>;
 
   /** The Reviewer's persisted findings for a Task, severity-ordered. */
-  reviewFindings(studyId: string, taskId: string): Promise<Finding[]>;
+  reviewFindings(researchId: string, taskId: string): Promise<Finding[]>;
   /** Mark one finding resolved; returns the updated finding list. */
   resolveFinding(
-    studyId: string,
+    researchId: string,
     taskId: string,
     findingId: string,
   ): Promise<Finding[]>;

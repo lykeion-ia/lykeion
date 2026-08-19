@@ -181,9 +181,9 @@ export function FilterBar({
             // h-8 (not py-1.5) so the trigger is the same 32px as the toolbar's
             // other controls (calendar, import/export, view toggle). With the
             // row's items-center that keeps the Filter button on the same
-            // baseline whether the row holds only the FilterBar (Studies) or a
+            // baseline whether the row holds only the FilterBar (Researches) or a
             // full toolbar (My Tasks) — otherwise the taller My Tasks row
-            // centres this shorter button a couple px below its Studies twin.
+            // centres this shorter button a couple px below its Researches twin.
             "inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface-2 px-2.5 text-sub transition-colors hover:bg-surface-3",
             count > 0 ? "text-fg" : "text-fg-subtle",
           )}

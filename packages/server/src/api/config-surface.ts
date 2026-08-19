@@ -74,6 +74,7 @@ function toGroup(row: Row): Group {
     description: row.description as string,
     ...(row.lead_agent === null ? {} : { leadAgent: row.lead_agent as string }),
     memberAgents: JSON.parse(row.member_agents as string) as string[],
+    memberUsers: JSON.parse((row.member_users as string) ?? "[]") as string[],
     createdTs: row.created_ts as number,
     // Stored separately even though nothing revises a Group yet.
     // The contract's other implementation orders this list on `updatedTs`,
@@ -229,7 +230,7 @@ export function configSurfaceApi(deps: Deps): ConfigSurfaceApi {
 
     async listGroups() {
       // Newest first, insertion sequence breaking the tie — the same rule
-      // `listStudies` follows.
+      // `listResearches` follows.
       return store
         .all(`SELECT * FROM research_groups ORDER BY updated_ts DESC, seq DESC`)
         .map(toGroup);
@@ -238,15 +239,15 @@ export function configSurfaceApi(deps: Deps): ConfigSurfaceApi {
     async createGroup(input) {
       const ts = now();
       // One sequence number serves both the id and the seq column, for the
-      // same reason createStudy and createTask use only one: a second
+      // same reason createResearch and createTask use only one: a second
       // nextSeq call would burn a value nothing reads, and would do it
       // outside this transaction, so a rollback couldn't even reclaim it.
       return store.tx(() => {
         const seq = nextSeq(store);
         const id = `rg_${seq}`;
         store.run(
-          `INSERT INTO research_groups (id, name, description, lead_agent, member_agents, created_ts, updated_ts, seq)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO research_groups (id, name, description, lead_agent, member_agents, member_users, created_ts, updated_ts, seq)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             id,
             input.name,
@@ -255,6 +256,7 @@ export function configSurfaceApi(deps: Deps): ConfigSurfaceApi {
             input.description ?? "",
             input.leadAgent ?? null,
             JSON.stringify(input.memberAgents ?? []),
+            JSON.stringify(input.memberUsers ?? []),
             ts,
             ts,
             seq,

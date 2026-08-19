@@ -530,7 +530,7 @@ export function createRequestListener(deps: {
           // that some paired machine is calling, not that it is the one this
           // run actually belongs to. Resolved through the run's own session
           // rather than trusted from the body, so a grant always lands on
-          // the Study and machine the run was actually started on. Unlike
+          // the Research and machine the run was actually started on. Unlike
           // that route, this one's own refusal names neither case — "no such
           // run" and "not yours" answer with the exact same body — because a
           // grant is a standing authorization record, not a transcript
@@ -540,7 +540,7 @@ export function createRequestListener(deps: {
           if (!session || session.machineId !== machine.machineId)
             return sendJson(res, 403, { error: "this machine does not own that run" });
           addGrant(store, {
-            studyId: session.studyId,
+            researchId: session.researchId,
             machineId: session.machineId,
             path: grantPath,
             mode,

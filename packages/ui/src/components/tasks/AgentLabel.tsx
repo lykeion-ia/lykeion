@@ -6,8 +6,8 @@ import { cliBrand, cliInk, cliName } from "../../lib/cli-brand";
  *
  * A Task is one continuous conversation with one agent, so this is a fact
  * about the whole page rather than about any one turn in it, which is why it
- * rides in the breadcrumb strip. The Study list already leads every row with
- * the same mark (`TaskGlyph`, StudyScreen.tsx); without this, opening a Task
+ * rides in the breadcrumb strip. The Research list already leads every row with
+ * the same mark (`TaskGlyph`, ResearchScreen.tsx); without this, opening a Task
  * lost a fact the list had shown.
  *
  * The mark is drawn bare and in its brand's ink, not on the filled tile the

@@ -9,7 +9,7 @@ import type {
   LykeionApi,
   NameTaskInput,
   NewGroup,
-  NewStudy,
+  NewResearch,
   NewTask,
   PairMachineInput,
   TaskPatch,
@@ -17,8 +17,8 @@ import type {
 import { cleanSummaryTitle, promptNeedsSummary, titleFromPrompt } from "./task-title";
 import type {
   Assignee,
-  Study,
-  StudyDetail,
+  Research,
+  ResearchDetail,
   Task,
 } from "./types";
 import type { KernelEnvCreateInput, KernelEnvDeclaration, KernelEnvManager, Language } from "./machine";
@@ -68,8 +68,13 @@ interface SimulatedRun extends RunHandle {
   onFrameFrom(cursor: number, cb: (frame: RunEventFrame) => void): () => void;
 }
 
-interface Seed {
-  studies: Study[];
+/**
+ * The shape `createInMemoryApi` starts life from. Exported because it is
+ * already that function's parameter type — a caller assembling a seed by
+ * hand could depend on it but not name it.
+ */
+export interface Seed {
+  researches: Research[];
   tasks: Task[];
   /** Threads about Tasks — what the Inbox lists. */
   conversations: Conversation[];
@@ -356,14 +361,14 @@ function seedPeople(): { users: User[]; members: Member[] } {
 }
 
 /**
- * Five cross-domain studies — deliberately general (systems neuroscience,
+ * Five cross-domain researches — deliberately general (systems neuroscience,
  * genomics, climate, chemistry, economics), to show the workbench is not a
  * single vertical. The example task graph lives in "Cross-modal plasticity".
  */
 export function defaultSeed(): Seed {
   const people = seedPeople();
   const me = "u_you";
-  const studies: Study[] = [
+  const researches: Research[] = [
     st(
       "s_cmp",
       "CMP",
@@ -583,7 +588,7 @@ export function defaultSeed(): Seed {
   const conversations: Conversation[] = [
     {
       id: "c_1",
-      studyId: "s_cmp",
+      researchId: "s_cmp",
       taskId: "t_3",
       title: "Preprocess two-photon calcium traces",
       participants: [
@@ -597,7 +602,7 @@ export function defaultSeed(): Seed {
     },
     {
       id: "c_2",
-      studyId: "s_cmp",
+      researchId: "s_cmp",
       taskId: "t_6",
       title: "Quantify tuning drift after deprivation",
       participants: [
@@ -610,7 +615,7 @@ export function defaultSeed(): Seed {
     },
     {
       id: "c_3",
-      studyId: "s_gen",
+      researchId: "s_gen",
       taskId: "t_8",
       title: "Integrate 10x lanes and remove batch effects",
       participants: [
@@ -773,7 +778,7 @@ export function defaultSeed(): Seed {
   ];
 
   return {
-    studies,
+    researches,
     tasks,
     conversations,
     messages,
@@ -797,7 +802,7 @@ export function defaultSeed(): Seed {
     n: number,
     description: string,
     agentContext?: string,
-  ): Study {
+  ): Research {
     return {
       id,
       key,
@@ -812,8 +817,8 @@ export function defaultSeed(): Seed {
   function tk(
     id: string,
     number: number,
-    /** Absent for an unfiled Task — one that belongs to no Study. */
-    studyId: string | undefined,
+    /** Absent for an unfiled Task — one that belongs to no Research. */
+    researchId: string | undefined,
     stage: Task["stage"],
     title: string,
     status: Task["status"],
@@ -823,7 +828,7 @@ export function defaultSeed(): Seed {
     return {
       id,
       number,
-      studyId,
+      researchId,
       stage,
       title,
       status,
@@ -839,7 +844,7 @@ export function defaultSeed(): Seed {
 }
 
 /**
- * The first-install state: no studies, tasks, conversations, or engine
+ * The first-install state: no researches, tasks, conversations, or engine
  * content. Used for the shipped/browser surface so the app opens empty, not
  * pre-populated.
  */
@@ -851,7 +856,7 @@ export function emptySeed(): Seed {
     createdTs: 0,
   };
   return {
-    studies: [],
+    researches: [],
     tasks: [],
     conversations: [],
     messages: [],
@@ -932,14 +937,14 @@ export function createInMemoryLab(
   seed: Seed = defaultSeed(),
   options?: InMemoryApiOptions,
 ): InMemoryLab {
-  const studies = [...seed.studies];
+  const researches = [...seed.researches];
   const tasks = [...seed.tasks];
   const conversations = [...seed.conversations];
   const messages = [...seed.messages];
   const findings: Record<string, Finding[]> = JSON.parse(
     JSON.stringify(seed.findings),
   ) as Record<string, Finding[]>;
-  let counter = tasks.length + studies.length + 1;
+  let counter = tasks.length + researches.length + 1;
   const nextId = (prefix: string) => `${prefix}_${counter++}`;
 
   const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
@@ -965,7 +970,7 @@ export function createInMemoryLab(
   // resolve a lockfile, so nothing here ever raises it).
   const kernelEnvs: KernelEnvDeclaration[] = [];
 
-  // Seeded artifact blobs for the viewers, keyed by Study-relative path.
+  // Seeded artifact blobs for the viewers, keyed by Research-relative path.
   const artifacts: Record<string, ArtifactBlob> = fixtureArtifacts();
 
   // Every Task's turns, keyed by task id. A Task with no turns has no entry;
@@ -1089,7 +1094,7 @@ export function createInMemoryLab(
   };
 
   /** Drop every matching thread, its messages, and its read marks together.
-   *  Used by the Study and Task deletes, which both orphan threads. */
+   *  Used by the Research and Task deletes, which both orphan threads. */
   const dropConversations = (match: (c: Conversation) => boolean) => {
     for (let i = conversations.length - 1; i >= 0; i--) {
       const c = conversations[i];
@@ -1103,7 +1108,7 @@ export function createInMemoryLab(
   };
 
   const appendTurn = (
-    input: Pick<StartRunInput, "studyId" | "taskId" | "prompt">,
+    input: Pick<StartRunInput, "researchId" | "taskId" | "prompt">,
     status: "ok" | "failed",
     run: RunRecord | undefined,
     messages: string[],
@@ -1152,14 +1157,14 @@ export function createInMemoryLab(
   // Task's roll-up fields are stamped by the replay rather than carried in
   // the seed, so there is one way for them to be set and only one.
   for (const seeded of seed.transcripts) {
-    // `studyId` is along for the ride: `appendTurn` takes a whole
+    // `researchId` is along for the ride: `appendTurn` takes a whole
     // `StartRunInput` on the run path and reads only the task id, since the
-    // Task already knows which Study it sits in. The replay passes the Task's
-    // own Study so the two paths hand it the same thing.
-    const studyId = tasks.find((t) => t.id === seeded.taskId)?.studyId ?? "";
+    // Task already knows which Research it sits in. The replay passes the Task's
+    // own Research so the two paths hand it the same thing.
+    const researchId = tasks.find((t) => t.id === seeded.taskId)?.researchId ?? "";
     for (const turn of seeded.turns) {
       appendTurn(
-        { studyId, taskId: seeded.taskId, prompt: turn.prompt },
+        { researchId, taskId: seeded.taskId, prompt: turn.prompt },
         turn.status ?? "ok",
         undefined,
         turn.messages,
@@ -1194,28 +1199,28 @@ export function createInMemoryLab(
     async coreInfo() {
       return { name: "lykeion-core", version: "0.1.0" };
     },
-    async listStudies(options?: { includeArchived?: boolean }) {
+    async listResearches(options?: { includeArchived?: boolean }) {
       const visible = options?.includeArchived
-        ? studies
-        : studies.filter((s) => s.archivedTs === undefined);
+        ? researches
+        : researches.filter((s) => s.archivedTs === undefined);
       return clone(visible).sort((a, b) => b.createdTs - a.createdTs);
     },
-    async getStudy(studyId) {
-      const study = studies.find((s) => s.id === studyId);
-      if (!study) throw new LykeionError("not-found", `no such study: ${studyId}`);
-      const forStudy = tasks
-        .filter((t) => t.studyId === studyId)
+    async getResearch(researchId) {
+      const research = researches.find((s) => s.id === researchId);
+      if (!research) throw new LykeionError("not-found", `no such research: ${researchId}`);
+      const forResearch = tasks
+        .filter((t) => t.researchId === researchId)
         .sort((a, b) => a.number - b.number);
-      return clone<StudyDetail>({ study, tasks: forStudy });
+      return clone<ResearchDetail>({ research, tasks: forResearch });
     },
-    async createStudy(input: NewStudy) {
-      // Held to the same rule an edit is held to. A Study whose title is
+    async createResearch(input: NewResearch) {
+      // Held to the same rule an edit is held to. A Research whose title is
       // blank is unfindable in every list that renders one, and nothing
       // downstream can recover the name its author meant to give it.
       const title = input.title.trim();
-      if (!title) throw new LykeionError("invalid", "study title must not be empty");
+      if (!title) throw new LykeionError("invalid", "research title must not be empty");
       const now = tick();
-      const study: Study = {
+      const research: Research = {
         id: nextId("s"),
         key: input.key,
         title,
@@ -1225,83 +1230,83 @@ export function createInMemoryLab(
         createdTs: now,
         updatedTs: now,
       };
-      studies.push(study);
-      return clone(study);
+      researches.push(research);
+      return clone(research);
     },
-    async updateStudy(studyId, patch) {
+    async updateResearch(researchId, patch) {
       // A blank title is rejected, and the key is never touched. Blank agent
-      // context is not an error — it is how the Study says it has none.
-      const study = studies.find((s) => s.id === studyId);
-      if (!study) throw new LykeionError("not-found", `no such study: ${studyId}`);
+      // context is not an error — it is how the Research says it has none.
+      const research = researches.find((s) => s.id === researchId);
+      if (!research) throw new LykeionError("not-found", `no such research: ${researchId}`);
       if (patch.title !== undefined) {
         const title = patch.title.trim();
-        if (!title) throw new LykeionError("invalid", "study title must not be empty");
-        study.title = title;
+        if (!title) throw new LykeionError("invalid", "research title must not be empty");
+        research.title = title;
       }
-      if (patch.description !== undefined) study.description = patch.description;
+      if (patch.description !== undefined) research.description = patch.description;
       if (patch.agentContext !== undefined)
-        study.agentContext = patch.agentContext;
+        research.agentContext = patch.agentContext;
       // Unpinning drops the key rather than storing a false: "not pinned" is
       // one state on the contract, and the server answers it the same way.
       if (patch.pinned !== undefined) {
-        if (patch.pinned) study.pinned = true;
-        else delete study.pinned;
+        if (patch.pinned) research.pinned = true;
+        else delete research.pinned;
       }
-      study.updatedTs = tick();
-      return clone(study);
+      research.updatedTs = tick();
+      return clone(research);
     },
-    async archiveStudy(studyId: string): Promise<Study> {
-      const study = studies.find((s) => s.id === studyId);
-      if (!study) throw new LykeionError("not-found", `no such study: ${studyId}`);
-      study.archivedTs = tick();
-      return clone(study);
+    async archiveResearch(researchId: string): Promise<Research> {
+      const research = researches.find((s) => s.id === researchId);
+      if (!research) throw new LykeionError("not-found", `no such research: ${researchId}`);
+      research.archivedTs = tick();
+      return clone(research);
     },
-    async restoreStudy(studyId: string): Promise<Study> {
-      const study = studies.find((s) => s.id === studyId);
-      if (!study) throw new LykeionError("not-found", `no such study: ${studyId}`);
-      delete study.archivedTs;
-      return clone(study);
+    async restoreResearch(researchId: string): Promise<Research> {
+      const research = researches.find((s) => s.id === researchId);
+      if (!research) throw new LykeionError("not-found", `no such research: ${researchId}`);
+      delete research.archivedTs;
+      return clone(research);
     },
-    async deleteStudy(studyId) {
-      // Deleting a Study removes it from the registry, taking everything its
+    async deleteResearch(researchId) {
+      // Deleting a Research removes it from the registry, taking everything its
       // directory held with it: nothing is set aside, and nothing about it is
       // recoverable from inside the workbench. Archive is the reversible
       // operation.
-      const at = studies.findIndex((s) => s.id === studyId);
-      if (at === -1) throw new LykeionError("not-found", `no such study: ${studyId}`);
-      studies.splice(at, 1);
+      const at = researches.findIndex((s) => s.id === researchId);
+      if (at === -1) throw new LykeionError("not-found", `no such research: ${researchId}`);
+      researches.splice(at, 1);
       for (let i = tasks.length - 1; i >= 0; i--) {
-        if (tasks[i].studyId === studyId) {
+        if (tasks[i].researchId === researchId) {
           // The Reviewer's findings and the Task's transcript both hang off
-          // the task, not the Study, so they have to go while the task is
+          // the task, not the Research, so they have to go while the task is
           // still here to name them.
           delete findings[tasks[i].id];
           transcripts.delete(tasks[i].id);
           tasks.splice(i, 1);
         }
       }
-      dropConversations((c) => c.studyId === studyId);
+      dropConversations((c) => c.researchId === researchId);
     },
     async createTask(input: NewTask) {
       const title = input.title.trim();
       if (!title) throw new LykeionError("invalid", "task title must not be empty");
       // Refused rather than filed into nothing: a Task written against a
-      // Study that does not exist would be created unfiled, and its author
+      // Research that does not exist would be created unfiled, and its author
       // would have no way to tell that from having asked for that.
-      if (input.studyId !== undefined && !studies.some((s) => s.id === input.studyId))
-        throw new LykeionError("not-found", `no such study: ${input.studyId}`);
-      // Filed Tasks number within their Study; unfiled ones share one Lab-wide
+      if (input.researchId !== undefined && !researches.some((s) => s.id === input.researchId))
+        throw new LykeionError("not-found", `no such research: ${input.researchId}`);
+      // Filed Tasks number within their Research; unfiled ones share one Lab-wide
       // run, so `TSK-1`, `TSK-2`… stay distinct from each other rather than
-      // colliding on every Study's `1`.
+      // colliding on every Research's `1`.
       const n =
         tasks
-          .filter((t) => t.studyId === input.studyId)
+          .filter((t) => t.researchId === input.researchId)
           .reduce((max, t) => Math.max(max, t.number), 0) + 1;
       const now = tick();
       const task: Task = {
         id: nextId("t"),
         number: n,
-        studyId: input.studyId,
+        researchId: input.researchId,
         stage: input.stage,
         title,
         description: input.description,
@@ -1343,10 +1348,10 @@ export function createInMemoryLab(
       if (patch.description !== undefined) task.description = patch.description;
       // Filing keeps the Task's number, which is cheaper than renumbering and
       // costs only that its code changes with it ("TSK-7" → "CMP-7").
-      if (patch.studyId !== undefined) {
-        if (!studies.some((s) => s.id === patch.studyId))
-          throw new LykeionError("not-found", `no such study: ${patch.studyId}`);
-        task.studyId = patch.studyId;
+      if (patch.researchId !== undefined) {
+        if (!researches.some((s) => s.id === patch.researchId))
+          throw new LykeionError("not-found", `no such research: ${patch.researchId}`);
+        task.researchId = patch.researchId;
       }
       if (patch.stage !== undefined) task.stage = patch.stage;
       if (patch.status !== undefined) task.status = patch.status;
@@ -1412,18 +1417,18 @@ export function createInMemoryLab(
           "invalid",
           "a conversation must open with a message",
         );
-      const study = studies.find((s) => s.id === input.studyId);
-      if (!study)
-        throw new LykeionError("not-found", `no such study: ${input.studyId}`);
+      const research = researches.find((s) => s.id === input.researchId);
+      if (!research)
+        throw new LykeionError("not-found", `no such research: ${input.researchId}`);
       const task = tasks.find((t) => t.id === input.taskId);
       if (!task)
         throw new LykeionError("not-found", `no such task: ${input.taskId}`);
       // A thread about a Task filed somewhere else is not a thread about that
-      // Study, and would list under a Study the work does not belong to.
-      if (task.studyId !== input.studyId)
+      // Research, and would list under a Research the work does not belong to.
+      if (task.researchId !== input.researchId)
         throw new LykeionError(
           "invalid",
-          `task ${task.id} is not in study ${input.studyId}`,
+          `task ${task.id} is not in research ${input.researchId}`,
         );
 
       // The opener is in it whether or not they named themselves — a thread
@@ -1435,7 +1440,7 @@ export function createInMemoryLab(
       const now = tick();
       const conversation: Conversation = {
         id: nextId("c"),
-        studyId: input.studyId,
+        researchId: input.researchId,
         taskId: input.taskId,
         title: input.title?.trim() || task.title,
         participants,
@@ -1491,7 +1496,7 @@ export function createInMemoryLab(
         : tasks.filter((t) => t.status !== "done");
       // Filed first, then unfiled — each run of numbers stays contiguous
       // rather than interleaving two unrelated sequences.
-      const rank = (t: Task) => (t.studyId === undefined ? 1 : 0);
+      const rank = (t: Task) => (t.researchId === undefined ? 1 : 0);
       return clone(visible).sort(
         (a, b) => rank(a) - rank(b) || a.number - b.number,
       );
@@ -1965,7 +1970,7 @@ export function createInMemoryLab(
         throw new LykeionError("forbidden", `run ${runId} does not belong to you`);
       // Refused by name here, on the way in, rather than narrowed to
       // something the researcher did not ask for: a "global" scope means
-      // every Study this lab holds, and there is nothing this core could
+      // every Research this lab holds, and there is nothing this core could
       // grant that would honestly mean that.
       if (
         decision.action === "permission" &&
@@ -1974,14 +1979,14 @@ export function createInMemoryLab(
       )
         throw new LykeionError(
           "invalid",
-          `a "global" grant would reach every Study in this lab — grant one Study at a time instead`,
+          `a "global" grant would reach every Research in this lab — grant one Research at a time instead`,
         );
       runs.get(runId)!.submit(decision);
     },
     async delegateSubagent(input: DelegateSubagentInput) {
       const sequence = nextTurnSequence(input.taskId);
       const runInput: StartRunInput = {
-        studyId: input.studyId,
+        researchId: input.researchId,
         taskId: input.taskId,
         prompt: input.task,
         options: input.options,
@@ -2010,7 +2015,7 @@ export function createInMemoryLab(
       runStarters.set(handle.runId, me);
       return handle;
     },
-    async readArtifact(_studyId, path) {
+    async readArtifact(_researchId, path) {
       const seeded = artifacts[path];
       if (seeded) return clone(seeded);
       // Not seeded — synthesize a small text blob so a viewer is always
@@ -2022,10 +2027,10 @@ export function createInMemoryLab(
         data: `# ${path}\n\nNo seeded fixture for this path — synthesized placeholder.\n`,
       };
     },
-    async reviewFindings(_studyId, taskId) {
+    async reviewFindings(_researchId, taskId) {
       return clone(sortedFindings(taskId));
     },
-    async resolveFinding(_studyId, taskId, findingId) {
+    async resolveFinding(_researchId, taskId, findingId) {
       const list = findings[taskId] ?? [];
       const hit = list.find((f) => f.id === findingId);
       if (!hit) throw new LykeionError("not-found", `no such finding: ${findingId}`);
@@ -2118,6 +2123,7 @@ export function createInMemoryLab(
         description: input.description ?? "",
         leadAgent: input.leadAgent,
         memberAgents: input.memberAgents ? [...input.memberAgents] : [],
+        memberUsers: input.memberUsers ? [...input.memberUsers] : [],
         createdTs: now,
         updatedTs: now,
       };
@@ -2355,7 +2361,7 @@ function simulateRun(
   /**
    * The run record a turn lands with. Every turn finalizes a record
    * unconditionally — denied, failed and cancelled turns are part of the
-   * study record too — with status following the terminal state (Completed
+   * research record too — with status following the terminal state (Completed
    * → ok, a researcher's stop → cancelled, anything else → failed). A
    * failed or cancelled turn stamps no provenance, hence no outputs.
    * `stream` is snapshotted at the moment the turn ends.
@@ -2416,7 +2422,7 @@ function simulateRun(
         // A stop reached before anything was even proposed to decline is
         // still a stop, not a decline of anything — it lands `cancelled`,
         // never a `failed` with an invented reason. It still lands a run:
-        // a cancelled turn is part of the study record too.
+        // a cancelled turn is part of the research record too.
         const run = record("cancelled", 200);
         liveIdle();
         emit({ event: "completed", state: { state: "cancelled" }, run });
@@ -2494,7 +2500,7 @@ function simulateRun(
     const d2 = await waitDecision();
     if (closed || d2.action === "cancel") {
       // Cancel is the hard stop — nothing to resume. It still records the
-      // run: a cancelled turn is part of the study record, landed with
+      // run: a cancelled turn is part of the research record, landed with
       // status `cancelled` rather than `failed` — a stop is not a decline
       // of anything, so nothing here actually failed.
       //

@@ -1,4 +1,4 @@
-import type { Study, Task, TaskStatus } from "@lykeion/api";
+import type { Research, Task, TaskStatus } from "@lykeion/api";
 import { TaskCard } from "./TaskCard";
 import { StatusIcon } from "../StatusIcon";
 import { PlusIcon } from "../icons";
@@ -7,7 +7,7 @@ export interface BoardColumnProps {
   status: TaskStatus;
   title: string;
   tasks: Task[];
-  studyById: Record<string, Study>;
+  studyById: Record<string, Research>;
   /** Opens the New Task modal; shown as the column's add affordances. */
   onAddTask?: () => void;
   /** Opens the Details editor for a card. */
@@ -43,15 +43,15 @@ export function BoardColumn({
       </div>
 
       <div className="flex flex-col gap-2">
-        {/* No guard on the Study: an unfiled Task has none, and one whose
-            Study is missing from the map must still show rather than
+        {/* No guard on the Research: an unfiled Task has none, and one whose
+            Research is missing from the map must still show rather than
             silently leave the board. */}
         {tasks.map((task) => (
           <TaskCard
             key={task.id}
             task={task}
-            study={
-              task.studyId !== undefined ? studyById[task.studyId] : undefined
+            research={
+              task.researchId !== undefined ? studyById[task.researchId] : undefined
             }
             onEdit={onEditTask}
           />

@@ -185,7 +185,7 @@ export interface RunningKernel extends KernelIdentity {
   /** Minted by the machine from the identity above; every call names this. */
   id: string;
   machineId: string;
-  studyId: string;
+  researchId: string;
   state: KernelState;
   /** Which incarnation of the process is behind this identity. A kernel
    *  outlives its own process — a restart raises this and keeps the id. */

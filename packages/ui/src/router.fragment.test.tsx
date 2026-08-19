@@ -16,7 +16,7 @@ function setHash(hash: string): void {
 }
 
 it("takes its own fragment with it when it goes", () => {
-  window.location.hash = "#/studies";
+  window.location.hash = "#/researches";
   const view = render(
     <RouterProvider>
       <p>the workbench</p>
@@ -35,7 +35,7 @@ it("leaves an invite fragment alone on the way out", () => {
   // bar is a working credential and the only copy of it they have; the
   // router passes it through on its way to the gate above, and passing
   // through is not the same as owning it.
-  window.location.hash = "#/studies";
+  window.location.hash = "#/researches";
   const view = render(
     <RouterProvider>
       <p>the workbench</p>
@@ -54,7 +54,7 @@ it("leaves a pairing fragment alone on the way out", () => {
   // signed in. If the session behind it turns out to be gone, the workbench
   // unmounts to show sign-in — and the pairing parameters must survive that
   // round trip, or approving after signing back in has nothing left to show.
-  window.location.hash = "#/studies";
+  window.location.hash = "#/researches";
   const view = render(
     <RouterProvider>
       <p>the workbench</p>
@@ -70,7 +70,7 @@ it("leaves a pairing fragment alone on the way out", () => {
 });
 
 it("still clears a fragment it navigated to itself", () => {
-  window.location.hash = "#/studies";
+  window.location.hash = "#/researches";
   const view = render(
     <RouterProvider>
       <p>the workbench</p>

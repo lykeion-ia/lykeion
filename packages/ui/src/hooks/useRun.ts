@@ -414,7 +414,7 @@ interface AttachedHandle {
  * changes and unmounts always `detach()`, never `close()`/cancel.
  */
 export function useRun(
-  studyId: string | undefined,
+  researchId: string | undefined,
   owner: { taskId: string },
 ): UseRun {
   const api = useApi();
@@ -527,14 +527,14 @@ export function useRun(
   const start = useCallback(
     (prompt: string, opts?: StartOptions) => {
       const trimmed = prompt.trim();
-      if (!trimmed || studyId === undefined) return;
+      if (!trimmed || researchId === undefined) return;
       const mine = epoch.current;
       setPendingStarts((count) => count + 1);
       setStartError(null);
 
       void api
         .startRun({
-          studyId,
+          researchId,
           taskId,
           prompt: trimmed,
           options: {
@@ -565,7 +565,7 @@ export function useRun(
             setPendingStarts((count) => Math.max(0, count - 1));
         });
     },
-    [api, studyId, taskId, attach],
+    [api, researchId, taskId, attach],
   );
 
   const submit = useCallback((runId: string, decision: RunDecision) => {
@@ -620,7 +620,7 @@ export function useRun(
       if (epoch.current === mine) epoch.current += 1;
       detachAll();
     };
-  }, [studyId, taskId, detachAll]);
+  }, [researchId, taskId, detachAll]);
 
   const runs = useMemo<ManagedRun[]>(
     () =>

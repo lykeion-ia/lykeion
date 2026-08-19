@@ -2,7 +2,7 @@ import type { AccessKind, PermissionScope } from "@lykeion/api";
 
 /**
  * The four scopes a permission grant can carry, in the order the split
- * button's dropdown offers them: Once → this conversation → this Study →
+ * button's dropdown offers them: Once → this conversation → this Research →
  * Global, from narrowest to broadest. `label` is the menu row's own wording;
  * `description` is the line under it, asserted verbatim by
  * `PermissionCard.test.tsx` — keep the four strings exact if this list is
@@ -21,8 +21,8 @@ export const PERMISSION_SCOPES: {
   },
   {
     scope: "study",
-    label: "This Study",
-    description: "Remembered for this Study",
+    label: "This Research",
+    description: "Remembered for this Research",
   },
   {
     scope: "global",

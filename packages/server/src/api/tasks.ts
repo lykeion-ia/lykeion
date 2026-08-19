@@ -19,20 +19,20 @@ export type TasksApi = Pick<
 >;
 
 /**
- * Numbers run per Study, and unfiled Tasks run on their own sequence, so
+ * Numbers run per Research, and unfiled Tasks run on their own sequence, so
  * two unrelated series never interleave. This does not need to defend a
  * `SELECT MAX` against a concurrent `INSERT` racing it the way a
  * multi-connection database would: this store runs one caller's whole
  * transaction to completion, synchronously, before the next one starts, so
- * no two calls into `nextNumber` for the same Study ever interleave.
+ * no two calls into `nextNumber` for the same Research ever interleave.
  *
- * It governs new Tasks only. Filing keeps a Task's number, and every Study
- * numbers from one, so a filed Task can and does land on a number the Study
- * already uses. Numbers are a reading order within a Study, not a key.
+ * It governs new Tasks only. Filing keeps a Task's number, and every Research
+ * numbers from one, so a filed Task can and does land on a number the Research
+ * already uses. Numbers are a reading order within a Research, not a key.
  */
-function nextNumber(store: Store, studyId: string | null): number {
-  const row = studyId
-    ? store.get(`SELECT MAX(number) AS n FROM tasks WHERE study_id = ?`, [studyId])
+function nextNumber(store: Store, researchId: string | null): number {
+  const row = researchId
+    ? store.get(`SELECT MAX(number) AS n FROM tasks WHERE study_id = ?`, [researchId])
     : store.get(`SELECT MAX(number) AS n FROM tasks WHERE study_id IS NULL`);
   return ((row?.n as number | null) ?? 0) + 1;
 }
@@ -57,7 +57,7 @@ export function toTask(
   return {
     id: row.id as string,
     number: row.number as number,
-    ...(row.study_id === null ? {} : { studyId: row.study_id as string }),
+    ...(row.study_id === null ? {} : { researchId: row.study_id as string }),
     stage: row.stage as Stage,
     title: row.title as string,
     ...(row.description === null ? {} : { description: row.description as string }),
@@ -154,22 +154,22 @@ export function tasksApi(deps: Deps): TasksApi {
       if (!title) throw new LykeionError("invalid", "task title must not be empty");
       const ts = now();
       return store.tx(() => {
-        if (input.studyId !== undefined && !store.get(`SELECT id FROM studies WHERE id = ?`, [input.studyId]))
-          throw new LykeionError("not-found", `no such study: ${input.studyId}`);
+        if (input.researchId !== undefined && !store.get(`SELECT id FROM studies WHERE id = ?`, [input.researchId]))
+          throw new LykeionError("not-found", `no such research: ${input.researchId}`);
 
         // One sequence number serves both the id and the seq column, for
-        // the same reason createStudy uses only one: a second nextSeq call
+        // the same reason createResearch uses only one: a second nextSeq call
         // would burn a value nothing reads.
         const seq = nextSeq(store);
         const id = `t_${seq}`;
-        const number = nextNumber(store, input.studyId ?? null);
+        const number = nextNumber(store, input.researchId ?? null);
         store.run(
           `INSERT INTO tasks (
              id, number, study_id, stage, title, description, status, priority,
              created_by, target_date, labels, links, subtasks, created_ts, updated_ts, seq
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            id, number, input.studyId ?? null, input.stage, title,
+            id, number, input.researchId ?? null, input.stage, title,
             input.description ?? null, "todo", input.priority ?? "none",
             actor.userId, null, "[]", "[]", "[]", ts, ts, seq,
           ],
@@ -195,10 +195,10 @@ export function tasksApi(deps: Deps): TasksApi {
           if (!title) throw new LykeionError("invalid", "task title must not be empty");
           store.run(`UPDATE tasks SET title = ? WHERE id = ?`, [title, taskId]);
         }
-        if (patch.studyId !== undefined) {
-          if (!store.get(`SELECT id FROM studies WHERE id = ?`, [patch.studyId]))
-            throw new LykeionError("not-found", `no such study: ${patch.studyId}`);
-          store.run(`UPDATE tasks SET study_id = ? WHERE id = ?`, [patch.studyId, taskId]);
+        if (patch.researchId !== undefined) {
+          if (!store.get(`SELECT id FROM studies WHERE id = ?`, [patch.researchId]))
+            throw new LykeionError("not-found", `no such research: ${patch.researchId}`);
+          store.run(`UPDATE tasks SET study_id = ? WHERE id = ?`, [patch.researchId, taskId]);
         }
         if (patch.description !== undefined)
           store.run(`UPDATE tasks SET description = ? WHERE id = ?`, [patch.description, taskId]);

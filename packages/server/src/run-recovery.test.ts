@@ -146,7 +146,7 @@ interface RecoveryLab {
 }
 
 /** A lab with an owner, a machine paired and reported as offering `claude`,
- *  a Study and a Task, and a turn already started on that machine — what
+ *  a Research and a Task, and a turn already started on that machine — what
  *  every test below needs before it can reconcile the machine's own list of
  *  what it still holds. Its command stream is attached before the run ever
  *  starts, the way a real daemon's already is by the time a researcher
@@ -164,11 +164,11 @@ async function labWithRunInFlight(): Promise<RecoveryLab> {
   const { machineId, token } = await pairClaudeMachine(server.base, ownerApi, machineName);
   server.relay.attach(machineId, () => {});
 
-  const study = await ownerApi.createStudy({ key: "CMP", title: "Comparative" });
-  const task = await ownerApi.createTask({ studyId: study.id, stage: "background", title: "run me" });
+  const research = await ownerApi.createResearch({ key: "CMP", title: "Comparative" });
+  const task = await ownerApi.createTask({ researchId: research.id, stage: "background", title: "run me" });
 
   const { runId } = await ownerApi.startRun({
-    studyId: study.id, taskId: task.id, prompt: "go",
+    researchId: research.id, taskId: task.id, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
 
@@ -385,14 +385,14 @@ it("drops the failed run's own command, the same as a normal completion would", 
 
 it("leaves a sibling run's status alone when only one run is missing", async () => {
   const lab = await labWithRunInFlight();
-  const studyId = (await lab.ownerApi.listStudies())[0]!.id;
+  const researchId = (await lab.ownerApi.listResearches())[0]!.id;
   const sibling = await lab.ownerApi.createTask({
-    studyId,
+    researchId,
     stage: "background",
     title: "Sibling run",
   });
   const second = await lab.ownerApi.startRun({
-    studyId,
+    researchId,
     taskId: sibling.id,
     prompt: "go again",
     options: { planMode: false, agent: "claude" },
@@ -460,10 +460,10 @@ it("does not lock a machine out of its command stream over a reported run id tha
   // have if the nonexistent id had never been named at all — proving the
   // route did not wedge this machine the way refusing the whole request
   // would have.
-  const study = await lab.ownerApi.createStudy({ key: "SEC", title: "Second" });
-  const task = await lab.ownerApi.createTask({ studyId: study.id, stage: "background", title: "still real" });
+  const research = await lab.ownerApi.createResearch({ key: "SEC", title: "Second" });
+  const task = await lab.ownerApi.createTask({ researchId: research.id, stage: "background", title: "still real" });
   const second = await lab.ownerApi.startRun({
-    studyId: study.id, taskId: task.id, prompt: "go",
+    researchId: research.id, taskId: task.id, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
   const replayed: RunCommand[] = [];
@@ -483,10 +483,10 @@ it("does not fail a run whose start-run was never delivered to any command strea
   const ownerApi = apiFor(server.base, ownerCookie);
   const { token } = await pairClaudeMachine(server.base, ownerApi, "ana-macbook");
 
-  const study = await ownerApi.createStudy({ key: "CMP", title: "Comparative" });
-  const task = await ownerApi.createTask({ studyId: study.id, stage: "background", title: "run me" });
+  const research = await ownerApi.createResearch({ key: "CMP", title: "Comparative" });
+  const task = await ownerApi.createTask({ researchId: research.id, stage: "background", title: "run me" });
   const { runId } = await ownerApi.startRun({
-    studyId: study.id, taskId: task.id, prompt: "go",
+    researchId: research.id, taskId: task.id, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
 

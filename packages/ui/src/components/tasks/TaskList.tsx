@@ -1,4 +1,4 @@
-import { taskCode, type Study, type Task } from "@lykeion/api";
+import { taskCode, type Research, type Task } from "@lykeion/api";
 import { CalendarIcon, PriorityIcon } from "../icons";
 import { RowLink } from "../RowLink";
 import { AssigneeStack } from "../AssigneeStack";
@@ -16,20 +16,20 @@ import { cn } from "../../lib/utils";
 
 export interface TaskListProps {
   tasks: Task[];
-  studyById: Record<string, Study>;
-  // Show the "Study" column (true for cross-study lists like My Tasks).
-  showStudy?: boolean;
+  studyById: Record<string, Research>;
+  // Show the "Research" column (true for cross-research lists like My Tasks).
+  showResearch?: boolean;
   emptyLabel?: string;
 }
 
 export function TaskList({
   tasks,
   studyById,
-  showStudy = true,
+  showResearch = true,
   emptyLabel = "No tasks in this view",
 }: TaskListProps) {
   const dir = useDirectory();
-  const gridCols = showStudy
+  const gridCols = showResearch
     ? "grid-cols-[minmax(0,1fr)_150px_120px_150px_90px]"
     : "grid-cols-[minmax(0,1fr)_120px_150px_90px]";
 
@@ -50,19 +50,19 @@ export function TaskList({
         )}
       >
         <span>Task</span>
-        {showStudy && <span>Study</span>}
+        {showResearch && <span>Research</span>}
         <span>Status</span>
         <span>Assignee</span>
         <span>Updated</span>
       </div>
 
       {tasks.map((task) => {
-        // Deliberately unguarded: an unfiled Task has no Study, and one whose
-        // Study is missing from the map still has to render. Dropping the row
+        // Deliberately unguarded: an unfiled Task has no Research, and one whose
+        // Research is missing from the map still has to render. Dropping the row
         // would take assigned work off the screen while the filter counts
         // above still include it.
-        const study =
-          task.studyId !== undefined ? studyById[task.studyId] : undefined;
+        const research =
+          task.researchId !== undefined ? studyById[task.researchId] : undefined;
         const meta = TASK_STATUS_META[task.status];
         const assignees = task.assignees ?? [];
         const stage = STAGE_META[task.stage];
@@ -79,7 +79,7 @@ export function TaskList({
             <span className="flex min-w-0 flex-col">
               <span className="flex min-w-0 items-center gap-2">
                 <span className="shrink-0 font-mono text-meta text-fg-tertiary">
-                  {taskCode(study, task)}
+                  {taskCode(research, task)}
                 </span>
                 <span className="truncate font-medium text-fg">
                   {task.title}
@@ -114,10 +114,10 @@ export function TaskList({
               </span>
             </span>
 
-            {showStudy && (
+            {showResearch && (
               <span className="truncate text-fg-muted">
-                {study ? (
-                  study.title
+                {research ? (
+                  research.title
                 ) : (
                   <span className="text-fg-tertiary">Unfiled</span>
                 )}

@@ -1,4 +1,4 @@
-import type { Assignee, LykeionApi, Study, Task } from "@lykeion/api";
+import type { Assignee, LykeionApi, Research, Task } from "@lykeion/api";
 import {
   assigneeAvatar,
   assigneeKey,
@@ -7,8 +7,8 @@ import {
 } from "./assignee";
 import { formatAgo, PRIORITY_META } from "./task-meta";
 
-// Study has no status/priority/lead of its own — aggregate from its real tasks.
-export interface StudyMeta {
+// Research has no status/priority/lead of its own — aggregate from its real tasks.
+export interface ResearchMeta {
   statusLabel: string;
   statusDotClass: string; // bg-*
   statusTextClass: string; // text-*
@@ -20,7 +20,7 @@ export interface StudyMeta {
 }
 
 /** Derive a short key from a title (initials, prefix fallback). */
-export function deriveStudyKey(title: string): string {
+export function deriveResearchKey(title: string): string {
   const words = title.trim().split(/\s+/).filter(Boolean);
   const initials = words
     .map((w) => w[0])
@@ -38,32 +38,32 @@ export function deriveStudyKey(title: string): string {
  *  derived rather than asked for. Lives here, beside the derivation and the
  *  create call that consume it, so the form collecting it stays a detail of
  *  the UI rather than something the data path depends on. */
-export interface NewStudyInput {
+export interface NewResearchInput {
   title: string;
   description: string;
   agentContext: string;
 }
 
-/** Turn a submitted {@link NewStudyInput} into a created Study. Every surface
- *  that offers Study creation calls this — one implementation of the key
+/** Turn a submitted {@link NewResearchInput} into a created Research. Every surface
+ *  that offers Research creation calls this — one implementation of the key
  *  derivation and optional-field trimming, not one copy per host. */
-export function createStudyFromInput(
+export function createResearchFromInput(
   api: LykeionApi,
-  { title, description, agentContext }: NewStudyInput,
-): Promise<Study> {
-  return api.createStudy({
+  { title, description, agentContext }: NewResearchInput,
+): Promise<Research> {
+  return api.createResearch({
     title,
-    key: deriveStudyKey(title),
+    key: deriveResearchKey(title),
     description: description || undefined,
     agentContext: agentContext || undefined,
   });
 }
 
-export function deriveStudyMeta(
-  study: Study,
+export function deriveResearchMeta(
+  research: Research,
   tasks: Task[],
   dir: Directory,
-): StudyMeta {
+): ResearchMeta {
   const totalCount = tasks.length;
   const doneCount = tasks.filter((t) => t.status === "done").length;
 
@@ -129,6 +129,6 @@ export function deriveStudyMeta(
     doneCount,
     totalCount,
     lead,
-    startedAgo: formatAgo(study.createdTs),
+    startedAgo: formatAgo(research.createdTs),
   };
 }

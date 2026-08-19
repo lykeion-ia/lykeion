@@ -35,7 +35,7 @@ import type {
 import App from "../App";
 
 const TASK = "t_3";
-const ROUTE = `#/studies/s_cmp/tasks/${TASK}`;
+const ROUTE = `#/researches/s_cmp/tasks/${TASK}`;
 
 /** One persisted turn — the historic transcript a reopened Task replays. */
 const HISTORIC_TURN: TaskTurn = {

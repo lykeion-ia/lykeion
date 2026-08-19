@@ -51,18 +51,18 @@ function PalettePreview({ preview }: { preview: Preview }) {
  * about a row that is otherwise just a title, and it replaced a text strip that
  * only ever said "Task".
  *
- * A Study takes the Study mark. Its key used to sit here, and still does in the
+ * A Research takes the Research mark. Its key used to sit here, and still does in the
  * preview beside the list, which is where a reader looks once the row is theirs.
  *
  * The glyph is `aria-hidden` with the same fact in text beside it, so the option's
  * announced name says what the picture shows.
  */
 function CommandMark({ command }: { command: Command }) {
-  if (command.kind === "study")
+  if (command.kind === "research")
     return (
       <span className="palette-mark">
         <FlaskIcon width={13} height={13} aria-hidden="true" />
-        <span className="sr-only">Study</span>
+        <span className="sr-only">Research</span>
       </span>
     );
   const Brand = command.agent ? cliIcon(command.agent) : null;

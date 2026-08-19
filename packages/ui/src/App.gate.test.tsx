@@ -63,7 +63,7 @@ it("a session that lapses mid-visit lands on the sign-in screen, not a shell stu
         });
       }
       // Everything else the shell reads on its default screen (member list,
-      // studies, inbox) is empty — the point of this test is the identity
+      // researches, inbox) is empty — the point of this test is the identity
       // check, not what a populated lab renders.
       return json(200, { ok: true, value: [] });
     }

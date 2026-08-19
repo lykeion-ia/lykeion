@@ -7,7 +7,7 @@ type User = ReturnType<typeof userEvent.setup>;
  * Drive a Task's row menu the way a researcher does.
  *
  * A Task's own actions live in the kebab on its row — in the Task surface's
- * sidebar and in the Study page's list, the same menu on both. Tests that used
+ * sidebar and in the Research page's list, the same menu on both. Tests that used
  * to click a Mark Done button in the breadcrumb go through here instead; the
  * breadcrumb now names the agent rather than offering anything, and a status
  * is written from the menu's `Status` submenu.

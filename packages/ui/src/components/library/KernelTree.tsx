@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { MachineCompute, RunningKernel, Machine, Study, Task } from "@lykeion/api";
+import type { MachineCompute, RunningKernel, Machine, Research, Task } from "@lykeion/api";
 import { cn } from "../../lib/utils";
 import { formatBytes, formatCores, formatSince, UNREPORTED } from "../../lib/format";
 import { ChevronDownIcon } from "../icons";
@@ -437,8 +437,8 @@ export function kernelSummary(kernels: RunningKernel[], health: Machine["health"
  * Names for the tree's middle level: a Task as a researcher would recognise
  * it, built once for a whole render rather than per kernel.
  */
-export function taskLabeller(tasks: Task[], studies: Study[]): (taskId: string) => string {
-  const studyOf = new Map(studies.map((s) => [s.id, s]));
+export function taskLabeller(tasks: Task[], researches: Research[]): (taskId: string) => string {
+  const studyOf = new Map(researches.map((s) => [s.id, s]));
   const byId = new Map(tasks.map((t) => [t.id, t]));
   return (taskId: string): string => {
     const task = byId.get(taskId);
@@ -446,8 +446,8 @@ export function taskLabeller(tasks: Task[], studies: Study[]): (taskId: string) 
     // a word this lab minted for itself, and printing it here would read as
     // a title.
     if (!task) return "A Task not in this list";
-    const study = task.studyId ? studyOf.get(task.studyId) : undefined;
-    const number = study ? `${study.key}-${task.number}` : `TSK-${task.number}`;
-    return study ? `${study.title} › ${number} ${task.title}` : `${number} ${task.title}`;
+    const research = task.researchId ? studyOf.get(task.researchId) : undefined;
+    const number = research ? `${research.key}-${task.number}` : `TSK-${task.number}`;
+    return research ? `${research.title} › ${number} ${task.title}` : `${number} ${task.title}`;
   };
 }

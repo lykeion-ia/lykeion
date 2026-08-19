@@ -2,22 +2,35 @@ import { describe, expect, it } from "vitest";
 import { parseHash, routeHash, type Route } from "./router";
 
 describe("parseHash", () => {
-  it("defaults to Studies for empty or unknown hashes", () => {
-    expect(parseHash("")).toEqual({ name: "studies" });
-    expect(parseHash("#")).toEqual({ name: "studies" });
-    expect(parseHash("#/")).toEqual({ name: "studies" });
-    expect(parseHash("#/nonsense")).toEqual({ name: "studies" });
+  it("defaults to Researches for empty or unknown hashes", () => {
+    expect(parseHash("")).toEqual({ name: "researches" });
+    expect(parseHash("#")).toEqual({ name: "researches" });
+    expect(parseHash("#/")).toEqual({ name: "researches" });
+    expect(parseHash("#/nonsense")).toEqual({ name: "researches" });
   });
 
-  it("parses study and task routes", () => {
-    expect(parseHash("#/studies")).toEqual({ name: "studies" });
-    expect(parseHash("#/studies/s_cmp")).toEqual({
-      name: "study",
-      studyId: "s_cmp",
+  it("parses research and task routes", () => {
+    expect(parseHash("#/researches")).toEqual({ name: "researches" });
+    expect(parseHash("#/researches/s_cmp")).toEqual({
+      name: "research",
+      researchId: "s_cmp",
     });
-    expect(parseHash("#/studies/s_cmp/tasks/t_3")).toEqual({
+    expect(parseHash("#/researches/s_cmp/tasks/t_3")).toEqual({
       name: "task",
-      studyId: "s_cmp",
+      researchId: "s_cmp",
+      taskId: "t_3",
+    });
+  });
+
+  it("still lands the old researches hashes on Researches", () => {
+    expect(parseHash("#/researches")).toEqual({ name: "researches" });
+    expect(parseHash("#/researches/s_cmp")).toEqual({
+      name: "research",
+      researchId: "s_cmp",
+    });
+    expect(parseHash("#/researches/s_cmp/tasks/t_3")).toEqual({
+      name: "task",
+      researchId: "s_cmp",
       taskId: "t_3",
     });
   });
@@ -30,6 +43,12 @@ describe("parseHash", () => {
   it("still lands the old research-groups hash on Groups", () => {
     expect(parseHash("#/research-groups")).toEqual({ name: "groups" });
     expect(routeHash({ name: "groups" })).toBe("#/groups");
+  });
+
+  it("routes Colleagues, and lands the old Members tab on it", () => {
+    expect(parseHash("#/colleagues")).toEqual({ name: "colleagues" });
+    expect(routeHash({ name: "colleagues" })).toBe("#/colleagues");
+    expect(parseHash("#/settings/members")).toEqual({ name: "colleagues" });
   });
 
   it("parses a Settings tab, and General as the bare route", () => {
@@ -65,12 +84,12 @@ describe("parseHash", () => {
     );
   });
 
-  it("parses an invite code off the join route, and falls back to Studies with none", () => {
+  it("parses an invite code off the join route, and falls back to Researches with none", () => {
     expect(parseHash("#/join/abc123")).toEqual({
       name: "join",
       code: "abc123",
     });
-    expect(parseHash("#/join")).toEqual({ name: "studies" });
+    expect(parseHash("#/join")).toEqual({ name: "researches" });
     expect(routeHash({ name: "join", code: "abc123" })).toBe("#/join/abc123");
   });
 
@@ -113,9 +132,9 @@ describe("parseHash", () => {
 
   it("round-trips every route through routeHash", () => {
     const routes: Route[] = [
-      { name: "studies" },
-      { name: "study", studyId: "s_gen" },
-      { name: "task", studyId: "s_gen", taskId: "t_8" },
+      { name: "researches" },
+      { name: "research", researchId: "s_gen" },
+      { name: "task", researchId: "s_gen", taskId: "t_8" },
       { name: "tasks" },
       { name: "unfiled-task", taskId: "t_9" },
       { name: "inbox" },

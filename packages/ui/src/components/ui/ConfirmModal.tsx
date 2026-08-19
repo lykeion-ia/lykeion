@@ -30,7 +30,7 @@ export interface ConfirmModalProps {
  * One step before an action nothing inside the workbench can take back.
  *
  * The mechanism lives here because three surfaces were already drawing this
- * same dialog — deleting a Study, removing a machine, and now deleting a Task
+ * same dialog — deleting a Research, removing a machine, and now deleting a Task
  * — and two of them had drifted into being the same component twice over,
  * closely enough that one said so in its own docstring. A behavioural fix to
  * either (a focus trap, restoring focus on close) would have been made once

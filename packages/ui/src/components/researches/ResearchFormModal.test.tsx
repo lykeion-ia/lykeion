@@ -1,12 +1,12 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Study } from "@lykeion/api";
-import { StudyFormModal } from "./StudyFormModal";
+import type { Research } from "@lykeion/api";
+import { ResearchFormModal } from "./ResearchFormModal";
 
 afterEach(cleanup);
 
-const existing: Study = {
+const existing: Research = {
   id: "s_cmp",
   key: "CMP",
   title: "Cross-modal plasticity in the brain",
@@ -17,13 +17,13 @@ const existing: Study = {
   updatedTs: 2,
 };
 
-it("opens empty and creates when it is given no Study", async () => {
+it("opens empty and creates when it is given no Research", async () => {
   const user = userEvent.setup();
   const onSubmit = vi.fn().mockResolvedValue(undefined);
-  render(<StudyFormModal onClose={vi.fn()} onSubmit={onSubmit} />);
+  render(<ResearchFormModal onClose={vi.fn()} onSubmit={onSubmit} />);
 
   expect(
-    screen.getByRole("heading", { name: "New Study" }),
+    screen.getByRole("heading", { name: "New Research" }),
   ).toBeInTheDocument();
   expect(screen.getByLabelText("Name")).toHaveValue("");
 
@@ -37,17 +37,17 @@ it("opens empty and creates when it is given no Study", async () => {
   });
 });
 
-it("opens on a Study's current values and saves an edit to all three fields", async () => {
+it("opens on a Research's current values and saves an edit to all three fields", async () => {
   const user = userEvent.setup();
   const onSubmit = vi.fn().mockResolvedValue(undefined);
   render(
-    <StudyFormModal study={existing} onClose={vi.fn()} onSubmit={onSubmit} />,
+    <ResearchFormModal research={existing} onClose={vi.fn()} onSubmit={onSubmit} />,
   );
 
-  // The form is the Study as it stands — an edit box that opens blank would
+  // The form is the Research as it stands — an edit box that opens blank would
   // silently invite you to retype what is already there.
   expect(
-    screen.getByRole("heading", { name: "Edit Study" }),
+    screen.getByRole("heading", { name: "Edit Research" }),
   ).toBeInTheDocument();
   expect(screen.getByLabelText("Name")).toHaveValue(existing.title);
   expect(screen.getByLabelText("Description")).toHaveValue(
@@ -58,25 +58,25 @@ it("opens on a Study's current values and saves an edit to all three fields", as
   );
 
   await user.clear(screen.getByLabelText("Name"));
-  await user.type(screen.getByLabelText("Name"), "Renamed study");
+  await user.type(screen.getByLabelText("Name"), "Renamed research");
   await user.clear(screen.getByLabelText("Agent Context"));
   await user.type(screen.getByLabelText("Agent Context"), "Report counts.");
   await user.click(screen.getByRole("button", { name: "Save" }));
 
   expect(onSubmit).toHaveBeenCalledWith({
-    title: "Renamed study",
+    title: "Renamed research",
     description: existing.description,
     agentContext: "Report counts.",
   });
 });
 
 it("clears a description by emptying it, rather than leaving it unpatched", async () => {
-  // An empty string is a real value on `StudyPatch` — it is how a Study says
+  // An empty string is a real value on `ResearchPatch` — it is how a Research says
   // it has no description. Omitting the field would leave the old text.
   const user = userEvent.setup();
   const onSubmit = vi.fn().mockResolvedValue(undefined);
   render(
-    <StudyFormModal study={existing} onClose={vi.fn()} onSubmit={onSubmit} />,
+    <ResearchFormModal research={existing} onClose={vi.fn()} onSubmit={onSubmit} />,
   );
 
   await user.clear(screen.getByLabelText("Description"));
@@ -87,11 +87,11 @@ it("clears a description by emptying it, rather than leaving it unpatched", asyn
   );
 });
 
-it("refuses to submit a Study whose name has been emptied", async () => {
+it("refuses to submit a Research whose name has been emptied", async () => {
   const user = userEvent.setup();
   const onSubmit = vi.fn().mockResolvedValue(undefined);
   render(
-    <StudyFormModal study={existing} onClose={vi.fn()} onSubmit={onSubmit} />,
+    <ResearchFormModal research={existing} onClose={vi.fn()} onSubmit={onSubmit} />,
   );
 
   await user.clear(screen.getByLabelText("Name"));

@@ -8,22 +8,22 @@ const CMP = "Cross-modal plasticity in the brain";
 
 afterEach(cleanup);
 
-it("Studies renders the empty state on a fresh install", async () => {
+it("Researches renders the empty state on a fresh install", async () => {
   render(<App api={createInMemoryApi(emptySeed())} />);
   expect(
     await screen.findByText(
-      /No studies yet — create one to start a research line\./i,
+      /No researches yet — create one to start a research line\./i,
     ),
   ).toBeInTheDocument();
 });
 
-it("Studies lists seeded studies with their key badge", async () => {
+it("Researches lists seeded researches with their key badge", async () => {
   render(<App api={createInMemoryApi()} />);
   expect(await screen.findByText(CMP)).toBeInTheDocument();
   expect(screen.getByText("CMP")).toBeInTheDocument();
 });
 
-it("the row's pencil renames the Study in place", async () => {
+it("the row's pencil renames the Research in place", async () => {
   const user = userEvent.setup();
   const api = createInMemoryApi();
   render(<App api={api} />);
@@ -40,7 +40,7 @@ it("the row's pencil renames the Study in place", async () => {
   // The key badge is not part of a rename.
   expect(screen.getByText("CMP")).toBeInTheDocument();
   expect(
-    (await api.listStudies()).find((s) => s.key === "CMP")?.title,
+    (await api.listResearches()).find((s) => s.key === "CMP")?.title,
   ).toBe("Auditory remapping");
 });
 
@@ -59,16 +59,16 @@ it("Escape leaves the title alone", async () => {
   expect(screen.queryByText("Discarded")).not.toBeInTheDocument();
 });
 
-it("the row's bin deletes the Study, but only through the confirm", async () => {
+it("the row's bin deletes the Research, but only through the confirm", async () => {
   const user = userEvent.setup();
   const api = createInMemoryApi();
   render(<App api={api} />);
 
-  // Cancelling leaves the Study exactly where it was.
+  // Cancelling leaves the Research exactly where it was.
   await user.click(
     await screen.findByRole("button", { name: `Delete ${CMP}` }),
   );
-  const dialog = await screen.findByRole("dialog", { name: "Delete study" });
+  const dialog = await screen.findByRole("dialog", { name: "Delete research" });
   expect(within(dialog).getByText(/cannot be undone/i)).toBeInTheDocument();
   await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
   expect(screen.getByText(CMP)).toBeInTheDocument();
@@ -77,12 +77,12 @@ it("the row's bin deletes the Study, but only through the confirm", async () => 
   await user.click(screen.getByRole("button", { name: `Delete ${CMP}` }));
   await user.click(
     within(
-      await screen.findByRole("dialog", { name: "Delete study" }),
+      await screen.findByRole("dialog", { name: "Delete research" }),
     ).getByRole("button", { name: "Delete" }),
   );
 
   await waitForGone(CMP);
-  expect((await api.listStudies()).some((s) => s.title === CMP)).toBe(false);
+  expect((await api.listResearches()).some((s) => s.title === CMP)).toBe(false);
 });
 
 /** The row leaves on the screen's re-read, one tick after the delete lands. */
@@ -105,7 +105,7 @@ async function filterBy(
   await user.click(await screen.findByRole("button", { name: option }));
 }
 
-it("archives a Study out of the list, and shows it again on request", async () => {
+it("archives a Research out of the list, and shows it again on request", async () => {
   const user = userEvent.setup();
   const api = createInMemoryApi();
   render(<App api={api} />);
@@ -119,7 +119,7 @@ it("archives a Study out of the list, and shows it again on request", async () =
   expect(await screen.findByText(CMP)).toBeInTheDocument();
 });
 
-it("the archived filter leaves a chip that puts the Study back when removed", async () => {
+it("the archived filter leaves a chip that puts the Research back when removed", async () => {
   const user = userEvent.setup();
   render(<App api={createInMemoryApi()} />);
   await screen.findByText(CMP);
@@ -139,6 +139,6 @@ it("an empty archive says so rather than going blank", async () => {
   await filterBy(user, /^Archived$/, /^Archived 0$/);
 
   expect(
-    await screen.findByText(/No studies match these filters\./i),
+    await screen.findByText(/No researches match these filters\./i),
   ).toBeInTheDocument();
 });

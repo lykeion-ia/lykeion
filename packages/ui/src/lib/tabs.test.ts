@@ -10,7 +10,7 @@ import {
   back,
   closeTab,
   closeTabsForRoute,
-  closeTabsForStudy,
+  closeTabsForResearch,
   forward,
   navigate,
   openTab,
@@ -28,9 +28,9 @@ const here = () => active().stack[active().index].route;
 beforeEach(() => resetTabs());
 
 describe("tab store", () => {
-  it("starts on one Studies tab", () => {
+  it("starts on one Researches tab", () => {
     expect(tabsSnapshot().tabs).toHaveLength(1);
-    expect(here()).toEqual({ name: "studies" });
+    expect(here()).toEqual({ name: "researches" });
   });
 
   it("pushes onto the active tab and walks back and forward", () => {
@@ -41,7 +41,7 @@ describe("tab store", () => {
     back();
     expect(here()).toEqual({ name: "inbox" });
     back();
-    expect(here()).toEqual({ name: "studies" });
+    expect(here()).toEqual({ name: "researches" });
     forward();
     expect(here()).toEqual({ name: "inbox" });
   });
@@ -49,10 +49,10 @@ describe("tab store", () => {
   it("stops at the ends instead of wrapping", () => {
     back();
     back();
-    expect(here()).toEqual({ name: "studies" });
+    expect(here()).toEqual({ name: "researches" });
     forward();
     forward();
-    expect(here()).toEqual({ name: "studies" });
+    expect(here()).toEqual({ name: "researches" });
   });
 
   it("drops the forward entries when you navigate after going back", () => {
@@ -62,7 +62,7 @@ describe("tab store", () => {
     navigate({ name: "agents" });
 
     expect(active().stack.map((e) => e.route.name)).toEqual([
-      "studies",
+      "researches",
       "inbox",
       "agents",
     ]);
@@ -97,7 +97,7 @@ describe("tab store", () => {
 
     const s = tabsSnapshot();
     expect(s.tabs.map((t) => t.stack[t.index].route.name)).toEqual([
-      "studies",
+      "researches",
       "inbox",
       "machines",
       "agents",
@@ -134,7 +134,7 @@ describe("tab store", () => {
   });
 
   it("relabels every copy of a route, in any tab at any depth", () => {
-    const task = { name: "task", studyId: "s_1", taskId: "t_1" } as const;
+    const task = { name: "task", researchId: "s_1", taskId: "t_1" } as const;
     navigate(task, "CMP-1: old");
     navigate({ name: "inbox" });
     openTab(task, "CMP-1: old");
@@ -148,51 +148,51 @@ describe("tab store", () => {
     expect(labels).toEqual(["CMP-1: new", "CMP-1: new"]);
   });
 
-  it("cuts a deleted Study's entries out of every stack", () => {
-    navigate({ name: "study", studyId: "s_1" });
-    navigate({ name: "task", studyId: "s_1", taskId: "t_1" });
+  it("cuts a deleted Research's entries out of every stack", () => {
+    navigate({ name: "research", researchId: "s_1" });
+    navigate({ name: "task", researchId: "s_1", taskId: "t_1" });
     navigate({ name: "machines" });
 
-    closeTabsForStudy("s_1");
+    closeTabsForResearch("s_1");
 
     expect(active().stack.map((e) => e.route.name)).toEqual([
-      "studies",
+      "researches",
       "machines",
     ]);
     expect(here()).toEqual({ name: "machines" });
   });
 
-  it("keeps one tab when a deleted Study emptied them all", () => {
+  it("keeps one tab when a deleted Research emptied them all", () => {
     resetTabs();
-    openTab({ name: "study", studyId: "s_1" });
+    openTab({ name: "research", researchId: "s_1" });
     closeTab(tabsSnapshot().tabs[0].id);
 
-    closeTabsForStudy("s_1");
+    closeTabsForResearch("s_1");
 
     expect(tabsSnapshot().tabs).toHaveLength(1);
-    expect(here()).toEqual({ name: "studies" });
+    expect(here()).toEqual({ name: "researches" });
   });
 
   it("cuts a deleted Task's entries out", () => {
-    const task = { name: "task", studyId: "s_1", taskId: "t_1" } as const;
+    const task = { name: "task", researchId: "s_1", taskId: "t_1" } as const;
     navigate(task);
     navigate({ name: "inbox" });
 
     closeTabsForRoute(task);
 
     expect(active().stack.map((e) => e.route.name)).toEqual([
-      "studies",
+      "researches",
       "inbox",
     ]);
   });
 
   it("falls back behind the cut entry, never ahead of it", () => {
     navigate({ name: "inbox" });
-    navigate({ name: "study", studyId: "s_1" });
+    navigate({ name: "research", researchId: "s_1" });
     navigate({ name: "agents" });
-    back(); // sitting on the Study itself
+    back(); // sitting on the Research itself
 
-    closeTabsForStudy("s_1");
+    closeTabsForResearch("s_1");
 
     expect(here()).toEqual({ name: "inbox" });
   });

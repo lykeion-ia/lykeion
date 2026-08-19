@@ -1,17 +1,17 @@
 /**
  * The per-Task kebab menu, shared by every surface that lists Tasks: Pin ·
- * Rename · Status · Move to study · Delete. Each action is only offered when
+ * Rename · Status · Move to research · Delete. Each action is only offered when
  * its handler is supplied, so a caller that can do less still gets a coherent
  * menu rather than rows that do nothing.
  */
 
-import type { Study } from "@lykeion/api";
+import type { Research } from "@lykeion/api";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TaskRowMenu } from "./TaskRowMenu";
 
-function st(id: string, key: string, title: string): Study {
+function st(id: string, key: string, title: string): Research {
   return {
     id,
     key,
@@ -36,8 +36,8 @@ function renderMenu(props: Partial<Parameters<typeof TaskRowMenu>[0]> = {}) {
       title="Fit tuning curves"
       pinned={false}
       status="in-review"
-      studies={STUDIES}
-      currentStudyId="s_cmp"
+      researches={STUDIES}
+      currentResearchId="s_cmp"
       onPin={vi.fn()}
       onRename={vi.fn()}
       onMove={vi.fn()}
@@ -63,7 +63,7 @@ describe("TaskRowMenu", () => {
       "Pin",
       "Rename",
       "Status",
-      "Move to study",
+      "Move to research",
       "Delete",
     ]);
   });
@@ -146,12 +146,12 @@ describe("TaskRowMenu", () => {
     expect(onPin).toHaveBeenCalledTimes(1);
   });
 
-  it("lists every other Study as a destination, never the one the Task is in", async () => {
+  it("lists every other Research as a destination, never the one the Task is in", async () => {
     const user = userEvent.setup();
     const onMove = vi.fn();
     renderMenu({ onMove });
     await open(user);
-    await user.hover(screen.getByRole("menuitem", { name: /Move to study/ }));
+    await user.hover(screen.getByRole("menuitem", { name: /Move to research/ }));
 
     // "Move" to where it already is would be a no-op dressed as an action.
     expect(screen.queryByRole("menuitem", { name: /Plasticity/ })).toBeNull();
@@ -162,10 +162,10 @@ describe("TaskRowMenu", () => {
   it("drops Move when the lab has nowhere else to put the Task", async () => {
     // A row that opens an empty flyout is worse than no row at all.
     const user = userEvent.setup();
-    renderMenu({ studies: [st("s_cmp", "CMP", "Plasticity")] });
+    renderMenu({ researches: [st("s_cmp", "CMP", "Plasticity")] });
     await open(user);
 
-    expect(screen.queryByRole("menuitem", { name: /Move to study/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Move to research/ })).toBeNull();
   });
 
   it("shows only the actions it was given a handler for", async () => {

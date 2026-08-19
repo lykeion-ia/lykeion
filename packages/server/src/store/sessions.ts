@@ -12,8 +12,8 @@ import type { Row, Store } from "./store";
 import { readReportedCell, recordCell } from "./cells";
 import { nextSeq } from "./migrations";
 
-/** A folder a Study's owner has granted standing access to on one machine.
- *  Scoped to (study, machine) rather than to the Study alone: the path only
+/** A folder a Research's owner has granted standing access to on one machine.
+ *  Scoped to (research, machine) rather than to the Research alone: the path only
  *  means anything on the filesystem of the machine it names. */
 export interface StandingGrant {
   path: string;
@@ -71,7 +71,7 @@ function planCarriedBy(state: TurnState): Plan | undefined {
 export function openSession(
   store: Store,
   params: {
-    studyId: string;
+    researchId: string;
     machineId: string;
     agent: string;
     openedBy: string;
@@ -83,7 +83,7 @@ export function openSession(
   store.run(
     `INSERT INTO sessions (id, study_id, runtime_id, agent, opened_by, opened_ts, seq)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, params.studyId, params.machineId, params.agent, params.openedBy, params.openedTs, seq],
+    [id, params.researchId, params.machineId, params.agent, params.openedBy, params.openedTs, seq],
   );
   return id;
 }
@@ -239,7 +239,7 @@ export function newestTurnForTask(store: Store, taskId: string): string | undefi
 }
 
 /**
- * The Study and machine a turn's session belongs to, and the member who
+ * The Research and machine a turn's session belongs to, and the member who
  * opened it, or `undefined` when no turn has that id at all. This is the
  * one query every other durable lookup on a turn's session is built from —
  * `machineForTurn` below included — so there is a single join to keep in
@@ -248,7 +248,7 @@ export function newestTurnForTask(store: Store, taskId: string): string | undefi
 export function sessionForTurn(
   store: Store,
   turnId: string,
-): { studyId: string; machineId: string; openedBy: string } | undefined {
+): { researchId: string; machineId: string; openedBy: string } | undefined {
   const row = store.get(
     `SELECT s.study_id AS study_id, s.runtime_id AS runtime_id, s.opened_by AS opened_by
        FROM turns t
@@ -257,7 +257,7 @@ export function sessionForTurn(
     [turnId],
   );
   return row
-    ? { studyId: row.study_id as string, machineId: row.runtime_id as string, openedBy: row.opened_by as string }
+    ? { researchId: row.study_id as string, machineId: row.runtime_id as string, openedBy: row.opened_by as string }
     : undefined;
 }
 
@@ -275,7 +275,7 @@ export function machineForTurn(store: Store, turnId: string): string | undefined
 }
 
 /**
- * The Study and machine a session itself belongs to, addressed by the
+ * The Research and machine a session itself belongs to, addressed by the
  * session's own id rather than through one of its turns. A kernel is
  * addressed by the session that opened it, and that session need not have
  * an open turn at the moment a kernel command reaches it — a researcher's
@@ -285,12 +285,12 @@ export function machineForTurn(store: Store, turnId: string): string | undefined
 export function sessionOwner(
   store: Store,
   sessionId: string,
-): { studyId: string; machineId: string } | undefined {
+): { researchId: string; machineId: string } | undefined {
   const row = store.get(
     `SELECT study_id AS study_id, runtime_id AS runtime_id FROM sessions WHERE id = ?`,
     [sessionId],
   );
-  return row ? { studyId: row.study_id as string, machineId: row.runtime_id as string } : undefined;
+  return row ? { researchId: row.study_id as string, machineId: row.runtime_id as string } : undefined;
 }
 
 /**
@@ -1019,40 +1019,40 @@ export function turnsForTask(
     }));
 }
 
-/** The grants standing for a Study on one machine, in the order they were
+/** The grants standing for a Research on one machine, in the order they were
  *  granted. A revoked grant is not returned — revocation removes it from
  *  what a future run carries, not just from what a person sees listed. */
-export function listGrants(store: Store, studyId: string, machineId: string): StandingGrant[] {
+export function listGrants(store: Store, researchId: string, machineId: string): StandingGrant[] {
   return store
     .all(
       `SELECT path, mode FROM folder_grants
         WHERE study_id = ? AND runtime_id = ? AND revoked_ts IS NULL
         ORDER BY seq ASC`,
-      [studyId, machineId],
+      [researchId, machineId],
     )
     .map((row) => ({ path: row.path as string, mode: row.mode as "read" | "write" }));
 }
 
-/** Drops every grant a Study holds, on whichever machine each was granted —
- *  what a deleted Study takes down with it: a grant for a Study that no
+/** Drops every grant a Research holds, on whichever machine each was granted —
+ *  what a deleted Research takes down with it: a grant for a Research that no
  *  longer exists means nothing. */
-export function dropGrantsForStudy(store: Store, studyId: string): void {
-  store.run(`DELETE FROM folder_grants WHERE study_id = ?`, [studyId]);
+export function dropGrantsForResearch(store: Store, researchId: string): void {
+  store.run(`DELETE FROM folder_grants WHERE study_id = ?`, [researchId]);
 }
 
-/** Drops every grant standing on a machine, across whichever Studies granted
+/** Drops every grant standing on a machine, across whichever Researches granted
  *  one — what a removed machine takes down with it: the path a grant names
  *  only ever meant anything on that machine's own filesystem. */
 export function dropGrantsForMachine(store: Store, machineId: string): void {
   store.run(`DELETE FROM folder_grants WHERE runtime_id = ?`, [machineId]);
 }
 
-/** Grants a Study standing access to a folder on one machine, and returns
+/** Grants a Research standing access to a folder on one machine, and returns
  *  the grant's id. */
 export function addGrant(
   store: Store,
   params: {
-    studyId: string;
+    researchId: string;
     machineId: string;
     path: string;
     mode: "read" | "write";
@@ -1064,8 +1064,8 @@ export function addGrant(
   const id = `fg_${seq}`;
   // No unique index backs this table, so idempotence is enforced in the
   // statement instead: a live grant already standing for the same
-  // (study, machine, path, mode) already covers what
-  // this one asks for, and answering a card "for the Study" a second time
+  // (research, machine, path, mode) already covers what
+  // this one asks for, and answering a card "for the Research" a second time
   // (a live session's own re-raised card, covered by a standing grant of a
   // different scope, or simply the same card answered twice) must not pile
   // up a second row for it. `nextSeq` is still spent on a write this ends up
@@ -1080,14 +1080,14 @@ export function addGrant(
       )`,
     [
       id,
-      params.studyId,
+      params.researchId,
       params.machineId,
       params.path,
       params.mode,
       params.grantedBy,
       params.grantedTs,
       seq,
-      params.studyId,
+      params.researchId,
       params.machineId,
       params.path,
       params.mode,

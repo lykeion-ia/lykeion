@@ -9,7 +9,7 @@
  * satisfy is a defect in this file, not in the implementation that fails it.
  *
  * Every test builds the content it checks — a fresh implementation starts
- * empty, so nothing here may assume seeded studies, tasks, members, or
+ * empty, so nothing here may assume seeded researches, tasks, members, or
  * inbox items exist already.
  *
  * What `makeApi()` must provide
@@ -83,283 +83,283 @@ export function identityConformance(makeApi: () => Promise<LykeionApi>): void {
     expect(info.version).toMatch(/^\d+\.\d+\.\d+/);
   });
 
-  it("gives every created study a distinct id", async () => {
+  it("gives every created research a distinct id", async () => {
     const api = await makeApi();
-    const a = await api.createStudy({ title: "One", key: "ONE" });
-    const b = await api.createStudy({ title: "Two", key: "TWO" });
+    const a = await api.createResearch({ title: "One", key: "ONE" });
+    const b = await api.createResearch({ title: "Two", key: "TWO" });
     expect(a.id).not.toBe(b.id);
   });
 }
 
-export function studiesConformance(makeApi: () => Promise<LykeionApi>): void {
-  describe("Studies", () => {
-    it("creates a Study naming its author", async () => {
+export function researchesConformance(makeApi: () => Promise<LykeionApi>): void {
+  describe("Researches", () => {
+    it("creates a Research naming its author", async () => {
       const api = await makeApi();
       const me = await api.currentUser();
-      const study = await api.createStudy({ title: "New line", key: "NEW" });
-      expect(study.createdBy).toBe(me.id);
+      const research = await api.createResearch({ title: "New line", key: "NEW" });
+      expect(research.createdBy).toBe(me.id);
     });
 
-    it("refuses to open a Study with no title", async () => {
-      // The same rule an edit is held to. A Study created blank is
+    it("refuses to open a Research with no title", async () => {
+      // The same rule an edit is held to. A Research created blank is
       // unfindable in every list that renders a title, and nothing
       // downstream can recover the name its author meant to give it.
       const api = await makeApi();
       const err = await api
-        .createStudy({ title: "   ", key: "BLK" })
+        .createResearch({ title: "   ", key: "BLK" })
         .then(() => undefined, (e: unknown) => e);
       expect(isLykeionError(err) && err.code).toBe("invalid");
     });
 
-    it("archiving hides a Study from the list but not from getStudy", async () => {
+    it("archiving hides a Research from the list but not from getResearch", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Archive me",
         key: "ARC",
       });
       await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Keep me",
       });
-      await api.archiveStudy(study.id);
-      const listed = await api.listStudies();
-      expect(listed.map((s) => s.id)).not.toContain(study.id);
-      const detail = await api.getStudy(study.id);
-      expect(detail.study.archivedTs).toBeTypeOf("number");
+      await api.archiveResearch(research.id);
+      const listed = await api.listResearches();
+      expect(listed.map((s) => s.id)).not.toContain(research.id);
+      const detail = await api.getResearch(research.id);
+      expect(detail.research.archivedTs).toBeTypeOf("number");
       expect(detail.tasks.length).toBeGreaterThan(0);
     });
 
-    it("archived studies come back when asked for", async () => {
+    it("archived researches come back when asked for", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Archive me",
         key: "ARC",
       });
-      await api.archiveStudy(study.id);
-      const all = await api.listStudies({ includeArchived: true });
-      expect(all.map((s) => s.id)).toContain(study.id);
+      await api.archiveResearch(research.id);
+      const all = await api.listResearches({ includeArchived: true });
+      expect(all.map((s) => s.id)).toContain(research.id);
     });
 
     it("restoring puts it back", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Archive me",
         key: "ARC",
       });
-      await api.archiveStudy(study.id);
-      const restored = await api.restoreStudy(study.id);
+      await api.archiveResearch(research.id);
+      const restored = await api.restoreResearch(research.id);
       expect(restored.archivedTs).toBeUndefined();
-      expect((await api.listStudies()).map((s) => s.id)).toContain(
-        study.id,
+      expect((await api.listResearches()).map((s) => s.id)).toContain(
+        research.id,
       );
     });
 
     it("archiving twice, and restoring what was never archived, both hold", async () => {
       // Neither end is an error: a second archive leaves it archived and a
-      // restore of a listed Study leaves it listed, so a surface can offer
+      // restore of a listed Research leaves it listed, so a surface can offer
       // either without first reading the state back.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Twice", key: "TWI" });
+      const research = await api.createResearch({ title: "Twice", key: "TWI" });
 
-      const untouched = await api.restoreStudy(study.id);
+      const untouched = await api.restoreResearch(research.id);
       expect(untouched.archivedTs).toBeUndefined();
 
-      await api.archiveStudy(study.id);
-      const again = await api.archiveStudy(study.id);
+      await api.archiveResearch(research.id);
+      const again = await api.archiveResearch(research.id);
       expect(again.archivedTs).toBeTypeOf("number");
-      expect((await api.listStudies()).map((s) => s.id)).not.toContain(
-        study.id,
+      expect((await api.listResearches()).map((s) => s.id)).not.toContain(
+        research.id,
       );
 
-      await api.restoreStudy(study.id);
-      expect((await api.restoreStudy(study.id)).archivedTs).toBeUndefined();
-      expect((await api.listStudies()).map((s) => s.id)).toContain(study.id);
+      await api.restoreResearch(research.id);
+      expect((await api.restoreResearch(research.id)).archivedTs).toBeUndefined();
+      expect((await api.listResearches()).map((s) => s.id)).toContain(research.id);
 
-      await expect(api.archiveStudy("s_nope")).rejects.toThrow();
-      await expect(api.restoreStudy("s_nope")).rejects.toThrow();
+      await expect(api.archiveResearch("s_nope")).rejects.toThrow();
+      await expect(api.restoreResearch("s_nope")).rejects.toThrow();
     });
 
-    it("lists studies newest first", async () => {
+    it("lists researches newest first", async () => {
       const api = await makeApi();
-      // Two Studies, not one — a one-element list is trivially "ordered"
+      // Two Researches, not one — a one-element list is trivially "ordered"
       // regardless of whether the implementation sorts at all, which is
       // exactly the class of bug this suite exists to catch (a vanished
       // `.sort()` on a contract method). Only a pair can prove the newer
       // one sorts ahead of the older one.
-      const older = await api.createStudy({ title: "Older", key: "OLD" });
-      const newer = await api.createStudy({ title: "Newer", key: "NEW" });
-      const ids = (await api.listStudies()).map((s) => s.id);
+      const older = await api.createResearch({ title: "Older", key: "OLD" });
+      const newer = await api.createResearch({ title: "Newer", key: "NEW" });
+      const ids = (await api.listResearches()).map((s) => s.id);
       expect(ids.slice(0, 2)).toEqual([newer.id, older.id]);
     });
 
-    it("updateStudy renames a Study and leaves its key alone", async () => {
+    it("updateResearch renames a Research and leaves its key alone", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Original title",
         key: "UPD",
       });
-      const renamed = await api.updateStudy(study.id, {
+      const renamed = await api.updateResearch(research.id, {
         title: "  Auditory cortex remapping  ",
       });
       expect(renamed.title).toBe("Auditory cortex remapping");
-      expect(renamed.key).toBe(study.key);
+      expect(renamed.key).toBe(research.key);
       expect(
-        (await api.listStudies()).find((s) => s.id === study.id)?.title,
+        (await api.listResearches()).find((s) => s.id === research.id)?.title,
       ).toBe("Auditory cortex remapping");
 
       await expect(
-        api.updateStudy(study.id, { title: "   " }),
+        api.updateResearch(research.id, { title: "   " }),
       ).rejects.toThrow();
       await expect(
-        api.updateStudy("s_nope", { title: "Anything" }),
+        api.updateResearch("s_nope", { title: "Anything" }),
       ).rejects.toThrow();
     });
 
-    it("updateStudy writes the agent context back, and leaves it alone when unpatched", async () => {
+    it("updateResearch writes the agent context back, and leaves it alone when unpatched", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Context holder",
         key: "CTX",
         agentContext: "Traces are ΔF/F.",
       });
 
-      const written = await api.updateStudy(study.id, {
+      const written = await api.updateResearch(research.id, {
         agentContext: "Traces are ΔF/F. Report counts from the summary file.",
       });
       expect(written.agentContext).toBe(
         "Traces are ΔF/F. Report counts from the summary file.",
       );
-      // It is the stored Study that changed, not just the returned copy.
-      expect((await api.getStudy(study.id)).study.agentContext).toBe(
+      // It is the stored Research that changed, not just the returned copy.
+      expect((await api.getResearch(research.id)).research.agentContext).toBe(
         "Traces are ΔF/F. Report counts from the summary file.",
       );
       // Patching the context leaves the title where it was…
       expect(written.title).toBe("Context holder");
 
       // …and a patch that does not mention the context does not clear it.
-      const renamed = await api.updateStudy(study.id, { title: "Renamed" });
+      const renamed = await api.updateResearch(research.id, { title: "Renamed" });
       expect(renamed.agentContext).toBe(
         "Traces are ΔF/F. Report counts from the summary file.",
       );
 
       // An empty string is a real value: it clears the context.
-      expect((await api.updateStudy(study.id, { agentContext: "" })).agentContext).toBe("");
+      expect((await api.updateResearch(research.id, { agentContext: "" })).agentContext).toBe("");
     });
 
-    it("updateStudy writes the description back, and an empty string clears it", async () => {
+    it("updateResearch writes the description back, and an empty string clears it", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Described",
         key: "DSC",
         description: "Whether visual cortex reallocated to touch.",
       });
 
-      const written = await api.updateStudy(study.id, {
+      const written = await api.updateResearch(research.id, {
         description: "Whether visual cortex reallocated to touch, in adults.",
       });
       expect(written.description).toBe(
         "Whether visual cortex reallocated to touch, in adults.",
       );
-      // It is the stored Study that changed, not just the returned copy.
-      expect((await api.getStudy(study.id)).study.description).toBe(
+      // It is the stored Research that changed, not just the returned copy.
+      expect((await api.getResearch(research.id)).research.description).toBe(
         "Whether visual cortex reallocated to touch, in adults.",
       );
 
       // A patch that does not mention the description does not clear it.
       expect(
-        (await api.updateStudy(study.id, { title: "Renamed" })).description,
+        (await api.updateResearch(research.id, { title: "Renamed" })).description,
       ).toBe("Whether visual cortex reallocated to touch, in adults.");
 
       // An empty string is a real value: it clears the description.
-      expect((await api.updateStudy(study.id, { description: "" })).description).toBe("");
+      expect((await api.updateResearch(research.id, { description: "" })).description).toBe("");
     });
 
-    it("unpinning a Study removes the flag rather than storing a false", async () => {
+    it("unpinning a Research removes the flag rather than storing a false", async () => {
       // `pinned` is optional on the contract, so "not pinned" has to be one
       // state — the same rule `Task.pinned` is held to. Two implementations
-      // that disagree hand two callers different answers for one Study.
+      // that disagree hand two callers different answers for one Research.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Pin me", key: "PNS" });
-      expect("pinned" in study).toBe(false);
+      const research = await api.createResearch({ title: "Pin me", key: "PNS" });
+      expect("pinned" in research).toBe(false);
 
-      const pinned = await api.updateStudy(study.id, { pinned: true });
+      const pinned = await api.updateResearch(research.id, { pinned: true });
       expect(pinned.pinned).toBe(true);
-      // It is the stored Study that changed, so the list agrees with the patch.
+      // It is the stored Research that changed, so the list agrees with the patch.
       expect(
-        (await api.listStudies()).find((s) => s.id === study.id)?.pinned,
+        (await api.listResearches()).find((s) => s.id === research.id)?.pinned,
       ).toBe(true);
 
-      const unpinned = await api.updateStudy(study.id, { pinned: false });
+      const unpinned = await api.updateResearch(research.id, { pinned: false });
       expect("pinned" in unpinned).toBe(false);
     });
 
-    it("pinning a Study does not move it in the list — order is the reader's to group", async () => {
-      // Grouping pinned Studies is presentation. The store keeps one order,
+    it("pinning a Research does not move it in the list — order is the reader's to group", async () => {
+      // Grouping pinned Researches is presentation. The store keeps one order,
       // newest first, so every surface starts from the same sequence.
       const api = await makeApi();
-      const older = await api.createStudy({ title: "Older", key: "OLD" });
-      const newer = await api.createStudy({ title: "Newer", key: "NEW" });
+      const older = await api.createResearch({ title: "Older", key: "OLD" });
+      const newer = await api.createResearch({ title: "Newer", key: "NEW" });
 
-      await api.updateStudy(older.id, { pinned: true });
-      const ids = (await api.listStudies()).map((s) => s.id);
+      await api.updateResearch(older.id, { pinned: true });
+      const ids = (await api.listResearches()).map((s) => s.id);
       expect(ids.slice(0, 2)).toEqual([newer.id, older.id]);
     });
 
-    it("deleteStudy removes the Study, its Tasks, and excludes it from myWork and conversations", async () => {
+    it("deleteResearch removes the Research, its Tasks, and excludes it from myWork and conversations", async () => {
       const api = await makeApi();
       const me = await api.currentUser();
-      const study = await api.createStudy({ title: "Doomed", key: "DEL" });
-      const other = await api.createStudy({
+      const research = await api.createResearch({ title: "Doomed", key: "DEL" });
+      const other = await api.createResearch({
         title: "Untouched",
         key: "OK",
       });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Gone with it",
         assignees: [{ kind: "user", userId: me.id }],
       });
-      expect((await api.getStudy(study.id)).tasks.length).toBeGreaterThan(
+      expect((await api.getResearch(research.id)).tasks.length).toBeGreaterThan(
         0,
       );
 
-      await api.deleteStudy(study.id);
+      await api.deleteResearch(research.id);
 
-      expect((await api.listStudies()).map((s) => s.id)).not.toContain(
-        study.id,
+      expect((await api.listResearches()).map((s) => s.id)).not.toContain(
+        research.id,
       );
-      await expect(api.getStudy(study.id)).rejects.toThrow();
+      await expect(api.getResearch(research.id)).rejects.toThrow();
       expect((await api.myWork()).every((t) => t.id !== task.id)).toBe(
         true,
       );
       expect(
         (await api.listConversations()).every(
-          (c) => c.conversation.studyId !== study.id,
+          (c) => c.conversation.researchId !== research.id,
         ),
       ).toBe(true);
 
-      expect((await api.getStudy(other.id)).study?.id).toBe(other.id);
-      await expect(api.deleteStudy(study.id)).rejects.toThrow();
+      expect((await api.getResearch(other.id)).research?.id).toBe(other.id);
+      await expect(api.deleteResearch(research.id)).rejects.toThrow();
     });
   });
 }
 
 export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
   describe("Tasks", () => {
-    it("creates tasks with sequential per-study numbers", async () => {
+    it("creates tasks with sequential per-research numbers", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Numbering",
         key: "NUM",
       });
       const first = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "First",
       });
       const second = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Second",
       });
@@ -370,9 +370,9 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
 
     it("advances task status via updateTask", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Status", key: "STA" });
+      const research = await api.createResearch({ title: "Status", key: "STA" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "T",
       });
@@ -382,9 +382,9 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
 
     it("targetDate and labels are optional and default undefined", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Fields", key: "FLD" });
+      const research = await api.createResearch({ title: "Fields", key: "FLD" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Bare",
       });
@@ -395,12 +395,12 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
     it("createTask accepts multiple assignees and myWork matches any of them", async () => {
       const api = await makeApi();
       const me = await api.currentUser();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Assignees",
         key: "ASN",
       });
       const created = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Co-owned task",
         assignees: [
@@ -418,9 +418,9 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
 
     it("updateTask patches assignees, labels, links, subtasks and targetDate", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Editable", key: "EDT" });
+      const research = await api.createResearch({ title: "Editable", key: "EDT" });
       const created = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Editable task",
       });
@@ -456,12 +456,12 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
     it("every Task names its author, assigned or not", async () => {
       const api = await makeApi();
       const me = await api.currentUser();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Authorship",
         key: "AUT",
       });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Unassigned on purpose",
       });
@@ -472,18 +472,18 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
     it("my work is the tasks assigned to me, not to an agent of my name", async () => {
       const api = await makeApi();
       const me = await api.currentUser();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Mine vs agent",
         key: "MVA",
       });
       const mine = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Mine",
         assignees: [{ kind: "user", userId: me.id }],
       });
       const agents = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "An agent's",
         assignees: [{ kind: "agent", name: me.id }],
@@ -496,18 +496,18 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
     it("myWork excludes tasks once they're done", async () => {
       const api = await makeApi();
       const me = await api.currentUser();
-      const study = await api.createStudy({
+      const research = await api.createResearch({
         title: "Work queue",
         key: "WRK",
       });
       const open = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Open",
         assignees: [{ kind: "user", userId: me.id }],
       });
       const finished = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Finished",
         assignees: [{ kind: "user", userId: me.id }],
@@ -519,33 +519,33 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
       expect(mine.map((t) => t.id)).not.toContain(finished.id);
     });
 
-    it("orders my work by task number, not by which study came first", async () => {
-      // Numbers restart per Study, so a low number in a Study opened later
+    it("orders my work by task number, not by which research came first", async () => {
+      // Numbers restart per Research, so a low number in a Research opened later
       // has to sort ahead of a high number in one opened earlier. Building
       // the pair that way is what separates a real ordering from the order
       // the tasks happen to be stored in: `second` is created last and
       // must come first.
       const api = await makeApi();
       const me = await api.currentUser();
-      const mineOf = (studyId: string, title: string) =>
+      const mineOf = (researchId: string, title: string) =>
         api.createTask({
-          studyId,
+          researchId,
           stage: "methods",
           title,
           assignees: [{ kind: "user", userId: me.id }],
         });
 
-      const earlier = await api.createStudy({ title: "Earlier", key: "ERL" });
+      const earlier = await api.createResearch({ title: "Earlier", key: "ERL" });
       await api.createTask({
-        studyId: earlier.id,
+        researchId: earlier.id,
         stage: "methods",
         title: "Someone else's",
       });
-      const first = await mineOf(earlier.id, "Second number, first study");
+      const first = await mineOf(earlier.id, "Second number, first research");
       expect(first.number).toBe(2);
 
-      const later = await api.createStudy({ title: "Later", key: "LTR" });
-      const second = await mineOf(later.id, "First number, second study");
+      const later = await api.createResearch({ title: "Later", key: "LTR" });
+      const second = await mineOf(later.id, "First number, second research");
       expect(second.number).toBe(1);
 
       const ids = (await api.myWork()).map((t) => t.id);
@@ -558,17 +558,17 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
       // exists: a Task nobody has put on me still has to come back.
       const api = await makeApi();
       const me = await api.currentUser();
-      const one = await api.createStudy({ title: "One", key: "ONE" });
-      const two = await api.createStudy({ title: "Two", key: "TWO" });
+      const one = await api.createResearch({ title: "One", key: "ONE" });
+      const two = await api.createResearch({ title: "Two", key: "TWO" });
 
       const mine = await api.createTask({
-        studyId: one.id,
+        researchId: one.id,
         stage: "methods",
         title: "Mine",
         assignees: [{ kind: "user", userId: me.id }],
       });
       const theirs = await api.createTask({
-        studyId: two.id,
+        researchId: two.id,
         stage: "methods",
         title: "Someone else's",
         assignees: [{ kind: "user", userId: "u_someone_else" }],
@@ -582,14 +582,14 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
 
     it("listTasks excludes done work unless asked for it", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Done", key: "DNE" });
+      const research = await api.createResearch({ title: "Done", key: "DNE" });
       const open = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Open",
       });
       const finished = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Finished",
       });
@@ -606,13 +606,13 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
       expect(all).toContain(finished.id);
     });
 
-    it("a Task created with no Study is unfiled and numbers on its own run", async () => {
+    it("a Task created with no Research is unfiled and numbers on its own run", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Filed", key: "FIL" });
+      const research = await api.createResearch({ title: "Filed", key: "FIL" });
       const filed = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
-        title: "In a Study",
+        title: "In a Research",
       });
       const loose = await api.createTask({
         stage: "background",
@@ -623,106 +623,106 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
         title: "Also nowhere",
       });
 
-      expect(loose.studyId).toBeUndefined();
-      // Its own run, not a continuation of the Study's.
+      expect(loose.researchId).toBeUndefined();
+      // Its own run, not a continuation of the Research's.
       expect(looseToo.number).toBe(loose.number + 1);
 
       // Unfiled work belongs to the Lab: `listTasks` is the only surface
-      // that has it, and no Study's detail may claim it.
+      // that has it, and no Research's detail may claim it.
       const ids = (await api.listTasks()).map((t) => t.id);
       expect(ids).toContain(loose.id);
-      const inStudy = (await api.getStudy(study.id)).tasks.map((t) => t.id);
-      expect(inStudy).toContain(filed.id);
-      expect(inStudy).not.toContain(loose.id);
+      const inResearch = (await api.getResearch(research.id)).tasks.map((t) => t.id);
+      expect(inResearch).toContain(filed.id);
+      expect(inResearch).not.toContain(loose.id);
     });
 
-    it("filing an unfiled Task into a Study moves it there", async () => {
+    it("filing an unfiled Task into a Research moves it there", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Home", key: "HOM" });
+      const research = await api.createResearch({ title: "Home", key: "HOM" });
       const loose = await api.createTask({
         stage: "background",
         title: "Captured first, filed later",
       });
 
-      const filed = await api.updateTask(loose.id, { studyId: study.id });
+      const filed = await api.updateTask(loose.id, { researchId: research.id });
 
-      expect(filed.studyId).toBe(study.id);
-      expect((await api.getStudy(study.id)).tasks.map((t) => t.id)).toContain(
+      expect(filed.researchId).toBe(research.id);
+      expect((await api.getResearch(research.id)).tasks.map((t) => t.id)).toContain(
         loose.id,
       );
     });
 
-    it("files a Task into a Study that already numbers up to that number", async () => {
-      // The ordinary case, not an edge one: every Study numbers from one, so
+    it("files a Task into a Research that already numbers up to that number", async () => {
+      // The ordinary case, not an edge one: every Research numbers from one, so
       // an unfiled TSK-1 filed anywhere lands on a number the destination is
       // already using. Filing keeps the number, so a store that treats
-      // (study, number) as a key refuses the commonest move there is.
+      // (research, number) as a key refuses the commonest move there is.
       const api = await makeApi();
       const loose = await api.createTask({
         stage: "background",
         title: "Captured loose",
       });
-      const study = await api.createStudy({ title: "Home", key: "HOM" });
-      // A new Study numbers from one, so filling it up to the loose Task's
+      const research = await api.createResearch({ title: "Home", key: "HOM" });
+      // A new Research numbers from one, so filling it up to the loose Task's
       // number is one Task on an empty lab and a handful on a lab with
       // history. Either way the collision is arranged rather than assumed.
       let resident = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "background",
         title: "Resident 1",
       });
       while (resident.number < loose.number) {
         resident = await api.createTask({
-          studyId: study.id,
+          researchId: research.id,
           stage: "background",
           title: `Resident ${resident.number + 1}`,
         });
       }
       expect(resident.number).toBe(loose.number);
 
-      const filed = await api.updateTask(loose.id, { studyId: study.id });
+      const filed = await api.updateTask(loose.id, { researchId: research.id });
 
-      expect(filed.studyId).toBe(study.id);
+      expect(filed.researchId).toBe(research.id);
       expect(filed.number).toBe(loose.number);
       // Both hold the same number, so the order between them is the order
       // they were written in — the loose one first, since it existed before
-      // the Study did.
+      // the Research did.
       expect(
-        (await api.getStudy(study.id)).tasks
+        (await api.getResearch(research.id)).tasks
           .filter((t) => t.number === loose.number)
           .map((t) => t.id),
       ).toEqual([loose.id, resident.id]);
     });
 
-    it("moves a Task between Studies that both number from one", async () => {
+    it("moves a Task between Researches that both number from one", async () => {
       const api = await makeApi();
-      const from = await api.createStudy({ title: "From", key: "FRM" });
-      const to = await api.createStudy({ title: "To", key: "TOO" });
+      const from = await api.createResearch({ title: "From", key: "FRM" });
+      const to = await api.createResearch({ title: "To", key: "TOO" });
       const moving = await api.createTask({
-        studyId: from.id,
+        researchId: from.id,
         stage: "background",
         title: "Filed in the wrong place",
       });
-      await api.createTask({ studyId: to.id, stage: "background", title: "Already there" });
+      await api.createTask({ researchId: to.id, stage: "background", title: "Already there" });
 
-      const moved = await api.updateTask(moving.id, { studyId: to.id });
+      const moved = await api.updateTask(moving.id, { researchId: to.id });
 
-      expect(moved.studyId).toBe(to.id);
-      expect((await api.getStudy(to.id)).tasks).toHaveLength(2);
-      expect((await api.getStudy(from.id)).tasks).toHaveLength(0);
+      expect(moved.researchId).toBe(to.id);
+      expect((await api.getResearch(to.id)).tasks).toHaveLength(2);
+      expect((await api.getResearch(from.id)).tasks).toHaveLength(0);
     });
 
-    it("refuses a Task with no title, and one filed into a Study that is not there", async () => {
+    it("refuses a Task with no title, and one filed into a Research that is not there", async () => {
       const api = await makeApi();
       const blank = await api
         .createTask({ stage: "background", title: "   " })
         .then(() => undefined, (e: unknown) => e);
       expect(isLykeionError(blank) && blank.code).toBe("invalid");
 
-      // Not silently created unfiled: the author asked for a Study, and a
+      // Not silently created unfiled: the author asked for a Research, and a
       // Task that quietly landed somewhere else is worse than a refusal.
       const nowhere = await api
-        .createTask({ studyId: "s_nope", stage: "background", title: "Homeless" })
+        .createTask({ researchId: "s_nope", stage: "background", title: "Homeless" })
         .then(() => undefined, (e: unknown) => e);
       expect(isLykeionError(nowhere) && nowhere.code).toBe("not-found");
     });
@@ -732,9 +732,9 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
       // state. Two implementations that disagree — absent here, present and
       // false there — hand two callers different answers for one Task.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Pins", key: "PIN" });
+      const research = await api.createResearch({ title: "Pins", key: "PIN" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "background",
         title: "Pin me",
       });
@@ -749,32 +749,32 @@ export function tasksConformance(makeApi: () => Promise<LykeionApi>): void {
       // does, when it mints one from a prompt. A store that silently cuts a
       // title the author typed loses the end of it with nothing to say so.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Long", key: "LNG" });
+      const research = await api.createResearch({ title: "Long", key: "LNG" });
       const long = "Q".repeat(140);
-      const task = await api.createTask({ studyId: study.id, stage: "background", title: long });
+      const task = await api.createTask({ researchId: research.id, stage: "background", title: long });
       expect(task.title).toBe(long);
       expect((await api.updateTask(task.id, { title: long })).title).toBe(long);
     });
 
     it("orders every Task by number, with the unfiled ones last", async () => {
-      // Same shape as the `myWork` ordering test: a low number in a Study
+      // Same shape as the `myWork` ordering test: a low number in a Research
       // opened later must sort ahead of a high number in one opened first,
       // which is what separates a real ordering from storage order.
       const api = await makeApi();
-      const earlier = await api.createStudy({ title: "Earlier", key: "ERL" });
+      const earlier = await api.createResearch({ title: "Earlier", key: "ERL" });
       await api.createTask({
-        studyId: earlier.id,
+        researchId: earlier.id,
         stage: "methods",
         title: "Number one",
       });
       const second = await api.createTask({
-        studyId: earlier.id,
+        researchId: earlier.id,
         stage: "methods",
         title: "Number two",
       });
-      const later = await api.createStudy({ title: "Later", key: "LTR" });
+      const later = await api.createResearch({ title: "Later", key: "LTR" });
       const firstOfLater = await api.createTask({
-        studyId: later.id,
+        researchId: later.id,
         stage: "methods",
         title: "Number one again",
       });
@@ -809,9 +809,9 @@ export function taskNamingConformance(makeApi: () => Promise<LykeionApi>): void 
       // researcher who renames a chat in the seconds after sending it watches
       // their name get overwritten by a machine.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Naming", key: "NAM" });
+      const research = await api.createResearch({ title: "Naming", key: "NAM" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "background",
         title: "A name I chose myself",
       });
@@ -828,10 +828,10 @@ export function taskNamingConformance(makeApi: () => Promise<LykeionApi>): void 
 
     it("answers null for a message already short enough to be a title", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Naming", key: "NA2" });
+      const research = await api.createResearch({ title: "Naming", key: "NA2" });
       const prompt = "Fix the axis labels";
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "background",
         title: titleFromPrompt(prompt),
       });
@@ -844,12 +844,12 @@ export function taskNamingConformance(makeApi: () => Promise<LykeionApi>): void 
       // The one case that covers an implementation which really does summarize
       // and one that cannot, without either side having to know which it is.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Naming", key: "NA3" });
+      const research = await api.createResearch({ title: "Naming", key: "NA3" });
       const prompt =
         "Use the live Python kernel. Run one cell that sets values = list(range(30)) and prints every value on its own line.";
       const minted = titleFromPrompt(prompt);
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "background",
         title: minted,
       });
@@ -873,9 +873,9 @@ export function taskChatConformance(makeApi: () => Promise<LykeionApi>): void {
   describe("a Task is a chat", () => {
     it("a Task created without a prompt has an empty transcript", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Empty", key: "EMP" });
+      const research = await api.createResearch({ title: "Empty", key: "EMP" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Nobody has spoken here",
       });
@@ -896,7 +896,7 @@ export function taskChatConformance(makeApi: () => Promise<LykeionApi>): void {
         stage: "background",
         title: "No home yet",
       });
-      expect(task.studyId).toBeUndefined();
+      expect(task.researchId).toBeUndefined();
       const detail = await api.getTask(task.id);
       expect(detail.task.id).toBe(task.id);
       expect(detail.turns).toEqual([]);
@@ -913,9 +913,9 @@ export function taskChatConformance(makeApi: () => Promise<LykeionApi>): void {
 
     it("updateTask renames and pins in one call", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Pin", key: "PIN" });
+      const research = await api.createResearch({ title: "Pin", key: "PIN" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Original",
       });
@@ -929,9 +929,9 @@ export function taskChatConformance(makeApi: () => Promise<LykeionApi>): void {
 
     it("updateTask rejects a blank title", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Blank", key: "BLK" });
+      const research = await api.createResearch({ title: "Blank", key: "BLK" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Original",
       });
@@ -942,9 +942,9 @@ export function taskChatConformance(makeApi: () => Promise<LykeionApi>): void {
 
     it("deleting a Task takes its transcript with it", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Del", key: "DEL" });
+      const research = await api.createResearch({ title: "Del", key: "DEL" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Doomed",
       });
@@ -968,14 +968,14 @@ export function taskChatConformance(makeApi: () => Promise<LykeionApi>): void {
 
     it("filing an unfiled Task keeps its number and its transcript", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "File", key: "FIL" });
+      const research = await api.createResearch({ title: "File", key: "FIL" });
       const task = await api.createTask({
         stage: "background",
         title: "Filed later",
       });
-      const filed = await api.updateTask(task.id, { studyId: study.id });
+      const filed = await api.updateTask(task.id, { researchId: research.id });
       expect(filed.number).toBe(task.number);
-      expect(filed.studyId).toBe(study.id);
+      expect(filed.researchId).toBe(research.id);
       expect((await api.getTask(task.id)).turns).toEqual([]);
     });
   });
@@ -991,23 +991,23 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
   describe("a Task's chat, once a run has spoken in it", () => {
     it("a Task minted from a prompt keeps that title through a second turn", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Titles", key: "TTL" });
+      const research = await api.createResearch({ title: "Titles", key: "TTL" });
       // Minting from a composer writes the truncated prompt as the title.
       // That is the ONLY moment a prompt becomes a title: the field is
       // authored from there on, so nothing recomputes it afterwards.
       const first =
         "Motion-correct the deprivation cohort and segment ROIs from the two-photon stacks";
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "background",
         title: first.slice(0, 80),
       });
       expect(task.title).toBe(first.slice(0, 80));
 
-      await driveOneTurn(api, study.id, task.id, first);
+      await driveOneTurn(api, research.id, task.id, first);
       await driveOneTurn(
         api,
-        study.id,
+        research.id,
         task.id,
         "Summarize what landed and flag anything a reviewer should check",
       );
@@ -1028,15 +1028,15 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
       // gate an implementation happens to raise, answering it here has to be
       // enough to reach `completed`.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Run block", key: "RUB" });
+      const research = await api.createResearch({ title: "Run block", key: "RUB" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Say something and stop",
       });
 
       const handle = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "Say something and stop",
         options: { planMode: false },
@@ -1088,14 +1088,14 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
       // requirement is that the turn keeps the same answer the live run
       // gave, whatever that answer was.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Which agent", key: "WCH" });
+      const research = await api.createResearch({ title: "Which agent", key: "WCH" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Run on something",
       });
       const handle = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "Run on something",
         options: { planMode: false },
@@ -1159,16 +1159,16 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
       // Task sat on Todo through its own first run and jumped straight to In
       // Review, which no reader could tell from a Task nobody had started.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Moves itself", key: "MVS" });
+      const research = await api.createResearch({ title: "Moves itself", key: "MVS" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Run and settle",
       });
       expect((await api.getTask(task.id)).task.status).toBe("todo");
 
       const handle = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "Run and settle",
         options: { planMode: false },
@@ -1216,16 +1216,16 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
       // Task rejoins the board — otherwise the completion guard that protects
       // a Done written mid-run would keep it Done for good.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Reopens", key: "ROP" });
+      const research = await api.createResearch({ title: "Reopens", key: "ROP" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Finished, then not",
       });
 
       const runToCompletion = async () => {
         const handle = await api.startRun({
-          studyId: study.id,
+          researchId: research.id,
           taskId: task.id,
           prompt: "More please",
           options: { planMode: false },
@@ -1273,14 +1273,14 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
 
     it("detach is observer-only: the same handle can resubscribe and still complete", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Detach and resume", key: "DAR" });
+      const research = await api.createResearch({ title: "Detach and resume", key: "DAR" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Keep running while nobody observes",
       });
       const handle = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "Keep running while nobody observes",
         options: { planMode: false },
@@ -1327,15 +1327,15 @@ export function taskChatRunConformance(makeApi: () => Promise<LykeionApi>): void
       // an ordinary stop would misdescribe a turn nothing actually failed
       // at.
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Stop block", key: "STB" });
+      const research = await api.createResearch({ title: "Stop block", key: "STB" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Say something and stop",
       });
 
       const handle = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "Say something and stop",
         options: { planMode: false },
@@ -1692,6 +1692,25 @@ export function groupsConformance(makeApi: () => Promise<LykeionApi>): void {
       expect(await api.listGroups()).toEqual([]);
     });
 
+    it("a group holds colleagues alongside its experts", async () => {
+      const api = await makeApi();
+      const created = await api.createGroup({
+        name: "Genomics Core",
+        leadAgent: "atlas",
+        memberAgents: ["scribe"],
+        memberUsers: ["u_you"],
+      });
+      expect(created.memberUsers).toEqual(["u_you"]);
+      const [listed] = await api.listGroups();
+      expect(listed.memberUsers).toEqual(["u_you"]);
+    });
+
+    it("a group created without colleagues has an empty list, not an absent one", async () => {
+      const api = await makeApi();
+      const created = await api.createGroup({ name: "Bare" });
+      expect(created.memberUsers).toEqual([]);
+    });
+
     it("createGroup then listGroups includes it, newest first", async () => {
       const api = await makeApi();
       await api.createGroup({ name: "Structural Biology" });
@@ -1817,9 +1836,9 @@ export function kernelAxisConformance(makeApi: () => Promise<LykeionApi>): void 
 
     it("reports an empty notebook for a Task nothing has run", async () => {
       const api = await makeApi();
-      const study = await api.createStudy({ title: "Kernel", key: "KRN" });
+      const research = await api.createResearch({ title: "Kernel", key: "KRN" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Nothing has run here",
       });
@@ -1988,24 +2007,24 @@ export function environmentDeclarationsConformance(makeApi: () => Promise<Lykeio
  */
 export function conversationWritesConformance(makeApi: () => Promise<LykeionApi>): void {
   describe("conversation writes", () => {
-    /** A Study with one Task in it, which is all a thread needs to exist. */
+    /** A Research with one Task in it, which is all a thread needs to exist. */
     async function subject(api: LykeionApi) {
-      const study = await api.createStudy({ title: "Talk", key: "TLK" });
+      const research = await api.createResearch({ title: "Talk", key: "TLK" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "Something to argue about",
       });
-      return { study, task };
+      return { research, task };
     }
 
     it("opens a thread carrying its first message and its opener", async () => {
       const api = await makeApi();
       const me = await api.currentUser();
-      const { study, task } = await subject(api);
+      const { research, task } = await subject(api);
 
       const conversation = await api.createConversation({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         participants: [{ kind: "agent", name: "reviewer" }],
         body: "Does this number hold up?",
@@ -2028,10 +2047,10 @@ export function conversationWritesConformance(makeApi: () => Promise<LykeionApi>
 
     it("refuses a thread with nothing said in it", async () => {
       const api = await makeApi();
-      const { study, task } = await subject(api);
+      const { research, task } = await subject(api);
       await expect(
         api.createConversation({
-          studyId: study.id,
+          researchId: research.id,
           taskId: task.id,
           participants: [],
           body: "   ",
@@ -2039,25 +2058,25 @@ export function conversationWritesConformance(makeApi: () => Promise<LykeionApi>
       ).rejects.toThrow();
     });
 
-    it("refuses a thread about a Task that is not in the named Study", async () => {
+    it("refuses a thread about a Task that is not in the named Research", async () => {
       const api = await makeApi();
       const { task } = await subject(api);
-      const elsewhere = await api.createStudy({ title: "Other", key: "OTH" });
+      const elsewhere = await api.createResearch({ title: "Other", key: "OTH" });
       await expect(
         api.createConversation({
-          studyId: elsewhere.id,
+          researchId: elsewhere.id,
           taskId: task.id,
           participants: [],
-          body: "wrong study",
+          body: "wrong research",
         }),
       ).rejects.toThrow();
     });
 
     it("appends a posted message and floats the thread up the list", async () => {
       const api = await makeApi();
-      const { study, task } = await subject(api);
+      const { research, task } = await subject(api);
       const conversation = await api.createConversation({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         participants: [],
         body: "first",
@@ -2081,9 +2100,9 @@ export function conversationWritesConformance(makeApi: () => Promise<LykeionApi>
 
     it("does not count your own messages as unread", async () => {
       const api = await makeApi();
-      const { study, task } = await subject(api);
+      const { research, task } = await subject(api);
       const conversation = await api.createConversation({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         participants: [],
         body: "talking to myself",
@@ -2098,9 +2117,9 @@ export function conversationWritesConformance(makeApi: () => Promise<LykeionApi>
 
     it("markConversationRead is idempotent and rejects an unknown id", async () => {
       const api = await makeApi();
-      const { study, task } = await subject(api);
+      const { research, task } = await subject(api);
       const conversation = await api.createConversation({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         participants: [],
         body: "read me",
@@ -2119,9 +2138,9 @@ export function conversationWritesConformance(makeApi: () => Promise<LykeionApi>
 
     it("deleteTask takes the threads about it with it", async () => {
       const api = await makeApi();
-      const { study, task } = await subject(api);
+      const { research, task } = await subject(api);
       const conversation = await api.createConversation({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         participants: [],
         body: "about to be orphaned",
@@ -2213,7 +2232,7 @@ export function unknownRunConformance(makeLab: () => Promise<ConformanceLab>): v
  * `submitRunDecision`'s remaining refusal, the one thing neither a Task's
  * chat nor a bare `RunHandle` exercises just by running a turn to
  * completion: not who started it (`unknownRunConformance`, above, covers
- * that), but a decision that would reach every Study in the lab. Lab-based,
+ * that), but a decision that would reach every Research in the lab. Lab-based,
  * like `rolesConformance`, and needs a durable run id to address. It does not
  * need an adapter to answer: global scope is rejected at the contract edge
  * before any permission request is forwarded.
@@ -2222,14 +2241,14 @@ export function runDecisionConformance(makeLab: () => Promise<ConformanceLab>): 
   describe("submitRunDecision's refusals addressed to a live run", () => {
     it("refuses a decision from an actor who did not start the run", async () => {
       const { owner, member } = await makeLab();
-      const study = await owner.createStudy({ title: "Actor check", key: "ACT" });
+      const research = await owner.createResearch({ title: "Actor check", key: "ACT" });
       const task = await owner.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "background",
         title: "run me",
       });
       const handle = await owner.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "go",
         options: { planMode: false },
@@ -2244,14 +2263,14 @@ export function runDecisionConformance(makeLab: () => Promise<ConformanceLab>): 
 
     it("refuses a global-scope permission decision by name, rather than narrowing it", async () => {
       const { owner } = await makeLab();
-      const study = await owner.createStudy({ title: "Global scope", key: "GLB" });
+      const research = await owner.createResearch({ title: "Global scope", key: "GLB" });
       const task = await owner.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "background",
         title: "run me",
       });
       const handle = await owner.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "go",
         options: { planMode: false },
@@ -2263,7 +2282,7 @@ export function runDecisionConformance(makeLab: () => Promise<ConformanceLab>): 
           decision: { decision: "allow", scope: "global" },
         }),
         "invalid",
-        /every Study/,
+        /every Research/,
       );
     });
   });
@@ -2280,32 +2299,32 @@ export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): vo
       // stopping the work to correct it. The turn is taken now and waits its
       // place; nothing about it runs beside the one already going.
       const { owner, member } = await makeLab();
-      const study = await owner.createStudy({ title: "Resume", key: "RSM" });
+      const research = await owner.createResearch({ title: "Resume", key: "RSM" });
       const task = await owner.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "first active turn",
       });
       const sibling = await owner.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "second active turn",
       });
       const first = await owner.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "first",
         options: { planMode: false },
       });
       const queued = await owner.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "and also this",
         options: { planMode: false },
       });
       expect(queued.runId).not.toBe(first.runId);
       const second = await owner.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: sibling.id,
         prompt: "second",
         options: { planMode: false },
@@ -2334,9 +2353,9 @@ export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): vo
       // it is a runaway or a mistake, and every turn waiting holds a prompt
       // the agent will act on much later than it was written.
       const { owner } = await makeLab();
-      const study = await owner.createStudy({ title: "Depth", key: "DPT" });
+      const research = await owner.createResearch({ title: "Depth", key: "DPT" });
       const task = await owner.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "typed ahead too far",
       });
@@ -2344,7 +2363,7 @@ export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): vo
       for (let i = 0; i < MAX_TURNS_OUTSTANDING; i += 1)
         started.push(
           await owner.startRun({
-            studyId: study.id,
+            researchId: research.id,
             taskId: task.id,
             prompt: `turn ${i}`,
             options: { planMode: false },
@@ -2353,7 +2372,7 @@ export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): vo
 
       await expect(
         owner.startRun({
-          studyId: study.id,
+          researchId: research.id,
           taskId: task.id,
           prompt: "one too many",
           options: { planMode: false },
@@ -2368,7 +2387,7 @@ export function runResumeConformance(makeLab: () => Promise<ConformanceLab>): vo
 /** Everything an implementation can satisfy with nothing but storage. */
 const AREAS = [
   identityConformance,
-  studiesConformance,
+  researchesConformance,
   tasksConformance,
   taskNamingConformance,
   taskChatConformance,
@@ -2438,12 +2457,12 @@ export function runContractConformance(
  */
 async function driveOneTurn(
   api: LykeionApi,
-  studyId: string,
+  researchId: string,
   taskId: string,
   prompt: string,
 ): Promise<void> {
   const handle = await api.startRun({
-    studyId,
+    researchId,
     taskId,
     prompt,
     options: { planMode: false },

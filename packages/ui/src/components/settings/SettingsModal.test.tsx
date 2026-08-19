@@ -4,7 +4,7 @@
  * the same SettingsSurface as the #/settings screen.
  */
 
-import type { Study } from "@lykeion/api";
+import type { Research } from "@lykeion/api";
 import { createInMemoryApi } from "@lykeion/api";
 import { describe, expect, it, beforeEach } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
@@ -13,7 +13,7 @@ import { ApiProvider } from "../../api/ApiContext";
 import { RouterProvider } from "../../router";
 import { TaskSidebar } from "../tasks/TaskSidebar";
 
-const study: Study = {
+const research: Research = {
   id: "s_1",
   key: "CMP",
   title: "Plasticity",
@@ -29,7 +29,7 @@ function renderSidebar() {
     <ApiProvider api={createInMemoryApi()}>
       <RouterProvider>
         <TaskSidebar
-          study={study}
+          research={research}
           filesActive={false}
           onNew={() => {}}
           onOpenFiles={() => {}}

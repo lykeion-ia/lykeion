@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import type { Study, Task } from "@lykeion/api";
+import type { Research, Task } from "@lykeion/api";
 import { useApi } from "../../api/ApiContext";
 import { ActionMenu } from "../ui/ActionMenu";
 import { ChevronDownIcon, FileIcon, UploadIcon } from "../icons";
@@ -12,7 +12,7 @@ import {
 export interface TaskImportExportProps {
   /** The tasks in view — export writes exactly what the filters left. */
   tasks: Task[];
-  studyById: Record<string, Study>;
+  studyById: Record<string, Research>;
   /** Download name for the exported document, e.g. "my-tasks.json". */
   fileName: string;
   /** Refetch: the imported tasks are not in `tasks` until the board reloads. */
@@ -52,12 +52,12 @@ export function TaskImportExport({
     const text = await file.text();
     const { tasks: parsed, skipped } = parseTasksJson(text);
     let created = 0;
-    let unknownStudy = 0;
+    let unknownResearch = 0;
     for (const { create, patch } of parsed) {
-      // A row with no studyId imports as unfiled; only a named-but-unknown
-      // Study is a reason to drop it.
-      if (create.studyId !== undefined && !studyById[create.studyId]) {
-        unknownStudy++;
+      // A row with no researchId imports as unfiled; only a named-but-unknown
+      // Research is a reason to drop it.
+      if (create.researchId !== undefined && !studyById[create.researchId]) {
+        unknownResearch++;
         continue;
       }
       try {
@@ -68,7 +68,7 @@ export function TaskImportExport({
         // Skip a row the core rejected; keep importing the rest.
       }
     }
-    const dropped = skipped + unknownStudy;
+    const dropped = skipped + unknownResearch;
     onMessage(
       `Imported ${created} task(s)${dropped ? `, skipped ${dropped}` : ""}.`,
     );

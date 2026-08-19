@@ -74,7 +74,7 @@ describe("WorkspaceSwitcher", () => {
     renderSwitcher();
 
     await userEvent.click(screen.getByRole("button", { name: "Back" }));
-    expect(here()).toEqual({ name: "studies" });
+    expect(here()).toEqual({ name: "researches" });
 
     await userEvent.click(screen.getByRole("button", { name: "Forward" }));
     expect(here()).toEqual({ name: "inbox" });

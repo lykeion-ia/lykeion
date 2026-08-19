@@ -78,7 +78,7 @@ function stringField(input: unknown, keys: string[]): string | undefined {
  * ("Wrote results/out.csv"), a step that was refused or stopped in the
  * non-past ("Write results/out.csv") — it is a request the researcher blocked,
  * not something that happened. Claiming the past tense for a file that was
- * never written misreports the study record, and it persists in
+ * never written misreports the research record, and it persists in
  * `TaskTurn.stream`, so it would read that way on every reopen.
  */
 export function deterministicLabel(entry: ExecutionLogEntry): string {
@@ -213,7 +213,7 @@ export function isControlPlaneStep(entry: ExecutionLogEntry): boolean {
   return CONTROL_PLANE_TOOLS.has(entry.tool) && didRun(entry);
 }
 
-/** Whether this step's access left the study workspace (`outsideWorkspace` —
+/** Whether this step's access left the research workspace (`outsideWorkspace` —
  *  a property of the path the core recorded, never of the tool name or the
  *  adapter). */
 export function leftTheWorkspace(entry: ExecutionLogEntry): boolean {
@@ -545,7 +545,7 @@ export function ToolStepCard({
   const [open, setOpen] = useState(false);
   const status = stepStatus(entry);
   /**
-   * The step's access left the study workspace. It is drawn as its OWN
+   * The step's access left the research workspace. It is drawn as its OWN
    * affordance, deliberately not folded into `stepStatus`: the call ran and
    * succeeded, so it is neither an error nor blocked, and saying otherwise
    * would be as false as the green marker this chip exists to qualify. An agent
@@ -610,7 +610,7 @@ export function ToolStepCard({
           // task.css): this must never be the part that gets truncated away.
           <span
             className="tool-step-outside"
-            title="This access fell outside the study workspace, and ran without a permission card."
+            title="This access fell outside the research workspace, and ran without a permission card."
           >
             outside workspace
           </span>

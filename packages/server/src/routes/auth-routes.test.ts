@@ -400,7 +400,7 @@ it("refuses redemption with a password under eight characters, or with a require
 
 it("leaves paths it does not own alone", async () => {
   const store = freshStore();
-  expect(await post(store, "/rpc/listStudies", {})).toBeUndefined();
+  expect(await post(store, "/rpc/listResearches", {})).toBeUndefined();
 });
 
 it("hashes on the unknown-email path too, so the answer cannot be timed", async () => {

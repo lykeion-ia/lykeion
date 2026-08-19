@@ -226,7 +226,7 @@ export interface ExecutionLogEntry {
   result?: string | ToolOutputPart[];
   isError: boolean;
   /**
-   * True when this call's access fell OUTSIDE the study workspace (skipped
+   * True when this call's access fell OUTSIDE the research workspace (skipped
    * from the JSON when false — so it is absent, not `false`, on records
    * written before the field existed).
    *
@@ -452,7 +452,7 @@ export interface SubagentResult {
  * and the chat is a Task.
  */
 export interface DelegateSubagentInput {
-  studyId: string;
+  researchId: string;
   taskId: string;
   parentRunId?: string;
   persona: AgentPersona;
@@ -551,11 +551,11 @@ export interface RunOptions {
 /**
  * Input to start a run. `taskId` names the Task the turn belongs to — a Task
  * is a chat, so every run is a turn in one, and there is no second kind of
- * owner to choose between. `studyId` is the workspace it runs in, which is
+ * owner to choose between. `researchId` is the workspace it runs in, which is
  * why an unfiled Task has to be filed before its first turn can start.
  */
 export interface StartRunInput {
-  studyId: string;
+  researchId: string;
   taskId: string;
   prompt: string;
   options: RunOptions;

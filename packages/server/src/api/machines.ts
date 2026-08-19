@@ -242,8 +242,8 @@ export function machinesApi(deps: Deps): MachinesApi {
           [ts, machineId],
         );
         // A grant's path only ever meant anything on this machine's own
-        // filesystem — dropped rather than orphaned, the way a Study's
-        // grants are dropped when the Study itself goes.
+        // filesystem — dropped rather than orphaned, the way a Research's
+        // grants are dropped when the Research itself goes.
         dropGrantsForMachine(store, machineId);
         record("machine-removed", {});
       });

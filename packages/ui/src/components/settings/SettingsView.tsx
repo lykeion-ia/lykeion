@@ -1,11 +1,10 @@
 import type { ReactNode } from "react";
-import type { Role, User, WorkspaceSettings } from "@lykeion/api";
+import type { User, WorkspaceSettings } from "@lykeion/api";
 import { cn } from "../../lib/utils";
 import { ChevronDownIcon } from "../icons";
 import { SectionTitle, SettingsSectionHeader } from "./SettingsSection";
 import { Row, OutlineButton, orNotSet } from "./SettingsRow";
 import { AppearanceTab } from "./AppearanceTab";
-import { MembersPanel } from "./MembersPanel";
 import { SkillsScreen } from "../../screens/SkillsScreen";
 import { ConnectorsScreen } from "../../screens/ConnectorsScreen";
 import { ProfileScreen } from "../../screens/ProfileScreen";
@@ -33,7 +32,6 @@ const SETTINGS_NAV: { group: string; items: SettingsNavItem[] }[] = [
       { key: "permissions", label: "Permissions" },
       { key: "credentials", label: "Credentials" },
       { key: "storage", label: "Storage" },
-      { key: "members", label: "Members" },
     ],
   },
   {
@@ -90,13 +88,9 @@ export interface SettingsBodyProps {
   tab: string;
   user: User;
   settings: WorkspaceSettings;
-  /** The signed-in caller's own standing in the lab, read off the roster.
-   *  Only `MembersPanel` reads it, but it is threaded down here rather than
-   *  fetched again inside that one tab. */
-  role: Role;
 }
 
-export function SettingsBody({ tab, user, settings, role }: SettingsBodyProps) {
+export function SettingsBody({ tab, user, settings }: SettingsBodyProps) {
   const title = ALL_ITEMS.find((i) => i.key === tab)?.label ?? "Settings";
   if (tab === "general") return <GeneralTab settings={settings} />;
   if (tab === "appearance") return <AppearanceTab />;
@@ -105,7 +99,6 @@ export function SettingsBody({ tab, user, settings, role }: SettingsBodyProps) {
   // still owns the gutter and the scroll.
   if (tab === "skills") return <SkillsScreen />;
   if (tab === "connectors") return <ConnectorsScreen />;
-  if (tab === "members") return <MembersPanel role={role} />;
   if (tab === "profile")
     return <ProfileScreen user={user} settings={settings} />;
   return <PlaceholderTab title={title} />;
@@ -203,7 +196,7 @@ function StorageTab({ settings }: { settings: WorkspaceSettings }) {
             <div>
               <SectionTitle>Data location</SectionTitle>
               <p className="-mt-2 mb-2 text-sub text-fg-subtle">
-                Where your studies and generated files are stored.
+                Where your researches and generated files are stored.
               </p>
             </div>
             <OutlineButton>Change location</OutlineButton>

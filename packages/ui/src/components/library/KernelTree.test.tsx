@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createInMemoryApi, type RunningKernel, type Machine, type Study, type Task } from "@lykeion/api";
+import { createInMemoryApi, type RunningKernel, type Machine, type Research, type Task } from "@lykeion/api";
 import { ApiProvider } from "../../api/ApiContext";
 import { taskLabeller } from "./KernelTree";
 import { MachinesList } from "./MachinesList";
@@ -30,7 +30,7 @@ function kernel(overrides: Partial<RunningKernel> = {}): RunningKernel {
   return {
     id: `k_${kernelSeq}`,
     machineId: "rt_1",
-    studyId: "st_1",
+    researchId: "st_1",
     sessionId: "ses_1",
     taskId: "tk_1",
     name: "main",
@@ -50,7 +50,7 @@ const TASKS: Task[] = [
   {
     id: "tk_1",
     number: 14,
-    studyId: "st_1",
+    researchId: "st_1",
     title: "Kinome screen",
     status: "in-progress",
     createdBy: "u_you",
@@ -61,14 +61,14 @@ const TASKS: Task[] = [
   } as unknown as Task,
 ];
 
-const STUDIES: Study[] = [
+const STUDIES: Research[] = [
   {
     id: "st_1",
     key: "KIN",
     title: "CRISPR kinase screen",
     createdBy: "u_you",
     createdTs: NOW,
-  } as unknown as Study,
+  } as unknown as Research,
 ];
 
 /**

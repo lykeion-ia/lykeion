@@ -1,9 +1,9 @@
 /**
  * The inspector's notebook breadcrumb.
  *
- * A notebook belongs to a Task, but it is read against a Study: the Tasks of
- * one Study share a workspace, and what one of them ran is the context for what
- * the next one runs. So the pane accumulates the notebooks opened in the Study
+ * A notebook belongs to a Task, but it is read against a Research: the Tasks of
+ * one Research share a workspace, and what one of them ran is the context for what
+ * the next one runs. So the pane accumulates the notebooks opened in the Research
  * and survives the click from one Task to another.
  *
  * The strip is the record of what was OPENED, and nothing else. A Task you are
@@ -31,7 +31,7 @@ import { resetTabs } from "../lib/tabs";
 import { closeNotebookTab } from "../lib/notebook-tabs";
 import { closeTaskTab } from "../lib/task-tabs";
 
-/** Two Tasks of the seeded Study, by the titles the fixture gives them. */
+/** Two Tasks of the seeded Research, by the titles the fixture gives them. */
 const TASK_A = { id: "t_3", title: "Preprocess two-photon calcium traces" };
 const TASK_B = { id: "t_5", title: "Fit orientation tuning curves per neuron" };
 
@@ -89,7 +89,7 @@ const currentConversation = () =>
   }).textContent;
 
 beforeEach(() => {
-  window.location.hash = `#/studies/s_cmp/tasks/${TASK_A.id}`;
+  window.location.hash = `#/researches/s_cmp/tasks/${TASK_A.id}`;
   // The strip is a module store, and `App` restores/adopts once per module
   // lifetime — both would otherwise leave a later test wherever an earlier
   // one's navigation left the active tab, rather than back on Task A.
@@ -154,7 +154,7 @@ it("takes the conversation along when another Task's notebook is opened", async 
   await openNotebook(user);
   await waitFor(() => expect(shownNotebook()).toBe(TASK_A.title));
 
-  // Move to another Task in the same Study, from the sidebar, and open the
+  // Move to another Task in the same Research, from the sidebar, and open the
   // inspector there — it closed on the way, as it does on every Task change.
   await goToTask(user, TASK_B.title);
   await openPane(user);
@@ -226,7 +226,7 @@ it("carries the inspector into a Task you opened, landing it on Files", async ()
   expect(screen.getByRole("tab", { name: "Files" })).toBeInTheDocument();
   expect(screen.queryByTestId("notebook-panel")).toBeNull();
 
-  // A's notebook is still on the strip — it was opened, and the Study's
+  // A's notebook is still on the strip — it was opened, and the Research's
   // notebooks outlive the move — it is simply not what the pane is showing.
   expect(notebookTab(TASK_A.title)).toBeInTheDocument();
 });

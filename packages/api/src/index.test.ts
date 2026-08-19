@@ -55,15 +55,15 @@ describe("UI ↔ core contract", () => {
 });
 
 describe("in-memory API", () => {
-  it("lists seeded studies and their tasks", async () => {
+  it("lists seeded researches and their tasks", async () => {
     const api = createInMemoryApi();
-    const studies = await api.listStudies();
-    expect(studies.length).toBeGreaterThanOrEqual(5);
+    const researches = await api.listResearches();
+    expect(researches.length).toBeGreaterThanOrEqual(5);
 
-    const cmp = studies.find((s) => s.key === "CMP")!;
-    const detail = await api.getStudy(cmp.id);
+    const cmp = researches.find((s) => s.key === "CMP")!;
+    const detail = await api.getResearch(cmp.id);
     expect(detail.tasks.length).toBeGreaterThan(0);
-    expect(taskCode(detail.study, detail.tasks[0])).toMatch(/^CMP-\d+$/);
+    expect(taskCode(detail.research, detail.tasks[0])).toMatch(/^CMP-\d+$/);
   });
 
   it("opens on a seeded thread with something genuinely unread in it", async () => {
@@ -90,10 +90,10 @@ describe("in-memory API", () => {
     // were not, a thread a researcher just opened would sort under fixture
     // data and vanish off the bottom of their list.
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const [task] = (await api.getStudy(study.id)).tasks;
+    const [research] = await api.listResearches();
+    const [task] = (await api.getResearch(research.id)).tasks;
     const fresh = await api.createConversation({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       participants: [],
       body: "just now",
@@ -112,8 +112,8 @@ describe("live write clock (in-memory)", () => {
     // merely differ from T0.
     const base = 2_000_000_000;
     const api = createInMemoryApi(emptySeed(), { now: () => base });
-    const study = await api.createStudy({ title: "Live", key: "LIV" });
-    expect(study.createdTs).toBeGreaterThanOrEqual(base);
+    const research = await api.createResearch({ title: "Live", key: "LIV" });
+    expect(research.createdTs).toBeGreaterThanOrEqual(base);
   });
 
   it("stamps a write with the time it happened, not the time the instance was built", async () => {
@@ -123,16 +123,16 @@ describe("live write clock (in-memory)", () => {
     // invisible to any test that creates immediately after constructing.
     let seconds = 2_000_000_000;
     const api = createInMemoryApi(emptySeed(), { now: () => seconds });
-    await api.createStudy({ title: "At boot", key: "BOOT" });
+    await api.createResearch({ title: "At boot", key: "BOOT" });
 
     seconds += 3600;
-    const later = await api.createStudy({ title: "An hour on", key: "HOUR" });
+    const later = await api.createResearch({ title: "An hour on", key: "HOUR" });
     expect(later.createdTs).toBeGreaterThanOrEqual(seconds);
 
     // Still strictly increasing when the clock does not move: two writes in
     // the same second must not tie, or recency ordering goes ambiguous.
-    const a = await api.createStudy({ title: "Same second", key: "SAME" });
-    const b = await api.createStudy({ title: "Also same", key: "ALSO" });
+    const a = await api.createResearch({ title: "Same second", key: "SAME" });
+    const b = await api.createResearch({ title: "Also same", key: "ALSO" });
     expect(b.createdTs).toBeGreaterThan(a.createdTs);
   });
 
@@ -146,12 +146,12 @@ describe("live write clock (in-memory)", () => {
     const now = vi.spyOn(Date, "now");
     try {
       now.mockReturnValueOnce(1_000_000_000_000);
-      const studyA = await createInMemoryApi(emptySeed()).createStudy({
+      const studyA = await createInMemoryApi(emptySeed()).createResearch({
         title: "A",
         key: "AAA",
       });
       now.mockReturnValueOnce(9_000_000_000_000);
-      const studyB = await createInMemoryApi(emptySeed()).createStudy({
+      const studyB = await createInMemoryApi(emptySeed()).createResearch({
         title: "B",
         key: "BBB",
       });
@@ -227,13 +227,13 @@ describe("Reviewer findings (in-memory)", () => {
     expect(await api.reviewFindings("s_cmp", "t_3")).toEqual([]);
   });
 
-  it("deleting a Study takes its tasks' findings with it", async () => {
+  it("deleting a Research takes its tasks' findings with it", async () => {
     const api = createInMemoryApi();
     expect((await api.reviewFindings("s_cmp", "t_3")).length).toBeGreaterThan(
       0,
     );
 
-    await api.deleteStudy("s_cmp");
+    await api.deleteResearch("s_cmp");
 
     expect(await api.reviewFindings("s_cmp", "t_3")).toEqual([]);
   });
@@ -329,10 +329,10 @@ describe("in-memory run simulation", () => {
     allow: boolean,
   ): Promise<import("./run").RunEvent[]> {
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const task = (await api.getStudy(study.id)).tasks[0];
+    const [research] = await api.listResearches();
+    const task = (await api.getResearch(research.id)).tasks[0];
     const session = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "run it",
       options: { planMode: true },
@@ -370,10 +370,10 @@ describe("in-memory run simulation", () => {
     vi.useFakeTimers();
     try {
       const api = createInMemoryApi();
-      const [study] = await api.listStudies();
-      const task = (await api.getStudy(study.id)).tasks[0];
+      const [research] = await api.listResearches();
+      const task = (await api.getResearch(research.id)).tasks[0];
       const handle = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "snapshot first",
         options: { planMode: false },
@@ -414,10 +414,10 @@ describe("in-memory run simulation", () => {
     vi.useFakeTimers();
     try {
       const api = createInMemoryApi();
-      const [study] = await api.listStudies();
-      const task = (await api.getStudy(study.id)).tasks[0];
+      const [research] = await api.listResearches();
+      const task = (await api.getResearch(research.id)).tasks[0];
       const handle = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "run it",
         options: { planMode: false },
@@ -448,10 +448,10 @@ describe("in-memory run simulation", () => {
     vi.useFakeTimers();
     try {
       const api = createInMemoryApi();
-      const [study] = await api.listStudies();
-      const task = (await api.getStudy(study.id)).tasks[0];
+      const [research] = await api.listResearches();
+      const task = (await api.getResearch(research.id)).tasks[0];
       const fresh = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "overlapping observers",
         options: { planMode: false },
@@ -483,10 +483,10 @@ describe("in-memory run simulation", () => {
     vi.useFakeTimers();
     try {
       const api = createInMemoryApi();
-      const [study] = await api.listStudies();
-      const task = (await api.getStudy(study.id)).tasks[0];
+      const [research] = await api.listResearches();
+      const task = (await api.getResearch(research.id)).tasks[0];
       const fresh = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "shared cancellation",
         options: { planMode: false },
@@ -516,10 +516,10 @@ describe("in-memory run simulation", () => {
     vi.useFakeTimers();
     try {
       const api = createInMemoryApi();
-      const [study] = await api.listStudies();
-      const task = (await api.getStudy(study.id)).tasks[0];
+      const [research] = await api.listResearches();
+      const task = (await api.getResearch(research.id)).tasks[0];
       const fresh = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "cursor ownership",
         options: { planMode: false },
@@ -547,10 +547,10 @@ describe("in-memory run simulation", () => {
     vi.useFakeTimers();
     try {
       const api = createInMemoryApi();
-      const [study] = await api.listStudies();
-      const task = (await api.getStudy(study.id)).tasks[0];
+      const [research] = await api.listResearches();
+      const task = (await api.getResearch(research.id)).tasks[0];
       const fresh = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "detach during replay",
         options: { planMode: false },
@@ -578,25 +578,25 @@ describe("in-memory run simulation", () => {
 
   it("settles concurrent Task runs independently when the second finishes first", async () => {
     const api = createInMemoryApi(emptySeed());
-    const study = await api.createStudy({ title: "Concurrent", key: "CON" });
+    const research = await api.createResearch({ title: "Concurrent", key: "CON" });
     const task = await api.createTask({
-      studyId: study.id,
+      researchId: research.id,
       stage: "methods",
       title: "keep turn order",
     });
     const sibling = await api.createTask({
-      studyId: study.id,
+      researchId: research.id,
       stage: "methods",
       title: "second concurrent task",
     });
     const first = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "first turn",
       options: { planMode: false },
     });
     const second = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: sibling.id,
       prompt: "second turn",
       options: { planMode: false },
@@ -662,14 +662,14 @@ describe("in-memory run simulation", () => {
 
   it("keeps an explicit Done after completion, then reopens for a new run", async () => {
     const api = createInMemoryApi(emptySeed());
-    const study = await api.createStudy({ title: "Done race", key: "DONE" });
+    const research = await api.createResearch({ title: "Done race", key: "DONE" });
     const task = await api.createTask({
-      studyId: study.id,
+      researchId: research.id,
       stage: "methods",
       title: "preserve explicit done",
     });
     const first = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "first run",
       options: { planMode: false },
@@ -699,7 +699,7 @@ describe("in-memory run simulation", () => {
     expect((await api.getTask(task.id)).task.status).toBe("done");
 
     const third = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "new work after done",
       options: { planMode: false },
@@ -719,14 +719,14 @@ describe("in-memory run simulation", () => {
     vi.useFakeTimers();
     try {
       const api = createInMemoryApi(emptySeed());
-      const study = await api.createStudy({ title: "Close", key: "CLS" });
+      const research = await api.createResearch({ title: "Close", key: "CLS" });
       const task = await api.createTask({
-        studyId: study.id,
+        researchId: research.id,
         stage: "methods",
         title: "close before start",
       });
       const handle = await api.startRun({
-        studyId: study.id,
+        researchId: research.id,
         taskId: task.id,
         prompt: "do not start",
         options: { planMode: false },
@@ -761,21 +761,21 @@ describe("in-memory run simulation", () => {
 
   it("a soft failure lands a run record alongside the failed state", async () => {
     // Every turn finalizes a record unconditionally — denied and failed
-    // turns are part of the study record too. The simulation used to
+    // turns are part of the research record too. The simulation used to
     // complete a rejected plan with `run: undefined`, so it could not
     // reproduce a failed-but-landed turn at all; that gap is exactly why a
     // presentation bug (prose live, cards after the next send) survived
     // review. Only a hard, unrecoverable error would yield `run: undefined`,
     // which the simulation has no analogue for.
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
+    const [research] = await api.listResearches();
     const task = await api.createTask({
-      studyId: study.id,
+      researchId: research.id,
       stage: "methods",
       title: "run it",
     });
     const session = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "run it",
       options: { planMode: true },
@@ -842,10 +842,10 @@ describe("in-memory run simulation", () => {
     // masking that bug — this test pins the exact contract so that can't
     // happen unnoticed.)
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const task = (await api.getStudy(study.id)).tasks[0];
+    const [research] = await api.listResearches();
+    const task = (await api.getResearch(research.id)).tasks[0];
     const session = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "run it",
       options: { planMode: true },
@@ -899,7 +899,7 @@ describe("in-memory run simulation", () => {
       ),
     ).toBe(false);
     // It DOES land a run record though — a cancelled turn is part of the
-    // study record, stamping no provenance, and its own `status` reads the
+    // research record, stamping no provenance, and its own `status` reads the
     // same `cancelled` the turn's state does rather than misreporting it
     // as `failed`.
     const cancelled = done.event === "completed" ? done.run : undefined;
@@ -909,7 +909,7 @@ describe("in-memory run simulation", () => {
 
     // ...and the turn counts as unfinished, so the Task never advances to
     // review the way a completed run would.
-    const after = (await api.getStudy(study.id)).tasks.find(
+    const after = (await api.getResearch(research.id)).tasks.find(
       (t) => t.id === task.id,
     );
     expect(after?.status).not.toBe("in-review");
@@ -921,10 +921,10 @@ describe("in-memory run simulation", () => {
     // "cancelled" }`) would misdescribe it exactly the way it would at the
     // permission card.
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const task = (await api.getStudy(study.id)).tasks[0];
+    const [research] = await api.listResearches();
+    const task = (await api.getResearch(research.id)).tasks[0];
     const session = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "run it",
       options: { planMode: true },
@@ -949,10 +949,10 @@ describe("submitRunDecision (in-memory)", () => {
     // The seam a wire transport is built on: nothing here ever touches the
     // `RunHandle` `startRun` returned — only the bare id it carries.
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const task = (await api.getStudy(study.id)).tasks[0];
+    const [research] = await api.listResearches();
+    const task = (await api.getResearch(research.id)).tasks[0];
     const handle = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "run it",
       options: { planMode: true },
@@ -992,10 +992,10 @@ describe("submitRunDecision (in-memory)", () => {
     const lab = createInMemoryLab();
     const owner = lab.api(lab.ownerId);
     const member = lab.api(lab.memberId);
-    const [study] = await owner.listStudies();
-    const task = (await owner.getStudy(study.id)).tasks[0];
+    const [research] = await owner.listResearches();
+    const task = (await owner.getResearch(research.id)).tasks[0];
     const handle = await owner.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "run it",
       options: { planMode: true },
@@ -1007,14 +1007,14 @@ describe("submitRunDecision (in-memory)", () => {
   });
 
   it("refuses a global-scope permission decision by name, rather than narrowing it", async () => {
-    // A "global" scope means every Study in the lab, and there is nothing
+    // A "global" scope means every Research in the lab, and there is nothing
     // this core could grant that would honestly mean that — refused by
     // name on the way in, the same way the workspace server refuses it.
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const task = (await api.getStudy(study.id)).tasks[0];
+    const [research] = await api.listResearches();
+    const task = (await api.getResearch(research.id)).tasks[0];
     const handle = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "run it",
       options: { planMode: false },
@@ -1031,7 +1031,7 @@ describe("submitRunDecision (in-memory)", () => {
         requestId,
         decision: { decision: "allow", scope: "global" },
       }),
-    ).rejects.toThrow(/every Study/);
+    ).rejects.toThrow(/every Research/);
     handle.close();
   });
 });
@@ -1041,14 +1041,14 @@ describe("live streaming (in-memory)", () => {
     // Drives the run via this contract's actual `RunHandle` idiom:
     // `onEvent`/`submit`, resolved to `completed` via a Promise.
     const api = createInMemoryApi(emptySeed());
-    const study = await api.createStudy({ title: "S", key: "S" });
+    const research = await api.createResearch({ title: "S", key: "S" });
     const task = await api.createTask({
-      studyId: study.id,
+      researchId: research.id,
       stage: "methods",
       title: "do the thing",
     });
     const session = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "do the thing",
       options: { planMode: true },
@@ -1099,12 +1099,12 @@ describe("live streaming (in-memory)", () => {
 // one card — so the Task owns a persisted transcript.
 async function runTaskTurn(
   api: ReturnType<typeof createInMemoryApi>,
-  studyId: string,
+  researchId: string,
   taskId: string,
   prompt: string,
 ): Promise<void> {
   const handle = await api.startRun({
-    studyId,
+    researchId,
     taskId,
     prompt,
     options: { planMode: true },
@@ -1123,32 +1123,32 @@ async function runTaskTurn(
   });
 }
 
-/** A Task in `studyId` with a transcript of its own, for a test that needs
+/** A Task in `researchId` with a transcript of its own, for a test that needs
  *  a chat nobody else has spoken in. */
 async function chatTask(
   api: ReturnType<typeof createInMemoryApi>,
-  studyId: string,
+  researchId: string,
   title: string,
 ) {
-  return api.createTask({ studyId, stage: "methods", title });
+  return api.createTask({ researchId, stage: "methods", title });
 }
 
 describe("tasks: delete and rename (in-memory)", () => {
   it("deleting a Task takes its transcript with it", async () => {
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const task = await chatTask(api, study.id, "look into this");
-    await runTaskTurn(api, study.id, task.id, "look into this");
+    const [research] = await api.listResearches();
+    const task = await chatTask(api, research.id, "look into this");
+    await runTaskTurn(api, research.id, task.id, "look into this");
 
     // Listed and reopenable before deletion.
-    expect((await api.getStudy(study.id)).tasks.map((t) => t.id)).toContain(
+    expect((await api.getResearch(research.id)).tasks.map((t) => t.id)).toContain(
       task.id,
     );
     expect((await api.getTask(task.id)).turns.length).toBeGreaterThan(0);
 
-    // Delete: gone from the Study, no longer reopenable.
+    // Delete: gone from the Research, no longer reopenable.
     await api.deleteTask(task.id);
-    expect((await api.getStudy(study.id)).tasks.map((t) => t.id)).not.toContain(
+    expect((await api.getResearch(research.id)).tasks.map((t) => t.id)).not.toContain(
       task.id,
     );
     await expect(api.getTask(task.id)).rejects.toThrow(
@@ -1158,9 +1158,9 @@ describe("tasks: delete and rename (in-memory)", () => {
 
   it("updateTask renames and pins without touching the transcript", async () => {
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const a = await chatTask(api, study.id, "first chat");
-    await runTaskTurn(api, study.id, a.id, "first chat");
+    const [research] = await api.listResearches();
+    const a = await chatTask(api, research.id, "first chat");
+    await runTaskTurn(api, research.id, a.id, "first chat");
 
     // A rename replaces the title, trimmed, and leaves the turns alone.
     const renamed = await api.updateTask(a.id, {
@@ -1188,39 +1188,39 @@ describe("tasks: delete and rename (in-memory)", () => {
     ).rejects.toThrow("no such task: t_nope");
   });
 
-  it("deleteStudy drops the Study with its tasks and their transcripts", async () => {
+  it("deleteResearch drops the Research with its tasks and their transcripts", async () => {
     const api = createInMemoryApi();
-    const [study, other] = await api.listStudies();
-    const task = await chatTask(api, study.id, "look into this");
-    await runTaskTurn(api, study.id, task.id, "look into this");
-    expect((await api.getStudy(study.id)).tasks.length).toBeGreaterThan(0);
+    const [research, other] = await api.listResearches();
+    const task = await chatTask(api, research.id, "look into this");
+    await runTaskTurn(api, research.id, task.id, "look into this");
+    expect((await api.getResearch(research.id)).tasks.length).toBeGreaterThan(0);
 
-    await api.deleteStudy(study.id);
+    await api.deleteResearch(research.id);
 
     // Gone from the list, unopenable, and its Tasks' chats went with it.
-    expect((await api.listStudies()).map((s) => s.id)).not.toContain(study.id);
-    await expect(api.getStudy(study.id)).rejects.toThrow();
+    expect((await api.listResearches()).map((s) => s.id)).not.toContain(research.id);
+    await expect(api.getResearch(research.id)).rejects.toThrow();
     await expect(api.getTask(task.id)).rejects.toThrow();
-    expect((await api.myWork()).every((t) => t.studyId !== study.id)).toBe(
+    expect((await api.myWork()).every((t) => t.researchId !== research.id)).toBe(
       true,
     );
     expect(
       (await api.listConversations()).every(
-        (c) => c.conversation.studyId !== study.id,
+        (c) => c.conversation.researchId !== research.id,
       ),
     ).toBe(true);
 
-    // The other Study is untouched; a second delete is a clean error.
-    expect((await api.getStudy(other.id)).study?.id).toBe(other.id);
-    await expect(api.deleteStudy(study.id)).rejects.toThrow();
+    // The other Research is untouched; a second delete is a clean error.
+    expect((await api.getResearch(other.id)).research?.id).toBe(other.id);
+    await expect(api.deleteResearch(research.id)).rejects.toThrow();
   });
 });
 
-describe("study lifecycle (in-memory)", () => {
+describe("research lifecycle (in-memory)", () => {
   it("every chat names its author", async () => {
     const api = createInMemoryApi();
     const me = await api.currentUser();
-    const [seeded] = await api.listStudies();
+    const [seeded] = await api.listResearches();
     const task = await chatTask(api, seeded.id, "who ran this");
     await runTaskTurn(api, seeded.id, task.id, "who ran this");
     expect((await api.getTask(task.id)).task.createdBy).toBe(me.id);
@@ -1230,11 +1230,11 @@ describe("study lifecycle (in-memory)", () => {
 describe("task transcripts: stream (in-memory)", () => {
   it("getTask returns a turn whose stream interleaves text and step items in arrival order", async () => {
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const task = await chatTask(api, study.id, "profile the dataset");
+    const [research] = await api.listResearches();
+    const task = await chatTask(api, research.id, "profile the dataset");
 
     const session = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "profile the dataset",
       options: { planMode: true },
@@ -1296,10 +1296,10 @@ describe("task transcripts: stream (in-memory)", () => {
     // exactly that entry, or no UI test could reproduce the card that says
     // so. The gated write INSIDE the workspace must NOT carry the flag.
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const task = await chatTask(api, study.id, "count the responders");
+    const [research] = await api.listResearches();
+    const task = await chatTask(api, research.id, "count the responders");
     const session = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "count the responders",
       options: { planMode: true },
@@ -1343,10 +1343,10 @@ describe("task transcripts: stream (in-memory)", () => {
     // vanishing from it. The simulation tracks that exact contract; that is
     // the only reason UI tests may run against it.
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const task = await chatTask(api, study.id, "write the results");
+    const [research] = await api.listResearches();
+    const task = await chatTask(api, research.id, "write the results");
     const session = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "write the results",
       options: { planMode: true },
@@ -1389,9 +1389,9 @@ describe("task transcripts: stream (in-memory)", () => {
 describe("subagent delegation (in-memory)", () => {
   it("runs an isolated child into the parent's transcript, and creates no Task of its own", async () => {
     const api = createInMemoryApi();
-    const [study] = await api.listStudies();
-    const parent = await chatTask(api, study.id, "the parent chat");
-    const before = (await api.getStudy(study.id)).tasks.length;
+    const [research] = await api.listResearches();
+    const parent = await chatTask(api, research.id, "the parent chat");
+    const before = (await api.getResearch(research.id)).tasks.length;
 
     const persona = {
       name: "Data Scientist",
@@ -1400,7 +1400,7 @@ describe("subagent delegation (in-memory)", () => {
       tools: ["Read", "Write"],
     };
     const session = await api.delegateSubagent({
-      studyId: study.id,
+      researchId: research.id,
       taskId: parent.id,
       parentRunId: "run_parent",
       persona,
@@ -1433,14 +1433,14 @@ describe("subagent delegation (in-memory)", () => {
 
     // No second Task was created — a subagent turn is a step inside a chat,
     // not a chat of its own.
-    expect((await api.getStudy(study.id)).tasks.length).toBe(before);
+    expect((await api.getResearch(research.id)).tasks.length).toBe(before);
   });
 
   it("reserves a delegated child's sequence before it can finish ahead of its live parent", async () => {
     const api = createInMemoryApi(emptySeed());
-    const study = await api.createStudy({ title: "Chronology", key: "CHR" });
+    const research = await api.createResearch({ title: "Chronology", key: "CHR" });
     const task = await api.createTask({
-      studyId: study.id,
+      researchId: research.id,
       stage: "methods",
       title: "interleave parent and child",
     });
@@ -1462,7 +1462,7 @@ describe("subagent delegation (in-memory)", () => {
     };
 
     const baseline = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "baseline turn",
       options: { planMode: false },
@@ -1470,7 +1470,7 @@ describe("subagent delegation (in-memory)", () => {
     await finish(baseline);
 
     const parent = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "live parent",
       options: { planMode: false },
@@ -1491,7 +1491,7 @@ describe("subagent delegation (in-memory)", () => {
     expect(liveParent.snapshot.sequence).toBe(2);
 
     const child = await api.delegateSubagent({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       parentRunId: parent.runId,
       persona: {
@@ -1528,7 +1528,7 @@ describe("assignees", () => {
 });
 
 describe("kernel identity", () => {
-  it("addresses a kernel by its own id, not by a Study", async () => {
+  it("addresses a kernel by its own id, not by a Research", async () => {
     const api = createInMemoryApi();
     // Nothing is running in a browser, and the honest answer to "which
     // kernels are running" is none — not a refusal.
@@ -1537,8 +1537,8 @@ describe("kernel identity", () => {
 
   it("has no notebook for a Task nothing has run", async () => {
     const api = createInMemoryApi();
-    const study = (await api.listStudies())[0]!;
-    const task = (await api.getStudy(study.id)).tasks[0]!;
+    const research = (await api.listResearches())[0]!;
+    const task = (await api.getResearch(research.id)).tasks[0]!;
     await expect(api.taskNotebook(task.id)).resolves.toEqual([]);
   });
 
@@ -1647,18 +1647,18 @@ describe("in-memory identity", () => {
 describe("a Task's transcript (in-memory)", () => {
   async function fixture() {
     const api = createInMemoryApi();
-    // CMP specifically: the fixture needs a Study with several tasks, which
-    // is a property of CMP, not of whichever Study lists first.
-    const study = (await api.listStudies()).find((s) => s.key === "CMP")!;
-    const detail = await api.getStudy(study.id);
-    return { api, study, tasks: detail.tasks };
+    // CMP specifically: the fixture needs a Research with several tasks, which
+    // is a property of CMP, not of whichever Research lists first.
+    const research = (await api.listResearches()).find((s) => s.key === "CMP")!;
+    const detail = await api.getResearch(research.id);
+    return { api, research, tasks: detail.tasks };
   }
 
   it("a Task accumulates the turns run against it, oldest first", async () => {
-    const { api, study, tasks } = await fixture();
+    const { api, research, tasks } = await fixture();
     const task = tasks[0];
-    await runTaskTurn(api, study.id, task.id, "look into this");
-    await runTaskTurn(api, study.id, task.id, "and then this");
+    await runTaskTurn(api, research.id, task.id, "look into this");
+    await runTaskTurn(api, research.id, task.id, "and then this");
 
     const turns = (await api.getTask(task.id)).turns;
     expect(turns.map((t) => t.prompt)).toEqual([
@@ -1671,10 +1671,10 @@ describe("a Task's transcript (in-memory)", () => {
   });
 
   it("rolls the turns up onto the Task rather than storing a second copy", async () => {
-    const { api, study, tasks } = await fixture();
+    const { api, research, tasks } = await fixture();
     const task = tasks[0];
-    await runTaskTurn(api, study.id, task.id, "look into this");
-    await runTaskTurn(api, study.id, task.id, "and then this");
+    await runTaskTurn(api, research.id, task.id, "look into this");
+    await runTaskTurn(api, research.id, task.id, "and then this");
 
     const detail = await api.getTask(task.id);
     // Count, outcome and the activity stamp are all derived from the turns.
@@ -1686,11 +1686,11 @@ describe("a Task's transcript (in-memory)", () => {
   });
 
   it("a completed turn moves the Task on to In Review", async () => {
-    const { api, study } = await fixture();
-    const task = await chatTask(api, study.id, "do the work");
+    const { api, research } = await fixture();
+    const task = await chatTask(api, research.id, "do the work");
     expect(task.status).toBe("todo");
 
-    await runTaskTurn(api, study.id, task.id, "do the work");
+    await runTaskTurn(api, research.id, task.id, "do the work");
 
     const after = (await api.getTask(task.id)).task;
     expect(after.status).toBe("in-review");
@@ -1698,10 +1698,10 @@ describe("a Task's transcript (in-memory)", () => {
   });
 
   it("a failed turn still lands on the Task, and leaves it started rather than In Review", async () => {
-    const { api, study } = await fixture();
-    const task = await chatTask(api, study.id, "try it");
+    const { api, research } = await fixture();
+    const task = await chatTask(api, research.id, "try it");
     const handle = await api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "try it",
       options: { planMode: true },
@@ -1727,26 +1727,26 @@ describe("a Task's transcript (in-memory)", () => {
     expect(after.task.status).toBe("in-progress");
   });
 
-  it("deleting one Task leaves the Study's other Tasks and their chats alone", async () => {
-    const { api, study, tasks } = await fixture();
-    await runTaskTurn(api, study.id, tasks[1].id, "the survivor's turn");
+  it("deleting one Task leaves the Research's other Tasks and their chats alone", async () => {
+    const { api, research, tasks } = await fixture();
+    await runTaskTurn(api, research.id, tasks[1].id, "the survivor's turn");
 
     await api.deleteTask(tasks[0].id);
 
     await expect(api.getTask(tasks[0].id)).rejects.toThrow();
     expect((await api.getTask(tasks[1].id)).turns).toHaveLength(1);
-    expect((await api.getStudy(study.id)).tasks.map((t) => t.id)).toContain(
+    expect((await api.getResearch(research.id)).tasks.map((t) => t.id)).toContain(
       tasks[1].id,
     );
   });
 
-  it("lists a Study's tasks by number, whatever order the store holds them in", async () => {
+  it("lists a Research's tasks by number, whatever order the store holds them in", async () => {
     // A number is handed out at creation, so tasks made through the contract
     // are stored in number order and any answer at all looks sorted. This
-    // seed holds one Study's tasks out of number order, which is the only
+    // seed holds one Research's tasks out of number order, which is the only
     // arrangement that separates a real ordering from the store's own.
     const seed = emptySeed();
-    seed.studies.push({
+    seed.researches.push({
       id: "s_ord",
       key: "ORD",
       title: "Out-of-order store",
@@ -1757,7 +1757,7 @@ describe("a Task's transcript (in-memory)", () => {
     const task = (id: string, number: number) => ({
       id,
       number,
-      studyId: "s_ord",
+      researchId: "s_ord",
       stage: "methods" as const,
       title: `Task ${number}`,
       status: "todo" as const,
@@ -1771,7 +1771,7 @@ describe("a Task's transcript (in-memory)", () => {
 
     const api = createInMemoryApi(seed);
 
-    expect((await api.getStudy("s_ord")).tasks.map((t) => t.number)).toEqual([
+    expect((await api.getResearch("s_ord")).tasks.map((t) => t.number)).toEqual([
       1, 2, 3,
     ]);
   });
@@ -1815,7 +1815,7 @@ describe("the chat the store ships", () => {
     // A live turn appended to the very same Task cannot collide with the
     // seeded ones, and lands after them.
     const live = await api.startRun({
-      studyId: "s_cmp",
+      researchId: "s_cmp",
       taskId: "t_3",
       prompt: "Re-run the SNR filter.",
       options: { planMode: false },
@@ -1869,7 +1869,7 @@ describe("the chat the store ships", () => {
     const api = createInMemoryApi();
     // The seeded chat IS CMP-3 — there is no separate record to join.
     expect((await api.getTask("t_3")).turns).toHaveLength(2);
-    const others = (await api.getStudy("s_cmp")).tasks.filter(
+    const others = (await api.getResearch("s_cmp")).tasks.filter(
       (t) => t.id !== "t_3",
     );
     expect(others.length).toBeGreaterThan(0);

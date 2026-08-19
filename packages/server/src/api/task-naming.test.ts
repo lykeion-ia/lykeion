@@ -167,7 +167,7 @@ interface NamingLab {
   memberApi: LykeionApi;
   machineId: string;
   token: string;
-  studyId: string;
+  researchId: string;
   advanceClock(seconds: number): void;
 }
 
@@ -183,7 +183,7 @@ async function freshLab(): Promise<NamingLab> {
   const memberApi = apiFor(server.base, memberCookie);
 
   const { machineId, token } = await pairClaudeMachine(server.base, ownerApi, "ana-macbook");
-  const study = await ownerApi.createStudy({ key: "NAM", title: "Naming" });
+  const research = await ownerApi.createResearch({ key: "NAM", title: "Naming" });
 
   return {
     base: server.base,
@@ -193,7 +193,7 @@ async function freshLab(): Promise<NamingLab> {
     memberApi,
     machineId,
     token,
-    studyId: study.id,
+    researchId: research.id,
     advanceClock: server.advanceClock,
   };
 }
@@ -223,7 +223,7 @@ function attachNamingDaemon(
 
 async function taskNamedByPrompt(lab: NamingLab, prompt: string): Promise<string> {
   const task = await lab.ownerApi.createTask({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     stage: "background",
     title: titleFromPrompt(prompt),
   });
@@ -243,7 +243,7 @@ it("renames a Task to what the machine it asked summarized", async () => {
 
 it("sends the message and the resolved agent to the machine, and nothing about the workspace", async () => {
   // What the summarizer is shown is the whole of what a researcher typed —
-  // never a study id, a path, or anything else it might go looking at.
+  // never a research id, a path, or anything else it might go looking at.
   const lab = await freshLab();
   const { taken } = attachNamingDaemon(lab, () => "Named");
   const taskId = await taskNamedByPrompt(lab, LONG_PROMPT);
@@ -303,7 +303,7 @@ it("never asks about a Task somebody has already named themselves", async () => 
   const lab = await freshLab();
   const { taken } = attachNamingDaemon(lab, () => "Should never be asked");
   const task = await lab.ownerApi.createTask({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     stage: "background",
     title: "A name I chose myself",
   });
@@ -361,9 +361,9 @@ it("does not spend a colleague's machine on naming", async () => {
   // name has lost nothing worth an error.
   const lab = await freshLab();
   const { taken } = attachNamingDaemon(lab, () => "Should never be asked");
-  const study = await lab.memberApi.createStudy({ key: "MEM", title: "Member's" });
+  const research = await lab.memberApi.createResearch({ key: "MEM", title: "Member's" });
   const task = await lab.memberApi.createTask({
-    studyId: study.id,
+    researchId: research.id,
     stage: "background",
     title: titleFromPrompt(LONG_PROMPT),
   });

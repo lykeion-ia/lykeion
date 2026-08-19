@@ -12,13 +12,13 @@ const wrap = (api: ReturnType<typeof createInMemoryApi>) =>
 describe("a Task's run wiring", () => {
   it("starts with an empty transcript for a Task nobody has spoken in", async () => {
     const api = createInMemoryApi(emptySeed());
-    const study = await api.createStudy({ title: "Compression", key: "CMP" });
+    const research = await api.createResearch({ title: "Compression", key: "CMP" });
     const task = await api.createTask({
-      studyId: study.id,
+      researchId: research.id,
       stage: "methods",
       title: "Nothing said here yet",
     });
-    const { result } = renderHook(() => useTaskRun(study.id, task.id), {
+    const { result } = renderHook(() => useTaskRun(research.id, task.id), {
       wrapper: wrap(api),
     });
     await waitFor(() => expect(result.current.history).toEqual([]));

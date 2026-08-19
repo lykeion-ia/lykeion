@@ -14,7 +14,7 @@ function thread(
 ): ConversationSummary {
   const conversation: Conversation = {
     id,
-    studyId: "s_1",
+    researchId: "s_1",
     taskId: "t_1",
     title,
     participants: [

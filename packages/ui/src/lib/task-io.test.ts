@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { Study, Task } from "@lykeion/api";
+import type { Research, Task } from "@lykeion/api";
 import { exportTasksJson, parseTasksJson, patchHasFields } from "./task-io";
 
-const study: Study = {
+const research: Research = {
   id: "s_1",
   key: "CMP",
   title: "Cross-modal plasticity",
@@ -10,13 +10,13 @@ const study: Study = {
   createdTs: 1,
   updatedTs: 1,
 };
-const studyById = { [study.id]: study };
+const studyById = { [research.id]: research };
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
     id: "t_1",
     number: 3,
-    studyId: "s_1",
+    researchId: "s_1",
     stage: "methods",
     title: "Preprocess calcium traces",
     description: "Denoise and align the two-photon stacks.",
@@ -52,7 +52,7 @@ describe("task-io", () => {
 
     const { create, patch } = tasks[0];
     // createTask-able subset
-    expect(create.studyId).toBe(t.studyId);
+    expect(create.researchId).toBe(t.researchId);
     expect(create.stage).toBe(t.stage);
     expect(create.title).toBe(t.title);
     expect(create.description).toBe(t.description);
@@ -78,10 +78,10 @@ describe("task-io", () => {
   it("skips malformed rows without throwing", () => {
     const doc = JSON.stringify({
       tasks: [
-        { studyId: "s_1", stage: "methods", title: "ok" },
-        { studyId: "s_1", stage: "not-a-stage", title: "bad stage" },
-        { studyId: "s_1", title: "missing stage" },
-        { title: "missing study" },
+        { researchId: "s_1", stage: "methods", title: "ok" },
+        { researchId: "s_1", stage: "not-a-stage", title: "bad stage" },
+        { researchId: "s_1", title: "missing stage" },
+        { title: "missing research" },
         "totally wrong",
       ],
     });
@@ -93,7 +93,7 @@ describe("task-io", () => {
   it("accepts a bare array and defaults an unknown priority to none", () => {
     const { tasks } = parseTasksJson(
       JSON.stringify([
-        { studyId: "s_1", stage: "results", title: "x", priority: "bogus" },
+        { researchId: "s_1", stage: "results", title: "x", priority: "bogus" },
       ]),
     );
     expect(tasks).toHaveLength(1);

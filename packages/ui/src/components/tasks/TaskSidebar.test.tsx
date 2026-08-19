@@ -4,11 +4,11 @@
  * only rendered when its handler is supplied, so a caller that passes none
  * keeps a read-only sidebar.
  *
- * The sidebar lists the Study's Tasks and nothing else: a Task is a chat, so
- * navigating the Study's conversations and navigating its work are one list.
+ * The sidebar lists the Research's Tasks and nothing else: a Task is a chat, so
+ * navigating the Research's conversations and navigating its work are one list.
  */
 
-import type { Study, Task } from "@lykeion/api";
+import type { Research, Task } from "@lykeion/api";
 import { createInMemoryApi } from "@lykeion/api";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
@@ -17,7 +17,7 @@ import { ApiProvider } from "../../api/ApiContext";
 import { RouterProvider } from "../../router";
 import { TaskSidebar } from "./TaskSidebar";
 
-const study: Study = {
+const research: Research = {
   id: "s_1",
   key: "CMP",
   title: "Plasticity",
@@ -31,7 +31,7 @@ function tk(id: string, title: string, over: Partial<Task> = {}): Task {
   return {
     id,
     number: 1,
-    studyId: study.id,
+    researchId: research.id,
     stage: "methods",
     title,
     status: "todo",
@@ -51,7 +51,7 @@ function renderSidebar(props: Partial<Parameters<typeof TaskSidebar>[0]> = {}) {
     <ApiProvider api={createInMemoryApi()}>
       <RouterProvider>
         <TaskSidebar
-          study={study}
+          research={research}
           filesActive={false}
           onNew={() => {}}
           onOpenFiles={() => {}}
@@ -199,7 +199,7 @@ describe("TaskSidebar row actions", () => {
     expect(order).toEqual(["Pinned", "Starred one", "Tasks", "Recent one"]);
   });
 
-  it("lists the Study's Tasks, and says so when it holds none", async () => {
+  it("lists the Research's Tasks, and says so when it holds none", async () => {
     const { container, unmount } = renderSidebar({
       tasks: [tk("t_a", "Preprocess traces"), tk("t_b", "Fit tuning curves")],
     });
@@ -211,7 +211,7 @@ describe("TaskSidebar row actions", () => {
     ]);
     unmount();
 
-    // A Study nobody has started work in says exactly that — there is no
+    // A Research nobody has started work in says exactly that — there is no
     // second list left to explain the empty one away.
     renderSidebar({ tasks: [] });
     expect(await screen.findByText("No tasks yet")).toBeTruthy();

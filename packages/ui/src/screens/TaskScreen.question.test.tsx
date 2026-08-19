@@ -11,9 +11,9 @@ import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
 
-// The seeded Study's one Task with a transcript — this flow appends a turn to
+// The seeded Research's one Task with a transcript — this flow appends a turn to
 // a conversation that already has some, which is the ordinary case.
-const ROUTE = "#/studies/s_cmp/tasks/t_3";
+const ROUTE = "#/researches/s_cmp/tasks/t_3";
 
 beforeEach(cleanup);
 

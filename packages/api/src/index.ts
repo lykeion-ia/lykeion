@@ -38,18 +38,19 @@ export {
   fixtureArtifacts,
   type InMemoryApiOptions,
   type InMemoryLab,
+  type Seed,
 } from "./memory";
 
 /** Registered core commands, by UI-facing name. */
 export const Commands = {
   coreInfo: "core_info",
-  listStudies: "list_studies",
-  getStudy: "get_study",
-  createStudy: "create_study",
-  updateStudy: "update_study",
-  archiveStudy: "archive_study",
-  restoreStudy: "restore_study",
-  deleteStudy: "delete_study",
+  listResearches: "list_researches",
+  getResearch: "get_research",
+  createResearch: "create_research",
+  updateResearch: "update_research",
+  archiveResearch: "archive_research",
+  restoreResearch: "restore_research",
+  deleteResearch: "delete_research",
   listTasks: "list_tasks",
   createTask: "create_task",
   updateTask: "update_task",

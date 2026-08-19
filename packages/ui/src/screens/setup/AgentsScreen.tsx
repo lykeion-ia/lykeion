@@ -173,7 +173,7 @@ export function AgentsScreen({
           — this is not a machine Lykeion runs agents on yet.
         </p>
         <p className="mt-3 max-w-[34rem] text-read leading-relaxed text-fg-muted">
-          It can still hold Studies and Tasks. Pair a Mac to this lab and the
+          It can still hold Researches and Tasks. Pair a Mac to this lab and the
           work you file here runs there.
         </p>
         {onSkip !== undefined && (

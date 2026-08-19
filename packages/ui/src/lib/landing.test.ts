@@ -67,8 +67,8 @@ describe("hasDestination", () => {
   it("treats anything addressed as a destination to keep", () => {
     // Signing in is also what happens when somebody opens a link to a Task
     // and turns out not to be signed in. That link is a choice already made.
-    expect(hasDestination("#/studies/s_1/tasks/t_2")).toBe(true);
+    expect(hasDestination("#/researches/s_1/tasks/t_2")).toBe(true);
     expect(hasDestination("#/machines")).toBe(true);
-    expect(hasDestination("#/studies")).toBe(true);
+    expect(hasDestination("#/researches")).toBe(true);
   });
 });

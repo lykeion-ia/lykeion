@@ -2,7 +2,7 @@
  * Starting a conversation.
  *
  * The modal is prompt-first but not subject-free: a thread is ABOUT a Task, so
- * the Study and the Task come before the message, and the people in it are
+ * the Research and the Task come before the message, and the people in it are
  * seeded from whoever that Task is on. Role/text-based, agnostic to markup.
  */
 
@@ -34,16 +34,16 @@ it("will not start until it has a subject and something to say", async () => {
   // Nothing chosen, nothing written.
   expect(startButton()).toBeDisabled();
 
-  // The Task picker has nothing to offer until a Study names some.
+  // The Task picker has nothing to offer until a Research names some.
   expect(screen.getByRole("combobox", { name: "Task" })).toBeDisabled();
 
   await user.selectOptions(
-    await screen.findByRole("combobox", { name: "Study" }),
-    within(screen.getByRole("combobox", { name: "Study" }))
+    await screen.findByRole("combobox", { name: "Research" }),
+    within(screen.getByRole("combobox", { name: "Research" }))
       .getByText(/Cross-modal plasticity/i)
       .getAttribute("value")!,
   );
-  // A Study alone is not a subject.
+  // A Research alone is not a subject.
   expect(startButton()).toBeDisabled();
 
   const taskPicker = await screen.findByRole("combobox", { name: "Task" });
@@ -67,7 +67,7 @@ it("seeds the people from the Task, and re-seeds when the subject changes", asyn
   const user = userEvent.setup();
   mount();
 
-  const studyPicker = await screen.findByRole("combobox", { name: "Study" });
+  const studyPicker = await screen.findByRole("combobox", { name: "Research" });
   await user.selectOptions(
     studyPicker,
     within(studyPicker)
@@ -109,7 +109,7 @@ it("takes the Task's title when none is given, and posts the opening message", a
   let created: Conversation | undefined;
   const api = mount((c) => (created = c));
 
-  const studyPicker = await screen.findByRole("combobox", { name: "Study" });
+  const studyPicker = await screen.findByRole("combobox", { name: "Research" });
   await user.selectOptions(
     studyPicker,
     within(studyPicker)
@@ -154,7 +154,7 @@ it("a written title wins over the Task's", async () => {
   let created: Conversation | undefined;
   mount((c) => (created = c));
 
-  const studyPicker = await screen.findByRole("combobox", { name: "Study" });
+  const studyPicker = await screen.findByRole("combobox", { name: "Research" });
   await user.selectOptions(
     studyPicker,
     within(studyPicker)

@@ -8,7 +8,7 @@ import { routeGlyph, routeLabel } from "./route-chrome";
  * The strip: one tab per place the researcher has open, the active one lit.
  *
  * It renders from the store and nothing else. The single pill this replaced
- * resolved its own label with a `getStudy` on every route change and showed
+ * resolved its own label with a `getResearch` on every route change and showed
  * "Task" until that landed — visible flicker on every Task opened. A tab's name
  * is state now, put there by whoever knew it, so the strip draws it directly.
  */
@@ -30,7 +30,7 @@ function TabPill({
   const entry = tab.stack[tab.index];
   const Glyph = routeGlyph(entry.route);
   // Truthiness rather than `??`: a stored label that is the empty string is not
-  // a name, and a blank tab is worse than a generic one. A Study created with an
+  // a name, and a blank tab is worse than a generic one. A Research created with an
   // empty title would otherwise reach the strip as nothing at all.
   const label = entry.label || routeLabel(entry.route);
 

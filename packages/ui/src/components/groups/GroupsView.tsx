@@ -1,7 +1,10 @@
 import type { Group } from "@lykeion/api";
 import { UsersIcon } from "../icons";
+import { UserAvatar } from "../UserAvatar";
 import { agentAvatar } from "../../lib/assignee";
+import { useDirectory } from "../../hooks/useDirectory";
 import { formatAgo } from "../../lib/task-meta";
+import { cn } from "../../lib/utils";
 
 export interface GroupsViewProps {
   groups: Group[];
@@ -11,6 +14,8 @@ export interface GroupsViewProps {
 /** The Groups surface: a faithful empty state until groups exist,
  *  then a simple list. Lead avatars are derived from the real agent name. */
 export function GroupsView({ groups, loading }: GroupsViewProps) {
+  const dir = useDirectory();
+
   if (!loading && groups.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3">
@@ -42,7 +47,45 @@ export function GroupsView({ groups, loading }: GroupsViewProps) {
                 {group.description}
               </span>
             </span>
-            <span className="ml-auto flex items-center gap-1.5 text-sub text-fg-muted">
+            {/* The colleagues in this group, ahead of the lead so the row
+                reads left-to-right as "the group, then who runs it". An id
+                the directory cannot resolve is skipped rather than drawn as
+                a blank circle: a removed colleague still resolves, so a miss
+                once `dir.loaded` is a genuinely unknown id, and a face for it
+                would assert a person who is not there. */}
+            {group.memberUsers.length > 0 && (
+              <span className="ml-auto flex items-center -space-x-1.5">
+                {group.memberUsers.map((userId) => {
+                  const user = dir.user(userId);
+                  if (!user) return null;
+                  // Titled on a wrapper rather than on `UserAvatar` itself:
+                  // that component draws an uploaded picture with the name as
+                  // its `alt` and the initials fallback with no accessible
+                  // name at all, and it is shared by every surface that draws
+                  // a face — so the name belongs here, where this row needs
+                  // it, not in a change everyone inherits.
+                  return (
+                    <span
+                      key={userId}
+                      title={user.displayName}
+                      className="inline-flex"
+                    >
+                      <UserAvatar
+                        user={user}
+                        size={20}
+                        className="ring-1 ring-canvas"
+                      />
+                    </span>
+                  );
+                })}
+              </span>
+            )}
+            <span
+              className={cn(
+                "flex items-center gap-1.5 text-sub text-fg-muted",
+                group.memberUsers.length === 0 && "ml-auto",
+              )}
+            >
               {lead && (
                 <>
                   <span

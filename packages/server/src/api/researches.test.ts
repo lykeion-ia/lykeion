@@ -13,7 +13,7 @@ import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
 import { createEnvSetupRegistry } from "../env-setup-registry";
 import { changeRecorder } from "./changes";
-import { studiesApi } from "./studies";
+import { researchesApi } from "./researches";
 import type { Deps } from "./index";
 import type { Store } from "../store/store";
 
@@ -21,7 +21,7 @@ const dirs: string[] = [];
 const opened: Store[] = [];
 
 function freshStore(): Store {
-  const dir = mkdtempSync(join(tmpdir(), "lykeion-studies-"));
+  const dir = mkdtempSync(join(tmpdir(), "lykeion-researches-"));
   dirs.push(dir);
   const store = openStore(join(dir, "workspace.db"));
   opened.push(store);
@@ -78,20 +78,20 @@ function depsFor(store: Store): Deps {
   };
 }
 
-it("description and agentContext read back absent, not null, on a Study that never had one", async () => {
-  // The shared conformance suite never creates a Study without these two
+it("description and agentContext read back absent, not null, on a Research that never had one", async () => {
+  // The shared conformance suite never creates a Research without these two
   // fields, so nothing that runs against a live server currently proves
-  // `toStudy` keeps the same absent-key discipline the account family holds
+  // `toResearch` keeps the same absent-key discipline the account family holds
   // for `removedTs`. This checks it directly.
   const store = freshStore();
   addOwner(store, "u_owner");
-  const studies = studiesApi(depsFor(store));
+  const researches = researchesApi(depsFor(store));
 
-  const bare = await studies.createStudy({ title: "Bare", key: "BAR" });
+  const bare = await researches.createResearch({ title: "Bare", key: "BAR" });
   expect("description" in bare).toBe(false);
   expect("agentContext" in bare).toBe(false);
 
-  const detailed = await studies.createStudy({
+  const detailed = await researches.createResearch({
     title: "Detailed",
     key: "DET",
     description: "A description.",

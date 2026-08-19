@@ -18,7 +18,7 @@ import { persistTabs } from "./tabs-storage";
 export interface TabEntry {
   route: Route;
   /**
-   * Only for routes whose name is data — `study` and `task`. Static routes are
+   * Only for routes whose name is data — `research` and `task`. Static routes are
    * named by `routeLabel()` and store nothing, so a renamed nav item cannot
    * leave stale copies of its old name in storage.
    */
@@ -54,7 +54,7 @@ export interface TabsState {
  *  arrived over the cap would otherwise sit there until it next navigated. */
 export const MAX_STACK = 50;
 
-const HOME: Route = { name: "studies" };
+const HOME: Route = { name: "researches" };
 
 let nextId = 1;
 const newId = () => `tab_${nextId++}`;
@@ -95,7 +95,7 @@ export function setTabsState(next: TabsState): void {
   emit();
 }
 
-/** Back to a single Studies tab. Sign-out and a corrupt payload both land
+/** Back to a single Researches tab. Sign-out and a corrupt payload both land
  *  here, and so does every test's `beforeEach`. */
 export function resetTabs(): void {
   setTabsState(freshState());
@@ -276,13 +276,13 @@ function cutEntries(keep: (route: Route) => boolean): void {
   setTabsState({ tabs, activeId });
 }
 
-/** What a deleted Study leaves behind: its own screen, and every Task in it. */
-export function closeTabsForStudy(studyId: string): void {
+/** What a deleted Research leaves behind: its own screen, and every Task in it. */
+export function closeTabsForResearch(researchId: string): void {
   cutEntries(
     (r) =>
       !(
-        (r.name === "study" && r.studyId === studyId) ||
-        (r.name === "task" && r.studyId === studyId)
+        (r.name === "research" && r.researchId === researchId) ||
+        (r.name === "task" && r.researchId === researchId)
       ),
   );
 }

@@ -33,14 +33,14 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("tab lifecycle", () => {
-  it("takes a deleted Study's own tab, and its Tasks', out of the strip", async () => {
+  it("takes a deleted Research's own tab, and its Tasks', out of the strip", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
 
-    // Two tabs aimed inside the Study, neither of them the one being read.
-    openTab({ name: "study", studyId: CMP });
-    openTab({ name: "task", studyId: CMP, taskId: "t_1" });
-    window.location.hash = "#/studies";
+    // Two tabs aimed inside the Research, neither of them the one being read.
+    openTab({ name: "research", researchId: CMP });
+    openTab({ name: "task", researchId: CMP, taskId: "t_1" });
+    window.location.hash = "#/researches";
     render(<App api={api} />);
 
     await user.click(
@@ -48,17 +48,17 @@ describe("tab lifecycle", () => {
     );
     await user.click(
       within(
-        await screen.findByRole("dialog", { name: "Delete study" }),
+        await screen.findByRole("dialog", { name: "Delete research" }),
       ).getByRole("button", { name: "Delete" }),
     );
 
-    // The strip cannot keep offering a Study that no longer opens.
+    // The strip cannot keep offering a Research that no longer opens.
     await vi.waitFor(() => {
       expect(
         routes().some(
           (r) =>
-            (r.name === "study" && r.studyId === CMP) ||
-            (r.name === "task" && r.studyId === CMP),
+            (r.name === "research" && r.researchId === CMP) ||
+            (r.name === "task" && r.researchId === CMP),
         ),
       ).toBe(false);
     });
@@ -67,11 +67,11 @@ describe("tab lifecycle", () => {
   it("takes a deleted Task out of the strip", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
-    const { tasks } = await api.getStudy(CMP);
+    const { tasks } = await api.getResearch(CMP);
     const doomed = tasks[0];
 
-    openTab({ name: "task", studyId: CMP, taskId: doomed.id });
-    window.location.hash = `#/studies/${CMP}`;
+    openTab({ name: "task", researchId: CMP, taskId: doomed.id });
+    window.location.hash = `#/researches/${CMP}`;
     render(<App api={api} />);
 
     // Deletion is behind the row's own kebab, then a confirm.

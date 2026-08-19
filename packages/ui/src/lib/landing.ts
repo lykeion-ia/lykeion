@@ -3,7 +3,7 @@ import type { LykeionApi } from "@lykeion/api";
 /**
  * Where a member lands the moment they sign in.
  *
- * A member with no machine of their own cannot run anything, and Studies does
+ * A member with no machine of their own cannot run anything, and Researches does
  * not say so — it shows the work and lets them find out at the first send. So
  * they land on Machines instead, which is where the one thing they still have
  * to do is explained. Once a machine is paired the rule stops applying and

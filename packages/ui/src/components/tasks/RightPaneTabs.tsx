@@ -43,10 +43,10 @@ export function tabAfterClose(
 
 /**
  * The inspector's tab strip: Files, an opened artifact, and every notebook the
- * researcher has opened in this Study.
+ * researcher has opened in this Research.
  *
  * The notebooks are why this scrolls. Files and the artifact are one slot each,
- * but a Study holds any number of Tasks and each has a notebook, so the row has
+ * but a Research holds any number of Tasks and each has a notebook, so the row has
  * to be able to outrun its own width. Clipping it, fading the edge it clips at,
  * and scrolling an off-clip tab back into view are `useTabBand` and `.tab-band`
  * — kept apart from this component because the breadcrumb once carried a band

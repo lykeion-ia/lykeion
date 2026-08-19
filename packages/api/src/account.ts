@@ -66,7 +66,7 @@ export interface Member {
   role: Role;
   joinedTs: number;
   /**
-   * Set when offboarded. Removal is soft: a removed member's Studies, Tasks
+   * Set when offboarded. Removal is soft: a removed member's Researches, Tasks
    * and links stay attributable to them, because orphaning authorship to
    * reclaim a row would corrupt the record.
    */

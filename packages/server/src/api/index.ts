@@ -14,7 +14,7 @@ import { absentApi } from "./absent";
 import { accountApi } from "./account";
 import { configSurfaceApi } from "./config-surface";
 import { settingsApi } from "./settings";
-import { studiesApi } from "./studies";
+import { researchesApi } from "./researches";
 import { tasksApi } from "./tasks";
 import { taskNamingApi } from "./task-naming";
 import { machinesApi } from "./machines";
@@ -82,7 +82,7 @@ export function createWorkspaceApi(deps: Deps): LykeionApi {
       return { name: "lykeion-server", version: "0.1.0" };
     },
     ...accountApi(deps),
-    ...studiesApi(deps),
+    ...researchesApi(deps),
     ...tasksApi(deps),
     ...taskNamingApi(deps),
     ...machinesApi(deps),

@@ -10,7 +10,7 @@ afterEach(cleanup);
 const k: RunningKernel = {
   id: "k_1",
   machineId: "rt_1",
-  studyId: "st_1",
+  researchId: "st_1",
   sessionId: "ses_1",
   taskId: "tk_1",
   name: "main",

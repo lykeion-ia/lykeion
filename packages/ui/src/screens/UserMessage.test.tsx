@@ -14,7 +14,7 @@ import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
 
 // CMP-3 is in-review, so it opens straight into the full chat interface.
-const CMP3 = "#/studies/s_cmp/tasks/t_3";
+const CMP3 = "#/researches/s_cmp/tasks/t_3";
 
 beforeEach(cleanup);
 

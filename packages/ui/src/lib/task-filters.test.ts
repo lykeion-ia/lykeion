@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Member, Study, Task } from "@lykeion/api";
-import { deriveStudyMeta } from "./study-meta";
+import type { Member, Research, Task } from "@lykeion/api";
+import { deriveResearchMeta } from "./research-meta";
 import { assigneeKey, directoryOf } from "./assignee";
 import {
   activeFilterCount,
-  applyStudyFilters,
+  applyResearchFilters,
   applyTaskFilters,
   EMPTY_FILTERS,
   taskDimensions,
@@ -12,10 +12,10 @@ import {
   studyDimensions,
 } from "./task-filters";
 
-const study: Study = {
+const research: Research = {
   id: "s1",
   key: "AAA",
-  title: "Alpha study",
+  title: "Alpha research",
   createdBy: "u_you",
   createdTs: 1000,
   updatedTs: 2000,
@@ -44,7 +44,7 @@ function tk(over: Partial<Task>): Task {
   return {
     id: "t",
     number: 1,
-    studyId: "s1",
+    researchId: "s1",
     stage: "methods",
     title: "T",
     status: "todo",
@@ -84,7 +84,7 @@ const tasks: Task[] = [
     stage: "results",
   }),
 ];
-const studyById: Record<string, Study> = { s1: study };
+const studyById: Record<string, Research> = { s1: research };
 
 describe("task-filters", () => {
   it("builds My Tasks dimensions with real counts", () => {
@@ -127,9 +127,9 @@ describe("task-filters", () => {
   });
 });
 
-describe("study-meta", () => {
+describe("research-meta", () => {
   it("rolls up status/priority/lead/progress from tasks", () => {
-    const meta = deriveStudyMeta(study, tasks, dir);
+    const meta = deriveResearchMeta(research, tasks, dir);
     expect(meta.statusLabel).toBe("In Progress"); // some in-progress
     expect(meta.totalCount).toBe(3);
     expect(meta.doneCount).toBe(1);
@@ -137,24 +137,24 @@ describe("study-meta", () => {
     expect(meta.lead?.label).toBe("You"); // most-frequent assignee
   });
 
-  it("empty study → Backlog / no lead", () => {
-    const meta = deriveStudyMeta(study, [], dir);
+  it("empty research → Backlog / no lead", () => {
+    const meta = deriveResearchMeta(research, [], dir);
     expect(meta.statusLabel).toBe("Backlog");
     expect(meta.lead).toBeNull();
     expect(meta.totalCount).toBe(0);
   });
 
-  it("study filters narrow on derived meta", () => {
-    const dims = studyDimensions([study], { s1: tasks });
+  it("research filters narrow on derived meta", () => {
+    const dims = studyDimensions([research], { s1: tasks });
     expect(dims.some((d) => d.key === "stage")).toBe(true);
-    const shown = applyStudyFilters(
-      [study],
+    const shown = applyResearchFilters(
+      [research],
       { values: { status: ["In Progress"] } },
       { s1: tasks },
     );
     expect(shown).toHaveLength(1);
-    const none = applyStudyFilters(
-      [study],
+    const none = applyResearchFilters(
+      [research],
       { values: { status: ["Done"] } },
       { s1: tasks },
     );
@@ -163,12 +163,12 @@ describe("study-meta", () => {
 });
 
 describe("the archived dimension", () => {
-  const archived: Study = { ...study, id: "s2", key: "BBB", title: "Shelved", archivedTs: 3000 };
-  const both = [study, archived];
-  const byStudy = { s1: tasks, s2: [] };
+  const archived: Research = { ...research, id: "s2", key: "BBB", title: "Shelved", archivedTs: 3000 };
+  const both = [research, archived];
+  const byResearch = { s1: tasks, s2: [] };
 
   it("counts each side of the shelf", () => {
-    const dim = studyDimensions(both, byStudy).find((d) => d.key === "archived");
+    const dim = studyDimensions(both, byResearch).find((d) => d.key === "archived");
     expect(dim?.options).toEqual([
       expect.objectContaining({ id: "active", label: "Active", count: 1 }),
       expect.objectContaining({ id: "archived", label: "Archived", count: 1 }),
@@ -176,25 +176,25 @@ describe("the archived dimension", () => {
   });
 
   it("hides the archived when nothing is selected", () => {
-    expect(applyStudyFilters(both, EMPTY_FILTERS, byStudy).map((s) => s.id)).toEqual([
+    expect(applyResearchFilters(both, EMPTY_FILTERS, byResearch).map((s) => s.id)).toEqual([
       "s1",
     ]);
   });
 
   it("shows only the archived when Archived is selected", () => {
-    const shown = applyStudyFilters(
+    const shown = applyResearchFilters(
       both,
       { values: { archived: ["archived"] } },
-      byStudy,
+      byResearch,
     );
     expect(shown.map((s) => s.id)).toEqual(["s2"]);
   });
 
   it("shows both when both are selected", () => {
-    const shown = applyStudyFilters(
+    const shown = applyResearchFilters(
       both,
       { values: { archived: ["active", "archived"] } },
-      byStudy,
+      byResearch,
     );
     expect(shown.map((s) => s.id)).toEqual(["s1", "s2"]);
   });

@@ -36,7 +36,7 @@ import type {
 } from "@lykeion/api";
 import App from "../App";
 
-const ROUTE = "#/studies/s_cmp/tasks/t_3";
+const ROUTE = "#/researches/s_cmp/tasks/t_3";
 
 /** A run whose events the test emits by hand — no scripted timeline, so every
  *  assertion below lands at a chosen point INSIDE the turn. */

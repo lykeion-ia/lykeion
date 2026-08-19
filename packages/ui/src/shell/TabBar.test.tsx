@@ -46,7 +46,7 @@ describe("TabBar", () => {
     openTab({ name: "machines" });
     renderTabBar();
 
-    expect(await screen.findByRole("tab", { name: /Studies/ })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: /Researches/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Inbox/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Machines/ })).toBeInTheDocument();
   });
@@ -66,8 +66,8 @@ describe("TabBar", () => {
     openTab({ name: "inbox" });
     renderTabBar();
 
-    await userEvent.click(screen.getByRole("tab", { name: /Studies/ }));
-    expect(here()).toEqual({ name: "studies" });
+    await userEvent.click(screen.getByRole("tab", { name: /Researches/ }));
+    expect(here()).toEqual({ name: "researches" });
   });
 
   it("closes a tab from its own control", async () => {
@@ -197,7 +197,7 @@ describe("TabBar", () => {
       await screen.findAllByRole("tab");
 
       await userEvent.keyboard("{Alt>}1{/Alt}");
-      expect(here()).toEqual({ name: "studies" });
+      expect(here()).toEqual({ name: "researches" });
 
       await userEvent.keyboard("{Alt>}2{/Alt}");
       expect(here()).toEqual({ name: "inbox" });
@@ -237,8 +237,8 @@ describe("TabBar", () => {
    * its kind rather than nothing.
    */
   it("shows a stored label, and the kind's name when there is none", async () => {
-    openTab({ name: "task", studyId: "s_1", taskId: "t_1" }, "CMP-7: Plasticity");
-    openTab({ name: "task", studyId: "s_1", taskId: "t_2" });
+    openTab({ name: "task", researchId: "s_1", taskId: "t_1" }, "CMP-7: Plasticity");
+    openTab({ name: "task", researchId: "s_1", taskId: "t_2" });
     renderTabBar();
 
     expect(

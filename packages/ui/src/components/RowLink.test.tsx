@@ -59,7 +59,7 @@ describe("RowLink", () => {
     // The tab that was active before is untouched — that is the whole point of
     // a modifier click: it adds somewhere without leaving where you are.
     expect(state.tabs[0].stack[state.tabs[0].index].route).toEqual({
-      name: "studies",
+      name: "researches",
     });
   });
 
@@ -110,7 +110,7 @@ describe("RowLink", () => {
       expect(here()).toEqual({ name: "machines" });
       // The tab that was active is untouched.
       expect(state.tabs[0].stack[state.tabs[0].index].route).toEqual({
-        name: "studies",
+        name: "researches",
       });
     });
 

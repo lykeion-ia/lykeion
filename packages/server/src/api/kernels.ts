@@ -199,7 +199,7 @@ const KERNEL_STATES = new Set([
  * One raw report from a machine's own `kernel.list`, enriched with the two
  * things its host could never know — which machine this is, carried by the
  * connection this lab reached it over rather than anything the report
- * itself claims, and which Study its session belongs to, read from this
+ * itself claims, and which Research its session belongs to, read from this
  * lab's own durable record of that session. `undefined` for a report this
  * lab cannot honestly enrich, or that names something a real kernel could
  * not: a language or state this lab does not recognise; a session id
@@ -208,7 +208,7 @@ const KERNEL_STATES = new Set([
  * only ever holds kernels for sessions opened on its own machine, so this
  * can never happen honestly, only be claimed; or a `taskId` that session
  * has no turn recorded for. That last check is bound to `turns`, not to a
- * Task's own `study_id`: a Task can be re-filed into a different Study
+ * Task's own `study_id`: a Task can be re-filed into a different Research
  * after a session opens, and `sessions.study_id` never moves with it, so a
  * live kernel's own Task must still be recognised by the turn that started
  * it, which never changes underneath a later re-filing.
@@ -231,7 +231,7 @@ function toRunningKernel(
     name: raw.name,
     language: raw.language,
     machineId,
-    studyId: owner.studyId,
+    researchId: owner.researchId,
     state: raw.state as RunningKernel["state"],
     incarnation: raw.incarnation,
     executionCount: raw.executionCount,

@@ -142,13 +142,13 @@ interface GrantsLab {
   /** The paired machine's own bearer token, for posting frames and grants
    *  the way its daemon would. */
   token: string;
-  studyId: string;
+  researchId: string;
   taskId: string;
   runId: string;
 }
 
 /** A lab with an owner and a member, a machine the owner has paired and
- *  reported as offering `claude`, a Study, a Task filed into it, and a turn
+ *  reported as offering `claude`, a Research, a Task filed into it, and a turn
  *  already started on that machine — what every test below needs before it
  *  can post a permission card, answer it, or write a grant. */
 async function labWithRunInFlight(): Promise<GrantsLab> {
@@ -163,11 +163,11 @@ async function labWithRunInFlight(): Promise<GrantsLab> {
 
   const { machineId, token } = await pairClaudeMachine(server.base, ownerApi, "ana-macbook");
 
-  const study = await ownerApi.createStudy({ key: "CMP", title: "Comparative" });
-  const task = await ownerApi.createTask({ studyId: study.id, stage: "background", title: "run me" });
+  const research = await ownerApi.createResearch({ key: "CMP", title: "Comparative" });
+  const task = await ownerApi.createTask({ researchId: research.id, stage: "background", title: "run me" });
 
   const { runId } = await ownerApi.startRun({
-    studyId: study.id, taskId: task.id, prompt: "go",
+    researchId: research.id, taskId: task.id, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
 
@@ -180,7 +180,7 @@ async function labWithRunInFlight(): Promise<GrantsLab> {
     memberCookie,
     machineId,
     token,
-    studyId: study.id,
+    researchId: research.id,
     taskId: task.id,
     runId,
   };
@@ -196,7 +196,7 @@ async function labWithTwoPairedMachines(): Promise<GrantsLab & { memberToken: st
   return { ...lab, memberToken };
 }
 
-/** A lab that already carries one standing grant for its Study and
+/** A lab that already carries one standing grant for its Research and
  *  machine — what the two cascade tests start from. */
 async function labWithGrant(): Promise<GrantsLab> {
   const lab = await labWithRunInFlight();
@@ -233,7 +233,7 @@ function fetchGrant(
 }
 
 /** POSTs a standing grant to `/daemon/run/grant`, bearing the paired
- *  machine's token — what a real daemon sends once a "study"-scope decision
+ *  machine's token — what a real daemon sends once a "research"-scope decision
  *  answers a card, and what these tests send directly instead of driving a
  *  whole ACP subprocess through one. */
 async function postGrant(lab: GrantsLab, grant: { path: string; mode: "read" | "write" }): Promise<void> {
@@ -318,7 +318,7 @@ it("carries a card to the browser and the answer back to the machine", async () 
   expect(taken.at(-1)).toMatchObject({ type: "decision", runId: lab.runId });
 });
 
-it("writes a Study grant when a card is answered for the Study", async () => {
+it("writes a Research grant when a card is answered for the Research", async () => {
   const lab = await labWithRunInFlight();
   await postGrant(lab, { path: "/work/rna-seq", mode: "write" });
   expect(lab.store.all(`SELECT path, mode FROM folder_grants WHERE revoked_ts IS NULL`)).toEqual([
@@ -326,14 +326,14 @@ it("writes a Study grant when a card is answered for the Study", async () => {
   ]);
 });
 
-it("never raises the card a second time for that Study", async () => {
+it("never raises the card a second time for that Research", async () => {
   const lab = await labWithRunInFlight();
   await postGrant(lab, { path: "/work/rna-seq", mode: "write" });
   await postFrames(lab, [{ seq: 1, event: { event: "completed", state: { state: "completed" } } }]);
   const taken: RunCommand[] = [];
   lab.relay.attach(lab.machineId, (_seq, c) => taken.push(c));
   await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "again",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "again",
     options: { planMode: false, agent: "claude" },
   });
   // The daemon answers a covered request itself, so the second run never
@@ -382,9 +382,9 @@ it("refuses a path that is not absolute, so an empty string never reads as every
   expect(lab.store.all(`SELECT id FROM folder_grants`)).toEqual([]);
 });
 
-it("drops a Study's grants when the Study is deleted", async () => {
+it("drops a Research's grants when the Research is deleted", async () => {
   const lab = await labWithGrant();
-  await lab.ownerApi.deleteStudy(lab.studyId);
+  await lab.ownerApi.deleteResearch(lab.researchId);
   expect(lab.store.all(`SELECT id FROM folder_grants`)).toEqual([]);
 });
 
@@ -402,5 +402,5 @@ it("refuses a global scope by name rather than narrowing it", async () => {
       requestId: "pr_1",
       decision: { decision: "allow", scope: "global" },
     }),
-  ).rejects.toThrow(/every Study/);
+  ).rejects.toThrow(/every Research/);
 });

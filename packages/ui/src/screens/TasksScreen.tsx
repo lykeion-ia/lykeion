@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Study, Task } from "@lykeion/api";
+import type { Research, Task } from "@lykeion/api";
 import { useApi } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
 import { useDirectory } from "../hooks/useDirectory";
@@ -32,13 +32,13 @@ import { cn } from "../lib/utils";
 
 interface TasksData {
   tasks: Task[];
-  studyById: Record<string, Study>;
+  studyById: Record<string, Research>;
 }
 
 /**
- * Every Task in the Lab — mine and everyone else's, across every Study, plus
- * the unfiled ones that belong to no Study at all. The flat counterpart to
- * Studies, and the only surface an unfiled Task can be reached from.
+ * Every Task in the Lab — mine and everyone else's, across every Research, plus
+ * the unfiled ones that belong to no Research at all. The flat counterpart to
+ * Researches, and the only surface an unfiled Task can be reached from.
  */
 export function TasksScreen() {
   const api = useApi();
@@ -59,15 +59,15 @@ export function TasksScreen() {
   const q = usePromise<TasksData>(async () => {
     // `includeDone`: this is the Lab's record of its work, not a queue —
     // seeing what someone else finished is half the reason to come here.
-    // `includeArchived`: archiving tidies the Studies list, it does not
-    // finish the work, and a task whose Study is missing from this map
+    // `includeArchived`: archiving tidies the Researches list, it does not
+    // finish the work, and a task whose Research is missing from this map
     // loses the title its row shows.
-    const [tasks, studies] = await Promise.all([
+    const [tasks, researches] = await Promise.all([
       api.listTasks({ includeDone: true }),
-      api.listStudies({ includeArchived: true }),
+      api.listResearches({ includeArchived: true }),
     ]);
-    const studyById: Record<string, Study> = {};
-    for (const s of studies) studyById[s.id] = s;
+    const studyById: Record<string, Research> = {};
+    for (const s of researches) studyById[s.id] = s;
     return { tasks, studyById };
   }, [api, reloadKey]);
 
@@ -85,8 +85,8 @@ export function TasksScreen() {
   const dueLabel = filters.targetDate
     ? `Due ${formatTargetDate(filters.targetDate)}`
     : "Due date";
-  const editingStudy =
-    editing?.studyId !== undefined ? studyById[editing.studyId] : undefined;
+  const editingResearch =
+    editing?.researchId !== undefined ? studyById[editing.researchId] : undefined;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -200,7 +200,7 @@ export function TasksScreen() {
         <TaskList
           tasks={shown}
           studyById={studyById}
-          showStudy
+          showResearch
           emptyLabel="No tasks match these filters"
         />
       )}
@@ -211,8 +211,8 @@ export function TasksScreen() {
       {editing && (
         <TaskDetailsModal
           task={editing}
-          study={editingStudy}
-          studies={Object.values(studyById)}
+          research={editingResearch}
+          researches={Object.values(studyById)}
           onClose={() => setEditing(null)}
           onSaved={reload}
         />

@@ -106,7 +106,7 @@ it("honours a link pasted while the gate was still up", async () => {
 
   // Once the gate opens, the workbench must land on the pasted link rather
   // than on whatever tab was active. Against a one-shot adoption flag this
-  // fails here: the strip opens on its default Studies tab instead.
+  // fails here: the strip opens on its default Researches tab instead.
   expect(
     await screen.findByRole("heading", { name: "Machines" }),
   ).toBeInTheDocument();

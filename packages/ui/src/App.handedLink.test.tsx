@@ -24,7 +24,7 @@ import { installLocalStorage, restoreLocalStorage } from "./test/local-storage";
 beforeEach(installLocalStorage);
 afterEach(restoreLocalStorage);
 
-// The seeded study every in-memory API starts with — see `Studies.test.tsx`,
+// The seeded research every in-memory API starts with — see `Researches.test.tsx`,
 // which uses the same anchor to prove the default screen actually rendered.
 const CMP = "Cross-modal plasticity in the brain";
 
@@ -34,7 +34,7 @@ it("never adopts a join link into a tab, and leaves the code out of storage", as
   render(<App api={createInMemoryApi()} />);
 
   // An injected `api` bypasses `AuthGate` entirely, so nothing here reads the
-  // join code at all — this settles on the ordinary Studies screen. Waiting
+  // join code at all — this settles on the ordinary Researches screen. Waiting
   // for it gives React a turn to flush before the strip is read.
   expect(await screen.findByText(CMP)).toBeInTheDocument();
 

@@ -94,7 +94,7 @@ function deferred<T>() {
 }
 
 function Probe({ taskId = "task-a" }: { taskId?: string }) {
-  const manager = useRun("study-a", { taskId });
+  const manager = useRun("research-a", { taskId });
   useEffect(() => {
     void manager.resume();
   }, [manager.resume]);
@@ -152,7 +152,7 @@ describe("the keyed Task run manager", () => {
       } as unknown as LykeionApi;
 
       function RaceProbe() {
-        const manager = useRun("study-a", { taskId: "task-a" });
+        const manager = useRun("research-a", { taskId: "task-a" });
         useEffect(() => {
           void manager.resume();
         }, [manager.resume]);
@@ -249,7 +249,7 @@ describe("the keyed Task run manager", () => {
     } as unknown as LykeionApi;
 
     function NewerFreshProbe() {
-      const manager = useRun("study-a", { taskId: "task-a" });
+      const manager = useRun("research-a", { taskId: "task-a" });
       useEffect(() => {
         void manager.resume();
       }, [manager.resume]);
@@ -322,7 +322,7 @@ describe("the keyed Task run manager", () => {
     } as unknown as LykeionApi;
 
     function FreshProbe() {
-      const manager = useRun("study-a", { taskId: "task-a" });
+      const manager = useRun("research-a", { taskId: "task-a" });
       return (
         <div>
           <button type="button" onClick={() => manager.start("fresh prompt")}>
@@ -527,7 +527,7 @@ describe("the keyed Task run manager", () => {
     } as unknown as LykeionApi;
 
     function StartProbe() {
-      const manager = useRun("study-a", { taskId: "task-a" });
+      const manager = useRun("research-a", { taskId: "task-a" });
       return (
         <div>
           <span data-testid="starting">{String(manager.starting)}</span>

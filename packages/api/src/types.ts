@@ -9,7 +9,7 @@ export interface CoreInfo {
   version: string;
 }
 
-/** The fixed scientific stages of a Study (kebab-case on the wire). */
+/** The fixed scientific stages of a Research (kebab-case on the wire). */
 export type Stage =
   | "background"
   | "hypothesis"
@@ -155,25 +155,25 @@ export type Assignee =
   | { kind: "agent"; name: string };
 
 /** One research line. */
-export interface Study {
+export interface Research {
   id: string;
   /** Short prefix used to build task numbers, e.g. "CMP" for "CMP-12". */
   key: string;
   title: string;
   description?: string;
-  /** Context injected into every agent's system prompt for this Study. */
+  /** Context injected into every agent's system prompt for this Research. */
   agentContext?: string;
   /** The `User.id` of whoever opened this research line. */
   createdBy: string;
   /**
-   * Set when the Study was archived. An archived Study keeps every Task and
-   * its transcript; it only leaves the list.
+   * Set when the Research was archived. An archived Research keeps every Task
+   * and its transcript; it only leaves the list.
    */
   archivedTs?: number;
   /**
-   * Pinned to the top of the Studies list. Presentation only — it groups the
-   * list for whoever reads it and changes nothing about the Study. Absent
-   * rather than `false` when unpinned, so "not pinned" is one state.
+   * Pinned to the top of the Researches list. Presentation only — it groups
+   * the list for whoever reads it and changes nothing about the Research.
+   * Absent rather than `false` when unpinned, so "not pinned" is one state.
    */
   pinned?: boolean;
   createdTs: number;
@@ -190,18 +190,18 @@ export interface Subtask {
 export interface Task {
   id: string;
   /**
-   * Sequential per Study, or per Lab when unfiled. Displays as
-   * "<study.key>-<number>", or "TSK-<number>" with no Study.
+   * Sequential per Research, or per Lab when unfiled. Displays as
+   * "<research.key>-<number>", or "TSK-<number>" with no Research.
    */
   number: number;
   /**
-   * The Study this Task sits in. Absent when the Task is unfiled: it belongs
-   * to the Lab rather than to a research line, and lives in Tasks. An unfiled
-   * Task has no workspace to run in, so the first send files it — the
-   * composer asks which Study and files the Task as it starts the run.
+   * The Research this Task sits in. Absent when the Task is unfiled: it
+   * belongs to the Lab rather than to a research line, and lives in Tasks. An
+   * unfiled Task has no workspace to run in, so the first send files it — the
+   * composer asks which Research and files the Task as it starts the run.
    * Filing keeps the Task's `number`, so its code changes with it.
    */
-  studyId?: string;
+  researchId?: string;
   stage: Stage;
   title: string;
   description?: string;
@@ -238,7 +238,7 @@ export interface Task {
    * Absent until a turn has run: a Task nobody has spoken in is on nothing.
    */
   agent?: string;
-  /** Pinned to the top of the Study's Task list. */
+  /** Pinned to the top of the Research's Task list. */
   pinned?: boolean;
   /** Which machine ran it. Absent until a machine records one. */
   machineId?: string;
@@ -246,14 +246,14 @@ export interface Task {
   updatedTs: number;
 }
 
-/** A Study plus its tasks. */
-export interface StudyDetail {
-  study: Study;
+/** A Research plus its tasks. */
+export interface ResearchDetail {
+  research: Research;
   /** All tasks, ascending by number. */
   tasks: Task[];
 }
 
 /** The display code for a task, e.g. "CMP-12" — or "TSK-7" when unfiled. */
-export function taskCode(study: Study | undefined, task: Task): string {
-  return study ? `${study.key}-${task.number}` : `TSK-${task.number}`;
+export function taskCode(research: Research | undefined, task: Task): string {
+  return research ? `${research.key}-${task.number}` : `TSK-${task.number}`;
 }

@@ -34,7 +34,7 @@ export interface Message {
 /** A thread about one Task. */
 export interface Conversation {
   id: string;
-  studyId: string;
+  researchId: string;
   taskId: string;
   /** Taken from the Task's title when the opener does not supply one. */
   title: string;
@@ -76,7 +76,7 @@ export interface ConversationDetail {
 
 /** What opening a Conversation takes. */
 export interface NewConversation {
-  studyId: string;
+  researchId: string;
   taskId: string;
   /** Omitted takes the Task's own title. */
   title?: string;

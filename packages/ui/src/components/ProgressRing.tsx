@@ -3,7 +3,7 @@ import "./components.css";
 const R = 5;
 const C = 2 * Math.PI * R;
 
-/** Tiny donut showing a study's done/total task fraction. */
+/** Tiny donut showing a research's done/total task fraction. */
 export function ProgressRing({ done, total }: { done: number; total: number }) {
   const frac = total === 0 ? 0 : done / total;
   return (

@@ -191,13 +191,13 @@ interface SessionsLab {
   /** The paired machine's own bearer token, for a test that speaks to
    *  `/daemon/...` routes directly rather than through `startRun`. */
   token: string;
-  studyId: string;
+  researchId: string;
   taskId: string;
   clock: { advance(seconds: number): void };
 }
 
 /** A lab with an owner and a member, a machine the owner has paired and
- *  reported as offering `claude`, a Study, and a Task filed into it — what
+ *  reported as offering `claude`, a Research, and a Task filed into it — what
  *  every test below needs before it can call `startRun`. */
 async function labWithPairedMachine(): Promise<SessionsLab> {
   let clock = 1_800_000_000;
@@ -215,8 +215,8 @@ async function labWithPairedMachine(): Promise<SessionsLab> {
   const machineName = "ana-macbook";
   const { machineId, token } = await pairClaudeMachine(server.base, ownerApi, machineName);
 
-  const study = await ownerApi.createStudy({ key: "CMP", title: "Comparative" });
-  const task = await ownerApi.createTask({ studyId: study.id, stage: "background", title: "run me" });
+  const research = await ownerApi.createResearch({ key: "CMP", title: "Comparative" });
+  const task = await ownerApi.createTask({ researchId: research.id, stage: "background", title: "run me" });
 
   return {
     base: server.base,
@@ -228,7 +228,7 @@ async function labWithPairedMachine(): Promise<SessionsLab> {
     machineId,
     machineName,
     token,
-    studyId: study.id,
+    researchId: research.id,
     taskId: task.id,
     clock: {
       advance(seconds: number) {
@@ -263,7 +263,7 @@ it("opens a session, records a turn, and hands the machine a start-run", async (
   lab.relay.attach(lab.machineId, (_seq, c) => taken.push(c));
 
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
 
@@ -276,7 +276,7 @@ it("opens a session, records a turn, and hands the machine a start-run", async (
 it("takes a second turn on a Task already working, onto the same session", async () => {
   const lab = await labWithPairedMachine();
   const input = {
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     taskId: lab.taskId,
     prompt: "first",
     // The fixture pairs the stubbed Claude catalogue entry; this is a
@@ -302,7 +302,7 @@ it("takes a second turn on a Task already working, onto the same session", async
 it("refuses a turn that would switch agent mid-conversation, naming the one it is with", async () => {
   const lab = await labWithPairedMachine();
   const input = {
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     taskId: lab.taskId,
     prompt: "first",
     options: { planMode: false, agent: "claude" },
@@ -317,20 +317,20 @@ it("refuses a turn that would switch agent mid-conversation, naming the one it i
   ).rejects.toMatchObject({ code: "conflict" });
 });
 
-it("allows different Tasks in one Study to run concurrently", async () => {
+it("allows different Tasks in one Research to run concurrently", async () => {
   const lab = await labWithPairedMachine();
   const sibling = await lab.ownerApi.createTask({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     stage: "background",
     title: "Sibling task",
   });
 
   const first = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "first",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "first",
     options: { planMode: false, agent: "claude" },
   });
   const second = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: sibling.id, prompt: "second",
+    researchId: lab.researchId, taskId: sibling.id, prompt: "second",
     options: { planMode: false, agent: "claude" },
   });
 
@@ -342,7 +342,7 @@ it("reuses the Task's live session for a later turn on the same agent", async ()
   const lab = await labWithPairedMachine();
   const go = () =>
     lab.ownerApi.startRun({
-      studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+      researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
       options: { planMode: false, agent: "claude" },
     });
   const first = await go();
@@ -356,7 +356,7 @@ it("reuses the Task's live session for a later turn on the same agent", async ()
 it("resumes an owned active turn and reveals it to no other member", async () => {
   const lab = await labWithPairedMachine();
   const first = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "first",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "first",
     options: { planMode: false, agent: "claude" },
   });
   const resumed = await lab.ownerApi.resumeRuns(lab.taskId);
@@ -372,7 +372,7 @@ it("refuses a run on a machine that is not the caller's", async () => {
   const lab = await labWithPairedMachine(); // paired by the owner
   await expect(
     lab.memberApi.startRun({
-      studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+      researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
       options: { planMode: false, agent: "claude" },
     }),
   ).rejects.toMatchObject({ code: "forbidden" });
@@ -384,10 +384,10 @@ it("refuses a run on an unfiled Task by name", async () => {
   const unfiled = await lab.ownerApi.createTask({ stage: "background", title: "loose end" });
   await expect(
     lab.ownerApi.startRun({
-      studyId: lab.studyId, taskId: unfiled.id, prompt: "go",
+      researchId: lab.researchId, taskId: unfiled.id, prompt: "go",
       options: { planMode: false, agent: "claude" },
     }),
-  ).rejects.toThrow(/not in a Study/);
+  ).rejects.toThrow(/not in a Research/);
 });
 
 it("refuses a run on a machine that is offline", async () => {
@@ -395,23 +395,23 @@ it("refuses a run on a machine that is offline", async () => {
   lab.clock.advance(10 * 60); // past the offline threshold
   await expect(
     lab.ownerApi.startRun({
-      studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+      researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
       options: { planMode: false, agent: "claude" },
     }),
   ).rejects.toThrow(new RegExp(lab.machineName));
 });
 
-it("carries the Study's standing folder grants in the command", async () => {
+it("carries the Research's standing folder grants in the command", async () => {
   const lab = await labWithPairedMachine();
   lab.store.run(
     `INSERT INTO folder_grants (id, study_id, runtime_id, path, mode, granted_by, granted_ts, seq)
      VALUES ('fg_1', ?, ?, '/work/rna-seq', 'write', ?, 1, 1)`,
-    [lab.studyId, lab.machineId, lab.ownerId],
+    [lab.researchId, lab.machineId, lab.ownerId],
   );
   const taken: RunCommand[] = [];
   lab.relay.attach(lab.machineId, (_seq, c) => taken.push(c));
   await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
   expect(taken[0]!.grants).toEqual([{ path: "/work/rna-seq", mode: "write" }]);
@@ -424,7 +424,7 @@ it("carries the Study's standing folder grants in the command", async () => {
 it("delivers a queued command over the wire on /daemon/commands", async () => {
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
 
@@ -435,7 +435,7 @@ it("delivers a queued command over the wire on /daemon/commands", async () => {
 it("replays only what a cursor missed when /daemon/commands reconnects", async () => {
   const lab = await labWithPairedMachine();
   await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "first",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "first",
     options: { planMode: false, agent: "claude" },
   });
   const [first] = await readCommands(lab.base, lab.token, undefined, 1);
@@ -443,7 +443,7 @@ it("replays only what a cursor missed when /daemon/commands reconnects", async (
     .toBe(200);
 
   await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "second",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "second",
     options: { planMode: false, agent: "claude" },
   });
   const replayed = await readCommands(lab.base, lab.token, first!.seq, 1);
@@ -478,7 +478,7 @@ it("reconciles what a machine reports live on /daemon/run/live, requiring its ow
   expect(unauthorized.status).toBe(401);
 
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
   expect(lab.relay.liveFor(lab.machineId)).toEqual([runId]);
@@ -500,7 +500,7 @@ it("refuses to publish run events for a run the calling machine does not own", a
   // machine, including a colleague's or another of the same owner's own.
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
   const other = await pairClaudeMachine(lab.base, lab.ownerApi, "bobs-desktop");
@@ -519,7 +519,7 @@ it("refuses to publish run events for a run the calling machine does not own", a
 it("accepts run events posted by the machine that actually owns the run", async () => {
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
   const seen: RunEventFrame[] = [];
@@ -541,7 +541,7 @@ it("accepts run events posted by the machine that actually owns the run", async 
 it("derives lastRunStatus from the latest settled turn", async () => {
   const lab = await labWithPairedMachine();
   const first = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "first",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "first",
     options: { planMode: false, agent: "claude" },
   });
   const postCompletion = (runId: string, state: Record<string, unknown>) =>
@@ -554,7 +554,7 @@ it("derives lastRunStatus from the latest settled turn", async () => {
   expect((await postCompletion(first.runId, { state: "failed", reason: "first failed" })).status)
     .toBe(200);
   const second = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "second",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "second",
     options: { planMode: false, agent: "claude" },
   });
   expect((await postCompletion(second.runId, { state: "completed" })).status).toBe(200);
@@ -567,7 +567,7 @@ it("derives lastRunStatus from the latest settled turn", async () => {
 it("preserves Done after a completed run and reopens it for later new work", async () => {
   const lab = await labWithPairedMachine();
   const first = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "first sibling",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "first sibling",
     options: { planMode: false, agent: "claude" },
   });
   const postSuccess = (runId: string) =>
@@ -585,7 +585,7 @@ it("preserves Done after a completed run and reopens it for later new work", asy
   expect((await lab.ownerApi.getTask(lab.taskId)).task.status).toBe("done");
 
   const third = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "new work after done",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "new work after done",
     options: { planMode: false, agent: "claude" },
   });
   expect((await postSuccess(third.runId)).status).toBe(200);
@@ -595,7 +595,7 @@ it("preserves Done after a completed run and reopens it for later new work", asy
 it("reopens a completed turn with prose and execution steps in their durable arrival order", async () => {
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "inspect counts",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "inspect counts",
     options: { planMode: false, agent: "claude" },
   });
   const frames: RunEventFrame[] = [
@@ -664,7 +664,7 @@ it("reopens a completed turn with prose and execution steps in their durable arr
 it("reopens repeated updates for one tool call as one enriched logical step", async () => {
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "write counts",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "write counts",
     options: { planMode: false, agent: "claude" },
   });
   const baseEntry = {
@@ -727,7 +727,7 @@ it("reopens repeated updates for one tool call as one enriched logical step", as
 it("records a cancelled turn as cancelled rather than defaulting to ok, and runHistory reports it", async () => {
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
 
@@ -753,7 +753,7 @@ it("records an unacknowledged stop distinctly, and runHistory reports the flag a
   // confirmed stop leaves.
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
 
@@ -786,7 +786,7 @@ it("records an unacknowledged stop distinctly, and runHistory reports the flag a
   expect(lab.store.get(`SELECT ended_ts FROM sessions WHERE id = ?`, [firstSession])?.ended_ts).not.toBeNull();
 
   const next = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "try again",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "try again",
     options: { planMode: false, agent: "claude" },
   });
   const nextSession = lab.store.get(`SELECT session_id FROM turns WHERE id = ?`, [next.runId])!.session_id;
@@ -822,7 +822,7 @@ it("wires the returned handle's onEvent/submit/close to the relay for an in-proc
   };
 
   const handle = await sessionsApi(deps).startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
 
@@ -872,7 +872,7 @@ it("stops a fresh handle's queued replay when its callback detaches", async () =
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
   const handle = await sessionsApi(deps).startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "detach while replaying",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "detach while replaying",
     options: { planMode: false, agent: "claude" },
   });
   lab.relay.publish(handle.runId, [
@@ -899,16 +899,16 @@ it("resumed in-process handles use their durable cursor, route decisions per mac
   const lab = await labWithPairedMachine();
   const codex = await pairClaudeMachine(lab.base, lab.ownerApi, "ana-codex", "codex");
   const sibling = await lab.ownerApi.createTask({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     stage: "background",
     title: "Second active run",
   });
   const first = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "claude turn",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "claude turn",
     options: { planMode: false, agent: "claude" },
   });
   const second = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: sibling.id, prompt: "codex turn",
+    researchId: lab.researchId, taskId: sibling.id, prompt: "codex turn",
     options: { planMode: false, agent: "codex" },
   });
   const firstFrame: RunEventFrame = {
@@ -983,7 +983,7 @@ it("resumed in-process handles use their durable cursor, route decisions per mac
 it("stops synchronous replay when a resumed handle closes from its first frame", async () => {
   const lab = await labWithPairedMachine();
   const started = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "close while replaying",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "close while replaying",
     options: { planMode: false, agent: "claude" },
   });
   lab.relay.publish(started.runId, [
@@ -1024,7 +1024,7 @@ it("stops synchronous replay when a resumed handle closes from its first frame",
 it("delivers a decision submitted through submitRunDecision to the run's machine", async () => {
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
   const commands: RunCommand[] = [];
@@ -1052,7 +1052,7 @@ it("does not queue handle or RPC commands after a run is already terminal", asyn
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   });
   const handle = await api.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "already done",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "already done",
     options: { planMode: false, agent: "claude" },
   });
   const posted = await fetch(`${lab.base}/daemon/run/events`, {
@@ -1077,7 +1077,7 @@ it("does not queue handle or RPC commands after a run is already terminal", asyn
 it("refuses a decision on a run whose machine the caller does not own", async () => {
   const lab = await labWithPairedMachine();
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId, taskId: lab.taskId, prompt: "go",
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
   await expect(
@@ -1112,7 +1112,7 @@ async function settledRunWithSnapshot(
   snapshot: { taken: boolean; reason?: string } = { taken: true },
 ): Promise<string> {
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     taskId: lab.taskId,
     prompt,
     options: { planMode: false, agent: "claude" },
@@ -1146,7 +1146,9 @@ it("discards the newest turn once the machine says the files are back", async ()
   await until(() => taken.some((c) => c.type === "revert"));
   expect(taken.find((c) => c.type === "revert")).toMatchObject({
     runId: newest,
-    studyId: lab.studyId,
+    // `studyId` on the wire, not `researchId`: the daemon reads the command
+    // under the old name because its on-disk workspaces are keyed off it.
+    studyId: lab.researchId,
     taskId: lab.taskId,
   });
 

@@ -30,7 +30,7 @@ it("sends an empty argument list for a method that takes none", async () => {
 
 it("returns whatever the transport resolves with", async () => {
   const api = createHttpApi(transportReturning([{ id: "s_1" }]));
-  expect(await api.listStudies()).toEqual([{ id: "s_1" }]);
+  expect(await api.listResearches()).toEqual([{ id: "s_1" }]);
 });
 
 it("builds a RunHandle over the transport without ever carrying one", async () => {
@@ -48,7 +48,7 @@ it("builds a RunHandle over the transport without ever carrying one", async () =
     },
   });
   const handle = await api.startRun({
-    studyId: "s", taskId: "t", prompt: "go", options: { planMode: false },
+    researchId: "s", taskId: "t", prompt: "go", options: { planMode: false },
   });
   expect(handle.runId).toBe("run_1");
 
@@ -73,7 +73,7 @@ it("close() detaches the stream and cancels an unfinished run, the same guarante
     openRun: () => detached,
   });
   const handle = await api.startRun({
-    studyId: "s", taskId: "t", prompt: "go", options: { planMode: false },
+    researchId: "s", taskId: "t", prompt: "go", options: { planMode: false },
   });
   handle.onEvent(() => {});
 
@@ -98,7 +98,7 @@ it("detach() releases the stream without cancelling the unfinished run", async (
     openRun: () => detached,
   });
   const handle = await api.startRun({
-    studyId: "s", taskId: "t", prompt: "go", options: { planMode: false },
+    researchId: "s", taskId: "t", prompt: "go", options: { planMode: false },
   });
   handle.onEvent(() => {});
 
@@ -128,7 +128,7 @@ it("detach() can reopen the run stream from the latest observed frame while clos
     },
   });
   const handle = await api.startRun({
-    studyId: "s",
+    researchId: "s",
     taskId: "t",
     prompt: "go",
     options: { planMode: false },
@@ -181,7 +181,7 @@ it("closing after a terminal frame releases observation without submitting a sta
     },
   });
   const handle = await api.startRun({
-    studyId: "s", taskId: "t", prompt: "go", options: { planMode: false },
+    researchId: "s", taskId: "t", prompt: "go", options: { planMode: false },
   });
   handle.onEvent(() => {});
   onFrame?.({ seq: 1, event: { event: "completed", state: { state: "completed" } } });
@@ -241,7 +241,7 @@ it("does not open a second stream for a second onEvent subscriber", async () => 
     },
   });
   const handle = await api.startRun({
-    studyId: "s", taskId: "t", prompt: "go", options: { planMode: false },
+    researchId: "s", taskId: "t", prompt: "go", options: { planMode: false },
   });
 
   handle.onEvent(() => {});

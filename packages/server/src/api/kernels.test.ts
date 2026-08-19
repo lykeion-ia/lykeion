@@ -184,7 +184,7 @@ interface KernelsLab {
   ownerId: string;
   machineId: string;
   token: string;
-  studyId: string;
+  researchId: string;
   advanceClock(seconds: number): void;
   close(): Promise<void>;
 }
@@ -205,7 +205,7 @@ async function freshLab(): Promise<KernelsLab> {
   const memberApi = apiFor(server.base, memberCookie);
 
   const { machineId, token } = await pairClaudeMachine(server.base, ownerApi, "ana-macbook");
-  const study = await ownerApi.createStudy({ key: "KRN", title: "Kernels" });
+  const research = await ownerApi.createResearch({ key: "KRN", title: "Kernels" });
 
   return {
     base: server.base,
@@ -216,7 +216,7 @@ async function freshLab(): Promise<KernelsLab> {
     ownerId,
     machineId,
     token,
-    studyId: study.id,
+    researchId: research.id,
     advanceClock: server.advanceClock,
     close: server.close,
   };
@@ -235,12 +235,12 @@ async function recordCellVia(
   params: { source: string; kernelId?: string },
 ): Promise<{ taskId: string; kernelId: string; runId: string; sessionId: string }> {
   const task = await lab.ownerApi.createTask({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     stage: "background",
     title: "notebook fixture",
   });
   const { runId } = await lab.ownerApi.startRun({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     taskId: task.id,
     prompt: "go",
     options: { planMode: false, agent: "claude" },
@@ -359,7 +359,7 @@ it("answers not-found for a Task nobody has filed", async () => {
 
 it("answers an empty notebook for a real Task nothing has run", async () => {
   const lab = await freshLab();
-  const task = await lab.ownerApi.createTask({ studyId: lab.studyId, stage: "methods", title: "quiet" });
+  const task = await lab.ownerApi.createTask({ researchId: lab.researchId, stage: "methods", title: "quiet" });
   await expect(lab.ownerApi.taskNotebook(task.id)).resolves.toEqual([]);
 });
 
@@ -569,7 +569,7 @@ it("reports nothing for a machine whose command stream is not connected, without
   expect(Date.now() - started).toBeLessThan(500);
 });
 
-it("reaches a paired machine's kernel.list and enriches it with the machine and the Study its session belongs to", async () => {
+it("reaches a paired machine's kernel.list and enriches it with the machine and the Research its session belongs to", async () => {
   const lab = await freshLab();
   const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
   attachStubDaemon(lab, [
@@ -594,7 +594,7 @@ it("reaches a paired machine's kernel.list and enriches it with the machine and 
       name: "main",
       language: "python",
       machineId: lab.machineId,
-      studyId: lab.studyId,
+      researchId: lab.researchId,
       state: "idle",
       incarnation: 1,
       executionCount: 3,
@@ -990,7 +990,7 @@ it("refuses a kernel-list reply from a machine the request was never sent to, an
   // ids are, so it is exactly as guessable. A second paired machine — any
   // member's, not only a stranger's — could otherwise race the real machine
   // to answer first,
-  // stamping fabricated kernels with the *targeted* machine and Study, or
+  // stamping fabricated kernels with the *targeted* machine and Research, or
   // permanently displacing the real answer since a settled request is
   // removed from the wait list on the first reply.
   const lab = await freshLab();
@@ -1056,7 +1056,7 @@ it("refuses a kernel-list reply from a machine the request was never sent to, an
   });
   expect(real.status).toBe(200);
   await expect(listing).resolves.toEqual([
-    expect.objectContaining({ id: "k_real", machineId: lab.machineId, studyId: lab.studyId }),
+    expect.objectContaining({ id: "k_real", machineId: lab.machineId, researchId: lab.researchId }),
   ]);
 });
 
@@ -1116,12 +1116,12 @@ it("drops a kernel report naming a session that belongs to a different machine t
 
   const { machineId: machineB, token: tokenB } = await pairClaudeMachine(lab.base, lab.memberApi, "bobs-desktop");
   const taskOnB = await lab.memberApi.createTask({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     stage: "background",
     title: "machine B's own task",
   });
   const { runId: runOnB } = await lab.memberApi.startRun({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     taskId: taskOnB.id,
     prompt: "go",
     options: { planMode: false, agent: "claude" },
@@ -1173,16 +1173,16 @@ it("drops a kernel report naming a session that belongs to a different machine t
   expect(kernels.map((k) => k.id)).toEqual(["k_honest"]);
 });
 
-it("drops a kernel report whose taskId names a Task the session never ran a turn for, even inside the session's own Study", async () => {
-  // A Task in the *same* Study as the session's real one is deliberately
-  // used here rather than a different Study: the binding is to the turn
-  // that actually opened this session for a Task, not to Study membership,
+it("drops a kernel report whose taskId names a Task the session never ran a turn for, even inside the session's own Research", async () => {
+  // A Task in the *same* Research as the session's real one is deliberately
+  // used here rather than a different Research: the binding is to the turn
+  // that actually opened this session for a Task, not to Research membership,
   // so a taskId nothing here ever recorded a turn for is refused whether or
-  // not it happens to share a Study with the real one.
+  // not it happens to share a Research with the real one.
   const lab = await freshLab();
   const { sessionId } = await recordCellVia(lab, { source: "x = 1" });
   const untouchedTask = await lab.ownerApi.createTask({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     stage: "background",
     title: "not this session's Task",
   });
@@ -1204,16 +1204,16 @@ it("drops a kernel report whose taskId names a Task the session never ran a turn
   await expect(lab.ownerApi.listRunningKernels()).resolves.toEqual([]);
 });
 
-it("keeps listing a Task's kernels after the Task is re-filed into a different Study", async () => {
+it("keeps listing a Task's kernels after the Task is re-filed into a different Research", async () => {
   // `sessions.study_id` is fixed at the moment a session opens and never
   // moves with a later re-filing — binding a report's `taskId` to that
-  // Study, rather than to the turn that actually opened the session for
+  // Research, rather than to the turn that actually opened the session for
   // it, would silently drop every live kernel of a Task the moment a
   // researcher moved it.
   const lab = await freshLab();
   const { sessionId, taskId } = await recordCellVia(lab, { source: "x = 1" });
-  const destinationStudy = await lab.ownerApi.createStudy({ key: "MOV", title: "Moved" });
-  await lab.ownerApi.updateTask(taskId, { studyId: destinationStudy.id });
+  const destinationResearch = await lab.ownerApi.createResearch({ key: "MOV", title: "Moved" });
+  await lab.ownerApi.updateTask(taskId, { researchId: destinationResearch.id });
 
   attachStubDaemon(lab, [
     {
@@ -1385,12 +1385,12 @@ it("refuses a cell report whose taskId names a Task the session never ran a turn
   // The machine legitimately owns the session this time — the forgery is
   // narrower: the same session, but a Task nothing here ever recorded a
   // turn for. Without this, any paired machine could write a cell into any
-  // Task's notebook in any Study, attributed to a session that never ran
+  // Task's notebook in any Research, attributed to a session that never ran
   // there at all.
   const lab = await freshLab();
   const { sessionId } = await recordCellVia(lab, { source: "x = 1" });
   const untouchedTask = await lab.ownerApi.createTask({
-    studyId: lab.studyId,
+    researchId: lab.researchId,
     stage: "background",
     title: "not this session's Task",
   });

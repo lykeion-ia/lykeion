@@ -62,10 +62,10 @@ export function Rail({ onOpenPalette }: { onOpenPalette: () => void }) {
   // somewhere inside the section, and an unlit Rail says the reader has left it.
   const isActive = (r: Route) =>
     r.name === route.name ||
-    // Everything under a Study — its composer and any of its Tasks — keeps the
-    // Studies nav item lit.
-    (r.name === "studies" &&
-      (route.name === "study" || route.name === "task")) ||
+    // Everything under a Research — its composer and any of its Tasks — keeps the
+    // Researches nav item lit.
+    (r.name === "researches" &&
+      (route.name === "research" || route.name === "task")) ||
     (r.name === "agents" && route.name === "agent");
 
   return (

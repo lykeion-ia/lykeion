@@ -115,7 +115,7 @@ describe("PermissionCard", () => {
 
     expect(screen.getByText("This call only")).toBeInTheDocument();
     expect(screen.getByText("Until this chat ends")).toBeInTheDocument();
-    expect(screen.getByText("Remembered for this Study")).toBeInTheDocument();
+    expect(screen.getByText("Remembered for this Research")).toBeInTheDocument();
     expect(
       screen.getByText("Remembered across all projects"),
     ).toBeInTheDocument();
@@ -406,7 +406,7 @@ describe("PermissionCard — an environment", () => {
     // Global here would be a standing grant to run strangers' build scripts
     // on colleagues' machines, permanently, without being asked again.
     expect(screen.queryByText("Global")).not.toBeInTheDocument();
-    expect(screen.queryByText("This Study")).not.toBeInTheDocument();
+    expect(screen.queryByText("This Research")).not.toBeInTheDocument();
     expect(screen.getByText("Once")).toBeInTheDocument();
     expect(screen.getByText("This conversation")).toBeInTheDocument();
   });

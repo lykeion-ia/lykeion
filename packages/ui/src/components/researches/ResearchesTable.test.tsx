@@ -1,17 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createInMemoryApi, type Study, type Task } from "@lykeion/api";
+import { createInMemoryApi, type Research, type Task } from "@lykeion/api";
 import { ApiProvider } from "../../api/ApiContext";
 import { RouterProvider } from "../../router";
-import { StudiesTable, type StudiesTableProps } from "./StudiesTable";
+import { ResearchesTable, type ResearchesTableProps } from "./ResearchesTable";
 
 afterEach(cleanup);
 
-const study: Study = {
+const research: Research = {
   id: "s1",
   key: "AAA",
-  title: "Alpha study",
+  title: "Alpha research",
   createdBy: "u_you",
   createdTs: 1,
   updatedTs: 2,
@@ -20,7 +20,7 @@ const tasks: Task[] = [
   {
     id: "t1",
     number: 1,
-    studyId: "s1",
+    researchId: "s1",
     stage: "methods",
     title: "T1",
     status: "in-progress",
@@ -34,7 +34,7 @@ const tasks: Task[] = [
   {
     id: "t2",
     number: 2,
-    studyId: "s1",
+    researchId: "s1",
     stage: "results",
     title: "T2",
     status: "done",
@@ -47,69 +47,69 @@ const tasks: Task[] = [
   },
 ];
 
-it("shows a study row with derived status and progress", async () => {
+it("shows a research row with derived status and progress", async () => {
   render(
     <ApiProvider api={createInMemoryApi()}>
       <RouterProvider>
-        <StudiesTable studies={[study]} tasksByStudy={{ s1: tasks }} />
+        <ResearchesTable researches={[research]} tasksByResearch={{ s1: tasks }} />
       </RouterProvider>
     </ApiProvider>,
   );
-  expect(await screen.findByText("Alpha study")).toBeInTheDocument();
+  expect(await screen.findByText("Alpha research")).toBeInTheDocument();
   expect(screen.getByText("In Progress")).toBeInTheDocument();
   expect(screen.getByText("1/2")).toBeInTheDocument();
 });
 
 describe("archive actions", () => {
-  const live: Study = {
+  const live: Research = {
     id: "s_live",
     key: "LIV",
-    title: "Live study",
+    title: "Live research",
     createdBy: "u_you",
     createdTs: 2,
     updatedTs: 2,
   };
-  const archived: Study = {
+  const archived: Research = {
     id: "s_arch",
     key: "ARC",
-    title: "Archived study",
+    title: "Archived research",
     createdBy: "u_you",
     createdTs: 1,
     updatedTs: 1,
     archivedTs: 1,
   };
 
-  function renderTable(props: Partial<StudiesTableProps>) {
+  function renderTable(props: Partial<ResearchesTableProps>) {
     return render(
       <ApiProvider api={createInMemoryApi()}>
         <RouterProvider>
-          <StudiesTable studies={[live, archived]} tasksByStudy={{}} {...props} />
+          <ResearchesTable researches={[live, archived]} tasksByResearch={{}} {...props} />
         </RouterProvider>
       </ApiProvider>,
     );
   }
 
-  it("offers Archive on a live Study and Restore on an archived one", async () => {
+  it("offers Archive on a live Research and Restore on an archived one", async () => {
     const onArchive = vi.fn();
     const onRestore = vi.fn();
     renderTable({ onArchive, onRestore });
     expect(
-      await screen.findByRole("button", { name: "Archive Live study" }),
+      await screen.findByRole("button", { name: "Archive Live research" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Restore Archived study" }),
+      screen.getByRole("button", { name: "Restore Archived research" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Archive Archived study" }),
+      screen.queryByRole("button", { name: "Archive Archived research" }),
     ).toBeNull();
   });
 
   it("marks an archived row so the two are distinguishable", async () => {
     renderTable({ onArchive: vi.fn(), onRestore: vi.fn() });
-    const archivedRow = (await screen.findByText("Archived study")).closest(
+    const archivedRow = (await screen.findByText("Archived research")).closest(
       "a",
     ) as HTMLElement;
-    const liveRow = screen.getByText("Live study").closest(
+    const liveRow = screen.getByText("Live research").closest(
       "a",
     ) as HTMLElement;
     expect(archivedRow).not.toBeNull();
@@ -124,16 +124,16 @@ describe("archive actions", () => {
     const onArchive = vi.fn();
     renderTable({ onArchive, onRestore: vi.fn() });
     await userEvent.click(
-      await screen.findByRole("button", { name: "Archive Live study" }),
+      await screen.findByRole("button", { name: "Archive Live research" }),
     );
     expect(onArchive).toHaveBeenCalledWith(live);
   });
 
   it("calls the handler for the clicked row even when it isn't the first one", async () => {
-    const secondLive: Study = {
+    const secondLive: Research = {
       id: "s_live2",
       key: "LV2",
-      title: "Second live study",
+      title: "Second live research",
       createdBy: "u_you",
       createdTs: 3,
       updatedTs: 3,
@@ -142,9 +142,9 @@ describe("archive actions", () => {
     render(
       <ApiProvider api={createInMemoryApi()}>
         <RouterProvider>
-          <StudiesTable
-            studies={[live, secondLive, archived]}
-            tasksByStudy={{}}
+          <ResearchesTable
+            researches={[live, secondLive, archived]}
+            tasksByResearch={{}}
             onArchive={onArchive}
             onRestore={vi.fn()}
           />
@@ -152,7 +152,7 @@ describe("archive actions", () => {
       </ApiProvider>,
     );
     await userEvent.click(
-      await screen.findByRole("button", { name: "Archive Second live study" }),
+      await screen.findByRole("button", { name: "Archive Second live research" }),
     );
     expect(onArchive).toHaveBeenCalledWith(secondLive);
     expect(onArchive).not.toHaveBeenCalledWith(live);
@@ -162,7 +162,7 @@ describe("archive actions", () => {
     render(
       <ApiProvider api={createInMemoryApi()}>
         <RouterProvider>
-          <StudiesTable studies={[live]} tasksByStudy={{}} />
+          <ResearchesTable researches={[live]} tasksByResearch={{}} />
         </RouterProvider>
       </ApiProvider>,
     );
@@ -174,29 +174,29 @@ describe("archive actions", () => {
 });
 
 describe("the pinned group", () => {
-  const plain: Study = {
+  const plain: Research = {
     id: "s_plain",
     key: "PLN",
-    title: "Plain study",
+    title: "Plain research",
     createdBy: "u_you",
     createdTs: 3,
     updatedTs: 3,
   };
-  const pinned: Study = {
+  const pinned: Research = {
     id: "s_pin",
     key: "PIN",
-    title: "Pinned study",
+    title: "Pinned research",
     createdBy: "u_you",
     createdTs: 1,
     updatedTs: 1,
     pinned: true,
   };
 
-  function renderTable(studies: Study[]) {
+  function renderTable(researches: Research[]) {
     return render(
       <ApiProvider api={createInMemoryApi()}>
         <RouterProvider>
-          <StudiesTable studies={studies} tasksByStudy={{}} />
+          <ResearchesTable researches={researches} tasksByResearch={{}} />
         </RouterProvider>
       </ApiProvider>,
     );
@@ -206,26 +206,26 @@ describe("the pinned group", () => {
     // A resting list must look exactly as it did before pinning existed —
     // an eyebrow over a single ungrouped run of rows is noise.
     renderTable([plain]);
-    expect(await screen.findByText("Plain study")).toBeInTheDocument();
+    expect(await screen.findByText("Plain research")).toBeInTheDocument();
     expect(screen.queryByText("Pinned")).toBeNull();
-    expect(screen.queryByText("Studies")).toBeNull();
+    expect(screen.queryByText("Researches")).toBeNull();
   });
 
-  it("lifts a pinned Study into its own labelled group above the rest", async () => {
+  it("lifts a pinned Research into its own labelled group above the rest", async () => {
     renderTable([plain, pinned]);
     expect(await screen.findByText("Pinned")).toBeInTheDocument();
-    expect(screen.getByText("Studies")).toBeInTheDocument();
+    expect(screen.getByText("Researches")).toBeInTheDocument();
 
     // Reading order, not merely membership: the pinned row has to come first
     // even though the list handed it over second.
     const titles = screen
-      .getAllByText(/study$/)
+      .getAllByText(/research$/)
       .map((n) => n.textContent);
-    expect(titles).toEqual(["Pinned study", "Plain study"]);
+    expect(titles).toEqual(["Pinned research", "Plain research"]);
   });
 
-  it("shows a pinned Study once, not in both groups", async () => {
+  it("shows a pinned Research once, not in both groups", async () => {
     renderTable([plain, pinned]);
-    expect(await screen.findAllByText("Pinned study")).toHaveLength(1);
+    expect(await screen.findAllByText("Pinned research")).toHaveLength(1);
   });
 });

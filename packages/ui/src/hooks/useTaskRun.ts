@@ -34,13 +34,13 @@ function persistedIds(detail: TaskDetail): Set<string> {
  * settled read is allowed to replace any run that completed in that window.
  */
 export function useTaskRun(
-  studyId: string | undefined,
+  researchId: string | undefined,
   taskId: string,
   onTasksChanged?: () => void,
   onTaskRefreshed?: (task: Task) => void,
 ): UseTaskRun {
   const api = useApi();
-  const runState = useRun(studyId, { taskId });
+  const runState = useRun(researchId, { taskId });
   const [history, setHistory] = useState<TaskTurn[]>([]);
   const [terminalStatusByRunId, setTerminalStatusByRunId] = useState<
     Record<string, CancelledTurnState>
@@ -111,7 +111,7 @@ export function useTaskRun(
     setRecoveryAttempt((attempt) => attempt + 1);
   }, []);
 
-  // Auto-start a pending Study-composer handoff. Deferral keeps React
+  // Auto-start a pending Research-composer handoff. Deferral keeps React
   // StrictMode's discarded mount from consuming and starting the one-shot
   // handoff before the settled mount exists.
   const start = runState.start;

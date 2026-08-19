@@ -2,7 +2,7 @@ import {
   PRIORITY_LABELS,
   TASK_STATUS_LABELS,
   taskCode,
-  type Study,
+  type Research,
   type Task,
 } from "@lykeion/api";
 import { RowLink } from "./RowLink";
@@ -14,8 +14,8 @@ import { taskRoute } from "../lib/task-route";
 import "./components.css";
 
 interface TaskRowProps {
-  /** The Task's Study, or undefined when it is unfiled. */
-  study?: Study;
+  /** The Task's Research, or undefined when it is unfiled. */
+  research?: Research;
   task: Task;
   active?: boolean;
   rowRef?: (el: HTMLAnchorElement | null) => void;
@@ -24,7 +24,7 @@ interface TaskRowProps {
 
 /** One dense task line: status disc · code · title · priority · assignee. */
 export function TaskRow({
-  study,
+  research,
   task,
   active,
   rowRef,
@@ -41,7 +41,7 @@ export function TaskRow({
       <span className="task-status" title={TASK_STATUS_LABELS[task.status]}>
         <StatusIcon status={task.status} />
       </span>
-      <span className="task-code">{taskCode(study, task)}</span>
+      <span className="task-code">{taskCode(research, task)}</span>
       <span className="row-title">{task.title}</span>
       <span className="task-priority" title={PRIORITY_LABELS[task.priority]}>
         <PriorityIcon priority={task.priority} />

@@ -16,7 +16,7 @@ import { createInMemoryApi } from "@lykeion/api";
 import type { LykeionApi, RunEvent, RunHandle, TaskTurn } from "@lykeion/api";
 import App from "../App";
 
-const ROUTE = "#/studies/s_cmp/tasks/t_5";
+const ROUTE = "#/researches/s_cmp/tasks/t_5";
 
 /** An API whose `startRun` records every prompt it is called with. */
 function scriptedApi() {

@@ -17,14 +17,14 @@ import {
 import { adoptRoute, navigate as navigateActive, useTabs } from "./lib/tabs";
 
 export type Route =
-  | { name: "studies" }
-  | { name: "study"; studyId: string }
-  | { name: "task"; studyId: string; taskId: string }
+  | { name: "researches" }
+  | { name: "research"; researchId: string }
+  | { name: "task"; researchId: string; taskId: string }
   | { name: "tasks" }
   /**
    * One unfiled Task — the same Task surface a filed one opens, addressed by
-   * id alone. An unfiled Task has no Study, so there is no honest `:studyId`
-   * to put under `#/studies/…`; the conversation itself is read by task id and
+   * id alone. An unfiled Task has no Research, so there is no honest `:researchId`
+   * to put under `#/researches/…`; the conversation itself is read by task id and
    * opens either way.
    */
   | { name: "unfiled-task"; taskId: string }
@@ -41,6 +41,7 @@ export type Route =
   | { name: "settings"; tab?: string }
   | { name: "my-tasks" }
   | { name: "groups" }
+  | { name: "colleagues" }
   /**
    * A redeemable invite, addressed by its code. Reachable with nobody signed
    * in — `AuthGate` reads this route directly, ahead of the workbench,
@@ -122,7 +123,7 @@ function pairQueryString(params: PairParams): string {
   return search.toString();
 }
 
-/** Parse a location hash into a Route. Unknown hashes fall back to Studies. */
+/** Parse a location hash into a Route. Unknown hashes fall back to Researches. */
 export function parseHash(hash: string): Route {
   // Every other route lives entirely in path segments; `pair` is the one
   // whose parameters are a query string, so the split into path vs. query
@@ -132,14 +133,22 @@ export function parseHash(hash: string): Route {
   const [head, a, b, c] = parts;
   switch (head) {
     case undefined:
-      return { name: "studies" };
+      return { name: "researches" };
+    case "researches":
+      if (a !== undefined && b === "tasks" && c !== undefined)
+        return { name: "task", researchId: a, taskId: c };
+      if (a !== undefined) return { name: "research", researchId: a };
+      return { name: "researches" };
+    // What these were addressed as while a Research was called a Study.
+    // Parse-only: the mirror rewrites them to `#/researches/…`, so a bookmark
+    // still lands and the address bar stops saying the old word when it does.
     case "studies":
       if (a !== undefined && b === "tasks" && c !== undefined)
-        return { name: "task", studyId: a, taskId: c };
-      if (a !== undefined) return { name: "study", studyId: a };
-      return { name: "studies" };
-    // `#/tasks/<id>` is an unfiled Task. A filed one keeps its Study-scoped
-    // address under `#/studies/<study>/tasks/<id>`, parsed above.
+        return { name: "task", researchId: a, taskId: c };
+      if (a !== undefined) return { name: "research", researchId: a };
+      return { name: "researches" };
+    // `#/tasks/<id>` is an unfiled Task. A filed one keeps its Research-scoped
+    // address under `#/researches/<research>/tasks/<id>`, parsed above.
     case "tasks":
       return a !== undefined
         ? { name: "unfiled-task", taskId: a }
@@ -168,11 +177,16 @@ export function parseHash(hash: string): Route {
     case "connectors":
       return { name: "settings", tab: "connectors" };
     // Usage is the Profile tab now — the surface is the same one, so the old
-    // hash lands on it rather than falling back to Studies.
+    // hash lands on it rather than falling back to Researches.
     case "usage":
       return { name: "settings", tab: "profile" };
     case "settings":
       if (a === undefined) return { name: "settings" };
+      // Members is not a Settings tab any more — it is the Colleagues surface.
+      // Carried here rather than left to render the "nothing configured"
+      // placeholder, which is a worse answer to a bookmark than the surface
+      // that took the tab's job.
+      if (a === "members") return { name: "colleagues" };
       // Preferences was renamed Appearance. The tab key is the URL, so the old
       // one is carried here rather than kept as a second key in the nav — an
       // unmapped key renders the "nothing configured" placeholder, which is a
@@ -188,8 +202,10 @@ export function parseHash(hash: string): Route {
     // the moment it does.
     case "research-groups":
       return { name: "groups" };
+    case "colleagues":
+      return { name: "colleagues" };
     case "join":
-      return a !== undefined ? { name: "join", code: a } : { name: "studies" };
+      return a !== undefined ? { name: "join", code: a } : { name: "researches" };
     case "pair":
       return { name: "pair", params: parsePairParams(query ?? "") };
     case "setup": {
@@ -201,7 +217,7 @@ export function parseHash(hash: string): Route {
       return { name: "setup", step: Number.isInteger(step) && step >= 1 ? step : 1 };
     }
     default:
-      return { name: "studies" };
+      return { name: "researches" };
   }
 }
 
@@ -217,12 +233,12 @@ export function parseHash(hash: string): Route {
  */
 export function routeHash(route: Route): string {
   switch (route.name) {
-    case "studies":
-      return "#/studies";
-    case "study":
-      return `#/studies/${route.studyId}`;
+    case "researches":
+      return "#/researches";
+    case "research":
+      return `#/researches/${route.researchId}`;
     case "task":
-      return `#/studies/${route.studyId}/tasks/${route.taskId}`;
+      return `#/researches/${route.researchId}/tasks/${route.taskId}`;
     case "tasks":
       return "#/tasks";
     case "unfiled-task":
@@ -243,6 +259,8 @@ export function routeHash(route: Route): string {
       return "#/my-tasks";
     case "groups":
       return "#/groups";
+    case "colleagues":
+      return "#/colleagues";
     case "join":
       return `#/join/${route.code}`;
     case "pair": {
@@ -379,11 +397,11 @@ export function RouterProvider({ children }: { children: ReactNode }) {
     // the route the active tab is already showing.
     //
     // Only for an address that says something, though. An empty fragment is
-    // "wherever you were", but `parseHash("")` answers with the Studies
+    // "wherever you were", but `parseHash("")` answers with the Researches
     // fallback, so syncing on one would navigate the active tab there. That is
     // not hypothetical: the cleanup below wipes the fragment on unmount, and
     // StrictMode's mount/unmount/mount leaves the second mount reading exactly
-    // that empty value — which sent two hand-off tests back to Studies
+    // that empty value — which sent two hand-off tests back to Researches
     // mid-flow.
     if (window.location.hash !== "") sync();
     return () => {

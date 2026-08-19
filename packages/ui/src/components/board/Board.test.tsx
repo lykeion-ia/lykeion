@@ -1,14 +1,14 @@
 import { expect, it } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
-import { createInMemoryApi, type Study, type Task } from "@lykeion/api";
+import { createInMemoryApi, type Research, type Task } from "@lykeion/api";
 import { ApiProvider } from "../../api/ApiContext";
 import { RouterProvider } from "../../router";
 import { Board } from "./Board";
 
 afterEach(cleanup);
 
-const study: Study = {
+const research: Research = {
   id: "s1",
   key: "AAA",
   title: "Alpha",
@@ -20,7 +20,7 @@ function tk(over: Partial<Task>): Task {
   return {
     id: "t",
     number: 1,
-    studyId: "s1",
+    researchId: "s1",
     stage: "methods",
     title: "T",
     status: "todo",
@@ -47,7 +47,7 @@ it("renders the four status columns and a card", async () => {
   render(
     <ApiProvider api={createInMemoryApi()}>
       <RouterProvider>
-        <Board tasks={tasks} studyById={{ s1: study }} />
+        <Board tasks={tasks} studyById={{ s1: research }} />
       </RouterProvider>
     </ApiProvider>,
   );

@@ -16,8 +16,8 @@ export const NO_MACHINE =
  * from durable storage. `coreInfo`, `currentUser` and `listMembers` are
  * excluded on purpose: something else in the composition root already
  * answers them, and folding them in here would let this file quietly grow a
- * second, stale answer for one of them. Every Study and Task method is
- * excluded for the same reason — `studiesApi` and `tasksApi` own those, with
+ * second, stale answer for one of them. Every Research and Task method is
+ * excluded for the same reason — `researchesApi` and `tasksApi` own those, with
  * `nameTask` belonging to `taskNamingApi`, and
  * so are the invite, offboarding and settings methods — `accountApi` and
  * `settingsApi` own those — and so are the customization-engine and
@@ -41,8 +41,8 @@ export function absentApi(
 ): Omit<
   LykeionApi,
   | "coreInfo" | "currentUser" | "setAvatar" | "listMembers"
-  | "listStudies" | "getStudy" | "createStudy" | "updateStudy"
-  | "archiveStudy" | "restoreStudy" | "deleteStudy"
+  | "listResearches" | "getResearch" | "createResearch" | "updateResearch"
+  | "archiveResearch" | "restoreResearch" | "deleteResearch"
   | "listTasks" | "createTask" | "updateTask" | "deleteTask" | "getTask" | "myWork"
   | "nameTask"
   | "createInvite" | "listInvites" | "revokeInvite" | "removeMember"
@@ -96,17 +96,17 @@ export function absentApi(
     async resumeRuns(_taskId) {
       return [];
     },
-    async readArtifact(_studyId, _path) {
+    async readArtifact(_researchId, _path) {
       throw new LykeionError(
         "unsupported",
-        "no machine is connected to this lab — install the Lykeion daemon on the machine that ran this study, so its artifacts can be read.",
+        "no machine is connected to this lab — install the Lykeion daemon on the machine that ran this research, so its artifacts can be read.",
       );
     },
 
-    async reviewFindings(_studyId, _taskId) {
+    async reviewFindings(_researchId, _taskId) {
       return [];
     },
-    async resolveFinding(_studyId, _taskId, findingId) {
+    async resolveFinding(_researchId, _taskId, findingId) {
       throw new LykeionError("not-found", `no such finding: ${findingId}`);
     },
 

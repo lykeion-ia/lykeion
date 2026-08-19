@@ -31,7 +31,7 @@ describe("a chat's title", () => {
   it("takes the first message, replacing the placeholder New mints", async () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
-    window.location.hash = `#/studies/${STUDY}/tasks/${FILED}`;
+    window.location.hash = `#/researches/${STUDY}/tasks/${FILED}`;
     render(<App api={api} />);
 
     await user.click(await screen.findByRole("button", { name: "New" }));
@@ -41,7 +41,7 @@ describe("a chat's title", () => {
     // same unlabelled row in the sidebar, the breadcrumb, the board, the
     // Inbox and My Tasks — for the rest of its life.
     const minted = await waitFor(async () => {
-      const t = (await api.getStudy(STUDY)).tasks.find(
+      const t = (await api.getResearch(STUDY)).tasks.find(
         (x) => x.title === "New task",
       );
       expect(t).toBeDefined();
@@ -62,7 +62,7 @@ describe("a chat's title", () => {
         "quantify the tuning drift after deprivation",
       ),
     );
-    // And the surface the researcher is looking at says so too — the Study's
+    // And the surface the researcher is looking at says so too — the Research's
     // own list, which is what names the open conversation now that the
     // breadcrumb no longer carries it as a tab.
     expect(
@@ -77,7 +77,7 @@ describe("a chat's title", () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
     const before = (await api.getTask(FILED)).task.title;
-    window.location.hash = `#/studies/${STUDY}/tasks/${FILED}`;
+    window.location.hash = `#/researches/${STUDY}/tasks/${FILED}`;
     render(<App api={api} />);
 
     await user.type(

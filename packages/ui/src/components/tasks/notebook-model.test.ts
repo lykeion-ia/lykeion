@@ -10,7 +10,7 @@ function kernel(overrides: Partial<RunningKernel>): RunningKernel {
   return {
     id: "kernel-1",
     machineId: "machine-1",
-    studyId: "study-1",
+    researchId: "research-1",
     sessionId: "session-1",
     taskId: "task-1",
     name: "main",

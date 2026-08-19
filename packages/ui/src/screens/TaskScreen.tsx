@@ -7,7 +7,7 @@ import {
   titleFromPrompt,
   type Finding,
   type Severity,
-  type Study,
+  type Research,
   type Task,
   type TaskStatus,
 } from "@lykeion/api";
@@ -219,7 +219,7 @@ function LiveRunBlock({
 
 /**
  * The Task surface — one Task, which is one chat. The left pane lists the
- * Study's Tasks and marks the one on screen, and the middle column is the
+ * Research's Tasks and marks the one on screen, and the middle column is the
  * conversation: the persisted transcript, the live turn, and the composer that
  * appends the next one.
  *
@@ -232,21 +232,21 @@ function LiveRunBlock({
  *
  * An unfiled Task opens here too, at `#/tasks/:taskId`, and it is the same
  * conversation — the transcript is read by task id, and the composer is live.
- * What it does not have is a Study, and with it the workspace: no Task list to
+ * What it does not have is a Research, and with it the workspace: no Task list to
  * put in the left pane, no artifacts or kernel for the inspector, no findings.
  * Those affordances are left OFF rather than shown against nothing. Its first
- * send asks which Study and files it on the way — see `send` below.
+ * send asks which Research and files it on the way — see `send` below.
  */
 export function TaskScreen({
-  studyId,
+  researchId,
   taskId,
   railView = "context",
   onOwnRail,
   railSlot,
 }: {
-  /** The Study this surface is addressed under, or absent for an unfiled
+  /** The Research this surface is addressed under, or absent for an unfiled
    *  Task, which is addressed by id alone. */
-  studyId?: string;
+  researchId?: string;
   taskId: string;
   railView?: "nav" | "context";
   /** Report that this surface owns the left slot — the shell hands the slot to
@@ -259,16 +259,16 @@ export function TaskScreen({
   const api = useApi();
   const { navigate } = useRouter();
   const invalidate = useInvalidateData();
-  // Absent for an unfiled Task: there is no Study to read, and asking for one
+  // Absent for an unfiled Task: there is no Research to read, and asking for one
   // by an id we do not have would be an error we would then have to explain
-  // away. `null` is the honest answer to "which Study is this under".
+  // away. `null` is the honest answer to "which Research is this under".
   const studyQuery = usePromise(
-    async () => (studyId === undefined ? null : api.getStudy(studyId)),
-    [api, studyId],
+    async () => (researchId === undefined ? null : api.getResearch(researchId)),
+    [api, researchId],
   );
   const clisQuery = usePromise(() => api.listAgentClis(), [api]);
-  // Every Study, as destinations for a sidebar row's "Move to study".
-  const allStudies = usePromise(() => api.listStudies(), [api]);
+  // Every Research, as destinations for a sidebar row's "Move to research".
+  const allResearches = usePromise(() => api.listResearches(), [api]);
   // The `/` skills the composer can reference.
   const skills = usePromise(() => api.listSkills(), [api]);
   const clis = clisQuery.data ?? [];
@@ -276,30 +276,30 @@ export function TaskScreen({
   // and this surface no longer carries one.
   const { blocker } = useMachineBlocker();
 
-  // The Study's Tasks — the sidebar list. Held here rather than read off
+  // The Research's Tasks — the sidebar list. Held here rather than read off
   // `studyQuery` so a rename, a pin or a landed turn can refresh it without
-  // re-rendering the whole screen from a new Study read.
+  // re-rendering the whole screen from a new Research read.
   const [tasks, setTasks] = useState<Task[]>([]);
-  const openTabs = useTaskTabs(studyId);
-  const openNotebooks = useNotebookTabs(studyId);
+  const openTabs = useTaskTabs(researchId);
+  const openNotebooks = useNotebookTabs(researchId);
 
   const refreshTasks = useCallback(() => {
-    if (studyId === undefined) {
+    if (researchId === undefined) {
       setTasks([]);
       return;
     }
-    api.getStudy(studyId).then(
+    api.getResearch(researchId).then(
       (d) => setTasks(d.tasks),
       () => setTasks([]),
     );
-  }, [api, studyId]);
+  }, [api, researchId]);
 
   useEffect(() => {
     refreshTasks();
   }, [refreshTasks]);
 
-  // The Task itself, read by id: an unfiled Task belongs to no Study, so the
-  // Study's task list cannot answer for it and `getTask` is the only read that
+  // The Task itself, read by id: an unfiled Task belongs to no Research, so the
+  // Research's task list cannot answer for it and `getTask` is the only read that
   // can. `taskNonce` re-reads it after a write of our own (mark done, filing).
   const [taskNonce, setTaskNonce] = useState(0);
   const taskReadAuthority = useRef(0);
@@ -323,7 +323,7 @@ export function TaskScreen({
   // belongs to, so moving to another Task shows that Task or nothing, never
   // the one before it.
   const [heldTask, setHeldTask] = useState<Task | null>(null);
-  const [heldStudy, setHeldStudy] = useState<Study | null>(null);
+  const [heldResearch, setHeldResearch] = useState<Research | null>(null);
   const retainAuthoritativeTask = useCallback((next: Task) => {
     taskReadAuthority.current += 1;
     setHeldTask(next);
@@ -334,8 +334,8 @@ export function TaskScreen({
     setHeldTask(read.detail.task);
   }, [taskQuery.data]);
   useEffect(() => {
-    const read = studyQuery.data?.study;
-    if (read) setHeldStudy(read);
+    const read = studyQuery.data?.research;
+    if (read) setHeldResearch(read);
   }, [studyQuery.data]);
   // The retained record may come from useTaskRun's newer reconciliation read
   // while this screen's independent query still carries the pre-completion
@@ -344,15 +344,15 @@ export function TaskScreen({
   const task =
     (heldTask?.id === taskId ? heldTask : undefined) ??
     taskQuery.data?.detail.task;
-  const study =
-    studyQuery.data?.study ??
-    (heldStudy !== null && heldStudy.id === studyId ? heldStudy : undefined);
+  const research =
+    studyQuery.data?.research ??
+    (heldResearch !== null && heldResearch.id === researchId ? heldResearch : undefined);
 
-  // A run belongs to the Task's Study, not to the Study named in the URL. The
+  // A run belongs to the Task's Research, not to the Research named in the URL. The
   // two agree everywhere except in the moment just after a send files an
-  // unfiled Task: the Task acquires a Study before the address catches up, and
+  // unfiled Task: the Task acquires a Research before the address catches up, and
   // the turn has to start in the workspace it was actually filed into.
-  const runStudyId = task?.studyId ?? studyId;
+  const runResearchId = task?.researchId ?? researchId;
 
   // The persisted transcript, the turns completed here but not yet read back,
   // and the live run — all owned by the hook, not this screen.
@@ -365,7 +365,7 @@ export function TaskScreen({
     recoveryReady,
     recoveryError,
     retryRecovery,
-  } = useTaskRun(runStudyId, taskId, refreshTasks, retainAuthoritativeTask);
+  } = useTaskRun(runResearchId, taskId, refreshTasks, retainAuthoritativeTask);
 
   // Follow the live reply to the bottom while pinned. The signature must grow
   // on every token so streaming prose (and thinking, and tool stdout) keeps
@@ -398,7 +398,7 @@ export function TaskScreen({
 
   // The composer's draft text, owned here (not by `Composer`'s internal
   // state) so Edit can refill it from a past prompt — and so a send held back
-  // by the Study picker leaves the text exactly where the researcher left it.
+  // by the Research picker leaves the text exactly where the researcher left it.
   // `inputRef` lets Edit focus the textarea after refilling it.
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -514,7 +514,7 @@ export function TaskScreen({
   const taskAgent = lastAgent ?? task?.agent ?? effectiveCliId;
   const agentName = clis.find((c) => c.id === taskAgent)?.name;
   // A model picked for one agent is dropped when the Task turns out to be on
-  // another that does not offer it — the same invariant `StudyScreen`'s
+  // another that does not offer it — the same invariant `ResearchScreen`'s
   // `selectCli` keeps, held here as a derivation rather than an effect
   // because the switch is something the transcript does to this screen
   // rather than something a control on it did.
@@ -532,7 +532,7 @@ export function TaskScreen({
   // The Task a researcher has asked to delete, held while they confirm it.
   // Null whenever nothing is waiting on that answer.
   const [pendingDelete, setPendingDelete] = useState<Task | null>(null);
-  // A send held back until the researcher says which Study to file this Task
+  // A send held back until the researcher says which Research to file this Task
   // into. Null whenever no send is waiting on an answer.
   const [filing, setFiling] = useState<{
     prompt: string;
@@ -550,14 +550,14 @@ export function TaskScreen({
     .map((run) => run.runId)
     .join("|");
   useEffect(() => {
-    // The Reviewer works inside a Study's workspace, so an unfiled Task has
+    // The Reviewer works inside a Research's workspace, so an unfiled Task has
     // nothing to have been flagged on — and nothing to ask about.
-    if (studyId === undefined) {
+    if (researchId === undefined) {
       setFindings([]);
       return;
     }
     let cancelled = false;
-    api.reviewFindings(studyId, taskId).then(
+    api.reviewFindings(researchId, taskId).then(
       (fs) => {
         if (!cancelled) setFindings(fs);
       },
@@ -569,10 +569,10 @@ export function TaskScreen({
       cancelled = true;
     };
     // Reload when the Task changes or a run lands (findings may appear).
-  }, [api, studyId, taskId, settledKey]);
+  }, [api, researchId, taskId, settledKey]);
 
   // Reset per-Task view state whenever the Task changes. Keyed on the Task
-  // alone, deliberately not on the Study: the one time a Task's Study changes
+  // alone, deliberately not on the Research: the one time a Task's Research changes
   // under a mounted surface is the moment a send files it, and everything
   // reset here — the parked send above all — is exactly what that send is
   // waiting on.
@@ -581,12 +581,12 @@ export function TaskScreen({
   // property of one conversation, so it survives the move in the state the
   // reader left it: open stays open, closed stays closed. Closing it on every
   // arrival meant reopening it on every arrival — a toll charged for moving
-  // between two Tasks of one Study, which is the ordinary way of working here.
+  // between two Tasks of one Research, which is the ordinary way of working here.
   //
   // What does not survive is what the pane was SHOWING. A notebook is the
   // record of one Task's run and does not follow the reader to another; the
   // artifact is a path out of the Task's own conversation, which left standing
-  // drew a tab for another Task's file and read it against this Study. So the
+  // drew a tab for another Task's file and read it against this Research. So the
   // pane lands on `Files` — the one surface that means the same thing wherever
   // it opens, being no Task's file in particular — and `Files` is reopened here
   // if the reader had closed it, because a pane that stays open needs something
@@ -612,9 +612,9 @@ export function TaskScreen({
   }, [taskId]);
 
   // The Task surface holds the left slot while it has a sidebar to put there.
-  // An unfiled Task has no Study, hence no Task list, so it leaves the slot to
+  // An unfiled Task has no Research, hence no Task list, so it leaves the slot to
   // the app Rail rather than claiming it for an empty pane.
-  const ownsRail = studyId !== undefined;
+  const ownsRail = researchId !== undefined;
   useEffect(() => {
     onOwnRail?.(ownsRail);
   }, [onOwnRail, ownsRail]);
@@ -630,13 +630,13 @@ export function TaskScreen({
     pendingPrompt ??
     NEW_TASK_TITLE;
 
-  // Register/refresh this Task as an open breadcrumb tab. The Study goes in
+  // Register/refresh this Task as an open breadcrumb tab. The Research goes in
   // too, and is reconciled by `openTaskTab`: filing moves the tab from the
-  // unfiled strip into its new Study's, which is where the surface has just
+  // unfiled strip into its new Research's, which is where the surface has just
   // navigated.
   useEffect(() => {
-    openTaskTab({ studyId, taskId, title: taskTitle });
-  }, [studyId, taskId, taskTitle]);
+    openTaskTab({ researchId, taskId, title: taskTitle });
+  }, [researchId, taskId, taskTitle]);
 
   // Name this Task's tab in the app strip the way the old single pill named it:
   // code first, so a researcher who knows "CMP-7" recognises the tab without
@@ -644,23 +644,23 @@ export function TaskScreen({
   // without this the tab would keep the generic "Task" a cold entry starts with
   // — and unlike the pill, it would keep it for as long as the tab is open.
   useEffect(() => {
-    if (studyId === undefined || study === undefined || task === undefined)
+    if (researchId === undefined || research === undefined || task === undefined)
       return;
     reconcileLabel(
-      { name: "task", studyId, taskId },
-      `${taskCode(study, task)}: ${taskTitle}`,
+      { name: "task", researchId, taskId },
+      `${taskCode(research, task)}: ${taskTitle}`,
     );
-  }, [studyId, taskId, study, task, taskTitle]);
+  }, [researchId, taskId, research, task, taskTitle]);
 
   const resolveFinding = useCallback(
     (findingId: string) => {
-      if (studyId === undefined) return;
-      api.resolveFinding(studyId, taskId, findingId).then(
+      if (researchId === undefined) return;
+      api.resolveFinding(researchId, taskId, findingId).then(
         (fs) => setFindings(fs),
         () => {},
       );
     },
-    [api, studyId, taskId],
+    [api, researchId, taskId],
   );
 
   /** Take the name a summary wrote and put it everywhere this surface shows
@@ -743,14 +743,14 @@ export function TaskScreen({
 
   /**
    * Send a message. A filed Task starts the turn straight away. An unfiled one
-   * has no workspace to run in, so the send opens the Study picker instead and
+   * has no workspace to run in, so the send opens the Research picker instead and
    * resumes there: filing is a step inside the work rather than a precondition
    * the researcher has to satisfy before any of it.
    */
   const send = (text: string, opts?: { planMode?: boolean }) => {
     if (!recoveryReady || runState.starting) return;
     const planMode = opts?.planMode ?? false;
-    if (task && task.studyId === undefined) {
+    if (task && task.researchId === undefined) {
       setFiling({ prompt: text, planMode });
       return;
     }
@@ -759,17 +759,17 @@ export function TaskScreen({
 
   /**
    * File the Task, then run the held-back send. The two cannot happen in one
-   * breath: the turn has to start in the Study the Task has just acquired, and
-   * this render still has the Study it had a moment ago. So the send is parked
+   * breath: the turn has to start in the Research the Task has just acquired, and
+   * this render still has the Research it had a moment ago. So the send is parked
    * and fired by the effect below, once the re-read Task actually reports a
-   * Study — the write, not a guess about when it landed, is what releases it.
+   * Research — the write, not a guess about when it landed, is what releases it.
    */
-  const confirmFiling = async (intoStudyId: string) => {
+  const confirmFiling = async (intoResearchId: string) => {
     const held = filing;
     if (!held) return;
     setFiling(null);
     try {
-      await api.updateTask(taskId, { studyId: intoStudyId });
+      await api.updateTask(taskId, { researchId: intoResearchId });
     } catch {
       // The Task stays unfiled and the draft stays put: nothing was sent, so
       // there is nothing to undo.
@@ -781,7 +781,7 @@ export function TaskScreen({
     refreshTasks();
     invalidate();
     // Keep the address honest about where the Task now lives.
-    navigate({ name: "task", studyId: intoStudyId, taskId });
+    navigate({ name: "task", researchId: intoResearchId, taskId });
   };
 
   // Put the message back in the composer while the picker is up. `Composer`
@@ -798,10 +798,10 @@ export function TaskScreen({
   // a send left behind is abandoned rather than replayed on the way back.
   useEffect(() => {
     if (!pendingSend || pendingSend.taskId !== taskId) return;
-    if (task?.studyId === undefined) return;
+    if (task?.researchId === undefined) return;
     setPendingSend(null);
     startTurn(pendingSend.prompt, pendingSend.planMode);
-  }, [pendingSend, taskId, task?.studyId, startTurn]);
+  }, [pendingSend, taskId, task?.researchId, startTurn]);
 
   /**
    * Where a Task opens FROM THIS SURFACE. `taskRoute` answers the same
@@ -810,28 +810,28 @@ export function TaskScreen({
    * been read.
    */
   const routeToTask = (id: string): Route =>
-    studyId === undefined
+    researchId === undefined
       ? { name: "unfiled-task", taskId: id }
-      : { name: "task", studyId, taskId: id };
+      : { name: "task", researchId, taskId: id };
 
-  /** Where the surface goes when the last tab closes: back up to the Study, or
+  /** Where the surface goes when the last tab closes: back up to the Research, or
    *  — for an unfiled Task, which has none — to the Lab's Task list. */
   const routeUp = (): Route =>
-    studyId === undefined ? { name: "tasks" } : { name: "study", studyId };
+    researchId === undefined ? { name: "tasks" } : { name: "research", researchId };
 
-  // Start another chat in this Study: a Task is a chat, so "New" mints one.
-  // Only offered where there is a Study to mint into — the sidebar that
+  // Start another chat in this Research: a Task is a chat, so "New" mints one.
+  // Only offered where there is a Research to mint into — the sidebar that
   // carries it is not rendered for an unfiled Task.
   const newTask = async () => {
-    if (studyId === undefined) return;
+    if (researchId === undefined) return;
     const created = await api.createTask({
-      studyId,
+      researchId,
       stage: "background",
       title: NEW_TASK_TITLE,
     });
     refreshTasks();
     invalidate();
-    navigate({ name: "task", studyId, taskId: created.id });
+    navigate({ name: "task", researchId, taskId: created.id });
   };
 
   const openTask = (id: string) => {
@@ -840,7 +840,7 @@ export function TaskScreen({
 
   /**
    * Take a Task's notebook off the inspector's strip, for a Task that has gone
-   * — deleted, or moved to another Study. Distinct from closing a conversation
+   * — deleted, or moved to another Research. Distinct from closing a conversation
    * tab, which leaves the notebook alone: a chat you are finished reading is
    * not a ledger you are finished consulting, and keeping the two strips
    * independent is the point of the notebook one.
@@ -849,7 +849,7 @@ export function TaskScreen({
 
   // Delete a Task: it and its transcript go together, its tab is dropped, and
   // — if it was the one on screen — the surface moves to another open Task (or
-  // back to the Study).
+  // back to the Research).
   //
   // A refusal is left to reject. This used to be swallowed and the tab closed
   // regardless, which made a delete the core had refused indistinguishable
@@ -857,14 +857,14 @@ export function TaskScreen({
   // the next read. The confirming dialog is a place to say so, and it stays
   // open and reports it rather than reconciling around it.
   const deleteTask = async (id: string) => {
-    const remaining = taskTabsFor(studyId).filter((t) => t.taskId !== id);
+    const remaining = taskTabsFor(researchId).filter((t) => t.taskId !== id);
     await api.deleteTask(id);
     closeTaskTab(id);
     dropNotebookTab(id);
     // Both spellings of the address: a Task filed after a tab was opened on it
     // left that tab under the unfiled route, and only one of the two matches.
-    if (studyId !== undefined)
-      closeTabsForRoute({ name: "task", studyId, taskId: id });
+    if (researchId !== undefined)
+      closeTabsForRoute({ name: "task", researchId, taskId: id });
     closeTabsForRoute({ name: "unfiled-task", taskId: id });
     refreshTasks();
     invalidate();
@@ -924,14 +924,14 @@ export function TaskScreen({
     refreshTasks();
   };
 
-  // Filing a Task under another Study takes it out of this sidebar, so it is
+  // Filing a Task under another Research takes it out of this sidebar, so it is
   // reconciled the way a delete is: drop the tab that pointed at it here, and
   // move off it if it was the Task on screen. The Task itself is untouched —
-  // it opens under its new Study.
+  // it opens under its new Research.
   const moveTask = async (id: string, destination: string) => {
-    const remaining = taskTabsFor(studyId).filter((t) => t.taskId !== id);
+    const remaining = taskTabsFor(researchId).filter((t) => t.taskId !== id);
     try {
-      await api.updateTask(id, { studyId: destination });
+      await api.updateTask(id, { researchId: destination });
     } catch {
       // Best-effort: the refresh below reconciles with the core either way.
     }
@@ -947,9 +947,9 @@ export function TaskScreen({
   };
 
   // Move destinations for the sidebar's row menus, newest-worked-on first.
-  const studies = useMemo(
-    () => [...(allStudies.data ?? [])].sort((a, b) => b.updatedTs - a.updatedTs),
-    [allStudies.data],
+  const researches = useMemo(
+    () => [...(allResearches.data ?? [])].sort((a, b) => b.updatedTs - a.updatedTs),
+    [allResearches.data],
   );
 
   // Read order: pinned first (the sidebar draws them as their own group), then
@@ -967,7 +967,7 @@ export function TaskScreen({
   /**
    * What to call a Task whose notebook is on the inspector's strip.
    *
-   * Read from the Study's own list rather than stored on the tab, so a rename
+   * Read from the Research's own list rather than stored on the tab, so a rename
    * lands on the notebook strip without a second store to keep in step. The
    * open conversation tabs are the fallback for the moment before that list has
    * loaded, since they already carry a title for every Task the researcher has
@@ -981,7 +981,7 @@ export function TaskScreen({
   /**
    * The inspector's tabs. `Files` is this Task's, and there while it is open; an
    * artifact is this Task's, and there while one is open; the notebooks are the
-   * Study's, and accumulate.
+   * Research's, and accumulate.
    *
    * EVERY notebook is called `Notebook`. What the tab names is the kind of
    * surface it opens, and they are all the same kind — a Task's title in that
@@ -1063,7 +1063,7 @@ export function TaskScreen({
    * way of getting there.
    */
   const showNotebookFor = (id: string) => {
-    if (studyId !== undefined) openNotebookTab({ studyId, taskId: id });
+    if (researchId !== undefined) openNotebookTab({ researchId, taskId: id });
     showInPane("notebook");
     if (id === taskId) return;
     notebookOnArrival.current = id;
@@ -1107,7 +1107,7 @@ export function TaskScreen({
   };
 
   // The composer's `@`/`#`/`/` sources, built from what REALLY exists here: the
-  // artifacts this chat has produced (deduped, newest turn first), the Study's
+  // artifacts this chat has produced (deduped, newest turn first), the Research's
   // other Tasks, and the configured skills. A source with nothing in it is
   // dropped by `Composer`, so a trigger never opens an empty list.
   const mentionSources = useMemo(() => {
@@ -1187,9 +1187,9 @@ export function TaskScreen({
   }
 
   // The Task is the whole gate: it names the conversation and everything on
-  // this page hangs off it. The Study is NOT — an unfiled Task has none, and
+  // this page hangs off it. The Research is NOT — an unfiled Task has none, and
   // waiting for one would blank the chat rather than draw it without the
-  // Study-scoped chrome it cannot have anyway.
+  // Research-scoped chrome it cannot have anyway.
   if (!task) return <div className="screen" aria-busy="true" />;
 
   // Once a run lands, the Task is In Review (optimistic; the store agrees).
@@ -1233,7 +1233,7 @@ export function TaskScreen({
     />
   );
 
-  // The inspector reads the Study's workspace — its files and its kernel — so
+  // The inspector reads the Research's workspace — its files and its kernel — so
   // an unfiled Task has nothing to open it on. Left undefined rather than
   // shown against an empty workspace, which drops the composer's Notebook
   // button, the run strip's pill and the breadcrumb's toggle together.
@@ -1241,7 +1241,7 @@ export function TaskScreen({
   // Both callers — the composer's button and a run strip's pill — mean THIS
   // Task's notebook, so this unpins whatever was being read from another one.
   const openNotebook =
-    study === undefined ? undefined : () => showNotebookFor(task.id);
+    research === undefined ? undefined : () => showNotebookFor(task.id);
 
   const liveTurns = runState.runs.map((run) => ({
     runId: run.runId,
@@ -1254,7 +1254,7 @@ export function TaskScreen({
   const composer = (
     <>
       {filing && (
-        <StudyPicker
+        <ResearchPicker
           onConfirm={(id) => void confirmFiling(id)}
           onCancel={() => setFiling(null)}
         />
@@ -1310,11 +1310,11 @@ export function TaskScreen({
     t.id === taskId ? { ...t, status: liveStatus } : t,
   );
 
-  // The left pane lists the Study's Tasks, so it exists only where there is a
-  // Study. An unfiled Task leaves the slot to the app Rail (see `ownsRail`).
-  const sidebar = study && (
+  // The left pane lists the Research's Tasks, so it exists only where there is a
+  // Research. An unfiled Task leaves the slot to the app Rail (see `ownsRail`).
+  const sidebar = research && (
     <TaskSidebar
-      study={study}
+      research={research}
       filesActive={rightPaneOpen && rightPaneTab === "files"}
       onNew={() => void newTask()}
       onOpenFiles={openFiles}
@@ -1333,7 +1333,7 @@ export function TaskScreen({
       // written mid-run as the newer authority, so a Done chosen here is not
       // a write about to be overtaken by the turn that is still going.
       onSetTaskStatus={(id, status) => void setTaskStatus(id, status)}
-      studies={studies}
+      researches={researches}
     />
   );
 
@@ -1362,7 +1362,7 @@ export function TaskScreen({
             // An unfiled Task's breadcrumb names the Lab's Task list, which is
             // the surface it belongs to until it is filed. Either way the name
             // is the way back to it.
-            crumb={study?.title ?? "Tasks"}
+            crumb={research?.title ?? "Tasks"}
             crumbTo={routeUp()}
             // The agent the Task ran on, or — before it has run at all — the
             // one its first turn is about to go to. See `taskAgent`: history
@@ -1382,7 +1382,7 @@ export function TaskScreen({
             // it has no home surface of its own to land on: this is the Files
             // tab's other way in, beside the sidebar's row.
             onToggleRightPane={
-              study === undefined || rightPaneOpen ? undefined : openFiles
+              research === undefined || rightPaneOpen ? undefined : openFiles
             }
             divider={false}
           />
@@ -1438,8 +1438,8 @@ export function TaskScreen({
         {/* The inspector: this Task's files, an opened artifact, and the
             Notebook — every surface that is not the conversation, in one
             column, reached by one tab strip. Exists only for filed Tasks,
-            which are the only ones with a Study workspace to inspect. */}
-        {rightPaneOpen && study !== undefined && (
+            which are the only ones with a Research workspace to inspect. */}
+        {rightPaneOpen && research !== undefined && (
           <div className="task-rightpane">
             <RightPaneTabs
               tabs={rightPaneTabs}
@@ -1462,7 +1462,7 @@ export function TaskScreen({
               // path, so the panel lands where the strip says it should rather
               // than on a Files tab that may not be open.
               <ArtifactPane
-                studyId={study.id}
+                researchId={research.id}
                 path={openArtifactPath}
                 onClose={() => closeRightPaneTab("artifact")}
               />
@@ -1494,44 +1494,44 @@ export function TaskScreen({
 }
 
 /**
- * The inline Study picker a send raises on an unfiled Task. One question, one
+ * The inline Research picker a send raises on an unfiled Task. One question, one
  * select, one confirm — a step inside the send rather than a modal over it,
  * because the researcher has already started the work and is only being asked
  * where it belongs. Cancel abandons the send; the draft is untouched, so the
  * message they wrote is still there to send again.
  *
- * Defaults to the most recently updated Study, which is where the next piece
+ * Defaults to the most recently updated Research, which is where the next piece
  * of work most often belongs.
  */
-function StudyPicker({
+function ResearchPicker({
   onConfirm,
   onCancel,
 }: {
-  onConfirm: (studyId: string) => void;
+  onConfirm: (researchId: string) => void;
   onCancel: () => void;
 }) {
   const api = useApi();
-  const studiesQuery = usePromise(() => api.listStudies(), [api]);
-  const studies = useMemo(
+  const studiesQuery = usePromise(() => api.listResearches(), [api]);
+  const researches = useMemo(
     () => [...(studiesQuery.data ?? [])].sort((a, b) => b.updatedTs - a.updatedTs),
     [studiesQuery.data],
   );
   const [chosen, setChosen] = useState<string | null>(null);
-  const selected = chosen ?? studies[0]?.id ?? "";
+  const selected = chosen ?? researches[0]?.id ?? "";
 
   return (
     <div className="composer-filing" role="group" aria-label="File this task">
-      <label className="composer-filing-label" htmlFor="composer-filing-study">
-        This task has no Study yet. File it to run it.
+      <label className="composer-filing-label" htmlFor="composer-filing-research">
+        This task has no Research yet. File it to run it.
       </label>
       <div className="composer-filing-row">
         <select
-          id="composer-filing-study"
+          id="composer-filing-research"
           className="composer-filing-select"
           value={selected}
           onChange={(e) => setChosen(e.target.value)}
         >
-          {studies.map((s: Study) => (
+          {researches.map((s: Research) => (
             <option key={s.id} value={s.id}>
               {s.title}
             </option>

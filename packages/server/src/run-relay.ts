@@ -33,6 +33,14 @@ export interface RunCommand {
     | "kernel-env-setup"
     | "kernel-env-reclaim";
   runId: string;
+  /**
+   * The Research a command belongs to, under the name the daemon reads it by.
+   * It stays `studyId` for the reason `studies` is still the table name: the
+   * daemon keys its on-disk workspaces off this value —
+   * `<workDir>/studies/study-<id>/tasks/task-<id>` — so renaming the field
+   * would orphan the working directory of every task in every existing lab.
+   * The rename stops at the wire here exactly as it stops at the SQL.
+   */
   studyId?: string;
   taskId?: string;
   sessionId?: string;

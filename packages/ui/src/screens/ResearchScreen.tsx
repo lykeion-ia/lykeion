@@ -4,7 +4,7 @@ import {
   STAGE_LABELS,
   titleFromPrompt,
   type Stage,
-  type StudyPatch,
+  type ResearchPatch,
   type Task,
   type TaskPatch,
 } from "@lykeion/api";
@@ -19,8 +19,8 @@ import { ModelSwitcher } from "../components/tasks/ModelSwitcher";
 import { CrumbStrip } from "../components/ScreenCrumb";
 import { RowLink } from "../components/RowLink";
 import { Icon } from "../components/Icon";
-import { StudyFormModal } from "../components/studies/StudyFormModal";
-import { DeleteStudyModal } from "../components/studies/DeleteStudyModal";
+import { ResearchFormModal } from "../components/researches/ResearchFormModal";
+import { DeleteResearchModal } from "../components/researches/DeleteResearchModal";
 import { DeleteTaskModal } from "../components/tasks/DeleteTaskModal";
 import { ActionMenu } from "../components/ui/ActionMenu";
 import { InlineRename } from "../components/ui/InlineRename";
@@ -39,37 +39,37 @@ import { stashRun } from "../lib/pending-run";
 import { nameChatAfterFirstMessage } from "../lib/task-naming";
 import {
   closeTaskTab,
-  closeTaskTabsForStudy,
+  closeTaskTabsForResearch,
   renameTaskTab,
 } from "../lib/task-tabs";
 import { closeTabsForRoute, reconcileLabel } from "../lib/tabs";
 import {
   closeNotebookTab,
-  closeNotebookTabsForStudy,
+  closeNotebookTabsForResearch,
 } from "../lib/notebook-tabs";
 import { formatAgo } from "../lib/task-meta";
 import "./screens.css";
 import "./task.css";
 
 /**
- * A research line, opened. The main column names the Study, offers the
- * composer, and then lists every Task the Study holds — assigned to anyone or
+ * A research line, opened. The main column names the Research, offers the
+ * composer, and then lists every Task the Research holds — assigned to anyone or
  * to no one, open or finished. The list is unfiltered on purpose: a surface
- * that showed only your own work would leave the rest of the Study's Tasks
+ * that showed only your own work would leave the rest of the Research's Tasks
  * with no click-path from here. The rail carries the standing context a
  * research line accumulates.
  *
  * Sending from the composer mints a Task and hands the prompt off to it: a
  * Task is a chat, so starting a conversation and opening a piece of work are
- * one act. Every chat in the Study is therefore tracked work, and shows up
+ * one act. Every chat in the Research is therefore tracked work, and shows up
  * wherever work does.
  */
-export function StudyScreen({ studyId }: { studyId: string }) {
+export function ResearchScreen({ researchId }: { researchId: string }) {
   const api = useApi();
   const { navigate } = useRouter();
   const version = useDataVersion();
   const invalidate = useInvalidateData();
-  const detail = usePromise(() => api.getStudy(studyId), [api, studyId, version]);
+  const detail = usePromise(() => api.getResearch(researchId), [api, researchId, version]);
   const clisQuery = usePromise(() => api.listAgentClis(), [api]);
   const clis = clisQuery.data ?? [];
   // `machineNames` rides along on the same `listMachines()` read the blocker
@@ -84,26 +84,26 @@ export function StudyScreen({ studyId }: { studyId: string }) {
   const [busy, setBusy] = useState(false);
   // Why the last send never left the composer. Cleared on the next attempt.
   const [sendError, setSendError] = useState<string | null>(null);
-  // The Study's own two dialogs, and why the last head action failed.
+  // The Research's own two dialogs, and why the last head action failed.
   const [showEdit, setShowEdit] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   // The Task a researcher has asked to delete from the list, held while they
-  // confirm it. Separate from the Study's own delete above: they guard
+  // confirm it. Separate from the Research's own delete above: they guard
   // different things and can never be open at once.
   const [pendingTaskDelete, setPendingTaskDelete] = useState<Task | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // Which Task row is being renamed in place — at most one at a time.
   const [renamingId, setRenamingId] = useState<string | null>(null);
 
-  const study = detail.data?.study;
+  const research = detail.data?.research;
 
-  // Name this Study's tab in the app strip. The strip stores labels rather than
-  // resolving them, so without this the tab keeps the generic "Study" that a
+  // Name this Research's tab in the app strip. The strip stores labels rather than
+  // resolving them, so without this the tab keeps the generic "Research" that a
   // cold entry starts with, for as long as it stays open.
   useEffect(() => {
-    if (study === undefined) return;
-    reconcileLabel({ name: "study", studyId: study.id }, study.title);
-  }, [study]);
+    if (research === undefined) return;
+    reconcileLabel({ name: "research", researchId: research.id }, research.title);
+  }, [research]);
 
   // Pinned Tasks read first. The sort key is the pin and nothing else, and
   // `sort` is stable, so number order survives inside both groups — this list
@@ -123,17 +123,17 @@ export function StudyScreen({ studyId }: { studyId: string }) {
   // With nothing pinned there is one ungrouped list, and it is all of them.
   // Once a group splits off, what is left is no longer "all".
   const restLabel = pinnedTasks.length > 0 ? "Tasks" : "All tasks";
-  // Destinations for a row's "Move to study", newest-worked-on first — the
-  // order `StudyPicker` files an unfiled Task by.
-  const studiesQuery = usePromise(() => api.listStudies(), [api, version]);
-  const studies = useMemo(
+  // Destinations for a row's "Move to research", newest-worked-on first — the
+  // order `ResearchPicker` files an unfiled Task by.
+  const studiesQuery = usePromise(() => api.listResearches(), [api, version]);
+  const researches = useMemo(
     () => [...(studiesQuery.data ?? [])].sort((a, b) => b.updatedTs - a.updatedTs),
     [studiesQuery.data],
   );
 
   const { index, select, setRef } = useListNav(tasks.length, (i) => {
     const task = tasks[i];
-    if (task) navigate({ name: "task", studyId, taskId: task.id });
+    if (task) navigate({ name: "task", researchId, taskId: task.id });
   });
 
   // The effective CLI (matches the dock's resolution) drives the model
@@ -162,13 +162,13 @@ export function StudyScreen({ studyId }: { studyId: string }) {
   };
 
   const send = async (text: string, opts?: { planMode?: boolean }) => {
-    if (busy || !study) return;
+    if (busy || !research) return;
     setBusy(true);
     setSendError(null);
     let task: Task;
     try {
       task = await api.createTask({
-        studyId,
+        researchId,
         stage: "background",
         title: titleFromPrompt(text),
       });
@@ -191,15 +191,15 @@ export function StudyScreen({ studyId }: { studyId: string }) {
     // this screen, and it outlives the screen either way.
     nameChatAfterFirstMessage(api, task.id, text, effectiveCliId, () => invalidate());
     invalidate();
-    navigate({ name: "task", studyId, taskId: task.id });
+    navigate({ name: "task", researchId, taskId: task.id });
   };
 
   // Every head action writes, then re-reads. A rejected one says why beside
   // the name rather than leaving the page looking as though nothing happened.
-  const patchStudy = async (patch: StudyPatch) => {
+  const patchResearch = async (patch: ResearchPatch) => {
     setActionError(null);
     try {
-      await api.updateStudy(studyId, patch);
+      await api.updateResearch(researchId, patch);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
@@ -208,36 +208,36 @@ export function StudyScreen({ studyId }: { studyId: string }) {
 
   // Archive and restore need no confirm: both are reversible and lose
   // nothing, which is exactly what tells them apart from delete. Neither
-  // moves you off the page — `getStudy` still resolves for an archived
-  // Study, so it only leaves the list.
+  // moves you off the page — `getResearch` still resolves for an archived
+  // Research, so it only leaves the list.
   const setArchived = async (archived: boolean) => {
     setActionError(null);
     try {
-      if (archived) await api.archiveStudy(studyId);
-      else await api.restoreStudy(studyId);
+      if (archived) await api.archiveResearch(researchId);
+      else await api.restoreResearch(researchId);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
     invalidate();
   };
 
-  // Delete: the Study leaves the Lab for good. Drop any breadcrumb tabs it
-  // owned — they would point at a Study that no longer opens — and leave for
+  // Delete: the Research leaves the Lab for good. Drop any breadcrumb tabs it
+  // owned — they would point at a Research that no longer opens — and leave for
   // the list, because this page has nothing left to show.
-  const deleteStudy = async () => {
-    await api.deleteStudy(studyId);
-    closeTaskTabsForStudy(studyId);
-    closeNotebookTabsForStudy(studyId);
+  const deleteResearch = async () => {
+    await api.deleteResearch(researchId);
+    closeTaskTabsForResearch(researchId);
+    closeNotebookTabsForResearch(researchId);
     setConfirmDelete(false);
     invalidate();
-    navigate({ name: "studies" });
+    navigate({ name: "researches" });
   };
 
   // The row menu's four actions. Like the head's, each writes and then
   // re-reads rather than guessing at the result: pin, rename and move are
   // presentation in the core, so there is nothing to be optimistic about, and
   // a rejected write leaves the list showing the core's unchanged truth with
-  // the reason beside the Study's name.
+  // the reason beside the Research's name.
   const patchTask = async (taskId: string, patch: TaskPatch) => {
     setActionError(null);
     try {
@@ -255,9 +255,9 @@ export function StudyScreen({ studyId }: { studyId: string }) {
   };
 
   // Moving a Task files it elsewhere: it leaves this list, and the tab that
-  // pointed at it under this Study would open a route the Task no longer has.
+  // pointed at it under this Research would open a route the Task no longer has.
   const moveTask = async (taskId: string, destination: string) => {
-    await patchTask(taskId, { studyId: destination });
+    await patchTask(taskId, { researchId: destination });
     closeTaskTab(taskId);
     closeNotebookTab(taskId);
   };
@@ -274,7 +274,7 @@ export function StudyScreen({ studyId }: { studyId: string }) {
     closeNotebookTab(taskId);
     // Both spellings of the address: a Task filed after a tab was opened on it
     // left that tab under the unfiled route, and only one of the two matches.
-    closeTabsForRoute({ name: "task", studyId, taskId });
+    closeTabsForRoute({ name: "task", researchId, taskId });
     closeTabsForRoute({ name: "unfiled-task", taskId });
     invalidate();
   };
@@ -291,12 +291,12 @@ export function StudyScreen({ studyId }: { studyId: string }) {
    * stopping at the seam.
    */
   const renderTaskRow = (task: Task, i: number) => (
-    <div className="study-task-row" key={task.id}>
+    <div className="research-task-row" key={task.id}>
       {renamingId === task.id ? (
         <InlineRename
           title={task.title}
           label={`Rename ${task.title}`}
-          className="study-task-rename"
+          className="research-task-rename"
           onCommit={(next) => {
             setRenamingId(null);
             if (next !== task.title) void renameTask(task.id, next);
@@ -306,8 +306,8 @@ export function StudyScreen({ studyId }: { studyId: string }) {
       ) : (
         <>
           <RowLink
-            to={{ name: "task", studyId, taskId: task.id }}
-            className={`study-task${i === index ? " is-active" : ""}`}
+            to={{ name: "task", researchId, taskId: task.id }}
+            className={`research-task${i === index ? " is-active" : ""}`}
             rowRef={setRef(i)}
             onFocus={() => select(i)}
           >
@@ -315,20 +315,20 @@ export function StudyScreen({ studyId }: { studyId: string }) {
               agent={task.agent}
               name={task.agent ? agentName(task.agent) : undefined}
             />
-            <span className="study-task-title">{task.title}</span>
-            <span className="study-task-when">{formatAgo(task.updatedTs)}</span>
+            <span className="research-task-title">{task.title}</span>
+            <span className="research-task-when">{formatAgo(task.updatedTs)}</span>
           </RowLink>
           {/* Shares the row's right slot with the timestamp: the time reads
               at rest, the kebab takes its place on hover or focus, and
               neither moves the row. */}
-          <span className="study-task-actions">
+          <span className="research-task-actions">
             <TaskRowMenu
               title={task.title}
               pinned={!!task.pinned}
               status={task.status}
-              triggerClassName="study-task-kebab"
-              studies={studies}
-              currentStudyId={studyId}
+              triggerClassName="research-task-kebab"
+              researches={researches}
+              currentResearchId={researchId}
               onPin={() => void patchTask(task.id, { pinned: !task.pinned })}
               onRename={() => setRenamingId(task.id)}
               onMove={(destination) => void moveTask(task.id, destination)}
@@ -348,39 +348,39 @@ export function StudyScreen({ studyId }: { studyId: string }) {
       </div>
     );
   }
-  if (!study) return <div className="screen" aria-busy="true" />;
+  if (!research) return <div className="screen" aria-busy="true" />;
 
-  const archived = study.archivedTs !== undefined;
-  const pinned = study.pinned === true;
+  const archived = research.archivedTs !== undefined;
+  const pinned = research.pinned === true;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-testid="study-page">
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="research-page">
       {/* The same strip the Task surface heads with, so the trail does not move
           across the click that opens a run. It sits above the scroller and is
           flush to the panel's edge rather than to the page's centred measure —
           the way out of the page does not travel with the page's contents. */}
       <div className="shrink-0">
-        <CrumbStrip page={study.title} />
+        <CrumbStrip page={research.title} />
       </div>
 
-      <div className="study-screen">
-        <div className="study-page">
+      <div className="research-screen">
+        <div className="research-page">
           {/* The name heads the whole page rather than the main column: it
-              belongs to the Study, not to the column of work, so it runs the
+              belongs to the Research, not to the column of work, so it runs the
               page's full measure and the columns begin beneath it. */}
           {/* The head keeps the name alone, so the description can begin the
               main column and start on the rail panel's first line. */}
-          <header className="study-head">
-            <h1 className="study-title">{study.title}</h1>
-            {archived && <span className="study-archived">Archived</span>}
-            <span className="study-head-actions">
+          <header className="research-head">
+            <h1 className="research-title">{research.title}</h1>
+            {archived && <span className="research-archived">Archived</span>}
+            <span className="research-head-actions">
               <button
                 type="button"
-                aria-label={pinned ? "Unpin study" : "Pin study"}
-                title={pinned ? "Unpin study" : "Pin study"}
+                aria-label={pinned ? "Unpin research" : "Pin research"}
+                title={pinned ? "Unpin research" : "Pin research"}
                 aria-pressed={pinned}
-                className={`study-head-action${pinned ? " is-on" : ""}`}
-                onClick={() => void patchStudy({ pinned: !pinned })}
+                className={`research-head-action${pinned ? " is-on" : ""}`}
+                onClick={() => void patchResearch({ pinned: !pinned })}
               >
                 <PinIcon width={15} height={15} />
               </button>
@@ -420,11 +420,11 @@ export function StudyScreen({ studyId }: { studyId: string }) {
                 {({ open, toggle }) => (
                   <button
                     type="button"
-                    aria-label="Study actions"
-                    title="Study actions"
+                    aria-label="Research actions"
+                    title="Research actions"
                     aria-haspopup="menu"
                     aria-expanded={open}
-                    className="study-head-action"
+                    className="research-head-action"
                     onClick={toggle}
                   >
                     <KebabIcon width={15} height={15} />
@@ -434,16 +434,16 @@ export function StudyScreen({ studyId }: { studyId: string }) {
             </span>
           </header>
 
-          <div className="study-columns">
-            <div className="study-main">
-              {study.description && (
-                <p className="study-description">{study.description}</p>
+          <div className="research-columns">
+            <div className="research-main">
+              {research.description && (
+                <p className="research-description">{research.description}</p>
               )}
-              {actionError && <p className="study-card-note">{actionError}</p>}
+              {actionError && <p className="research-card-note">{actionError}</p>}
 
               {/* The composer opens the page's work: no hero question above it
-                  — the header already names the Study, so the box is the ask. */}
-              <section className="study-composer" aria-label="Start a task">
+                  — the header already names the Research, so the box is the ask. */}
+              <section className="research-composer" aria-label="Start a task">
                 <CliDock
                   clis={clis}
                   selectedId={selectedCliId}
@@ -465,27 +465,27 @@ export function StudyScreen({ studyId }: { studyId: string }) {
                     />
                   }
                 />
-                {sendError && <p className="study-card-note">{sendError}</p>}
+                {sendError && <p className="research-card-note">{sendError}</p>}
               </section>
 
               {/* A pinned Task reads first, in a group of its own, directly
-                  under the composer — the same shape a pinned Study takes on
-                  the Studies list. The group only exists while something is
+                  under the composer — the same shape a pinned Research takes on
+                  the Researches list. The group only exists while something is
                   pinned: an eyebrow over a list nobody has pinned anything in
                   is noise. */}
               {pinnedTasks.length > 0 && (
-                <section className="study-tasks" aria-label="Pinned">
-                  <h2 className="study-tasks-label">Pinned</h2>
+                <section className="research-tasks" aria-label="Pinned">
+                  <h2 className="research-tasks-label">Pinned</h2>
                   {pinnedTasks.map((task, i) => renderTaskRow(task, i))}
                 </section>
               )}
 
               {(restTasks.length > 0 || tasks.length === 0) && (
-                <section className="study-tasks" aria-label={restLabel}>
-                  <h2 className="study-tasks-label">{restLabel}</h2>
+                <section className="research-tasks" aria-label={restLabel}>
+                  <h2 className="research-tasks-label">{restLabel}</h2>
                   {tasks.length === 0 ? (
-                    <p className="study-tasks-empty">
-                      No tasks yet — this Study holds no work of its own.
+                    <p className="research-tasks-empty">
+                      No tasks yet — this Research holds no work of its own.
                     </p>
                   ) : (
                     restTasks.map((task, j) =>
@@ -496,34 +496,34 @@ export function StudyScreen({ studyId }: { studyId: string }) {
               )}
             </div>
 
-            <aside className="study-rail">
-              <div className="study-rail-panel">
+            <aside className="research-rail">
+              <div className="research-rail-panel">
                 <InstructionsCard
-                  value={study.agentContext ?? ""}
+                  value={research.agentContext ?? ""}
                   onSave={async (agentContext) => {
-                    await api.updateStudy(studyId, { agentContext });
+                    await api.updateResearch(researchId, { agentContext });
                     invalidate();
                   }}
                 />
 
                 <RailCard title="Memory">
-                  {/* Nothing in the contract holds a Study's accumulated
+                  {/* Nothing in the contract holds a Research's accumulated
                       memory, so the card says it is empty and offers no
                       control. */}
-                  <p className="study-card-empty">
-                    Nothing remembered — this Study has kept no notes of its
+                  <p className="research-card-empty">
+                    Nothing remembered — this Research has kept no notes of its
                     own.
                   </p>
                 </RailCard>
 
                 <RailCard title="Scientific stages">
-                  <ul className="study-stage-list">
+                  <ul className="research-stage-list">
                     {STAGES.map((stage) => (
-                      <li key={stage} className="study-stage">
-                        <span className="study-stage-label">
+                      <li key={stage} className="research-stage">
+                        <span className="research-stage-label">
                           {STAGE_LABELS[stage]}
                         </span>
-                        <span className="study-stage-count">
+                        <span className="research-stage-count">
                           {countAt(tasks, stage)}
                         </span>
                       </li>
@@ -532,10 +532,10 @@ export function StudyScreen({ studyId }: { studyId: string }) {
                 </RailCard>
 
                 <RailCard title="Files">
-                  {/* Nothing here reads a Study's artifact bytes, so the card
+                  {/* Nothing here reads a Research's artifact bytes, so the card
                       says it is empty and offers no control. */}
-                  <p className="study-card-empty">
-                    No files — nothing has been written into this Study.
+                  <p className="research-card-empty">
+                    No files — nothing has been written into this Research.
                   </p>
                 </RailCard>
               </div>
@@ -545,11 +545,11 @@ export function StudyScreen({ studyId }: { studyId: string }) {
       </div>
 
       {showEdit && (
-        <StudyFormModal
-          study={study}
+        <ResearchFormModal
+          research={research}
           onClose={() => setShowEdit(false)}
           onSubmit={async (input) => {
-            await api.updateStudy(studyId, input);
+            await api.updateResearch(researchId, input);
             setShowEdit(false);
             invalidate();
           }}
@@ -557,11 +557,11 @@ export function StudyScreen({ studyId }: { studyId: string }) {
       )}
 
       {confirmDelete && (
-        <DeleteStudyModal
-          study={study}
+        <DeleteResearchModal
+          research={research}
           taskCount={tasks.length}
           onClose={() => setConfirmDelete(false)}
-          onConfirm={deleteStudy}
+          onConfirm={deleteResearch}
         />
       )}
 
@@ -603,7 +603,7 @@ function TaskGlyph({ agent, name }: { agent?: string; name?: string }) {
   const ink = Mark && agent ? cliInk(agent) : null;
   return (
     <span
-      className="study-task-glyph"
+      className="research-task-glyph"
       // Out of the accessibility tree rather than named: this sits inside the
       // row's link, and a titled child with no readable content of its own
       // would be folded into the link's name — so the row would announce its
@@ -613,7 +613,7 @@ function TaskGlyph({ agent, name }: { agent?: string; name?: string }) {
       {...(Mark ? { "data-agent": agent, title: name } : {})}
     >
       {Mark ? (
-        <Mark className="study-task-mark" />
+        <Mark className="research-task-mark" />
       ) : (
         <Icon name="chat" size={14} />
       )}
@@ -621,7 +621,7 @@ function TaskGlyph({ agent, name }: { agent?: string; name?: string }) {
   );
 }
 
-/** How many of a Study's Tasks sit at one stage of the scientific arc. */
+/** How many of a Research's Tasks sit at one stage of the scientific arc. */
 function countAt(tasks: Task[], stage: Stage): number {
   return tasks.filter((t) => t.stage === stage).length;
 }
@@ -641,9 +641,9 @@ function RailCard({
   children: ReactNode;
 }) {
   return (
-    <section className="study-card" aria-label={title}>
-      <div className="study-card-head">
-        <h2 className="study-card-title">{title}</h2>
+    <section className="research-card" aria-label={title}>
+      <div className="research-card-head">
+        <h2 className="research-card-title">{title}</h2>
         {action}
       </div>
       {children}
@@ -652,7 +652,7 @@ function RailCard({
 }
 
 /**
- * What every agent started in this Study is told. Editable in place — a card
+ * What every agent started in this Research is told. Editable in place — a card
  * that shows a value it cannot change is worse than no card.
  */
 function InstructionsCard({
@@ -692,7 +692,7 @@ function InstructionsCard({
           <button
             type="button"
             aria-label="Edit instructions"
-            className="study-card-action"
+            className="research-card-action"
             onClick={open}
           >
             Edit
@@ -704,12 +704,12 @@ function InstructionsCard({
         <>
           <textarea
             aria-label="Instructions"
-            className="study-card-textarea"
+            className="research-card-textarea"
             rows={7}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
-          <div className="study-card-actions">
+          <div className="research-card-actions">
             <button
               type="button"
               className="btn btn--primary"
@@ -727,12 +727,12 @@ function InstructionsCard({
               Cancel
             </button>
           </div>
-          {error && <p className="study-card-note">{error}</p>}
+          {error && <p className="research-card-note">{error}</p>}
         </>
       ) : value ? (
-        <p className="study-card-prose">{value}</p>
+        <p className="research-card-prose">{value}</p>
       ) : (
-        <p className="study-card-empty">
+        <p className="research-card-empty">
           Nothing yet — agents here start with no standing context.
         </p>
       )}
@@ -740,4 +740,4 @@ function InstructionsCard({
   );
 }
 
-export default StudyScreen;
+export default ResearchScreen;

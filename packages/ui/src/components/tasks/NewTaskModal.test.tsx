@@ -24,7 +24,7 @@ it("creates a real task assigned to me and reports it via onCreated", async () =
   );
 
   const createBtn = screen.getByRole("button", { name: /Create task/i });
-  // Enabled once both the Study and the creating member's identity load.
+  // Enabled once both the Research and the creating member's identity load.
   await waitFor(() => expect(createBtn).toBeEnabled());
   await user.click(createBtn);
 
@@ -102,7 +102,7 @@ it("removes the default assignee while the picker is open", async () => {
   expect(created!.assignees).toBeUndefined();
 });
 
-it("on a fresh install with no Study to file into, still captures the Task, unfiled", async () => {
+it("on a fresh install with no Research to file into, still captures the Task, unfiled", async () => {
   const user = userEvent.setup();
   const api = createInMemoryApi(emptySeed());
   let created: Task | null = null;
@@ -124,11 +124,11 @@ it("on a fresh install with no Study to file into, still captures the Task, unfi
   await user.click(createBtn);
 
   // The end state, not the button state: a real Task in the data layer,
-  // belonging to no Study. Asserting only that Create was enabled would pass
+  // belonging to no Research. Asserting only that Create was enabled would pass
   // against a modal that enabled it and then failed the write.
   await waitFor(() => expect(created).not.toBeNull());
-  expect(created!.studyId).toBeUndefined();
+  expect(created!.researchId).toBeUndefined();
   const all = await api.listTasks();
   expect(all.map((t) => t.id)).toEqual([created!.id]);
-  expect(await api.listStudies()).toEqual([]);
+  expect(await api.listResearches()).toEqual([]);
 });

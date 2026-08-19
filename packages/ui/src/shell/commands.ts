@@ -1,4 +1,4 @@
-import { taskCode, type Study, type Task } from "@lykeion/api";
+import { taskCode, type Research, type Task } from "@lykeion/api";
 import { PRIORITY_META, TASK_STATUS_META, formatAgo } from "../lib/task-meta";
 import type { Route } from "../router";
 
@@ -21,7 +21,7 @@ export interface Preview {
   rows: PreviewRow[];
 }
 
-export type CommandKind = "study" | "task";
+export type CommandKind = "research" | "task";
 
 export interface Command {
   id: string;
@@ -34,38 +34,38 @@ export interface Command {
    * a chat mark for a Task nobody has run, which is the difference between work
    * an agent has touched and a conversation a person started.
    *
-   * Absent on a Study, which is not a thing that runs.
+   * Absent on a Research, which is not a thing that runs.
    */
   agent?: string;
   preview: Preview;
   route: Route;
 }
 
-/** A Study's Tasks, keyed by Study id. */
-export type TasksByStudy = Record<string, Task[]>;
+/** A Research's Tasks, keyed by Research id. */
+export type TasksByResearch = Record<string, Task[]>;
 
-function studyPreview(study: Study, now: number): Preview {
+function studyPreview(research: Research, now: number): Preview {
   return {
-    title: study.title,
-    subtitle: study.key,
-    rows: [{ label: "Updated", value: formatAgo(study.updatedTs, now) }],
+    title: research.title,
+    subtitle: research.key,
+    rows: [{ label: "Updated", value: formatAgo(research.updatedTs, now) }],
   };
 }
 
 /**
- * A Task, described by what tells two of them apart: which Study it belongs to,
+ * A Task, described by what tells two of them apart: which Research it belongs to,
  * where it has got to, and when it last moved.
  *
  * No assignee row, though it would belong here: naming one needs a directory of
  * lab members that the palette's index does not read, and adding that read for
  * one line of a preview would cost a round trip on every open.
  */
-function taskPreview(study: Study, task: Task, now: number): Preview {
+function taskPreview(research: Research, task: Task, now: number): Preview {
   return {
-    title: taskCode(study, task),
+    title: taskCode(research, task),
     subtitle: task.title,
     rows: [
-      { label: "Study", value: study.title },
+      { label: "Research", value: research.title },
       { label: "Status", value: TASK_STATUS_META[task.status].label },
       { label: "Priority", value: PRIORITY_META[task.priority].label },
       { label: "Updated", value: formatAgo(task.updatedTs, now) },
@@ -74,20 +74,20 @@ function taskPreview(study: Study, task: Task, now: number): Preview {
 }
 
 /**
- * What the palette can find: every Study, and every Task in them.
+ * What the palette can find: every Research, and every Task in them.
  *
  * Screens are deliberately absent. They used to be here as "Go to <section>"
  * rows, thirteen of them, and they crowded out the thing the palette is actually
- * reached for — a Task or a Study by name. The rail is how you get to a screen,
+ * reached for — a Task or a Research by name. The rail is how you get to a screen,
  * and it is always on the page; nobody opens a search box to find the Inbox.
  *
  * A Task's row leads with its code, so a researcher who knows "CMP-7" types it
- * and lands on a prefix match, and finds it without first choosing the Study
+ * and lands on a prefix match, and finds it without first choosing the Research
  * that holds it.
  */
 export function buildCommands(
-  studies: Study[],
-  tasksByStudy: TasksByStudy = {},
+  researches: Research[],
+  tasksByResearch: TasksByResearch = {},
   /**
    * Passed in rather than read off the clock. A preview that says "2d" is a
    * function of when it was asked, and a builder that reads the time itself
@@ -95,26 +95,26 @@ export function buildCommands(
    */
   now: number = Date.now() / 1000,
 ): Command[] {
-  const perStudy: Command[] = studies.map((study) => ({
-    id: `study-${study.id}`,
-    label: `Go to ${study.title}`,
-    kind: "study",
-    preview: studyPreview(study, now),
-    route: { name: "study", studyId: study.id },
+  const perResearch: Command[] = researches.map((research) => ({
+    id: `research-${research.id}`,
+    label: `Go to ${research.title}`,
+    kind: "research",
+    preview: studyPreview(research, now),
+    route: { name: "research", researchId: research.id },
   }));
   // Code first so a researcher who knows "CMP-7" types it and lands on a
   // prefix match; the title carries the rest of the query surface.
-  const perTask: Command[] = studies.flatMap((study) =>
-    (tasksByStudy[study.id] ?? []).map((task) => ({
+  const perTask: Command[] = researches.flatMap((research) =>
+    (tasksByResearch[research.id] ?? []).map((task) => ({
       id: `task-${task.id}`,
-      label: `${taskCode(study, task)} · ${task.title}`,
+      label: `${taskCode(research, task)} · ${task.title}`,
       kind: "task" as const,
       agent: task.agent,
-      preview: taskPreview(study, task, now),
-      route: { name: "task" as const, studyId: study.id, taskId: task.id },
+      preview: taskPreview(research, task, now),
+      route: { name: "task" as const, researchId: research.id, taskId: task.id },
     })),
   );
-  return [...perStudy, ...perTask];
+  return [...perResearch, ...perTask];
 }
 
 /**

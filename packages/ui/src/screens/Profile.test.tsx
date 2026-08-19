@@ -25,7 +25,7 @@ it("renders the usage dashboard with zeroed stats and both panels on a fresh cor
   // Zero figures come from real (empty) data, not invented content. The Cost
   // card sub-line is unambiguous; the "0.00M" token figure appears in several
   // places, so match it with getAllByText rather than getByText.
-  expect(screen.getByText("Across 0 studies")).toBeInTheDocument();
+  expect(screen.getByText("Across 0 researches")).toBeInTheDocument();
   expect(screen.getAllByText("0.00M").length).toBeGreaterThan(0);
 });
 

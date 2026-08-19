@@ -5,7 +5,7 @@ import type { Route } from "../../router";
 
 /**
  * The full-chat breadcrumb strip. Its geometry is `CrumbStrip`'s, shared with
- * the Study page this surface is opened from, so the trail does not move under
+ * the Research page this surface is opened from, so the trail does not move under
  * the click; what this adds is the load the strip carries — the agent the Task
  * is talking to, and the top-right menu button that toggles the Files right
  * pane.

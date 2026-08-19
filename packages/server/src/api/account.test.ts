@@ -187,12 +187,12 @@ it("still answers honestly for everything nothing writes to yet", async () => {
   addMember(store, "u_ana", "Ana", "owner", NOW);
   const api = createWorkspaceApi(depsFor(store, "u_ana", "owner"));
 
-  expect(await api.listStudies()).toEqual([]);
+  expect(await api.listResearches()).toEqual([]);
   expect(await api.listMachines()).toEqual([]);
   expect(await api.usage()).toEqual({ series: [], agents: [], users: [] });
 
   const err = await api
-    .startRun({ studyId: "s_1", taskId: "t_1", prompt: "go", options: { planMode: false } })
+    .startRun({ researchId: "s_1", taskId: "t_1", prompt: "go", options: { planMode: false } })
     .then(() => undefined, (e: unknown) => e);
   expect(isLykeionError(err) && err.code).toBe("unsupported");
 });
@@ -234,8 +234,8 @@ it("keeps an offboarded member's authorship readable", async () => {
   // The reason removal is soft. A Task they wrote must still resolve their
   // name, or the record is corrupted to reclaim a row.
   const { ownerApi, memberApi, memberId } = await lab();
-  const study = await ownerApi.createStudy({ title: "Attribution", key: "ATT" });
-  const task = await memberApi.createTask({ studyId: study.id, stage: "methods", title: "Theirs" });
+  const research = await ownerApi.createResearch({ title: "Attribution", key: "ATT" });
+  const task = await memberApi.createTask({ researchId: research.id, stage: "methods", title: "Theirs" });
   await ownerApi.removeMember(memberId);
   expect((await ownerApi.getTask(task.id)).task.createdBy).toBe(memberId);
   const still = (await ownerApi.listMembers()).find((m) => m.user.id === memberId);

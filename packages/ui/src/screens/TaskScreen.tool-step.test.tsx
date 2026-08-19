@@ -39,7 +39,7 @@ import type {
 import App from "../App";
 
 const TASK = "t_3";
-const ROUTE = `#/studies/s_cmp/tasks/${TASK}`;
+const ROUTE = `#/researches/s_cmp/tasks/${TASK}`;
 
 const freshSnapshot = (runId: string, prompt: string): RunEvent => ({
   event: "snapshot",
@@ -313,7 +313,7 @@ describe("Task transcript — tool-step cards", () => {
 
   it("keeps a completed turn's cards after the next send", async () => {
     const user = userEvent.setup();
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={createInMemoryApi()} />);
 
     // Drive one full turn in Plan mode: "Plan first" → approve the plan →
@@ -424,7 +424,7 @@ describe("Task transcript — tool-step cards", () => {
     // live rendering on "completed" made such a turn show prose live and then
     // flip to cards on the next send and again on reopen.
     const user = userEvent.setup();
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={apiWithFailedLandedRun()} />);
 
     await user.type(
@@ -637,7 +637,7 @@ describe("Task transcript refresh on landing", () => {
 
   it("shows the landed turn's card exactly once, from the refetched transcript", async () => {
     const user = userEvent.setup();
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={apiThatPersistsOnLanding()} />);
 
     await user.type(
@@ -699,7 +699,7 @@ describe("Task transcript refresh on landing", () => {
         };
       },
     };
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={api} />);
 
     await user.type(
@@ -755,7 +755,7 @@ describe("Task run strip", () => {
         };
       },
     };
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={api} />);
 
     await user.type(
@@ -779,7 +779,7 @@ describe("Task run strip", () => {
 
   it("shows no strip for a plain run with no plan steps", async () => {
     const user = userEvent.setup();
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={createInMemoryApi()} />);
 
     await user.type(
@@ -816,7 +816,7 @@ describe("Task inspector pane", () => {
   };
 
   it("stays closed until the researcher opens it", async () => {
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={apiWithTurns([TURN_WITH_ARTIFACTS])} />);
     // The transcript renders; the pane does not.
     await screen.findByTestId("conversation");
@@ -825,7 +825,7 @@ describe("Task inspector pane", () => {
 
   it("lists the conversation's own artifacts when opened", async () => {
     const user = userEvent.setup();
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={apiWithTurns([TURN_WITH_ARTIFACTS])} />);
 
     await user.click(
@@ -838,7 +838,7 @@ describe("Task inspector pane", () => {
 
   it("opens an artifact into its own tab and retains a Notebook entry point", async () => {
     const user = userEvent.setup();
-    window.location.hash = "#/studies/s_cmp/tasks/t_3";
+    window.location.hash = "#/researches/s_cmp/tasks/t_3";
     render(<App api={apiWithTurns([TURN_WITH_ARTIFACTS])} />);
 
     await user.click(

@@ -59,11 +59,11 @@ it("flushes a change recorded in a transaction that committed", () => {
   const seen: Send[] = [];
   deps.channel.subscribe(undefined, (s) => seen.push(s));
 
-  store.tx(() => record("study-created", { studyId: "s_1" }));
+  store.tx(() => record("research-created", { researchId: "s_1" }));
   flush();
 
   expect(seen).toEqual([
-    { type: "change", message: { seq: 1, kind: "study-created", payload: { studyId: "s_1" } } },
+    { type: "change", message: { seq: 1, kind: "research-created", payload: { researchId: "s_1" } } },
   ]);
 });
 
@@ -77,11 +77,11 @@ it("never flushes a change whose transaction rolled back, even though it reaches
   const seen: Send[] = [];
   deps.channel.subscribe(undefined, (s) => seen.push(s));
 
-  store.tx(() => record("study-created", { studyId: "s_kept" }));
+  store.tx(() => record("research-created", { researchId: "s_kept" }));
 
   expect(() =>
     store.tx(() => {
-      record("study-created", { studyId: "s_lost" });
+      record("research-created", { researchId: "s_lost" });
       throw new Error("boom");
     }),
   ).toThrow("boom");
@@ -89,7 +89,7 @@ it("never flushes a change whose transaction rolled back, even though it reaches
   flush();
 
   expect(seen).toEqual([
-    { type: "change", message: { seq: 1, kind: "study-created", payload: { studyId: "s_kept" } } },
+    { type: "change", message: { seq: 1, kind: "research-created", payload: { researchId: "s_kept" } } },
   ]);
 });
 
@@ -106,7 +106,7 @@ it("never flushes a rolled-back change whose sequence a later one was given", ()
 
   expect(() =>
     store.tx(() => {
-      record("study-created", { studyId: "s_lost" });
+      record("research-created", { researchId: "s_lost" });
       throw new Error("boom");
     }),
   ).toThrow("boom");
@@ -130,15 +130,15 @@ it("leaves the log itself holding only the committed row", () => {
   const deps = depsFor(store);
   const { record } = changeRecorder({ store, actorId: deps.actor.userId, now: deps.now, channel: deps.channel });
 
-  store.tx(() => record("study-created", { studyId: "s_kept" }));
+  store.tx(() => record("research-created", { researchId: "s_kept" }));
   expect(() =>
     store.tx(() => {
-      record("study-created", { studyId: "s_lost" });
+      record("research-created", { researchId: "s_lost" });
       throw new Error("boom");
     }),
   ).toThrow("boom");
 
   expect(store.all(`SELECT kind FROM change_log`).map((r) => r.kind)).toEqual([
-    "study-created",
+    "research-created",
   ]);
 });

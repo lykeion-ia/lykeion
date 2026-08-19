@@ -158,10 +158,10 @@ it("a Task names the agent of its newest turn, so a list can say what each is ta
   expect((await tasks.listTasks())[0].agent).toBe("cursor");
 });
 
-it("createTask names the unknown study rather than surfacing a raw foreign-key failure", async () => {
+it("createTask names the unknown research rather than surfacing a raw foreign-key failure", async () => {
   // `tasks.study_id` is a foreign key to `studies.id`, and this store runs
   // with `PRAGMA foreign_keys = ON`. Without a check ahead of the INSERT,
-  // an unknown studyId does not fail cleanly — it throws whatever SQLite's
+  // an unknown researchId does not fail cleanly — it throws whatever SQLite's
   // own constraint-violation error looks like, which reaches the RPC layer
   // as an uncaught exception (a 500) instead of a `not-found` a caller can
   // branch on the way `updateTask` already lets one for the same mistake.
@@ -170,13 +170,13 @@ it("createTask names the unknown study rather than surfacing a raw foreign-key f
   const tasks = tasksApi(depsFor(store));
 
   const err = await tasks
-    .createTask({ studyId: "s_nope", stage: "background", title: "Orphaned" })
+    .createTask({ researchId: "s_nope", stage: "background", title: "Orphaned" })
     .then(
       () => undefined,
       (e: unknown) => e,
     );
   expect(isLykeionError(err) && err.code).toBe("not-found");
-  expect((err as Error).message).toMatch(/no such study: s_nope/);
+  expect((err as Error).message).toMatch(/no such research: s_nope/);
 
   // And nothing was written: a failed create leaves no row a later number
   // could collide with, or a later list could turn up.

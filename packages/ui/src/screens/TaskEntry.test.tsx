@@ -25,7 +25,7 @@ import App from "../App";
 
 // A genuinely fresh (todo, never-run) task — the one that used to open on the
 // chat-entry hero; the in-review CMP-3 task the other suites use has history.
-const TODO_TASK = "#/studies/s_cmp/tasks/t_5";
+const TODO_TASK = "#/researches/s_cmp/tasks/t_5";
 
 /** Spy on every `startRun`'s `planMode`, driving the real in-memory run. */
 function planModeSpy() {

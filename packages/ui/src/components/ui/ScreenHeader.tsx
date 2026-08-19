@@ -14,7 +14,7 @@ import type { ReactNode } from "react";
 export const screenTitleClass = "text-title font-semibold text-fg";
 
 /**
- * The fixed title row every section screen uses — Studies, Groups, Experts,
+ * The fixed title row every section screen uses — Researches, Groups, Experts,
  * Skills, Connectors, My Tasks, Machines, Usage, Settings.
  *
  * This is the single definition of the header's geometry (padding, height,

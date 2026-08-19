@@ -3,7 +3,7 @@ import { cn } from "../../lib/utils";
 
 /**
  * The single primary action button — the accent "New …" / "Add …" CTA shared
- * across every screen header (Studies, Groups, Agents, Skills, Connectors,
+ * across every screen header (Researches, Groups, Agents, Skills, Connectors,
  * My Tasks). One definition keeps them identical.
  */
 export const primaryActionClass =

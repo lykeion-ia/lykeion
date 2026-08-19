@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
  * blur commits, Escape cancels, and a blank title cancels rather than blanking
  * the row (the core rejects a blank rename too).
  *
- * Shared by the sidebar's task rows and the Studies table: the blur/Escape
+ * Shared by the sidebar's task rows and the Researches table: the blur/Escape
  * race below is subtle enough that a second copy would drift out of step.
  */
 export function InlineRename({

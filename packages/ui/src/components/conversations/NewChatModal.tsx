@@ -30,14 +30,14 @@ import { cn } from "../../lib/utils";
 export function NewChatModal({
   onClose,
   onCreated,
-  defaultStudyId,
+  defaultResearchId,
   defaultTaskId,
 }: {
   onClose: () => void;
   /** The new thread, so the Inbox can select what was just opened. */
   onCreated?: (conversation: Conversation) => void;
-  defaultStudyId?: string;
-  /** Only honoured when it names a Task inside `defaultStudyId`. */
+  defaultResearchId?: string;
+  /** Only honoured when it names a Task inside `defaultResearchId`. */
   defaultTaskId?: string;
 }) {
   const api = useApi();
@@ -45,10 +45,10 @@ export function NewChatModal({
   const invalidate = useInvalidateData();
   const version = useDataVersion();
 
-  const studiesQuery = usePromise(() => api.listStudies(), [api, version]);
-  const studies = studiesQuery.data ?? [];
+  const studiesQuery = usePromise(() => api.listResearches(), [api, version]);
+  const researches = studiesQuery.data ?? [];
 
-  const [studyId, setStudyId] = useState(defaultStudyId ?? "");
+  const [researchId, setResearchId] = useState(defaultResearchId ?? "");
   const [taskId, setTaskId] = useState(defaultTaskId ?? "");
   const [title, setTitle] = useState("");
   const [participants, setParticipants] = useState<Assignee[]>([]);
@@ -56,18 +56,18 @@ export function NewChatModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // The chosen Study's Tasks. A thread is about one Task, so there is nothing
-  // to offer until a Study names some.
+  // The chosen Research's Tasks. A thread is about one Task, so there is nothing
+  // to offer until a Research names some.
   const detailQuery = usePromise(
-    () => (studyId ? api.getStudy(studyId) : Promise.resolve(null)),
-    [api, studyId, version],
+    () => (researchId ? api.getResearch(researchId) : Promise.resolve(null)),
+    [api, researchId, version],
   );
-  const study = detailQuery.data?.study;
+  const research = detailQuery.data?.research;
   const tasks: Task[] = detailQuery.data?.tasks ?? [];
   const task = tasks.find((t) => t.id === taskId);
 
-  // Changing Study invalidates the Task under it — a task id from the previous
-  // Study would submit a thread about work that lives somewhere else, which
+  // Changing Research invalidates the Task under it — a task id from the previous
+  // Research would submit a thread about work that lives somewhere else, which
   // the core refuses. Clearing it here means the researcher sees the empty
   // picker rather than that rejection.
   useEffect(() => {
@@ -107,7 +107,7 @@ export function NewChatModal({
   // first message to exist at all. The core refuses each of them, and a button
   // that submits into a refusal teaches nothing.
   const canSubmit =
-    studyId !== "" && taskId !== "" && body.trim().length > 0 && !busy;
+    researchId !== "" && taskId !== "" && body.trim().length > 0 && !busy;
 
   const submit = () => {
     if (!canSubmit) return;
@@ -115,7 +115,7 @@ export function NewChatModal({
     setError(null);
     api
       .createConversation({
-        studyId,
+        researchId,
         taskId,
         // Empty means "name it after the Task"; the contract takes an absent
         // title, not "".
@@ -168,16 +168,16 @@ export function NewChatModal({
         {/* What the thread is about, chosen before it is written: the people
             below are seeded from the Task, so the subject has to come first. */}
         <div className="grid grid-cols-2 gap-2 px-4 pb-3 pt-1">
-          <Field label="Study">
+          <Field label="Research">
             <select
-              value={studyId}
-              onChange={(e) => setStudyId(e.target.value)}
+              value={researchId}
+              onChange={(e) => setResearchId(e.target.value)}
               className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-sub text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
             >
               <option value="">
-                {studies.length === 0 ? "No studies yet" : "— Pick a study —"}
+                {researches.length === 0 ? "No researches yet" : "— Pick a research —"}
               </option>
-              {studies.map((s) => (
+              {researches.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.key} · {s.title}
                 </option>
@@ -187,20 +187,20 @@ export function NewChatModal({
           <Field label="Task">
             <select
               value={taskId}
-              disabled={studyId === ""}
+              disabled={researchId === ""}
               onChange={(e) => setTaskId(e.target.value)}
               className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-sub text-fg outline-none focus-visible:outline-none! focus:border-line-strong disabled:opacity-50"
             >
               <option value="">
-                {studyId === ""
-                  ? "Pick a study first"
+                {researchId === ""
+                  ? "Pick a research first"
                   : tasks.length === 0
-                    ? "This study holds no tasks"
+                    ? "This research holds no tasks"
                     : "— Pick a task —"}
               </option>
               {tasks.map((t) => (
                 <option key={t.id} value={t.id}>
-                  {taskCode(study, t)} · {t.title}
+                  {taskCode(research, t)} · {t.title}
                 </option>
               ))}
             </select>

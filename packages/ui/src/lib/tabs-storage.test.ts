@@ -46,11 +46,11 @@ describe("tab persistence", () => {
     );
   });
 
-  it("falls back to one Studies tab on a corrupt payload", () => {
+  it("falls back to one Researches tab on a corrupt payload", () => {
     window.localStorage.setItem(storageKey(), "{not json");
     restoreTabs();
     expect(tabsSnapshot().tabs).toHaveLength(1);
-    expect(tabsSnapshot().tabs[0].stack[0].route).toEqual({ name: "studies" });
+    expect(tabsSnapshot().tabs[0].stack[0].route).toEqual({ name: "researches" });
   });
 
   it("drops entries whose route does not round-trip", () => {
@@ -91,13 +91,13 @@ describe("tab persistence", () => {
   });
 
   it("does not hand the next person the last one's tabs", () => {
-    navigate({ name: "task", studyId: "s_1", taskId: "t_1" });
+    navigate({ name: "task", researchId: "s_1", taskId: "t_1" });
     clearStoredTabs();
 
     // Cleared, not emptied: `clearStoredTabs` resets the store, and that reset
-    // persists — so what is left on disk is one Studies tab, carrying nothing
+    // persists — so what is left on disk is one Researches tab, carrying nothing
     // of the last session.
-    expect(tabsSnapshot().tabs[0].stack[0].route).toEqual({ name: "studies" });
+    expect(tabsSnapshot().tabs[0].stack[0].route).toEqual({ name: "researches" });
     const stored = JSON.parse(window.localStorage.getItem(storageKey())!);
     expect(stored.tabs).toHaveLength(1);
     expect(JSON.stringify(stored)).not.toContain("t_1");
@@ -116,7 +116,7 @@ describe("tab persistence", () => {
         v: 1,
         activeId: "tab_1",
         tabs: [
-          { id: "tab_1", index: 0, stack: [{ route: { name: "studies" } }] },
+          { id: "tab_1", index: 0, stack: [{ route: { name: "researches" } }] },
           { id: "tab_1", index: 0, stack: [{ route: { name: "inbox" } }] },
         ],
       }),
@@ -129,7 +129,7 @@ describe("tab persistence", () => {
     // any other route: closing never empties the strip.
     setTabsState({
       tabs: [
-        { id: "dup", stack: [{ route: { name: "studies" } }], index: 0 },
+        { id: "dup", stack: [{ route: { name: "researches" } }], index: 0 },
         { id: "dup", stack: [{ route: { name: "inbox" } }], index: 0 },
       ],
       activeId: "dup",
@@ -148,8 +148,8 @@ describe("tab persistence", () => {
   });
 
   // A route missing a field stringifies that field as the literal "undefined"
-  // (`routeHash({name:"task"})` builds `#/studies/undefined/tasks/undefined`)
-  // and `parseHash` reads that back as `{name:"task", studyId:"undefined",
+  // (`routeHash({name:"task"})` builds `#/researches/undefined/tasks/undefined`)
+  // and `parseHash` reads that back as `{name:"task", researchId:"undefined",
   // taskId:"undefined"}` — same hash, different route. `roundTrips` must
   // reject it on shape, not just on hash equality.
   it("rejects a stored route missing fields, even though its hash round-trips", () => {
@@ -184,7 +184,7 @@ describe("tab persistence", () => {
             id: "tab_9",
             index: 0,
             stack: [
-              { route: { name: "task", studyId: "s_1", taskId: "t_1" } },
+              { route: { name: "task", researchId: "s_1", taskId: "t_1" } },
             ],
           },
         ],
@@ -193,7 +193,7 @@ describe("tab persistence", () => {
     restoreTabs();
     const tabs = tabsSnapshot().tabs;
     expect(tabs[0].stack.map((e) => e.route)).toEqual([
-      { name: "task", studyId: "s_1", taskId: "t_1" },
+      { name: "task", researchId: "s_1", taskId: "t_1" },
     ]);
   });
 

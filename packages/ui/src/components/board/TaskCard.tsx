@@ -1,4 +1,4 @@
-import { taskCode, type Study, type Task } from "@lykeion/api";
+import { taskCode, type Research, type Task } from "@lykeion/api";
 import { CalendarIcon, LinkIcon, PencilIcon } from "../icons";
 import { RowLink } from "../RowLink";
 import { StatusIcon } from "../StatusIcon";
@@ -10,8 +10,8 @@ import { taskRoute } from "../../lib/task-route";
 
 export interface TaskCardProps {
   task: Task;
-  /** The Task's Study, or undefined when it is unfiled. */
-  study?: Study;
+  /** The Task's Research, or undefined when it is unfiled. */
+  research?: Research;
   /** Opens the Details editor without navigating to the task. */
   onEdit?: (task: Task) => void;
 }
@@ -33,7 +33,7 @@ function MetaChip({ children }: { children: React.ReactNode }) {
  * (date · links · subtask progress) with a right-aligned assignee stack.
  * Every field is real Task data.
  */
-export function TaskCard({ task, study, onEdit }: TaskCardProps) {
+export function TaskCard({ task, research, onEdit }: TaskCardProps) {
   const labels = (task.labels ?? [])
     .map((id) => LABEL_BY_ID.get(id))
     .filter((l): l is (typeof LABELS)[number] => Boolean(l));
@@ -73,7 +73,7 @@ export function TaskCard({ task, study, onEdit }: TaskCardProps) {
           </span>
           <span className="min-w-0 flex-1">
             <span className="block font-mono text-micro leading-none text-fg-tertiary">
-              {taskCode(study, task)}
+              {taskCode(research, task)}
             </span>
             <span className="mt-1 block text-ui font-medium leading-snug text-fg">
               {task.title}

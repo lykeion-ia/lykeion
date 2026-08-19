@@ -2,7 +2,7 @@
  * The command palette against the real workbench.
  *
  * The palette finds a Task by code or title from anywhere, without first
- * choosing the Study that holds it or being assigned it. Role/text-based,
+ * choosing the Research that holds it or being assigned it. Role/text-based,
  * agnostic to the markup.
  */
 
@@ -24,9 +24,9 @@ beforeEach(() => {
   resetPageLoad();
 });
 
-/** Open the palette over the Studies list and hand back its input. */
+/** Open the palette over the Researches list and hand back its input. */
 async function openPalette(user: ReturnType<typeof userEvent.setup>) {
-  window.location.hash = "#/studies";
+  window.location.hash = "#/researches";
   render(<App api={createInMemoryApi()} />);
   await screen.findByText("Cross-modal plasticity in the brain");
   await user.keyboard("{Meta>}k{/Meta}");
@@ -60,10 +60,10 @@ describe("finding a Task from the command palette", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens a finished Task in a Study the query never names", async () => {
+  it("opens a finished Task in a Research the query never names", async () => {
     const user = userEvent.setup();
     const reference = createInMemoryApi();
-    const done = (await reference.getStudy("s_cmp")).tasks.find(
+    const done = (await reference.getResearch("s_cmp")).tasks.find(
       (t) => t.id === "t_1",
     )!;
     expect(done.status).toBe("done");
@@ -72,7 +72,7 @@ describe("finding a Task from the command palette", () => {
     const { palette, input } = await openPalette(user);
     await user.type(input, "Survey cross-modal plasticity literature");
 
-    // The Study "Cross-modal plasticity in the brain" is a competing match on
+    // The Research "Cross-modal plasticity in the brain" is a competing match on
     // those words; the exact Task title has to win.
     await user.click(within(palette).getAllByRole("option")[0]);
     expect(await screen.findByTestId("task-surface")).toBeInTheDocument();
@@ -86,7 +86,7 @@ describe("finding a Task from the command palette", () => {
    * they crowded out what the palette is actually reached for; the rail is how
    * you get to a screen, and it is always on the page.
    */
-  it("offers no screens, only Studies and their Tasks", async () => {
+  it("offers no screens, only Researches and their Tasks", async () => {
     const user = userEvent.setup();
     const { palette, input } = await openPalette(user);
     await user.type(input, "Inbox");
@@ -130,7 +130,7 @@ describe("the palette's preview pane", () => {
     expect(preview.textContent).not.toBe(before);
   });
 
-  it("describes a Study by its key and when it last moved", async () => {
+  it("describes a Research by its key and when it last moved", async () => {
     const user = userEvent.setup();
     const { palette, input } = await openPalette(user);
     await user.type(input, "Cross-modal plasticity in the brain");
@@ -182,7 +182,7 @@ describe("the palette's preview pane", () => {
 describe("the strip's plus", () => {
   it("opens the palette instead of a tab on some fixed screen", async () => {
     const user = userEvent.setup();
-    window.location.hash = "#/studies";
+    window.location.hash = "#/researches";
     render(<App api={createInMemoryApi()} />);
     await screen.findByText("Cross-modal plasticity in the brain");
     const before = tabsSnapshot().tabs.length;
@@ -198,7 +198,7 @@ describe("the strip's plus", () => {
 
   it("opens what it finds beside the current tab, not in it", async () => {
     const user = userEvent.setup();
-    window.location.hash = "#/studies";
+    window.location.hash = "#/researches";
     render(<App api={createInMemoryApi()} />);
     await screen.findByText("Cross-modal plasticity in the brain");
     const before = tabsSnapshot().tabs.length;
@@ -213,12 +213,12 @@ describe("the strip's plus", () => {
     const active = state.tabs.find((t) => t.id === state.activeId)!;
     expect(active.stack[active.index].route).toEqual({
       name: "task",
-      studyId: "s_cmp",
+      researchId: "s_cmp",
       taskId: "t_1",
     });
-    // And the tab that was active before is still on Studies.
+    // And the tab that was active before is still on Researches.
     expect(state.tabs[0].stack[state.tabs[0].index].route).toEqual({
-      name: "studies",
+      name: "researches",
     });
   });
 
@@ -245,12 +245,12 @@ describe("the kind mark", () => {
     const user = userEvent.setup();
     const api = createInMemoryApi();
     // A Task with no turns against it: `agent` is written off the newest turn.
-    const fresh = (await api.getStudy("s_cmp")).tasks.find(
+    const fresh = (await api.getResearch("s_cmp")).tasks.find(
       (t) => t.agent === undefined,
     );
     expect(fresh).toBeDefined();
 
-    window.location.hash = "#/studies";
+    window.location.hash = "#/researches";
     render(<App api={api} />);
     await screen.findByText("Cross-modal plasticity in the brain");
     await user.keyboard("{Meta>}k{/Meta}");
@@ -262,13 +262,13 @@ describe("the kind mark", () => {
     ).toBeInTheDocument();
   });
 
-  it("names a Study as a Study", async () => {
+  it("names a Research as a Research", async () => {
     const user = userEvent.setup();
     const { palette, input } = await openPalette(user);
     await user.type(input, "Cross-modal plasticity in the brain");
 
     expect(
-      within(palette).getByRole("option", { name: /Study$/ }),
+      within(palette).getByRole("option", { name: /Research$/ }),
     ).toBeInTheDocument();
   });
 });

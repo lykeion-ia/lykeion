@@ -12,7 +12,7 @@ import { createInMemoryApi } from "@lykeion/api";
 import type { LykeionApi, RunEvent, RunHandle } from "@lykeion/api";
 import App from "../App";
 
-const ROUTE = "#/studies/s_cmp/tasks/t_3";
+const ROUTE = "#/researches/s_cmp/tasks/t_3";
 
 /** A run whose subscriber count the test can watch, and whose stream the
  *  test can feed — a stop reaches the screen two ways, either from the

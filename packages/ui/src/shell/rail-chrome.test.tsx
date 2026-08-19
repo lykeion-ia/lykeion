@@ -9,7 +9,7 @@
  * tests pin the two panes to the ONE shared definition in `rail-chrome.tsx`.
  */
 
-import type { Study } from "@lykeion/api";
+import type { Research } from "@lykeion/api";
 import { createInMemoryApi, emptySeed } from "@lykeion/api";
 import { describe, expect, it, beforeEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
@@ -19,7 +19,7 @@ import { Rail } from "./Rail";
 import { TaskSidebar } from "../components/tasks/TaskSidebar";
 import { railRowClass } from "./rail-chrome";
 
-const study: Study = {
+const research: Research = {
   id: "s_1",
   key: "CMP",
   title: "Plasticity",
@@ -45,7 +45,7 @@ function renderSidebar() {
     <ApiProvider api={createInMemoryApi(emptySeed())}>
       <RouterProvider>
         <TaskSidebar
-          study={study}
+          research={research}
           filesActive={false}
           onNew={() => {}}
           onOpenFiles={() => {}}

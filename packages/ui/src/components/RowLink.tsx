@@ -17,7 +17,7 @@ interface RowLinkProps {
    * back to, so navigating the current tab to it would mean losing whatever was
    * there — and opening a second Inbox every time would be worse still, which is
    * why this activates rather than always opening. Rows INSIDE a screen (a Task
-   * in a list, a Study in a table) leave it off: following one is going deeper
+   * in a list, a Research in a table) leave it off: following one is going deeper
    * where you are, not opening somewhere else.
    */
   ownTab?: boolean;

@@ -20,13 +20,13 @@ async function makeServerApiWithFixedClock(base: number) {
   return handle.api;
 }
 
-it("puts the later of two Studies opened in one second first", async () => {
+it("puts the later of two Researches opened in one second first", async () => {
   // A real clock returns the same second for both. Without the insertion
   // sequence in the ORDER BY, the answer is whatever the page happens to
   // hold, and the assertion passes or fails by accident.
   const api = await makeServerApiWithFixedClock(1_800_000_000);
-  const first = await api.createStudy({ title: "First", key: "ONE" });
-  const second = await api.createStudy({ title: "Second", key: "TWO" });
-  const listed = await api.listStudies();
+  const first = await api.createResearch({ title: "First", key: "ONE" });
+  const second = await api.createResearch({ title: "Second", key: "TWO" });
+  const listed = await api.listResearches();
   expect(listed.map((s) => s.id)).toEqual([second.id, first.id]);
 });

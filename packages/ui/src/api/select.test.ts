@@ -8,24 +8,24 @@ describe("selectApi", () => {
   });
 
   it("boots with populated data so every screen has something to show", async () => {
-    const studies = await selectApi().api.listStudies();
-    expect(studies.length).toBeGreaterThan(0);
+    const researches = await selectApi().api.listResearches();
+    expect(researches.length).toBeGreaterThan(0);
   });
 
   it("boots blank when the seed is set to empty", async () => {
     window.history.replaceState({}, "", "/?seed=empty");
-    expect(await selectApi().api.listStudies()).toEqual([]);
+    expect(await selectApi().api.listResearches()).toEqual([]);
   });
 
-  it("stamps a Study created through its own data layer at the real present, not the seed's fixture time", async () => {
-    // `selectApi` must hand the data layer a real clock base, or every Study
+  it("stamps a Research created through its own data layer at the real present, not the seed's fixture time", async () => {
+    // `selectApi` must hand the data layer a real clock base, or every Research
     // created in the running app reads as old as the seed data instead of
     // just made. Nothing else covers that argument.
-    const study = await selectApi().api.createStudy({
+    const research = await selectApi().api.createResearch({
       title: "Live",
       key: "LIV",
     });
-    expect(formatAgo(study.createdTs)).toBe("just now");
+    expect(formatAgo(research.createdTs)).toBe("just now");
   });
 
   it("has no transport in demo mode, since there is no server to subscribe to", () => {
@@ -58,7 +58,7 @@ describe("selectApi", () => {
     try {
       const { api, transport } = selectApi(onUnauthenticated);
       await api.currentUser().catch(() => {});
-      await transport!.request("listStudies", []).catch(() => {});
+      await transport!.request("listResearches", []).catch(() => {});
       expect(onUnauthenticated).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();

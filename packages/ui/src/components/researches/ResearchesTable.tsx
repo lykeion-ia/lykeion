@@ -1,29 +1,29 @@
 import type { MouseEvent } from "react";
-import type { Study, Task } from "@lykeion/api";
+import type { Research, Task } from "@lykeion/api";
 import { RowLink } from "../RowLink";
 import { ArchiveIcon, PencilIcon, TrashIcon } from "../icons";
 import { InlineRename } from "../ui/InlineRename";
-import { deriveStudyMeta } from "../../lib/study-meta";
+import { deriveResearchMeta } from "../../lib/research-meta";
 import { formatAgo } from "../../lib/task-meta";
 import { cn } from "../../lib/utils";
 import { useDirectory } from "../../hooks/useDirectory";
 
-export interface StudiesTableProps {
-  studies: Study[];
-  tasksByStudy: Record<string, Task[]>;
+export interface ResearchesTableProps {
+  researches: Research[];
+  tasksByResearch: Record<string, Task[]>;
   /** Which row is being renamed in place, if any (owned by the screen). */
   renamingId?: string | null;
   /** Start renaming a row. Omit to hide the rename action. */
-  onStartRename?: (studyId: string) => void;
+  onStartRename?: (researchId: string) => void;
   /** Commit a rename; `title` is already trimmed and non-blank. */
-  onRename?: (studyId: string, title: string) => void;
+  onRename?: (researchId: string, title: string) => void;
   onCancelRename?: () => void;
-  /** Ask to delete a Study (the screen owns the confirm). Omit to hide it. */
-  onDelete?: (study: Study) => void;
-  /** Archive a Study out of the list. Omit to hide the action. */
-  onArchive?: (study: Study) => void;
-  /** Bring an archived Study back. Omit to hide the action. */
-  onRestore?: (study: Study) => void;
+  /** Ask to delete a Research (the screen owns the confirm). Omit to hide it. */
+  onDelete?: (research: Research) => void;
+  /** Archive a Research out of the list. Omit to hide the action. */
+  onArchive?: (research: Research) => void;
+  /** Bring an archived Research back. Omit to hide the action. */
+  onRestore?: (research: Research) => void;
 }
 
 // Column template shared by the header and every row so widths line up. The
@@ -42,9 +42,9 @@ const BADGE_CLASS =
 const GROUP_LABEL_CLASS =
   "px-3 pb-1.5 pt-4 text-meta font-medium uppercase tracking-[0.4px] text-fg-tertiary";
 
-export function StudiesTable({
-  studies,
-  tasksByStudy,
+export function ResearchesTable({
+  researches,
+  tasksByResearch,
   renamingId = null,
   onStartRename,
   onRename,
@@ -52,30 +52,30 @@ export function StudiesTable({
   onDelete,
   onArchive,
   onRestore,
-}: StudiesTableProps) {
+}: ResearchesTableProps) {
   const dir = useDirectory();
 
-  // Pinned Studies read first, in a group of their own. Within each group the
+  // Pinned Researches read first, in a group of their own. Within each group the
   // order is the one the screen handed over — filtering and sorting happened
   // before this component saw the list, and pinning must not disturb them.
-  const pinned = studies.filter((s) => s.pinned);
-  const rest = studies.filter((s) => !s.pinned);
+  const pinned = researches.filter((s) => s.pinned);
+  const rest = researches.filter((s) => !s.pinned);
 
-  const renderRow = (study: Study) => {
-    const tasks = tasksByStudy[study.id] ?? [];
-    const meta = deriveStudyMeta(study, tasks, dir);
+  const renderRow = (research: Research) => {
+    const tasks = tasksByResearch[research.id] ?? [];
+    const meta = deriveResearchMeta(research, tasks, dir);
     const progressPct =
       meta.totalCount > 0
         ? Math.round((meta.doneCount / meta.totalCount) * 100)
         : 0;
 
-    const renaming = renamingId === study.id && !!onRename;
+    const renaming = renamingId === research.id && !!onRename;
     const cells = (
       <>
         <span className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-medium text-fg">{study.title}</span>
-          <span className={BADGE_CLASS}>{study.key}</span>
-          {study.archivedTs !== undefined && (
+          <span className="truncate font-medium text-fg">{research.title}</span>
+          <span className={BADGE_CLASS}>{research.key}</span>
+          {research.archivedTs !== undefined && (
             <span className={BADGE_CLASS}>Archived</span>
           )}
         </span>
@@ -120,7 +120,7 @@ export function StudiesTable({
         </span>
 
         <span className="truncate text-fg-tertiary">
-          {formatAgo(study.createdTs)}
+          {formatAgo(research.createdTs)}
         </span>
 
         {/* Reserved for the actions, which overlay this column as a
@@ -131,7 +131,7 @@ export function StudiesTable({
 
     return (
       <div
-        key={study.id}
+        key={research.id}
         className="group relative border-b border-line-soft hover:bg-surface-2"
       >
         {renaming ? (
@@ -140,19 +140,19 @@ export function StudiesTable({
           <div className={cn(ROW_CLASS, GRID_COLS)}>
             <span className="flex min-w-0 items-center gap-2">
               <InlineRename
-                title={study.title}
-                label={`Rename ${study.title}`}
+                title={research.title}
+                label={`Rename ${research.title}`}
                 className="min-w-0 flex-1 rounded-md border border-line-strong bg-surface-2 px-1.5 py-0.5 text-ui font-medium text-fg outline-none"
-                onCommit={(next) => onRename?.(study.id, next)}
+                onCommit={(next) => onRename?.(research.id, next)}
                 onCancel={() => onCancelRename?.()}
               />
-              <span className={BADGE_CLASS}>{study.key}</span>
+              <span className={BADGE_CLASS}>{research.key}</span>
             </span>
             <span className="col-span-5" />
           </div>
         ) : (
           <RowLink
-            to={{ name: "study", studyId: study.id }}
+            to={{ name: "research", researchId: research.id }}
             className={cn(ROW_CLASS, GRID_COLS)}
           >
             {cells}
@@ -163,34 +163,34 @@ export function StudiesTable({
           <span className="absolute inset-y-0 right-3 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
             {onStartRename && (
               <RowAction
-                label={`Rename ${study.title}`}
-                onClick={() => onStartRename(study.id)}
+                label={`Rename ${research.title}`}
+                onClick={() => onStartRename(research.id)}
               >
                 <PencilIcon width={14} height={14} />
               </RowAction>
             )}
-            {study.archivedTs === undefined
+            {research.archivedTs === undefined
               ? onArchive && (
                   <RowAction
-                    label={`Archive ${study.title}`}
-                    onClick={() => onArchive(study)}
+                    label={`Archive ${research.title}`}
+                    onClick={() => onArchive(research)}
                   >
                     <ArchiveIcon width={14} height={14} />
                   </RowAction>
                 )
               : onRestore && (
                   <RowAction
-                    label={`Restore ${study.title}`}
-                    onClick={() => onRestore(study)}
+                    label={`Restore ${research.title}`}
+                    onClick={() => onRestore(research)}
                   >
                     <ArchiveIcon width={14} height={14} />
                   </RowAction>
                 )}
             {onDelete && (
               <RowAction
-                label={`Delete ${study.title}`}
+                label={`Delete ${research.title}`}
                 danger
-                onClick={() => onDelete(study)}
+                onClick={() => onDelete(research)}
               >
                 <TrashIcon width={14} height={14} />
               </RowAction>
@@ -227,7 +227,7 @@ export function StudiesTable({
           {pinned.map(renderRow)}
           {rest.length > 0 && (
             <>
-              <div className={GROUP_LABEL_CLASS}>Studies</div>
+              <div className={GROUP_LABEL_CLASS}>Researches</div>
               {rest.map(renderRow)}
             </>
           )}
@@ -267,4 +267,4 @@ function RowAction({
   );
 }
 
-export default StudiesTable;
+export default ResearchesTable;

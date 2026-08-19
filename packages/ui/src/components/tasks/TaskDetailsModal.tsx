@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   taskCode,
   type Assignee,
-  type Study,
+  type Research,
   type Subtask,
   type Task,
 } from "@lykeion/api";
@@ -32,19 +32,19 @@ import { cn } from "../../lib/utils";
  */
 export function TaskDetailsModal({
   task,
-  study,
-  studies,
+  research,
+  researches,
   onClose,
   onSaved,
 }: {
   task: Task;
-  /** The Task's Study, or undefined when it is unfiled. */
-  study?: Study;
+  /** The Task's Research, or undefined when it is unfiled. */
+  research?: Research;
   /**
-   * The Studies an unfiled Task can be filed into. Omit for a Task that
+   * The Researches an unfiled Task can be filed into. Omit for a Task that
    * already has one — filing is the only reason this modal needs the list.
    */
-  studies?: Study[];
+  researches?: Research[];
   onClose: () => void;
   onSaved?: (task: Task) => void;
 }) {
@@ -111,7 +111,7 @@ export function TaskDetailsModal({
         subtasks,
         // Omitted unless the researcher picked one: passing `undefined` leaves
         // the Task where it is, and there is no un-filing.
-        ...(fileInto ? { studyId: fileInto } : {}),
+        ...(fileInto ? { researchId: fileInto } : {}),
       })
       .then(
         (updated) => {
@@ -139,7 +139,7 @@ export function TaskDetailsModal({
       >
         <div className="flex items-center gap-2 px-4 pb-2 pt-3">
           <span className="font-mono text-meta text-fg-tertiary">
-            {taskCode(study, task)}
+            {taskCode(research, task)}
           </span>
           <span className="truncate text-ui font-medium text-fg">
             {task.title}
@@ -156,19 +156,19 @@ export function TaskDetailsModal({
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-2">
-          {/* Study — only for an unfiled Task, which is the only one that can
-              be filed. A Task that already has a Study is moved from the
-              Study's own surfaces, not from here. */}
-          {study === undefined && studies !== undefined && (
-            <Section title="Study">
+          {/* Research — only for an unfiled Task, which is the only one that can
+              be filed. A Task that already has a Research is moved from the
+              Research's own surfaces, not from here. */}
+          {research === undefined && researches !== undefined && (
+            <Section title="Research">
               <select
-                aria-label="File into a Study"
+                aria-label="File into a Research"
                 value={fileInto}
                 onChange={(e) => setFileInto(e.target.value)}
                 className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-sub text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
               >
-                <option value="">Unfiled — belongs to no Study</option>
-                {studies.map((s) => (
+                <option value="">Unfiled — belongs to no Research</option>
+                {researches.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.key} · {s.title}
                   </option>
@@ -177,7 +177,7 @@ export function TaskDetailsModal({
               <p className="mt-1.5 text-meta text-fg-tertiary">
                 Filing gives this task a code and a workspace. An unfiled task
                 can be opened and written in, but not run — a run needs a
-                Study's workspace.
+                Research's workspace.
               </p>
             </Section>
           )}

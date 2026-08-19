@@ -1,7 +1,7 @@
 import { useState } from "react";
-import type { Study, Task, TaskStatus } from "@lykeion/api";
+import type { Research, Task, TaskStatus } from "@lykeion/api";
 import { useApi, useInvalidateData } from "../../api/ApiContext";
-import { StudyFormModal } from "../studies/StudyFormModal";
+import { ResearchFormModal } from "../researches/ResearchFormModal";
 import { InlineRename } from "../ui/InlineRename";
 import { TaskRowMenu } from "./TaskRowMenu";
 import { SettingsModal } from "../settings/SettingsModal";
@@ -9,19 +9,19 @@ import { railRow, RailGlyph, RailGroupLabel } from "../../shell/rail-chrome";
 import { WorkspaceSwitcher } from "../../shell/WorkspaceSwitcher";
 
 /**
- * The Task's left-side pane — a project header (the Study), a New ·
- * Customize · Files menu, the Study's Task list, and a settings/avatar
+ * The Task's left-side pane — a project header (the Research), a New ·
+ * Customize · Files menu, the Research's Task list, and a settings/avatar
  * footer. Same width as the app nav Rail (w-56 / 224px), which it swaps with
  * via the rail FABs (the collapse button here triggers the same swap).
  *
- * One list, because there is one thing to list: every Task in the Study is a
- * chat, so navigating the Study's conversations and navigating its work are
+ * One list, because there is one thing to list: every Task in the Research is a
+ * chat, so navigating the Research's conversations and navigating its work are
  * the same act.
  *
  * Keeps `data-testid="context-rail"` so the FABs and tests keep addressing it.
  */
 export function TaskSidebar({
-  study,
+  research,
   filesActive,
   onNew,
   onOpenFiles,
@@ -33,13 +33,13 @@ export function TaskSidebar({
   onPinTask,
   onMoveTask,
   onSetTaskStatus,
-  studies,
+  researches,
 }: {
-  study: Study;
+  research: Research;
   filesActive: boolean;
   onNew: () => void;
   onOpenFiles: () => void;
-  /** The Study's Tasks, in the order they should read. */
+  /** The Research's Tasks, in the order they should read. */
   tasks: Task[];
   /** The Task on screen, drawn as the active row. */
   activeTaskId?: string;
@@ -50,13 +50,13 @@ export function TaskSidebar({
   onRenameTask?: (taskId: string, title: string) => void;
   /** Pin/unpin a Task. Omit to drop Pin from the actions menu. */
   onPinTask?: (taskId: string, pinned: boolean) => void;
-  /** File a Task under another Study. Omit to drop Move from the menu. */
-  onMoveTask?: (taskId: string, studyId: string) => void;
+  /** File a Task under another Research. Omit to drop Move from the menu. */
+  onMoveTask?: (taskId: string, researchId: string) => void;
   /** Move a Task along its lifecycle. Omit to drop Status from the actions
    *  menu. */
   onSetTaskStatus?: (taskId: string, status: TaskStatus) => void;
-  /** Every Study, as move destinations. This one is dropped from the list. */
-  studies?: Study[];
+  /** Every Research, as move destinations. This one is dropped from the list. */
+  researches?: Research[];
 }) {
   const api = useApi();
   const invalidate = useInvalidateData();
@@ -64,8 +64,8 @@ export function TaskSidebar({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Customize opens Settings over the conversation rather than navigating away.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // The project header names the Study it belongs to, so it opens that Study to
-  // be corrected — the same form, on the same record, as the Study page's own
+  // The project header names the Research it belongs to, so it opens that Research to
+  // be corrected — the same form, on the same record, as the Research page's own
   // Edit action.
   const [editOpen, setEditOpen] = useState(false);
   const pinned = tasks.filter((t) => t.pinned);
@@ -110,12 +110,12 @@ export function TaskSidebar({
             status={t.status}
             className="tsb-task-actions"
             triggerClassName="tsb-task-kebab"
-            studies={studies}
-            currentStudyId={study.id}
+            researches={researches}
+            currentResearchId={research.id}
             onRename={onRenameTask ? () => setRenamingId(t.id) : undefined}
             onPin={onPinTask ? () => onPinTask(t.id, !t.pinned) : undefined}
             onMove={
-              onMoveTask ? (studyId) => onMoveTask(t.id, studyId) : undefined
+              onMoveTask ? (researchId) => onMoveTask(t.id, researchId) : undefined
             }
             onDelete={onDeleteTask ? () => onDeleteTask(t.id) : undefined}
             onSetStatus={
@@ -137,10 +137,10 @@ export function TaskSidebar({
         <button
           type="button"
           className="tsb-project"
-          aria-label="Edit study"
+          aria-label="Edit research"
           onClick={() => setEditOpen(true)}
         >
-          <span className="tsb-project-name">{study.title}</span>
+          <span className="tsb-project-name">{research.title}</span>
           <svg width="11" height="11" viewBox="0 0 10 10" fill="none">
             <path
               d="M2.5 4 5 6.5 7.5 4"
@@ -223,7 +223,7 @@ export function TaskSidebar({
         ) : (
           <>
             {/* The Pinned group only exists while something is pinned — an
-                empty eyebrow would be noise on a fresh Study. */}
+                empty eyebrow would be noise on a fresh Research. */}
             {pinned.length > 0 && (
               <>
                 <RailGroupLabel>Pinned</RailGroupLabel>
@@ -242,11 +242,11 @@ export function TaskSidebar({
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
       {editOpen && (
-        <StudyFormModal
-          study={study}
+        <ResearchFormModal
+          research={research}
           onClose={() => setEditOpen(false)}
           onSubmit={async (input) => {
-            await api.updateStudy(study.id, input);
+            await api.updateResearch(research.id, input);
             setEditOpen(false);
             invalidate();
           }}

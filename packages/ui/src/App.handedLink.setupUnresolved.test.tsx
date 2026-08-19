@@ -28,7 +28,7 @@ it("never adopts an unresolved setup step into a tab, and leaves storage empty",
 
   // Step 99 draws nothing, so `App` falls through to the ordinary workbench
   // rather than `<SetupFlow>` — which is exactly what puts `RouterProvider`
-  // in play for this hash. Waiting for Studies proves the strip landed on
+  // in play for this hash. Waiting for Researches proves the strip landed on
   // its ordinary default rather than on a `setup` tab `Shell` has no case
   // for (and so would render blank).
   expect(await screen.findByText(CMP)).toBeInTheDocument();

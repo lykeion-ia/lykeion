@@ -1,6 +1,6 @@
 /**
  * The confirmation mechanism, tested once here so that the three dialogs
- * built on it — deleting a Study, removing a machine, deleting a Task — are
+ * built on it — deleting a Research, removing a machine, deleting a Task — are
  * free to test only the thing each of them guards.
  */
 

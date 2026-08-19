@@ -14,7 +14,7 @@ import { createInMemoryApi } from "@lykeion/api";
 import type { LykeionApi, RunEvent, RunHandle } from "@lykeion/api";
 import App from "../App";
 
-const ROUTE = "#/studies/s_cmp/tasks/t_3";
+const ROUTE = "#/researches/s_cmp/tasks/t_3";
 
 /** A run whose frames the test emits by hand — the same shape
  *  `TaskScreen.cancel.test.tsx` scripts a machine-reported ending with. */

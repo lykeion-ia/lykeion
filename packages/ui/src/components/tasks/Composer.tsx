@@ -52,9 +52,9 @@ export interface ComposerProps {
   /**
    * Controlled draft text. Supply BOTH `draft` and `onDraftChange` to make the
    * parent own the composer's text (e.g. the Task surface refilling it from
-   * an Edit action, or holding it while the Study picker is up) — the internal
+   * an Edit action, or holding it while the Research picker is up) — the internal
    * `useState` is bypassed entirely in that case. Supplying only one of the two
-   * is treated as uncontrolled, so a caller that passes neither (`StudyScreen`)
+   * is treated as uncontrolled, so a caller that passes neither (`ResearchScreen`)
    * needs no change at all.
    */
   draft?: string;
@@ -64,7 +64,7 @@ export interface ComposerProps {
    *  controlling parent can imperatively focus it (e.g. after Edit refills
    *  the draft). */
   inputRef?: RefObject<HTMLTextAreaElement | null>;
-  /** Open the Notebook rail tab (the Study's live shared kernel). When wired, a
+  /** Open the Notebook rail tab (the Research's live shared kernel). When wired, a
    *  Notebook button appears in the composer footer. */
   onOpenNotebook?: () => void;
   /** Trigger-character sources for in-composer references (`@`/`#`/`/`). Only
@@ -87,7 +87,7 @@ export interface MentionItem {
  * tasks, `/` skills.
  *
  * The SCREEN supplies `items`, because only it knows what actually exists: the
- * Task's own artifacts, the Study's other Tasks, the configured skills. This
+ * Task's own artifacts, the Research's other Tasks, the configured skills. This
  * component owns the trigger detection, the menu and the insertion, and offers a
  * trigger ONLY when its source is non-empty — so a researcher is never shown an
  * affordance that would open an empty list.
@@ -490,7 +490,7 @@ export function Composer({
             <button
               type="button"
               className="composer-icon-btn"
-              title="Notebook — the Study's shared kernels"
+              title="Notebook — the Research's shared kernels"
               aria-label="Open notebook"
               disabled={disabled}
               onClick={onOpenNotebook}

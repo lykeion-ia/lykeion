@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Study } from "@lykeion/api";
+import type { Research } from "@lykeion/api";
 import { useApi } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
 import { useRoute } from "../router";
@@ -7,9 +7,9 @@ import { Rail } from "./Rail";
 import { TabBar } from "./TabBar";
 import { RailFabs, type RailView } from "./RailFabs";
 import { CommandPalette } from "./CommandPalette";
-import { buildCommands, type TasksByStudy } from "./commands";
-import { StudiesScreen } from "../screens/StudiesScreen";
-import { StudyScreen } from "../screens/StudyScreen";
+import { buildCommands, type TasksByResearch } from "./commands";
+import { ResearchesScreen } from "../screens/ResearchesScreen";
+import { ResearchScreen } from "../screens/ResearchScreen";
 import { TaskScreen } from "../screens/TaskScreen";
 import { TasksScreen } from "../screens/TasksScreen";
 import { InboxScreen } from "../screens/InboxScreen";
@@ -20,6 +20,7 @@ import { AgentDetailScreen } from "../screens/AgentDetailScreen";
 import { MachinesScreen } from "../screens/MachinesScreen";
 import { MyTasksScreen } from "../screens/MyTasksScreen";
 import { GroupsScreen } from "../screens/GroupsScreen";
+import { ColleaguesScreen } from "../screens/ColleaguesScreen";
 import "./shell.css";
 
 /** The app frame: left Rail, top TabBar, rounded content pane, global
@@ -38,27 +39,27 @@ export function Shell() {
   // The DOM node of the Task's left-rail slot; TaskScreen portals its sidebar in.
   const [taskRailEl, setTaskRailEl] = useState<HTMLDivElement | null>(null);
   // Bumped every time the palette opens: the Shell never unmounts, so without
-  // this a Study or Task created since it mounted would be missing from the
+  // this a Research or Task created since it mounted would be missing from the
   // palette.
   const [paletteNonce, setPaletteNonce] = useState(0);
   const indexed = usePromise(async () => {
-    const studies = await api.listStudies();
-    const details = await Promise.all(studies.map((s) => api.getStudy(s.id)));
-    const tasksByStudy: TasksByStudy = {};
-    for (const d of details) tasksByStudy[d.study.id] = d.tasks;
-    return { studies, tasksByStudy };
+    const researches = await api.listResearches();
+    const details = await Promise.all(researches.map((s) => api.getResearch(s.id)));
+    const tasksByResearch: TasksByResearch = {};
+    for (const d of details) tasksByResearch[d.research.id] = d.tasks;
+    return { researches, tasksByResearch };
   }, [api, paletteNonce]);
   // Hold the last good result so a refresh doesn't blank the palette's
-  // per-Study and per-Task commands while it re-reads.
+  // per-Research and per-Task commands while it re-reads.
   const [snapshot, setSnapshot] = useState<{
-    studies: Study[];
-    tasksByStudy: TasksByStudy;
-  }>({ studies: [], tasksByStudy: {} });
+    researches: Research[];
+    tasksByResearch: TasksByResearch;
+  }>({ researches: [], tasksByResearch: {} });
   useEffect(() => {
     if (indexed.data) setSnapshot(indexed.data);
   }, [indexed.data]);
   const commands = useMemo(
-    () => buildCommands(snapshot.studies, snapshot.tasksByStudy),
+    () => buildCommands(snapshot.researches, snapshot.tasksByResearch),
     [snapshot],
   );
   /**
@@ -75,7 +76,7 @@ export function Shell() {
   /**
    * The strip's `+`. It opens the palette rather than a tab on some arbitrary
    * screen: "new tab" is a question about where to go, and answering it with
-   * Studies made the button read as a duplicate-the-current-screen control. The
+   * Researches made the button read as a duplicate-the-current-screen control. The
    * palette is also what the button in this position did before the strip
    * existed, so the gesture is unchanged from the outside.
    */
@@ -87,7 +88,7 @@ export function Shell() {
 
   // The Task page is the three-pane screen: its own pane in the left slot,
   // the FABs to swap it back for the app Rail. `screenOwnsRail` is the Task
-  // surface's own answer, and an unfiled Task says no — it has no Study, so no
+  // surface's own answer, and an unfiled Task says no — it has no Research, so no
   // Task list to put there.
   const isThreePane =
     (route.name === "task" || route.name === "unfiled-task") && screenOwnsRail;
@@ -101,7 +102,7 @@ export function Shell() {
         e.key.toLowerCase() === "k"
       ) {
         e.preventDefault();
-        // Opening refreshes the per-Study routes (see `paletteNonce`).
+        // Opening refreshes the per-Research routes (see `paletteNonce`).
         if (!paletteOpen) setPaletteNonce((n) => n + 1);
         setPaletteOpen(!paletteOpen);
       }
@@ -156,14 +157,14 @@ function ScreenSwitch({
 }) {
   const route = useRoute();
   switch (route.name) {
-    case "studies":
-      return <StudiesScreen />;
-    case "study":
-      return <StudyScreen studyId={route.studyId} />;
+    case "researches":
+      return <ResearchesScreen />;
+    case "research":
+      return <ResearchScreen researchId={route.researchId} />;
     case "task":
       return (
         <TaskScreen
-          studyId={route.studyId}
+          researchId={route.researchId}
           taskId={route.taskId}
           railView={railView}
           onOwnRail={onScreenOwnsRail}
@@ -173,8 +174,8 @@ function ScreenSwitch({
     case "tasks":
       return <TasksScreen />;
     // An unfiled Task opens the same surface a filed one does — it is the same
-    // conversation, read by task id. All its address lacks is a Study, and
-    // `TaskScreen` leaves the Study-scoped panes off when there is none.
+    // conversation, read by task id. All its address lacks is a Research, and
+    // `TaskScreen` leaves the Research-scoped panes off when there is none.
     case "unfiled-task":
       return (
         <TaskScreen
@@ -200,5 +201,7 @@ function ScreenSwitch({
       return <MyTasksScreen />;
     case "groups":
       return <GroupsScreen />;
+    case "colleagues":
+      return <ColleaguesScreen />;
   }
 }

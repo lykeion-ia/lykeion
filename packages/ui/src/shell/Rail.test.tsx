@@ -26,7 +26,7 @@ describe("Rail", () => {
       "My Tasks",
       "Groups",
       "Tasks",
-      "Studies",
+      "Researches",
       "Experts",
       "Machines",
       "Settings",

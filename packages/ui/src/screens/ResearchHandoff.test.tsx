@@ -1,5 +1,5 @@
 /**
- * Regression: the Study → Task hand-off must start the run even under
+ * Regression: the Research → Task hand-off must start the run even under
  * <React.StrictMode>'s dev double-mount (mount → simulated unmount → remount).
  *
  * `takeRun` is single-shot, so a naive hand-off effect consumes the pending run
@@ -17,13 +17,13 @@ import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
 
-// The Study chat entry (no task yet). Sending here creates a Task, navigates to
+// The Research chat entry (no task yet). Sending here creates a Task, navigates to
 // it, and hands the first prompt to TaskScreen to auto-start — the buggy path.
-const STUDY = "#/studies/s_cmp";
+const STUDY = "#/researches/s_cmp";
 
 beforeEach(cleanup);
 
-describe("Study → Task hand-off under StrictMode", () => {
+describe("Research → Task hand-off under StrictMode", () => {
   it("starts the run from the first hero message despite the double-mount", async () => {
     const user = userEvent.setup();
     window.location.hash = STUDY;

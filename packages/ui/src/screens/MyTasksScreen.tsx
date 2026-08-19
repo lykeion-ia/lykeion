@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Study, Task } from "@lykeion/api";
+import type { Research, Task } from "@lykeion/api";
 import { useApi } from "../api/ApiContext";
 import { usePromise } from "../hooks/usePromise";
 import { useDirectory } from "../hooks/useDirectory";
@@ -32,7 +32,7 @@ import { cn } from "../lib/utils";
 
 interface MyTasksData {
   tasks: Task[];
-  studyById: Record<string, Study>;
+  studyById: Record<string, Research>;
 }
 
 /** Everything assigned to me that isn't Done — a board / list view. */
@@ -50,16 +50,16 @@ export function MyTasksScreen() {
   const reload = () => setReloadKey((k) => k + 1);
 
   const q = usePromise<MyTasksData>(async () => {
-    // Archived studies included: archiving tidies the Studies list, it does
-    // not finish the work. A row whose study is missing from this map cannot
+    // Archived researches included: archiving tidies the Researches list, it does
+    // not finish the work. A row whose research is missing from this map cannot
     // render, so leaving them out would quietly drop assigned tasks that the
     // filter counts still include.
-    const [tasks, studies] = await Promise.all([
+    const [tasks, researches] = await Promise.all([
       api.myWork(),
-      api.listStudies({ includeArchived: true }),
+      api.listResearches({ includeArchived: true }),
     ]);
-    const studyById: Record<string, Study> = {};
-    for (const s of studies) studyById[s.id] = s;
+    const studyById: Record<string, Research> = {};
+    for (const s of researches) studyById[s.id] = s;
     return { tasks, studyById };
   }, [api, reloadKey]);
 
@@ -77,8 +77,8 @@ export function MyTasksScreen() {
   const dueLabel = filters.targetDate
     ? `Due ${formatTargetDate(filters.targetDate)}`
     : "Due date";
-  const editingStudy =
-    editing?.studyId !== undefined ? studyById[editing.studyId] : undefined;
+  const editingResearch =
+    editing?.researchId !== undefined ? studyById[editing.researchId] : undefined;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -194,7 +194,7 @@ export function MyTasksScreen() {
         <TaskList
           tasks={shown}
           studyById={studyById}
-          showStudy
+          showResearch
           emptyLabel="No tasks match these filters"
         />
       )}
@@ -205,13 +205,13 @@ export function MyTasksScreen() {
           onCreated={reload}
         />
       )}
-      {/* Gated on `editing` alone: an unfiled Task has no Study, and also
+      {/* Gated on `editing` alone: an unfiled Task has no Research, and also
           requiring one would make its Details silently refuse to open. */}
       {editing && (
         <TaskDetailsModal
           task={editing}
-          study={editingStudy}
-          studies={Object.values(studyById)}
+          research={editingResearch}
+          researches={Object.values(studyById)}
           onClose={() => setEditing(null)}
           onSaved={reload}
         />

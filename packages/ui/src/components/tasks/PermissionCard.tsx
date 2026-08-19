@@ -137,7 +137,9 @@ function payloadLabel(access: AccessKind): { label: string; open: boolean } {
 const ALLOW_SUFFIX: Record<PermissionScope, string> = {
   once: "once",
   conversation: "for this conversation",
-  study: "for this Study",
+  // `study` is the scope's wire name, kept because the daemon persists grants
+  // under it; the words a reader sees are the Lab's current ones.
+  study: "for this Research",
   global: "globally",
 };
 

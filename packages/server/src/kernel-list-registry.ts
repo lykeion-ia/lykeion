@@ -20,7 +20,7 @@
 const DEFAULT_TIMEOUT_MS = 2000;
 
 /** One kernel exactly as a host's own `kernel.list` describes it — every
- *  field that call reports, none of which name a machine or a Study: the
+ *  field that call reports, none of which name a machine or a Research: the
  *  host that produced this has no way to know either. */
 export interface RawKernelReport {
   id: string;

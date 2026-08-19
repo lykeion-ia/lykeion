@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ConversationDetail, Message, Study } from "@lykeion/api";
+import type { ConversationDetail, Message, Research } from "@lykeion/api";
 import { taskCode } from "@lykeion/api";
 import { useApi } from "../../api/ApiContext";
 import { usePromise } from "../../hooks/usePromise";
@@ -37,14 +37,14 @@ export function ConversationPane({
 
   // The Task's code — "CMP-3" — is how a researcher refers to the work, so the
   // thread names it rather than only its own title. Read here because the
-  // conversation carries ids, not the Study's key or the Task's number.
+  // conversation carries ids, not the Research's key or the Task's number.
   const contextQuery = usePromise(
-    () => api.getStudy(conversation.studyId),
-    [api, conversation.studyId],
+    () => api.getResearch(conversation.researchId),
+    [api, conversation.researchId],
   );
-  const study: Study | undefined = contextQuery.data?.study;
+  const research: Research | undefined = contextQuery.data?.research;
   const task = contextQuery.data?.tasks.find((t) => t.id === conversation.taskId);
-  const code = study && task ? taskCode(study, task) : undefined;
+  const code = research && task ? taskCode(research, task) : undefined;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -71,7 +71,7 @@ export function ConversationPane({
           <RowLink
             to={{
               name: "task",
-              studyId: conversation.studyId,
+              researchId: conversation.researchId,
               taskId: conversation.taskId,
             }}
             className="shrink-0 font-mono text-meta text-accent hover:underline"

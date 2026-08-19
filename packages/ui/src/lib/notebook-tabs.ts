@@ -2,8 +2,8 @@
  * The open-Notebook tabs — the inspector's own breadcrumb, one entry per Task
  * whose notebook has been opened.
  *
- * A notebook belongs to a Task, but it is read against a Study: the Tasks of
- * one Study share a workspace, and the work one of them ran is the context for
+ * A notebook belongs to a Task, but it is read against a Research: the Tasks of
+ * one Research share a workspace, and the work one of them ran is the context for
  * what the next one runs. So a notebook opened from Task A stays reachable from
  * Task B, and selecting it there shows A's ledger beside B's conversation
  * rather than navigating away from it. That is the whole difference from
@@ -16,10 +16,10 @@
 import { useSyncExternalStore } from "react";
 
 export interface NotebookTabEntry {
-  /** The Study the notebook is read under. Required, unlike a Task tab's:
+  /** The Research the notebook is read under. Required, unlike a Task tab's:
    *  the inspector exists only for a filed Task, so an unfiled Task has no
    *  notebook tab and there is no unfiled strip to model. */
-  studyId: string;
+  researchId: string;
   /** The Task that owns the notebook. There is exactly one notebook per Task,
    *  identified by the Task alone — no path, no notebook id — so this is both
    *  the identity of the tab and the argument `NotebookPanel` needs. */
@@ -46,7 +46,7 @@ const snapshot = () => tabs;
  * nothing, which is what makes this safe to call from the same handler that
  * opens the pane, on every click, without churning the strip.
  *
- * A Task moved to another Study is not reconciled here either: its notebook
+ * A Task moved to another Research is not reconciled here either: its notebook
  * leaves this strip with the Task, and `closeNotebookTab` at the move is what
  * takes it off.
  */
@@ -65,29 +65,29 @@ export function closeNotebookTab(taskId: string): void {
 }
 
 /**
- * Close every notebook belonging to a Study — what a deleted Study leaves
- * behind. Without this the inspector would keep offering ledgers whose Study no
+ * Close every notebook belonging to a Research — what a deleted Research leaves
+ * behind. Without this the inspector would keep offering ledgers whose Research no
  * longer exists to read them against.
  */
-export function closeNotebookTabsForStudy(studyId: string): void {
-  const remaining = tabs.filter((t) => t.studyId !== studyId);
+export function closeNotebookTabsForResearch(researchId: string): void {
+  const remaining = tabs.filter((t) => t.researchId !== researchId);
   if (remaining.length === tabs.length) return;
   tabs = remaining;
   emit();
 }
 
-/** The open notebooks for one Study, in open order. `undefined` is the unfiled
+/** The open notebooks for one Research, in open order. `undefined` is the unfiled
  *  Task, which has no workspace to inspect and so never has any — taken rather
  *  than refused, so the Task surface can call this before it knows whether the
  *  Task it is on is filed. */
 export function useNotebookTabs(
-  studyId: string | undefined,
+  researchId: string | undefined,
 ): NotebookTabEntry[] {
   const all = useSyncExternalStore(subscribe, snapshot, snapshot);
-  return studyId === undefined ? [] : all.filter((t) => t.studyId === studyId);
+  return researchId === undefined ? [] : all.filter((t) => t.researchId === researchId);
 }
 
-/** Non-hook read of a Study's open notebooks (for imperative close). */
-export function notebookTabsFor(studyId: string): NotebookTabEntry[] {
-  return tabs.filter((t) => t.studyId === studyId);
+/** Non-hook read of a Research's open notebooks (for imperative close). */
+export function notebookTabsFor(researchId: string): NotebookTabEntry[] {
+  return tabs.filter((t) => t.researchId === researchId);
 }

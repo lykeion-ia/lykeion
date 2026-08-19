@@ -1,5 +1,5 @@
 /**
- * Where `StudyScreen` and `TaskScreen` actually wire the composer's
+ * Where `ResearchScreen` and `TaskScreen` actually wire the composer's
  * `blocker` prop, through `useMachineBlocker`. `Composer.test.tsx` covers the
  * component's own mechanism against a bare prop; this covers the condition
  * that feeds it — `hasWorkspaceServer()`, ownership of whatever
@@ -19,7 +19,7 @@ import App from "../App";
 import { resetPageLoad } from "../lib/tabs-storage";
 import { resetTabs } from "../lib/tabs";
 
-const ROUTE = "#/studies/s_cmp/tasks/t_3";
+const ROUTE = "#/researches/s_cmp/tasks/t_3";
 
 function declareWorkspaceServer() {
   const meta = document.createElement("meta");
@@ -102,9 +102,9 @@ describe("the composer's machine notice", () => {
     expect(calls).toBe(1);
   });
 
-  it("reads listMachines once per mount on the Study surface", async () => {
+  it("reads listMachines once per mount on the Research surface", async () => {
     declareWorkspaceServer();
-    window.location.hash = "#/studies/s_cmp";
+    window.location.hash = "#/researches/s_cmp";
     const base = createInMemoryApi();
     let calls = 0;
     const api: LykeionApi = {
@@ -116,7 +116,7 @@ describe("the composer's machine notice", () => {
     };
     render(<App api={api} />);
 
-    await screen.findByTestId("study-page");
+    await screen.findByTestId("research-page");
     expect(calls).toBe(1);
   });
 });

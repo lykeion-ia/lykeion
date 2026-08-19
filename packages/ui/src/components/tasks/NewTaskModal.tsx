@@ -23,7 +23,7 @@ import { PRIORITY_ORDER } from "../../lib/task-meta";
 import { cn } from "../../lib/utils";
 
 /**
- * Create a real Task, wired to `api.createTask`: pick a Study + stage, set
+ * Create a real Task, wired to `api.createTask`: pick a Research + stage, set
  * title/description/priority, and assign people (multi). Extra fields
  * (labels, links, subtasks, target date) are edited on the task's Details
  * editor after it exists. No mock data.
@@ -31,12 +31,12 @@ import { cn } from "../../lib/utils";
 export function NewTaskModal({
   onClose,
   onCreated,
-  defaultStudyId,
+  defaultResearchId,
   defaultTitle,
 }: {
   onClose: () => void;
   onCreated?: (task: Task) => void;
-  defaultStudyId?: string;
+  defaultResearchId?: string;
   /** Seeds the title field. The researcher edits it before creating. */
   defaultTitle?: string;
 }) {
@@ -44,12 +44,12 @@ export function NewTaskModal({
   const dir = useDirectory();
   const invalidate = useInvalidateData();
   const version = useDataVersion();
-  const studiesQuery = usePromise(() => api.listStudies(), [api, version]);
-  const studies = studiesQuery.data ?? [];
+  const studiesQuery = usePromise(() => api.listResearches(), [api, version]);
+  const researches = studiesQuery.data ?? [];
   const meQuery = usePromise(() => api.currentUser(), [api]);
   const me = meQuery.data;
 
-  const [studyId, setStudyId] = useState(defaultStudyId ?? "");
+  const [researchId, setResearchId] = useState(defaultResearchId ?? "");
   const [title, setTitle] = useState(defaultTitle ?? "");
   const [description, setDescription] = useState("");
   const [stage, setStage] = useState<Stage>("background");
@@ -59,10 +59,10 @@ export function NewTaskModal({
   const [error, setError] = useState<string | null>(null);
   const seededMineRef = useRef(false);
 
-  // No Study is defaulted in. A caller that knows where the Task belongs pins
-  // it with `defaultStudyId`; a quick capture from the Rail deliberately
+  // No Research is defaulted in. A caller that knows where the Task belongs pins
+  // it with `defaultResearchId`; a quick capture from the Rail deliberately
   // creates an unfiled Task rather than silently filing it into whichever
-  // Study happens to sort first.
+  // Research happens to sort first.
 
   // Default to assigning the creating member, exactly once, as soon as their
   // identity loads. A ref (not `assignees.length`) gates this: `assignees`
@@ -100,8 +100,8 @@ export function NewTaskModal({
     setError(null);
     api
       .createTask({
-        // Empty means unfiled; the contract takes an absent `studyId`, not "".
-        studyId: studyId || undefined,
+        // Empty means unfiled; the contract takes an absent `researchId`, not "".
+        researchId: researchId || undefined,
         stage,
         title: title.trim(),
         description: description.trim() || undefined,
@@ -169,18 +169,18 @@ export function NewTaskModal({
 
         {/* properties */}
         <div className="grid grid-cols-2 gap-2 px-4 pb-3 sm:grid-cols-3">
-          <Field label="Study">
+          <Field label="Research">
             <select
-              value={studyId}
-              onChange={(e) => setStudyId(e.target.value)}
+              value={researchId}
+              onChange={(e) => setResearchId(e.target.value)}
               className="w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-sub text-fg outline-none focus-visible:outline-none! focus:border-line-strong"
             >
               <option value="">
-                {studies.length === 0
-                  ? "No studies yet — unfiled"
-                  : "— No study —"}
+                {researches.length === 0
+                  ? "No researches yet — unfiled"
+                  : "— No research —"}
               </option>
-              {studies.map((s) => (
+              {researches.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.key} · {s.title}
                 </option>

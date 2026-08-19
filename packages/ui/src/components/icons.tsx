@@ -330,6 +330,18 @@ export const TagIcon = (p: IconProps) => (
   </Base>
 );
 
+// Two people side by side, both drawn in full — Colleagues. Distinct from
+// `UsersIcon`, which Groups owns and which crops its second figure to read as
+// "a group" rather than "two people".
+export const ColleaguesIcon = (p: IconProps) => (
+  <Base {...p}>
+    <circle cx="8" cy="8" r="3" />
+    <circle cx="16.5" cy="9.5" r="2.5" />
+    <path d="M2.5 19.5a5.5 5.5 0 0 1 11 0" />
+    <path d="M15 19.5a4.5 4.5 0 0 1 6.5-4" />
+  </Base>
+);
+
 // Two-person group — "Groups" nav + empty-state glyph.
 export const UsersIcon = (p: IconProps) => (
   <Base {...p}>
@@ -385,7 +397,7 @@ export const PencilIcon = (p: IconProps) => (
   </Base>
 );
 
-// Thumbtack — "Pin"/"Unpin this Study".
+// Thumbtack — "Pin"/"Unpin this Research".
 export const PinIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M14.7 2.9 21.1 9.3l-2.4.7a3 3 0 0 0-1.5.9l-3 3.5.6 3.3-7-7 3.3.6 3.5-3a3 3 0 0 0 .9-1.5z" />
@@ -393,7 +405,7 @@ export const PinIcon = (p: IconProps) => (
   </Base>
 );
 
-// Box with a lid — "Archive"/"Restore this Study".
+// Box with a lid — "Archive"/"Restore this Research".
 export const ArchiveIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M3 6a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v2H3V6Z" />
@@ -402,7 +414,7 @@ export const ArchiveIcon = (p: IconProps) => (
   </Base>
 );
 
-// Bin with a lid — "Delete this Study".
+// Bin with a lid — "Delete this Research".
 export const TrashIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M4 7h16" />

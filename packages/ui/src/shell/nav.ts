@@ -1,6 +1,7 @@
 import type { ComponentType, SVGProps } from "react";
 import type { Route } from "../router";
 import {
+  ColleaguesIcon,
   FlaskIcon,
   InboxIcon,
   ListIcon,
@@ -30,16 +31,22 @@ export const topItems: NavEntry[] = [
 // Skills and Connectors are deliberately absent: they are configuration, not
 // lab content, and live under Settings › Capabilities.
 export const laboratoryItems: NavEntry[] = [
-  // Above Studies: the Lab's work seen flat, before it is seen by research
-  // line. It is also where unfiled Tasks live — they have no Study to be
+  // Above Researches: the Lab's work seen flat, before it is seen by research
+  // line. It is also where unfiled Tasks live — they have no Research to be
   // reached through, so this is the only surface that holds them.
   { label: "Tasks", icon: ListIcon, route: { name: "tasks" } },
-  { label: "Studies", icon: FlaskIcon, route: { name: "studies" } },
+  { label: "Researches", icon: FlaskIcon, route: { name: "researches" } },
   {
     label: "Groups",
     icon: UsersIcon,
     route: { name: "groups" },
   },
+  // The one section of the Lab that holds people rather than things. It sits
+  // under Groups because a Group is the unit those people work in, and above
+  // Experts because a colleague is who you work WITH and an Expert is what
+  // you work THROUGH. Settings had the roster before this, filed beside
+  // Storage and Credentials as though who is in the lab were configuration.
+  { label: "Colleagues", icon: ColleaguesIcon, route: { name: "colleagues" } },
   // "Experts", not "Agents": a coding agent is the thing a Task runs ON, and
   // the Lab already says "agent" for that all over the Task surface. What this
   // section holds is the specialist you compose — a persona with its own

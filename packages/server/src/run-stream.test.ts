@@ -175,7 +175,7 @@ interface RunStreamLab {
 }
 
 /** A lab with an owner, a member, a machine the owner paired and reported,
- *  a Study and Task, and a turn already started on that machine — what
+ *  a Research and Task, and a turn already started on that machine — what
  *  every test below needs before it can post or read this run's frames. */
 async function labWithRunInFlight(): Promise<RunStreamLab> {
   const server = await freshLabServer();
@@ -189,11 +189,11 @@ async function labWithRunInFlight(): Promise<RunStreamLab> {
 
   const token = await pairClaudeMachine(server.base, ownerApi);
 
-  const study = await ownerApi.createStudy({ key: "CMP", title: "Comparative" });
-  const task = await ownerApi.createTask({ studyId: study.id, stage: "background", title: "run me" });
+  const research = await ownerApi.createResearch({ key: "CMP", title: "Comparative" });
+  const task = await ownerApi.createTask({ researchId: research.id, stage: "background", title: "run me" });
 
   const { runId } = await ownerApi.startRun({
-    studyId: study.id, taskId: task.id, prompt: "go",
+    researchId: research.id, taskId: task.id, prompt: "go",
     options: { planMode: false, agent: "claude" },
   });
 

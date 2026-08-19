@@ -17,7 +17,7 @@ import { createInMemoryApi } from "@lykeion/api";
 import App from "../App";
 import { markTaskDone } from "../test/task-row-menu";
 
-const CMP3 = "#/studies/s_cmp/tasks/t_3";
+const CMP3 = "#/researches/s_cmp/tasks/t_3";
 const CMP3_TITLE = "Preprocess two-photon calcium traces";
 
 beforeEach(cleanup);

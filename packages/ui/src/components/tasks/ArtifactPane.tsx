@@ -10,18 +10,18 @@ import { CloseIcon } from "../icons";
  * viewers, which take an already-loaded blob.
  */
 export function ArtifactPane({
-  studyId,
+  researchId,
   path,
   onClose,
 }: {
-  studyId: string;
+  researchId: string;
   path: string;
   onClose?: () => void;
 }) {
   const api = useApi();
   const blob = usePromise(
-    () => api.readArtifact(studyId, path),
-    [api, studyId, path],
+    () => api.readArtifact(researchId, path),
+    [api, researchId, path],
   );
   const name = path.split("/").pop() || path;
 

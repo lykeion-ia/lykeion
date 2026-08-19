@@ -479,11 +479,11 @@ it(
       20_000,
     );
 
-    const study = await owner.api.createStudy({ key: "CMP", title: "Comparative" });
-    const task = await owner.api.createTask({ studyId: study.id, stage: "background", title: "run me" });
+    const research = await owner.api.createResearch({ key: "CMP", title: "Comparative" });
+    const task = await owner.api.createTask({ researchId: research.id, stage: "background", title: "run me" });
 
     const handle = await owner.api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "what is six times seven",
       options: { planMode: false, agent: "claude" },
@@ -520,10 +520,10 @@ it(
       "the daemon to report claude as session-ready",
       20_000,
     );
-    const study = await owner.api.createStudy({ key: "CMP", title: "Comparative" });
-    const task = await owner.api.createTask({ studyId: study.id, stage: "background", title: "run me" });
+    const research = await owner.api.createResearch({ key: "CMP", title: "Comparative" });
+    const task = await owner.api.createTask({ researchId: research.id, stage: "background", title: "run me" });
     const handle = await owner.api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "keep running while this tab detaches",
       options: { planMode: false, agent: "claude" },
@@ -640,11 +640,11 @@ onDarwin(
       "the daemon to report claude as session-ready",
       20_000,
     );
-    const study = await owner.api.createStudy({ key: "CMP", title: "Comparative" });
-    const task = await owner.api.createTask({ studyId: study.id, stage: "background", title: "run me" });
+    const research = await owner.api.createResearch({ key: "CMP", title: "Comparative" });
+    const task = await owner.api.createTask({ researchId: research.id, stage: "background", title: "run me" });
 
     const handle = await owner.api.startRun({
-      studyId: study.id,
+      researchId: research.id,
       taskId: task.id,
       prompt: "bind a name and then read it back",
       options: { planMode: false, agent: "claude" },

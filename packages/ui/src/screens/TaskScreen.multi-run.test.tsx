@@ -28,7 +28,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-const ROUTE = "#/studies/s_cmp/tasks/t_3";
+const ROUTE = "#/researches/s_cmp/tasks/t_3";
 const CMP5_TITLE = "Fit orientation tuning curves per neuron";
 
 const CLIS: AgentCli[] = [
@@ -293,7 +293,7 @@ describe("the Task page with recovered live turns", () => {
         };
       }),
     };
-    window.location.hash = "#/studies/s_cmp/tasks/t_5";
+    window.location.hash = "#/researches/s_cmp/tasks/t_5";
     render(<App api={api} />);
     expect(await screen.findByTestId("live-turn")).toHaveAttribute(
       "data-run-id",
@@ -366,7 +366,7 @@ describe("the Task page with recovered live turns", () => {
         return Promise.resolve(refreshed);
       }),
     };
-    window.location.hash = "#/studies/s_cmp/tasks/t_5";
+    window.location.hash = "#/researches/s_cmp/tasks/t_5";
     render(<App api={api} />);
     expect(await screen.findByTestId("live-turn")).toHaveAttribute(
       "data-run-id",

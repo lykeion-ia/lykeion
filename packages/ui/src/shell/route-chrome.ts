@@ -3,7 +3,7 @@
  *
  * Pure, and derived from the route alone. A tab's glyph is therefore never
  * stored — it cannot fall out of step with the route it decorates — and a label
- * is stored only where it cannot be derived, which is a Task's or a Study's
+ * is stored only where it cannot be derived, which is a Task's or a Research's
  * title. These are what the strip draws until the screen that read the subject
  * says better, and on a cold entry they are all there is.
  *
@@ -34,8 +34,8 @@ export function routeLabel(route: Route): string {
     case "task":
     case "unfiled-task":
       return "Task";
-    case "study":
-      return "Study";
+    case "research":
+      return "Research";
     // The id, not the name: the name needs a read, and a tab that filled in
     // afterwards would change under the reader for the length of one fetch.
     case "agent":
@@ -47,10 +47,10 @@ export function routeLabel(route: Route): string {
 
 export function routeGlyph(route: Route): IconType {
   switch (route.name) {
-    // A Task is read inside a Study, so both carry the Study's mark.
+    // A Task is read inside a Research, so both carry the Research's mark.
     case "task":
     case "unfiled-task":
-    case "study":
+    case "research":
       return FlaskIcon;
     // A singular route name the rail has no entry for — its entry is the
     // section, `agents`.

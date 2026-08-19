@@ -47,7 +47,7 @@ export interface MachineBlocker {
 
 /**
  * What `Composer`'s `blocker` prop should read on a screen that hosts it —
- * the one place the copy and the condition exist, so `StudyScreen` and
+ * the one place the copy and the condition exist, so `ResearchScreen` and
  * `TaskScreen` cannot drift apart on either — bundled with the machine names
  * both screens also need for `CliDock`, so `listMachines()` is read once
  * here rather than once more per screen. `ApiContext.tsx`'s `DirectoryContext`

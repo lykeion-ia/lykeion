@@ -4,7 +4,7 @@
  * `ArtifactViewer` dispatches on `contentType`.
  */
 export interface ArtifactBlob {
-  /** Workspace/Study-relative path. */
+  /** Workspace/Research-relative path. */
   path: string;
   /** MIME type inferred from the extension (e.g. `text/csv`, `image/png`). */
   contentType: string;

@@ -1,5 +1,5 @@
 import type { ComponentType, SVGProps } from "react";
-import type { Assignee, Priority, Study, Task } from "@lykeion/api";
+import type { Assignee, Priority, Research, Task } from "@lykeion/api";
 import {
   ArchiveIcon,
   CalendarIcon,
@@ -27,7 +27,7 @@ import {
   displayName,
   type Directory,
 } from "./assignee";
-import { deriveStudyMeta } from "./study-meta";
+import { deriveResearchMeta } from "./research-meta";
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 
@@ -88,21 +88,21 @@ function assigneeOptions(
 }
 
 /**
- * The option id standing for "no Study". A sentinel is needed because the
- * filter state is a list of string ids and an unfiled Task's `studyId` is
+ * The option id standing for "no Research". A sentinel is needed because the
+ * filter state is a list of string ids and an unfiled Task's `researchId` is
  * absent — there is no real id to select it by.
  */
 export const UNFILED_STUDY_ID = "__unfiled__";
 
-// Task filter set: Status, Assignee, Priority, Stage, Labels, Study, Target date.
+// Task filter set: Status, Assignee, Priority, Stage, Labels, Research, Target date.
 export function taskDimensions(
   tasks: Task[],
-  studyById: Record<string, Study>,
+  studyById: Record<string, Research>,
   dir: Directory,
 ): FilterDimension[] {
   const count = (pred: (t: Task) => boolean) => tasks.filter(pred).length;
-  const studyIds = [
-    ...new Set(tasks.map((t) => t.studyId ?? UNFILED_STUDY_ID)),
+  const researchIds = [
+    ...new Set(tasks.map((t) => t.researchId ?? UNFILED_STUDY_ID)),
   ];
   return [
     {
@@ -160,15 +160,15 @@ export function taskDimensions(
       })),
     },
     {
-      key: "study",
-      label: "Study",
+      key: "research",
+      label: "Research",
       icon: FlaskIcon,
       kind: "select",
-      options: studyIds.map((id) => ({
+      options: researchIds.map((id) => ({
         id,
         label:
           id === UNFILED_STUDY_ID ? "Unfiled" : (studyById[id]?.title ?? id),
-        count: count((t) => (t.studyId ?? UNFILED_STUDY_ID) === id),
+        count: count((t) => (t.researchId ?? UNFILED_STUDY_ID) === id),
       })),
     },
     {
@@ -189,7 +189,7 @@ export function applyTaskFilters(tasks: Task[], state: FilterState): Task[] {
     const priority = v.priority ?? [];
     const stage = v.stage ?? [];
     const labels = v.labels ?? [];
-    const study = v.study ?? [];
+    const research = v.research ?? [];
     if (status.length && !status.includes(t.status)) return false;
     if (
       assignee.length &&
@@ -200,7 +200,7 @@ export function applyTaskFilters(tasks: Task[], state: FilterState): Task[] {
     if (stage.length && !stage.includes(t.stage)) return false;
     if (labels.length && !(t.labels ?? []).some((l) => labels.includes(l)))
       return false;
-    if (study.length && !study.includes(t.studyId ?? UNFILED_STUDY_ID))
+    if (research.length && !research.includes(t.researchId ?? UNFILED_STUDY_ID))
       return false;
     if (dueBy && t.targetDate !== undefined && t.targetDate > dueBy)
       return false;
@@ -248,17 +248,17 @@ export function sortTasks(tasks: Task[], key: SortKey): Task[] {
   return arr;
 }
 
-// --- Study dimensions + apply (derived from tasks, no new Study fields) ---
+// --- Research dimensions + apply (derived from tasks, no new Research fields) ---
 
 function uniq<T>(arr: T[]): T[] {
   return [...new Set(arr)];
 }
 
 /**
- * Which shelf a Study sits on. Archived is a dimension like any other, except
+ * Which shelf a Research sits on. Archived is a dimension like any other, except
  * for its default: selecting nothing means "active only" rather than "both",
  * because a Lab's archive is meant to stay out of the way until asked for.
- * `ARCHIVED_DEFAULT` is that default, applied in `applyStudyFilters`.
+ * `ARCHIVED_DEFAULT` is that default, applied in `applyResearchFilters`.
  */
 export const ARCHIVED_OPTIONS = [
   { id: "active", label: "Active" },
@@ -267,23 +267,23 @@ export const ARCHIVED_OPTIONS = [
 
 export const ARCHIVED_DEFAULT = ["active"];
 
-function shelfOf(study: Study): string {
-  return study.archivedTs === undefined ? "active" : "archived";
+function shelfOf(research: Research): string {
+  return research.archivedTs === undefined ? "active" : "archived";
 }
 
-// Studies filter set: Stage, Priority, Status, Archived, Target date.
-// Priority/Status use the derived study meta (what the table shows);
-// Stage/Target date match over the study's tasks; Archived reads the Study's
+// Researches filter set: Stage, Priority, Status, Archived, Target date.
+// Priority/Status use the derived research meta (what the table shows);
+// Stage/Target date match over the research's tasks; Archived reads the Research's
 // own `archivedTs`. No dimension surfaces a lead avatar, so an empty directory
-// is always correct for this `deriveStudyMeta` call.
+// is always correct for this `deriveResearchMeta` call.
 export function studyDimensions(
-  studies: Study[],
-  tasksByStudy: Record<string, Task[]>,
+  researches: Research[],
+  tasksByResearch: Record<string, Task[]>,
 ): FilterDimension[] {
-  const metas = studies.map((s) =>
-    deriveStudyMeta(s, tasksByStudy[s.id] ?? [], directoryOf([])),
+  const metas = researches.map((s) =>
+    deriveResearchMeta(s, tasksByResearch[s.id] ?? [], directoryOf([])),
   );
-  const studyTasks = studies.map((s) => tasksByStudy[s.id] ?? []);
+  const studyTasks = researches.map((s) => tasksByResearch[s.id] ?? []);
   return [
     {
       key: "stage",
@@ -327,7 +327,7 @@ export function studyDimensions(
       options: ARCHIVED_OPTIONS.map((o) => ({
         id: o.id,
         label: o.label,
-        count: studies.filter((s) => shelfOf(s) === o.id).length,
+        count: researches.filter((s) => shelfOf(s) === o.id).length,
       })),
     },
     {
@@ -339,17 +339,17 @@ export function studyDimensions(
   ];
 }
 
-export function applyStudyFilters(
-  studies: Study[],
+export function applyResearchFilters(
+  researches: Research[],
   state: FilterState,
-  tasksByStudy: Record<string, Task[]>,
-): Study[] {
+  tasksByResearch: Record<string, Task[]>,
+): Research[] {
   const v = state.values;
   const dueBy = state.targetDate;
-  return studies.filter((s) => {
-    const tasks = tasksByStudy[s.id] ?? [];
+  return researches.filter((s) => {
+    const tasks = tasksByResearch[s.id] ?? [];
     // No lead avatar is read here either — same empty directory as above.
-    const m = deriveStudyMeta(s, tasks, directoryOf([]));
+    const m = deriveResearchMeta(s, tasks, directoryOf([]));
     const status = v.status ?? [];
     const priority = v.priority ?? [];
     const stage = v.stage ?? [];

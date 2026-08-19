@@ -9,9 +9,9 @@
 import { useSyncExternalStore } from "react";
 
 export interface TaskTabEntry {
-  /** The Study the tab is filed under, or absent for an unfiled Task — which
-   *  has its own strip, since it shares a breadcrumb with no Study. */
-  studyId?: string;
+  /** The Research the tab is filed under, or absent for an unfiled Task — which
+   *  has its own strip, since it shares a breadcrumb with no Research. */
+  researchId?: string;
   taskId: string;
   title: string;
 }
@@ -31,10 +31,10 @@ const snapshot = () => tabs;
 /**
  * Add a Task tab, or reconcile the one already open for it.
  *
- * A tab is keyed by its Task, not by the Study it was opened under, so the
- * Study is reconciled along with the title. Filing an unfiled Task — or
- * moving a Task between Studies — changes which strip its tab belongs to, and
- * a tab left under the Study it was opened in vanishes from the breadcrumb the
+ * A tab is keyed by its Task, not by the Research it was opened under, so the
+ * Research is reconciled along with the title. Filing an unfiled Task — or
+ * moving a Task between Researches — changes which strip its tab belongs to, and
+ * a tab left under the Research it was opened in vanishes from the breadcrumb the
  * moment the surface follows the Task to its new one.
  */
 export function openTaskTab(tab: TaskTabEntry): void {
@@ -44,11 +44,11 @@ export function openTaskTab(tab: TaskTabEntry): void {
     emit();
   } else if (
     existing.title !== tab.title ||
-    existing.studyId !== tab.studyId
+    existing.researchId !== tab.researchId
   ) {
     tabs = tabs.map((t) =>
       t.taskId === tab.taskId
-        ? { ...t, studyId: tab.studyId, title: tab.title }
+        ? { ...t, researchId: tab.researchId, title: tab.title }
         : t,
     );
     emit();
@@ -73,24 +73,24 @@ export function closeTaskTab(taskId: string): void {
 }
 
 /**
- * Close every tab belonging to a Study — what a deleted Study leaves behind.
+ * Close every tab belonging to a Research — what a deleted Research leaves behind.
  * Without this the breadcrumb would keep offering Tasks that no longer open.
  */
-export function closeTaskTabsForStudy(studyId: string): void {
-  const remaining = tabs.filter((t) => t.studyId !== studyId);
+export function closeTaskTabsForResearch(researchId: string): void {
+  const remaining = tabs.filter((t) => t.researchId !== researchId);
   if (remaining.length === tabs.length) return;
   tabs = remaining;
   emit();
 }
 
-/** The open Task tabs for one Study, in open order. `undefined` asks for the
+/** The open Task tabs for one Research, in open order. `undefined` asks for the
  *  unfiled ones, which share a strip of their own. */
-export function useTaskTabs(studyId: string | undefined): TaskTabEntry[] {
+export function useTaskTabs(researchId: string | undefined): TaskTabEntry[] {
   const all = useSyncExternalStore(subscribe, snapshot, snapshot);
-  return all.filter((t) => t.studyId === studyId);
+  return all.filter((t) => t.researchId === researchId);
 }
 
-/** Non-hook read of a Study's open tabs (for imperative close/navigation). */
-export function taskTabsFor(studyId: string | undefined): TaskTabEntry[] {
-  return tabs.filter((t) => t.studyId === studyId);
+/** Non-hook read of a Research's open tabs (for imperative close/navigation). */
+export function taskTabsFor(researchId: string | undefined): TaskTabEntry[] {
+  return tabs.filter((t) => t.researchId === researchId);
 }

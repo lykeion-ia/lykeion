@@ -155,7 +155,7 @@ async function setupOwner(base: string): Promise<string> {
 
 it("refuses an RPC call from nobody", async () => {
   const { base } = await freshServer();
-  const res = await fetch(`${base}/rpc/listStudies`, {
+  const res = await fetch(`${base}/rpc/listResearches`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ args: [] }),
@@ -286,7 +286,7 @@ it("serves the UI with the marker that tells it a server is behind it", async ()
 
 it("falls back to the UI for an unmatched path, so deep links load", async () => {
   const { base } = await freshServer();
-  const res = await fetch(`${base}/studies/s_1`);
+  const res = await fetch(`${base}/researches/s_1`);
   expect(res.status).toBe(200);
   expect(res.headers.get("content-type")).toMatch(/text\/html/);
 });
@@ -343,10 +343,10 @@ it("stamps the marker on /index.html too, not only on /", async () => {
   // A bookmark, a proxy, or a link can ask for the document by name. Serving
   // that file straight off disk hands back the unstamped copy, and a browser
   // that cannot find the marker builds the in-browser demo instead — so a
-  // researcher on their own lab's address would be shown fabricated studies
+  // researcher on their own lab's address would be shown fabricated researches
   // and lose everything they wrote on the next reload.
   const { base } = await freshServer();
-  for (const path of ["/", "/index.html", "/studies/s_1"]) {
+  for (const path of ["/", "/index.html", "/researches/s_1"]) {
     const html = await (await fetch(`${base}${path}`)).text();
     expect(html, `no marker on ${path}`).toContain(
       '<meta name="lykeion-workspace" content="1">',
@@ -447,7 +447,7 @@ it("delivers a write made through the RPC endpoint to a subscriber already on th
   const stream = openEventStream(base, cookie);
   expect(await stream.status()).toBe(200);
 
-  const created = await fetch(`${base}/rpc/createStudy`, {
+  const created = await fetch(`${base}/rpc/createResearch`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie },
     body: JSON.stringify({ args: [{ title: "Live", key: "LIV" }] }),
@@ -455,9 +455,9 @@ it("delivers a write made through the RPC endpoint to a subscriber already on th
 
   const frame = await stream.next();
   expect(frame.event).toBe("change");
-  const message = JSON.parse(frame.data) as { kind: string; payload: { studyId: string } };
-  expect(message.kind).toBe("study-created");
-  expect(message.payload.studyId).toBe(created.value.id);
+  const message = JSON.parse(frame.data) as { kind: string; payload: { researchId: string } };
+  expect(message.kind).toBe("research-created");
+  expect(message.payload.researchId).toBe(created.value.id);
 });
 
 it("replays only what a reconnecting cursor missed, not the whole log again", async () => {
@@ -476,19 +476,19 @@ it("replays only what a reconnecting cursor missed, not the whole log again", as
   // resume from — not one it had to assume.
   const early = openEventStream(base, cookie);
   expect(await early.status()).toBe(200);
-  const first = await post("createStudy", [{ title: "First", key: "FIR" }]);
+  const first = await post("createResearch", [{ title: "First", key: "FIR" }]);
   const firstFrame = await early.next();
   const firstSeq = (JSON.parse(firstFrame.data) as { seq: number }).seq;
   early.close();
 
-  const second = await post("createStudy", [{ title: "Second", key: "SEC" }]);
+  const second = await post("createResearch", [{ title: "Second", key: "SEC" }]);
 
   const resumed = openEventStream(base, cookie, firstSeq);
   const frame = await resumed.next();
-  const message = JSON.parse(frame.data) as { kind: string; payload: { studyId: string } };
-  expect(message.kind).toBe("study-created");
-  expect(message.payload.studyId).toBe(second.value.id);
-  expect(message.payload.studyId).not.toBe(first.value.id);
+  const message = JSON.parse(frame.data) as { kind: string; payload: { researchId: string } };
+  expect(message.kind).toBe("research-created");
+  expect(message.payload.researchId).toBe(second.value.id);
+  expect(message.payload.researchId).not.toBe(first.value.id);
 });
 
 it("resumes from the Last-Event-ID a reconnecting browser sends", async () => {
@@ -506,17 +506,17 @@ it("resumes from the Last-Event-ID a reconnecting browser sends", async () => {
 
   const early = openEventStream(base, cookie);
   expect(await early.status()).toBe(200);
-  await post("createStudy", [{ title: "First", key: "FIR" }]);
+  await post("createResearch", [{ title: "First", key: "FIR" }]);
   const firstSeq = (JSON.parse((await early.next()).data) as { seq: number }).seq;
   early.close();
 
-  const second = await post("createStudy", [{ title: "Second", key: "SEC" }]);
+  const second = await post("createResearch", [{ title: "Second", key: "SEC" }]);
 
   const resumed = openEventStream(base, cookie, firstSeq, "header");
   const message = JSON.parse((await resumed.next()).data) as {
-    payload: { studyId: string };
+    payload: { researchId: string };
   };
-  expect(message.payload.studyId).toBe(second.value.id);
+  expect(message.payload.researchId).toBe(second.value.id);
 });
 
 it("ends an open event stream when the server closes, rather than leaving it dangling", async () => {

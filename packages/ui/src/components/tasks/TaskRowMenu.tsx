@@ -1,4 +1,4 @@
-import type { Study, TaskStatus } from "@lykeion/api";
+import type { Research, TaskStatus } from "@lykeion/api";
 import { ActionMenu, type ActionMenuItem } from "../ui/ActionMenu";
 import { FlaskIcon, KebabIcon, PencilIcon, PinIcon, TrashIcon } from "../icons";
 import { STATUS_MENU_ICONS } from "../StatusIcon";
@@ -19,20 +19,20 @@ export interface TaskRowMenuProps {
   triggerClassName?: string;
   /** Which edge the panel hangs from. Rows sit at the right, so "end". */
   align?: "start" | "end";
-  /** Candidate destinations for a move. The Task's own Study is dropped. */
-  studies?: Study[];
-  /** The Study the Task is in now, so it never offers a move to itself. */
-  currentStudyId?: string;
+  /** Candidate destinations for a move. The Task's own Research is dropped. */
+  researches?: Research[];
+  /** The Research the Task is in now, so it never offers a move to itself. */
+  currentResearchId?: string;
   onPin?: () => void;
   onRename?: () => void;
-  onMove?: (studyId: string) => void;
+  onMove?: (researchId: string) => void;
   onDelete?: () => void;
   /** Move the Task along its lifecycle. Omitted drops the Status submenu. */
   onSetStatus?: (status: TaskStatus) => void;
 }
 
 /**
- * The per-Task kebab menu — Pin · Rename · Status · Move to study · Delete —
+ * The per-Task kebab menu — Pin · Rename · Status · Move to research · Delete —
  * shared by every surface that lists Tasks, so the same row offers the same
  * things wherever a reader meets it.
  *
@@ -53,8 +53,8 @@ export function TaskRowMenu({
   className,
   triggerClassName,
   align = "end",
-  studies,
-  currentStudyId,
+  researches,
+  currentResearchId,
   onPin,
   onRename,
   onMove,
@@ -99,20 +99,20 @@ export function TaskRowMenu({
       })),
     });
 
-  // A lab with one Study has nowhere to move a Task to, and a menu row that
+  // A lab with one Research has nowhere to move a Task to, and a menu row that
   // opens an empty flyout is worse than no row.
-  const destinations = (studies ?? []).filter((s) => s.id !== currentStudyId);
+  const destinations = (researches ?? []).filter((s) => s.id !== currentResearchId);
   if (onMove && destinations.length > 0)
     items.push({
       id: "move",
       icon: FlaskIcon,
-      label: "Move to study",
-      submenu: destinations.map((study) => ({
-        id: study.id,
+      label: "Move to research",
+      submenu: destinations.map((research) => ({
+        id: research.id,
         icon: FlaskIcon,
-        label: study.title,
-        detail: study.key,
-        onSelect: () => onMove(study.id),
+        label: research.title,
+        detail: research.key,
+        onSelect: () => onMove(research.id),
       })),
     });
 

@@ -66,7 +66,7 @@ const kernel: RunningKernel = {
   name: "main",
   language: "python",
   machineId: "rt_1",
-  studyId: "study_1",
+  researchId: "study_1",
   state: "idle",
   incarnation: 1,
   executionCount: 0,

@@ -56,7 +56,7 @@ describe("Connectors panel", () => {
 
     // Reached the way a screen is reached: from the rail, then its tab. The
     // palette used to be the way in, and no longer indexes screens at all — it
-    // holds Studies and Tasks, which is what it is opened for.
+    // holds Researches and Tasks, which is what it is opened for.
     await user.click(await screen.findByRole("link", { name: /^Settings$/i }));
     await user.click(await screen.findByRole("button", { name: "Connectors" }));
 

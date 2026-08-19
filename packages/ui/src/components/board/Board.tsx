@@ -1,10 +1,10 @@
-import type { Study, Task } from "@lykeion/api";
+import type { Research, Task } from "@lykeion/api";
 import { BoardColumn } from "./BoardColumn";
 import { STATUS_ORDER, TASK_STATUS_META } from "../../lib/task-meta";
 
 export interface BoardProps {
   tasks: Task[];
-  studyById: Record<string, Study>;
+  studyById: Record<string, Research>;
   /** Opens the New Task modal from a column's add affordance. */
   onAddTask?: () => void;
   /** Opens the Details editor for a card. */

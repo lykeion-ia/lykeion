@@ -4,7 +4,7 @@ import {
   type Assignee,
   type NewTask,
   type Priority,
-  type Study,
+  type Research,
   type Subtask,
   type Task,
   type TaskPatch,
@@ -33,7 +33,7 @@ const PRIORITIES: readonly Priority[] = [
 export interface ExportedTask {
   code: string;
   /** Absent for an unfiled Task; a row without one re-imports as unfiled. */
-  studyId?: string;
+  researchId?: string;
   stage: Task["stage"];
   title: string;
   description?: string;
@@ -61,23 +61,23 @@ export interface ParseResult {
 /** Serialize the given tasks to a pretty JSON document string. */
 export function exportTasksJson(
   tasks: Task[],
-  studyById: Record<string, Study>,
+  studyById: Record<string, Research>,
 ): string {
   const rows: ExportedTask[] = tasks.map((t) => {
-    const study = t.studyId !== undefined ? studyById[t.studyId] : undefined;
+    const research = t.researchId !== undefined ? studyById[t.researchId] : undefined;
     const row: ExportedTask = {
-      // `taskCode` covers both the unfiled case and a real Study; the fallback
-      // is only for a filed Task whose Study is missing from the map.
+      // `taskCode` covers both the unfiled case and a real Research; the fallback
+      // is only for a filed Task whose Research is missing from the map.
       code:
-        study || t.studyId === undefined
-          ? taskCode(study, t)
-          : `${t.studyId}-${t.number}`,
+        research || t.researchId === undefined
+          ? taskCode(research, t)
+          : `${t.researchId}-${t.number}`,
       stage: t.stage,
       title: t.title,
       status: t.status,
       priority: t.priority,
     };
-    if (t.studyId !== undefined) row.studyId = t.studyId;
+    if (t.researchId !== undefined) row.researchId = t.researchId;
     if (t.description) row.description = t.description;
     if (t.assignees?.length) row.assignees = [...t.assignees];
     if (t.labels?.length) row.labels = [...t.labels];
@@ -136,10 +136,10 @@ function parseSubtasks(v: unknown): Subtask[] | undefined {
 function parseRow(raw: unknown): ImportedTask | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
-  // A missing `studyId` is an unfiled Task, not a malformed row. Only the
+  // A missing `researchId` is an unfiled Task, not a malformed row. Only the
   // title and stage are structurally required.
   if (!isNonEmptyString(r.title)) return null;
-  if (r.studyId !== undefined && !isNonEmptyString(r.studyId)) return null;
+  if (r.researchId !== undefined && !isNonEmptyString(r.researchId)) return null;
   if (!STAGES.includes(r.stage as Task["stage"])) return null;
   const priority = PRIORITIES.includes(r.priority as Priority)
     ? (r.priority as Priority)
@@ -151,7 +151,7 @@ function parseRow(raw: unknown): ImportedTask | null {
     title: r.title,
     priority,
   };
-  if (isNonEmptyString(r.studyId)) create.studyId = r.studyId;
+  if (isNonEmptyString(r.researchId)) create.researchId = r.researchId;
   if (isNonEmptyString(r.description)) create.description = r.description;
   if (assignees) create.assignees = assignees;
 

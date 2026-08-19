@@ -20,7 +20,7 @@ import {
   listGrants,
   machineForTurn,
   sessionForTurn,
-  dropGrantsForStudy,
+  dropGrantsForResearch,
   dropGrantsForMachine,
 } from "./sessions";
 import type { ExecutionLogEntry, NotebookCell, RunEventFrame } from "@lykeion/api";
@@ -46,7 +46,7 @@ afterEach(() => {
 function freshTurn(
   store: Store,
   overrides: Partial<{
-    studyId: string;
+    researchId: string;
     machineId: string;
     agent: string;
     openedBy: string;
@@ -55,7 +55,7 @@ function freshTurn(
   }> = {},
 ): { sessionId: string; turnId: string } {
   const sessionId = openSession(store, {
-    studyId: overrides.studyId ?? "s_1",
+    researchId: overrides.researchId ?? "s_1",
     machineId: overrides.machineId ?? "rt_1",
     agent: overrides.agent ?? "claude",
     openedBy: overrides.openedBy ?? "u_1",
@@ -788,7 +788,7 @@ it("returns only settled Task turns with their durable sequence in transcript or
 it("settles a turn's ended_ts and status", () => {
   const store = freshStore();
   const sessionId = openSession(store, {
-    studyId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
+    researchId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
   });
   const turnId = recordTurn(store, { sessionId, taskId: "t_1", prompt: "go", startedTs: 1 });
 
@@ -803,7 +803,7 @@ it("settles a turn's ended_ts and status", () => {
 it("resolves the machine a turn's session belongs to, and nothing for an unknown turn", () => {
   const store = freshStore();
   const sessionId = openSession(store, {
-    studyId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
+    researchId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
   });
   const turnId = recordTurn(store, { sessionId, taskId: "t_1", prompt: "go", startedTs: 1 });
 
@@ -814,7 +814,7 @@ it("resolves the machine a turn's session belongs to, and nothing for an unknown
 it("appends a step to a turn's transcript, storing its input as JSON", () => {
   const store = freshStore();
   const sessionId = openSession(store, {
-    studyId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
+    researchId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
   });
   const turnId = recordTurn(store, { sessionId, taskId: "t_1", prompt: "go", startedTs: 1 });
 
@@ -829,35 +829,35 @@ it("appends a step to a turn's transcript, storing its input as JSON", () => {
   expect(JSON.parse(row.input as string)).toEqual({ path: "/a" });
 });
 
-it("grants a Study standing access to a folder on one machine, and lists it back", () => {
+it("grants a Research standing access to a folder on one machine, and lists it back", () => {
   const store = freshStore();
 
   addGrant(store, {
-    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
+    researchId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
   });
 
   expect(listGrants(store, "s_1", "rt_1")).toEqual([{ path: "/work/rna-seq", mode: "write" }]);
-  // Scoped to the (study, machine) pair the grant named — neither a
-  // different Study nor a different machine sees it.
+  // Scoped to the (research, machine) pair the grant named — neither a
+  // different Research nor a different machine sees it.
   expect(listGrants(store, "s_1", "rt_2")).toEqual([]);
   expect(listGrants(store, "s_2", "rt_1")).toEqual([]);
 });
 
-it("does not duplicate a grant already standing for the same Study, machine, path, and mode", () => {
+it("does not duplicate a grant already standing for the same Research, machine, path, and mode", () => {
   const store = freshStore();
 
   addGrant(store, {
-    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
+    researchId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
   });
   addGrant(store, {
-    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 2,
+    researchId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 2,
   });
 
   expect(listGrants(store, "s_1", "rt_1")).toEqual([{ path: "/work/rna-seq", mode: "write" }]);
   // A different mode on the same path is a different grant, not a repeat —
   // read and write are not interchangeable, so both stand.
   addGrant(store, {
-    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "read", grantedBy: "u_1", grantedTs: 3,
+    researchId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "read", grantedBy: "u_1", grantedTs: 3,
   });
   expect(listGrants(store, "s_1", "rt_1")).toEqual([
     { path: "/work/rna-seq", mode: "write" },
@@ -865,27 +865,27 @@ it("does not duplicate a grant already standing for the same Study, machine, pat
   ]);
 });
 
-it("resolves a turn's Study, machine, and opener through its session, and nothing for an unknown turn", () => {
+it("resolves a turn's Research, machine, and opener through its session, and nothing for an unknown turn", () => {
   const store = freshStore();
   const sessionId = openSession(store, {
-    studyId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
+    researchId: "s_1", machineId: "rt_1", agent: "claude", openedBy: "u_1", openedTs: 1,
   });
   const turnId = recordTurn(store, { sessionId, taskId: "t_1", prompt: "go", startedTs: 1 });
 
-  expect(sessionForTurn(store, turnId)).toEqual({ studyId: "s_1", machineId: "rt_1", openedBy: "u_1" });
+  expect(sessionForTurn(store, turnId)).toEqual({ researchId: "s_1", machineId: "rt_1", openedBy: "u_1" });
   expect(sessionForTurn(store, "run_nonexistent")).toBeUndefined();
 });
 
-it("drops every grant a Study holds, leaving another Study's alone", () => {
+it("drops every grant a Research holds, leaving another Research's alone", () => {
   const store = freshStore();
   addGrant(store, {
-    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
+    researchId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
   });
   addGrant(store, {
-    studyId: "s_2", machineId: "rt_1", path: "/work/other", mode: "read", grantedBy: "u_1", grantedTs: 1,
+    researchId: "s_2", machineId: "rt_1", path: "/work/other", mode: "read", grantedBy: "u_1", grantedTs: 1,
   });
 
-  dropGrantsForStudy(store, "s_1");
+  dropGrantsForResearch(store, "s_1");
 
   expect(listGrants(store, "s_1", "rt_1")).toEqual([]);
   expect(listGrants(store, "s_2", "rt_1")).toEqual([{ path: "/work/other", mode: "read" }]);
@@ -894,10 +894,10 @@ it("drops every grant a Study holds, leaving another Study's alone", () => {
 it("drops every grant standing on a machine, leaving another machine's alone", () => {
   const store = freshStore();
   addGrant(store, {
-    studyId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
+    researchId: "s_1", machineId: "rt_1", path: "/work/rna-seq", mode: "write", grantedBy: "u_1", grantedTs: 1,
   });
   addGrant(store, {
-    studyId: "s_1", machineId: "rt_2", path: "/work/other", mode: "read", grantedBy: "u_1", grantedTs: 1,
+    researchId: "s_1", machineId: "rt_2", path: "/work/other", mode: "read", grantedBy: "u_1", grantedTs: 1,
   });
 
   dropGrantsForMachine(store, "rt_1");

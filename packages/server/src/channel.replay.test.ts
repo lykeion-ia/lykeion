@@ -71,25 +71,25 @@ it("frames each event with its sequence as the id", async () => {
   const lab = await makeServerLab();
   labs.push(lab);
   const before = await headCursor(lab.base, lab.cookie);
-  const study = await lab.ownerApi.createStudy({ title: "Framing", key: "FRM" });
+  const research = await lab.ownerApi.createResearch({ title: "Framing", key: "FRM" });
 
   const frames = await readFrames(lab.base, lab.cookie, 1, { "last-event-id": before });
 
   expect(frames[0]).toMatch(/^id: \d+\n/);
   expect(frames[0]).toContain("event: change");
-  expect(frames[0]).toContain(study.id);
+  expect(frames[0]).toContain(research.id);
 });
 
 it("resumes from Last-Event-ID, delivering exactly what was missed", async () => {
   const lab = await makeServerLab();
   labs.push(lab);
   const before = await headCursor(lab.base, lab.cookie);
-  const first = await lab.ownerApi.createStudy({ title: "One", key: "ONE" });
+  const first = await lab.ownerApi.createResearch({ title: "One", key: "ONE" });
   const seenFirst = await readFrames(lab.base, lab.cookie, 1, { "last-event-id": before });
   const cursor = /^id: (\d+)/m.exec(seenFirst[0])![1];
 
-  const second = await lab.ownerApi.createStudy({ title: "Two", key: "TWO" });
-  const third = await lab.ownerApi.createStudy({ title: "Three", key: "THR" });
+  const second = await lab.ownerApi.createResearch({ title: "Two", key: "TWO" });
+  const third = await lab.ownerApi.createResearch({ title: "Three", key: "THR" });
 
   const resumed = await readFrames(lab.base, lab.cookie, 2, { "last-event-id": cursor });
 
@@ -105,7 +105,7 @@ it("sends resync and no change frames when the cursor has aged out", async () =>
   const lab = await makeServerLab({ changeLogRetention: 2 });
   labs.push(lab);
   for (const key of ["ONE", "TWO", "THR", "FOR", "FIV"])
-    await lab.ownerApi.createStudy({ title: key, key });
+    await lab.ownerApi.createResearch({ title: key, key });
 
   const frames = await readFrames(lab.base, lab.cookie, 1, { "last-event-id": "1" });
 

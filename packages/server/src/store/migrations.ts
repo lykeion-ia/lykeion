@@ -139,12 +139,12 @@ export const MIGRATIONS: Migration[] = [
       store.run(`CREATE INDEX tasks_by_study ON tasks(study_id)`);
       store.run(`CREATE INDEX assignees_by_ref ON task_assignees(kind, ref)`);
       // Deliberately not unique. A Task keeps its number when it is filed
-      // into a Study or moved between them, and every Study numbers from
+      // into a Research or moved between them, and every Research numbers from
       // one, so two Tasks sharing a (study_id, number) is the ordinary
       // result of filing rather than a fault to reject. What keeps a fresh
       // Task off an existing number is nextNumber inside the insert's
       // transaction; see tasks.ts. This index is here so that read, and the
-      // per-Study list, do not scan the whole table.
+      // per-Research list, do not scan the whole table.
       store.run(`CREATE INDEX tasks_number_per_study ON tasks(study_id, number)`);
       store.run(`
         CREATE TABLE change_log (
@@ -203,9 +203,9 @@ export const MIGRATIONS: Migration[] = [
   {
     version: 4,
     up(store) {
-      // Pinning a Study groups the list for whoever reads it. The column
-      // stores 0/1 and defaults to 0, so every Study that already exists
-      // reads back unpinned — `toStudy` maps 0 to an absent key, which is
+      // Pinning a Research groups the list for whoever reads it. The column
+      // stores 0/1 and defaults to 0, so every Research that already exists
+      // reads back unpinned — `toResearch` maps 0 to an absent key, which is
       // what the contract calls "not pinned".
       store.run(`ALTER TABLE studies ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
     },
@@ -284,10 +284,10 @@ export const MIGRATIONS: Migration[] = [
     version: 7,
     up(store) {
       // A session is the ACP conversation state living on one runtime for
-      // one Study and agent. It names no Task of its own — a Task's live
+      // one Research and agent. It names no Task of its own — a Task's live
       // session is found through the turn that already ties one to it,
       // which is what lets one session outlive several turns filed under
-      // different Tasks in the same Study.
+      // different Tasks in the same Research.
       store.run(`
         CREATE TABLE sessions (
           id         TEXT PRIMARY KEY,
@@ -328,8 +328,8 @@ export const MIGRATIONS: Migration[] = [
           is_error    INTEGER NOT NULL,
           seq         INTEGER NOT NULL UNIQUE
         )`);
-      // A standing grant is scoped to (study, runtime) rather than to the
-      // Study alone: the path it names only means anything on the
+      // A standing grant is scoped to (research, runtime) rather than to the
+      // Research alone: the path it names only means anything on the
       // filesystem of the machine it was granted for.
       store.run(`
         CREATE TABLE folder_grants (
@@ -424,7 +424,7 @@ export const MIGRATIONS: Migration[] = [
     up(store) {
       // Provenance is optional on the wire: NULL means an older step made no
       // claim, while 1 preserves the explicit fact that access escaped the
-      // Study workspace. False is represented by absence, as on the contract.
+      // Research workspace. False is represented by absence, as on the contract.
       store.run(`ALTER TABLE turn_steps ADD COLUMN outside_workspace INTEGER`);
     },
   },
@@ -1054,6 +1054,18 @@ export const MIGRATIONS: Migration[] = [
       // touch anything near it. Nothing referenced `workflows` by foreign
       // key, so this drops cleanly and needs no rebuild.
       store.run(`DROP TABLE IF EXISTS workflows`);
+    },
+  },
+  {
+    version: 31,
+    up(store) {
+      // A Group holds colleagues as well as Experts now. A plain add, not a
+      // rebuild: nothing about the existing columns changes, and the default
+      // gives every group written before this an honest empty list rather
+      // than a NULL that every reader would have to decode.
+      store.run(
+        `ALTER TABLE research_groups ADD COLUMN member_users TEXT NOT NULL DEFAULT '[]'`,
+      );
     },
   },
 ];
