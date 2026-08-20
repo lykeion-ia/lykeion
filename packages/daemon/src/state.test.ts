@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   labLabel,
+  labMovedTo,
   readState,
   revokedStatePath,
   setAsidePairing,
@@ -110,4 +111,36 @@ it("keeps mode 0600 even overwriting a file that already had looser permissions"
   writeState(dir, SAMPLE);
   const mode = statSync(path).mode & 0o777;
   expect(mode).toBe(0o600);
+});
+
+it("re-points a self-hosted lab at the port it actually came up on", () => {
+  // A daemon that hosts its own lab spawns it on a FREE port, chosen fresh on
+  // every start and read back from the child's own startup line. The address
+  // recorded when this machine paired is therefore stale the moment the
+  // daemon restarts — and everything this machine says to its lab goes to
+  // that address: `heartbeat`, `report`, and the declarations fetch.
+  //
+  // Nothing crashes. The daemon retries a dead port for ever, the lab never
+  // hears from the machine again, and every surface fed by those reports goes
+  // quiet — including Setup, which cannot offer to build an environment for a
+  // machine that has not said what it holds. The page says exactly that, and
+  // it reads like a UI fault rather than a daemon addressing nowhere.
+  expect(labMovedTo({ ...SAMPLE, lab: "http://127.0.0.1:61047" }, 64286)).toEqual({
+    ...SAMPLE,
+    lab: "http://127.0.0.1:64286",
+  });
+});
+
+it("leaves the state file alone when the self-hosted lab kept its port", () => {
+  // The write is what makes this durable, and a write on every start would
+  // rewrite a file holding a bearer token for no reason. `undefined` means
+  // "nothing to persist", not "no lab".
+  expect(labMovedTo({ ...SAMPLE, lab: "http://127.0.0.1:64286" }, 64286)).toBeUndefined();
+});
+
+it("has nothing to re-point when this machine has never paired", () => {
+  // A first run has no state file at all, and pairing writes the address
+  // itself a moment later. Answering with a half-made state here would put a
+  // lab address on disk with no token beside it.
+  expect(labMovedTo(undefined, 64286)).toBeUndefined();
 });

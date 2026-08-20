@@ -23,7 +23,15 @@ import {
   startLabChild,
   type LabChild,
 } from "./lab-child";
-import { labLabel, readState, revokedStatePath, setAsidePairing, type PairedState } from "./state";
+import {
+  labLabel,
+  labMovedTo,
+  readState,
+  revokedStatePath,
+  setAsidePairing,
+  writeState,
+  type PairedState,
+} from "./state";
 import { beginPairing, beginSignIn, openBrowser, PairingRefused, type PairingSession } from "./pairing";
 import { cliFingerprint, platformTag, probeAgentClis } from "./probe";
 import { kernelHostDir, probeKernelFloor, processVisibility } from "./kernel-floor";
@@ -677,6 +685,21 @@ async function runServe(config: DaemonConfig): Promise<void> {
       return;
     }
     forward = forwardTo(lab.port);
+    // Where this machine now SAYS things to its lab, as against where the
+    // front door forwards a browser. The two are the same address and only
+    // one of them was being kept current: `forward` is handed the live port
+    // above, while `machine.lab` still held the port this lab happened to
+    // take on the day this machine paired. A self-hosted lab takes a free
+    // one on every start, so that recorded address is wrong from the second
+    // run onward — and `heartbeat`, `report` and the declarations fetch all
+    // go to it. They retried a dead port for ever, the lab stopped hearing
+    // from the machine, and the notebook's Setup went quiet because a
+    // machine that has not said what it holds cannot be offered a build.
+    const moved = labMovedTo(machine, lab.port);
+    if (moved !== undefined) {
+      machine = moved;
+      writeState(config.dataDir, moved);
+    }
     out("The lab for this machine runs here, behind this daemon's own address");
   }
 

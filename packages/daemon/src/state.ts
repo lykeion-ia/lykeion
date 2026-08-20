@@ -63,6 +63,35 @@ export function readState(dir: string): PairedState | undefined {
 }
 
 /**
+ * The state to persist when a self-hosted lab came up somewhere new, or
+ * `undefined` when there is nothing to write.
+ *
+ * A daemon whose lab lives on this computer starts that lab itself, and the
+ * lab takes a FREE port — chosen fresh on every start, read back from the
+ * child's own startup line (see `startLabChild`). The address in this file
+ * was written once, when the machine paired, and every restart after that
+ * leaves it naming a port nothing is listening on.
+ *
+ * That address is not decoration: `heartbeat`, `report` and the declarations
+ * fetch all send to `machine.lab`. Pointed at a dead port they retry for
+ * ever, so the lab never hears from the machine again, `runtimes.environments`
+ * stays as it was, and every surface built on those reports goes quiet — the
+ * notebook's Setup among them, which cannot offer to build an environment for
+ * a machine that has not said what it holds. The proxy keeps working, because
+ * it is handed the live port directly, which is why the application looks
+ * healthy while the machine behind it has gone silent.
+ *
+ * Answers `undefined` rather than the same state back when the port has not
+ * moved: the write is what makes this durable, and rewriting a file holding a
+ * bearer token on every start earns nothing.
+ */
+export function labMovedTo(state: PairedState | undefined, port: number): PairedState | undefined {
+  if (state === undefined) return undefined;
+  const here = `http://127.0.0.1:${port}`;
+  return state.lab === here ? undefined : { ...state, lab: here };
+}
+
+/**
  * Holds a bearer token, so the file it lives in is written mode `0600` —
  * readable and writable by this machine's own account only. `writeFileSync`'s
  * own `mode` option is only honoured while the file is being created; a
