@@ -466,6 +466,10 @@ function stubKernelHost(
    *  before the two were told apart — so every existing caller is unchanged
    *  and a test that cares passes them separately. */
   capable: string[] = languages.map((descriptor) => descriptor.language),
+  /** What an environment of each launchable language must read beyond its own
+   *  root — the directory holding that language's driver. Defaults to nothing,
+   *  which is what a host reported before it said. */
+  environmentReads: Record<string, string[]> = {},
 ) {
   const asked: string[] = [];
   const answering: { configured?: { token?: string }; refusing: boolean } = { refusing: false };
@@ -507,7 +511,7 @@ function stubKernelHost(
   const host: KernelHost = {
     call: async (method, params) => {
       asked.push(method);
-      if (method === "host.hello") return { protocol, languages, capable };
+      if (method === "host.hello") return { protocol, languages, capable, environmentReads };
       if (method === "kernel.restart_environment") {
         environmentRestarts.push((params ?? {}) as Record<string, unknown>);
         return { restarted: [] };
@@ -6187,4 +6191,54 @@ it("carries the lab's own reason back for an add it refused", async () => {
   lab.send(decideOn("run_pkg_missing", cardsOf(lab)[0]!.id, { decision: "allow", scope: "once" }));
 
   await expect(asked).rejects.toThrow("this lab declares no environment named crispr");
+});
+
+it("grants a built environment whatever its language needs beyond its own root", async () => {
+  // A kernel is `<interpreter> <driver>`, and the driver is a file in the
+  // kernel host's own package — not in the environment the interpreter came
+  // from. The boundary is `(deny default)`, so a read set of just the
+  // environment root refuses the kernel at exec, before it writes a word to
+  // stderr. That is what "this machine's r kernel did not start", with
+  // nothing after the colon, actually was on a real machine.
+  //
+  // Python never showed it: its floor descriptor lists the driver's own
+  // directory among its reads, and a built `python` environment inherits its
+  // language's floor reads. R has no floor descriptor at all — deliberately,
+  // since it is no longer discovered from a bare `Rscript` — so an R
+  // environment's read set was its root and nothing else.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    { name: "rstats", language: "r", manager: "conda", packages: [], createdTs: 1, lockRevision: 3 },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  rEnvOnDisk(workDir, "rstats", true);
+  const kernels = stubKernelHost(
+    0,
+    PROTOCOL_VERSION,
+    // Discovered: python only — a real machine, where R is never discovered.
+    [
+      {
+        language: "python", environment: "python",
+        interpreter: "/nowhere/python/bin/python3", reads: ["/nowhere/python/base"],
+      },
+    ],
+    ["python", "r"],
+    { r: ["/nowhere/kernel-host/lykeion_kernel"] },
+  );
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_reads"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    environments: Array<{ name: string; prefix: string[] }>;
+  };
+  const r = configured.environments.find((entry) => entry.name === "rstats");
+  expect(r, "the R environment was not offered at all").toBeDefined();
+  // Rendered INTO the boundary, which is the only place it does any good.
+  expect(r!.prefix.join(" ")).toContain("/nowhere/kernel-host/lykeion_kernel");
 });

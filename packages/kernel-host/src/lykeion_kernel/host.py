@@ -87,6 +87,17 @@ def _hello(holding: Holding, _params: dict[str, Any], _place: Place | None) -> d
         # and broken the other consumer, which guards RUNNING an R cell on
         # whether this machine has a real interpreter for it.
         "capable": list(holding.registry.capable_languages),
+        # What an environment of each of those languages needs to read on top
+        # of its own root — the directory holding that language's driver.
+        # Reported because the daemon cannot know it: the driver is a file in
+        # THIS package, and the boundary it renders is `(deny default)`.
+        #
+        # Python's built environments inherited this from its floor
+        # descriptor, which lists the driver's directory among its reads. R
+        # has no floor descriptor — not discovered from a bare `Rscript`, by
+        # design — so nothing granted its driver and every R kernel died at
+        # exec with an empty error.
+        "environmentReads": holding.registry.environment_reads,
     }
 
 

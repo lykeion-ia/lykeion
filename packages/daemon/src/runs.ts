@@ -1137,6 +1137,11 @@ export function startRuns(options: {
        *  gate on a lab's declarations reads this one — see the comment
        *  where it is used. */
       capable?: string[];
+      /** What an environment of each launchable language must read on top of
+       *  its own root — the directory holding that language's driver. The
+       *  daemon cannot work this out: the driver is a file in the host's own
+       *  package, and the boundary rendered here is `(deny default)`. */
+      environmentReads?: Record<string, string[]>;
     };
     // Read rather than merely declared at both ends. The wire shapes below
     // are written twice, once here and once in the host, and this number is
@@ -1242,6 +1247,14 @@ export function startRuns(options: {
     // capability, which is today's behaviour rather than a wider one.
     const capable = new Set<string>(
       hello.capable ?? (hello.languages ?? []).map((descriptor) => descriptor.language),
+    );
+    // Absent from a host older than this field, and absent is not empty: such
+    // a host reports no R at all, so nothing reaches the composition below.
+    const environmentReads = new Map<string, string[]>(
+      Object.entries(hello.environmentReads ?? {}).filter(
+        (entry): entry is [string, string[]] =>
+          Array.isArray(entry[1]) && entry[1].every((path) => typeof path === "string"),
+      ),
     );
     // How many boundaries this machine tried to render and could not. Read
     // once at the end, and only to tell "this language is unusable" from
@@ -1487,7 +1500,16 @@ export function startRuns(options: {
           // to, AND the floor's reads for the same language: the interpreter
           // inside a venv is a link out of it, and a boundary granting only
           // the root refuses the kernel before its first instruction.
-          reads: [status.root, ...ownBase, ...(floorReads.get(declaration.language) ?? [])],
+          // The host's own driver directory among them. Python's arrives
+          // through `floorReads` — its floor descriptor lists it — and R has
+          // no floor descriptor at all, so without this an R kernel is
+          // refused at exec for reading the file it was told to run.
+          reads: [
+            status.root,
+            ...ownBase,
+            ...(floorReads.get(declaration.language) ?? []),
+            ...(environmentReads.get(declaration.language) ?? []),
+          ],
         });
         // No `default` of its own, and `place` carries over the one the
         // entry it replaces had — see the note above.

@@ -1,5 +1,6 @@
 import io
 import json
+from pathlib import Path
 import os
 import sys
 import threading
@@ -575,3 +576,35 @@ def test_an_ask_made_after_the_stream_ended_is_refused_rather_than_blocked():
 
     with pytest.raises(ValueError, match="no longer answering"):
         ask("environment.create", {"name": "crispr"})
+
+
+def test_hello_says_what_an_environment_of_each_language_must_read():
+    """The reads a kernel needs that its environment root does not contain.
+
+    A kernel is started as `<interpreter> <driver>`, and the driver is a file
+    in THIS package — not in the environment the interpreter came from. The
+    boundary is `(deny default)`, so that file has to be granted or the
+    process dies before its first instruction, with nothing on stderr to say
+    why.
+
+    Python got this for free: its floor descriptor lists the driver's own
+    directory among its reads, and a built `python` environment inherits the
+    floor's reads for its language. R has no floor descriptor at all — it is
+    deliberately no longer discovered from a bare `Rscript` — so a built R
+    environment's read set was its root and nothing else, and every R kernel
+    on a real machine failed to start.
+
+    Reported per language this host can LAUNCH rather than per language it
+    discovered, because that is the question being answered: what would an
+    environment of this language need, if one existed.
+    """
+    stdin = io.StringIO('{"id": 1, "method": "host.hello", "params": {}}\n')
+    stdout = io.StringIO()
+    serve(stdin, stdout)
+    said = json.loads(stdout.getvalue().strip())["result"]
+
+    assert set(said["environmentReads"]) == set(said["capable"])
+    for language, reads in said["environmentReads"].items():
+        assert reads, f"{language} claims to be launchable and names nothing to read"
+        for path in reads:
+            assert Path(path).is_dir(), f"{language} names {path}, which is not a directory"

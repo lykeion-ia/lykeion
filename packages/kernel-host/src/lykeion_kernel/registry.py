@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -21,7 +22,9 @@ from typing import Any, Callable, Iterator
 
 from .interpreters import Runnable, runnables
 from .kernels import Kernel, KernelIdentity
+from .kernels.python import DRIVER as PYTHON_DRIVER
 from .kernels.python import launch as launch_python
+from .kernels.r import DRIVER as R_DRIVER
 from .kernels.r import launch as launch_r
 from .overlay import (
     drop_overlay,
@@ -46,6 +49,12 @@ Launcher = Callable[
 # list of names kept beside this one, so "can be started" and "is published"
 # are one fact rather than two that can drift apart.
 LAUNCHERS: dict[str, Launcher] = {"python": launch_python, "r": launch_r}
+
+# The driver each launcher runs, by the same key. Kept beside `LAUNCHERS`
+# rather than derived from it because the two answer to one another: a
+# language that can be launched has a driver, and a boundary that does not
+# grant that driver's directory refuses the kernel before it starts.
+DRIVERS: dict[str, str] = {"python": PYTHON_DRIVER, "r": R_DRIVER}
 
 # How many readings a kernel's ring holds. See `Entry.ring` for why this many.
 RING = 8
@@ -506,6 +515,31 @@ class Registry:
         the first place.
         """
         return tuple(LAUNCHERS)
+
+    @property
+    def environment_reads(self) -> dict[str, list[str]]:
+        """What a kernel of each launchable language must read BEYOND its own
+        environment root.
+
+        A kernel is started as `<interpreter> <driver>`, and the driver is a
+        file in this package rather than in the environment the interpreter
+        came from. The daemon renders `(deny default)`, so unless that file's
+        directory is granted the process dies before its first instruction —
+        and, denied at exec, with nothing on stderr to explain it.
+
+        Python never needed this reported separately: its floor descriptor
+        already lists the driver's directory, and a built `python` environment
+        inherits its language's floor reads. R has no floor descriptor at all
+        — it is deliberately not discovered from a bare `Rscript` — so a built
+        R environment's read set was its root and nothing else, and every R
+        kernel on a real machine failed to start with an empty error.
+
+        Keyed off `LAUNCHERS`, the same live source as `capable_languages`, so
+        a language this host can launch cannot appear in one and be missing
+        from the other.
+        """
+        return {language: [str(Path(DRIVERS[language]).parent)] for language in LAUNCHERS}
+
 
     def configure_session(
         self,
