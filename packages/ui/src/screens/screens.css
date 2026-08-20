@@ -58,7 +58,7 @@
   flex-direction: column;
 }
 
-/* Breadcrumbs (study + task headers). */
+/* Breadcrumbs (research + task headers). */
 .crumb {
   color: var(--ink-subtle);
   text-decoration: none;
@@ -84,13 +84,13 @@ a.crumb:hover {
   color: var(--ink-muted);
 }
 
-/* The current (leaf) crumb — the study title on the Project page. */
+/* The current (leaf) crumb — the research title on the Project page. */
 .crumb--current {
   color: var(--ink);
   font-weight: 500;
 }
 
-/* Scientific-stage sections (and My Work's study groups). */
+/* Scientific-stage sections (and My Work's research groups). */
 .stage-header {
   display: flex;
   align-items: center;
@@ -238,12 +238,12 @@ a.crumb:hover {
 }
 
 /* ============================================================
-   The Study page — a wide main column beside a rail of cards
+   The Research page — a wide main column beside a rail of cards
    ============================================================ */
 
 /* The page scrolls as one thing: the name, the composer, the work and the rail
    move together, so the rail never slides against a frozen column. */
-.study-screen {
+.research-screen {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -253,9 +253,9 @@ a.crumb:hover {
    outer edge is set by the page rather than by however wide the screen is. The
    two track widths are named here because the head, which sits outside the
    grid, has to measure itself against the same columns. */
-.study-page {
-  --study-rail: 340px;
-  --study-gutter: 40px;
+.research-page {
+  --research-rail: 340px;
+  --research-gutter: 40px;
   width: 100%;
   max-width: 1160px;
   margin-inline: auto;
@@ -265,28 +265,28 @@ a.crumb:hover {
 /* The columns begin below the name, so the rail's top edge is level with the
    CLI dock that opens the composer — the rail stands beside the work, not
    beside the title. `align-items: start` lets it be as tall as its contents. */
-.study-columns {
+.research-columns {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--study-rail);
+  grid-template-columns: minmax(0, 1fr) var(--research-rail);
   align-items: start;
-  gap: var(--study-gutter);
+  gap: var(--research-gutter);
 }
 
-.study-main {
+.research-main {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-/* The name, and what can be done to the Study, on one row. The key is not
+/* The name, and what can be done to the Research, on one row. The key is not
    repeated here — the page was reached by it, so printing it again says
    nothing. The head's BOX runs the page's full measure, across the rail's
-   column too, so the Study's name sits above everything the page holds rather
+   column too, so the Research's name sits above everything the page holds rather
    than beside one part.
 
    Its content, though, is centred on the main column: the right padding
    reserves the rail's track and the gutter, which leaves a content box exactly
-   as wide as `.study-main` — so the name lands on the composer's axis, the
+   as wide as `.research-main` — so the name lands on the composer's axis, the
    same line the description below it centres on. Centring on the head's own
    measure instead would sit the name half the rail's width to the right of
    everything it heads.
@@ -298,19 +298,19 @@ a.crumb:hover {
 
    The description is NOT here: it opens the main column instead, so that it
    and the rail's panel begin on the same line. */
-.study-head {
+.research-head {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding-right: calc(var(--study-rail) + var(--study-gutter));
+  padding-right: calc(var(--research-rail) + var(--research-gutter));
   margin-bottom: 18px;
 }
 
-/* An archived Study still opens, so its page says so rather than pretending
+/* An archived Research still opens, so its page says so rather than pretending
    otherwise — the same quiet marker the Studies table uses. */
-.study-archived {
+.research-archived {
   flex-shrink: 0;
   border: 1px solid var(--hairline);
   border-radius: 4px;
@@ -322,8 +322,8 @@ a.crumb:hover {
 
 /* Pin and the "…" menu, pushed to the far edge of the name's row. Out of the
    flow so the name centres on the main column rather than on whatever the
-   controls leave behind — see `.study-head`. */
-.study-head-actions {
+   controls leave behind — see `.research-head`. */
+.research-head-actions {
   position: absolute;
   right: 0;
   /* Spanning the row and centring its children, rather than the shorter
@@ -338,7 +338,7 @@ a.crumb:hover {
   gap: 2px;
 }
 
-.study-head-action {
+.research-head-action {
   display: grid;
   place-items: center;
   width: 28px;
@@ -350,17 +350,17 @@ a.crumb:hover {
   cursor: pointer;
 }
 
-.study-head-action:hover {
+.research-head-action:hover {
   background: var(--surface-2);
   color: var(--ink);
 }
 
-/* A pinned Study says so on the control that pinned it. */
-.study-head-action.is-on {
+/* A pinned Research says so on the control that pinned it. */
+.research-head-action.is-on {
   color: var(--ink);
 }
 
-.study-title {
+.research-title {
   margin: 0;
   text-align: center;
   font-size: var(--type-display);
@@ -377,7 +377,7 @@ a.crumb:hover {
    track is the cap, so the two edges cannot drift apart when either track is
    retuned. The bottom margin is the gap to the composer, which the head's
    padding used to supply. */
-.study-description {
+.research-description {
   margin: 0 0 26px;
   /* It already fills the main column, so this centres it on the composer's
      axis — the same line the name above it is centred on. */
@@ -389,23 +389,23 @@ a.crumb:hover {
 
 /* The composer opens the column, its CLI pill centred on the card beneath it
    — the dock belongs to the composer, so it sits on the composer's axis. */
-.study-composer {
+.research-composer {
   display: flex;
   flex-direction: column;
 }
 
-.study-composer .cli-dock {
+.research-composer .cli-dock {
   margin: 0 auto 10px;
 }
 
-/* Every Task the Study holds, in number order. */
-.study-tasks {
+/* Every Task the Research holds, in number order. */
+.research-tasks {
   display: flex;
   flex-direction: column;
   padding: 26px 0 0;
 }
 
-.study-tasks-label {
+.research-tasks-label {
   margin: 0 0 2px;
   padding: 0;
   font-size: var(--type-sub);
@@ -419,7 +419,7 @@ a.crumb:hover {
    where the title, the description and the composer do, so the section reads
    as one block rather than a band hung outside the measure — while its
    contents sit an 8px breath inside that fill, off the hover box's own edge. */
-.study-task {
+.research-task {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -431,15 +431,15 @@ a.crumb:hover {
   font-size: var(--type-ui);
 }
 
-.study-task:hover {
+.research-task:hover {
   background: var(--surface-1);
 }
 
-.study-task.is-active {
+.research-task.is-active {
   background: var(--surface-2);
 }
 
-.study-task-glyph {
+.research-task-glyph {
   display: grid;
   place-items: center;
   width: 16px;
@@ -450,16 +450,16 @@ a.crumb:hover {
 
 /* The agent's brand mark, sized to the stroked glyph it stands in for so the
    titles below it stay on one line whichever a row wears. Drawn in the brand's
-   own colour, set on the glyph by `TaskGlyph` (StudyScreen.tsx) — the mark is
+   own colour, set on the glyph by `TaskGlyph` (ResearchScreen.tsx) — the mark is
    a `currentColor` silhouette, so the ink it inherits is the whole of it. The
    tertiary ink this box sets is what a mark falls back to when its brand has
    no colour of its own to be in. */
-.study-task-mark {
+.research-task-mark {
   width: 14px;
   height: 14px;
 }
 
-.study-task-title {
+.research-task-title {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -472,7 +472,7 @@ a.crumb:hover {
    actions kebab takes its place under the pointer. Overlaying them — rather
    than seating the kebab beside the time — keeps the title's measure fixed,
    so no row jumps as the pointer travels down the list. */
-.study-task-row {
+.research-task-row {
   position: relative;
 }
 
@@ -480,12 +480,12 @@ a.crumb:hover {
    positioned siblings that would otherwise paint on top of it and swallow
    every click meant for Pin or Delete. Lifting the row that owns the menu
    above its neighbours is what puts those clicks back where they belong. */
-.study-task-row:hover,
-.study-task-row:focus-within {
+.research-task-row:hover,
+.research-task-row:focus-within {
   z-index: 20;
 }
 
-.study-task-when {
+.research-task-when {
   flex-shrink: 0;
   /* Never narrower than the control that replaces it, so the swap is in
      place rather than a reflow. */
@@ -500,7 +500,7 @@ a.crumb:hover {
    Centred by stretching the row's full height rather than by a transform: a
    transform would make this a stacking context, and the menu hanging off it
    could then never rise above the rows below. */
-.study-task-actions {
+.research-task-actions {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -519,19 +519,19 @@ a.crumb:hover {
    keyboard that walks INTO it (ArrowRight onto a submenu) takes focus out of
    this row, and the row would fade its own open menu's trigger. The attribute
    says the menu is open wherever the focus went. */
-.study-task-row:hover .study-task-actions,
-.study-task-row:focus-within .study-task-actions,
-.study-task-row:has(.study-task-kebab[aria-expanded="true"]) .study-task-actions {
+.research-task-row:hover .research-task-actions,
+.research-task-row:focus-within .research-task-actions,
+.research-task-row:has(.research-task-kebab[aria-expanded="true"]) .research-task-actions {
   opacity: 1;
 }
 
-.study-task-row:hover .study-task-when,
-.study-task-row:focus-within .study-task-when,
-.study-task-row:has(.study-task-kebab[aria-expanded="true"]) .study-task-when {
+.research-task-row:hover .research-task-when,
+.research-task-row:focus-within .research-task-when,
+.research-task-row:has(.research-task-kebab[aria-expanded="true"]) .research-task-when {
   opacity: 0;
 }
 
-.study-task-kebab {
+.research-task-kebab {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -545,13 +545,13 @@ a.crumb:hover {
   cursor: pointer;
 }
 
-.study-task-kebab:hover {
+.research-task-kebab:hover {
   background: var(--surface-2);
   color: var(--ink);
 }
 
 /* The in-place rename editor, sized to sit in the row it replaces. */
-.study-task-rename {
+.research-task-rename {
   width: 100%;
   min-height: 40px;
   padding: 0 8px;
@@ -564,7 +564,7 @@ a.crumb:hover {
   outline: none;
 }
 
-.study-tasks-empty {
+.research-tasks-empty {
   margin: 0;
   padding: 8px 0;
   font-size: var(--type-sub);
@@ -572,17 +572,17 @@ a.crumb:hover {
 }
 
 /* The rail: standing context, held in one panel whose top edge is level with
-   the Study's name. No rule divides it from the main column — the panel's own
+   the Research's name. No rule divides it from the main column — the panel's own
    edge is enough. */
-.study-rail {
+.research-rail {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-/* One box around everything the Study accumulates, so the rail reads as a
+/* One box around everything the Research accumulates, so the rail reads as a
    single standing thing rather than a stack of loose cards. */
-.study-rail-panel {
+.research-rail-panel {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--hairline);
@@ -591,18 +591,18 @@ a.crumb:hover {
   overflow: hidden;
 }
 
-.study-card {
+.research-card {
   display: flex;
   flex-direction: column;
   padding: 14px 14px 16px;
 }
 
 /* Cards inside the panel are divided by a hairline, not by a gap. */
-.study-card + .study-card {
+.research-card + .research-card {
   border-top: 1px solid var(--hairline);
 }
 
-.study-card-head {
+.research-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -610,14 +610,14 @@ a.crumb:hover {
   margin-bottom: 10px;
 }
 
-.study-card-title {
+.research-card-title {
   margin: 0;
   font-size: var(--type-sub);
   font-weight: 500;
   color: var(--ink);
 }
 
-.study-card-action {
+.research-card-action {
   flex-shrink: 0;
   padding: 2px 6px;
   border-radius: 6px;
@@ -628,12 +628,12 @@ a.crumb:hover {
   cursor: pointer;
 }
 
-.study-card-action:hover {
+.research-card-action:hover {
   color: var(--ink);
   background: var(--surface-2);
 }
 
-.study-card-prose {
+.research-card-prose {
   margin: 0;
   font-size: var(--type-sub);
   line-height: 1.6;
@@ -641,14 +641,14 @@ a.crumb:hover {
   white-space: pre-wrap;
 }
 
-.study-card-empty {
+.research-card-empty {
   margin: 0;
   font-size: var(--type-sub);
   line-height: 1.6;
   color: var(--ink-tertiary);
 }
 
-.study-card-textarea {
+.research-card-textarea {
   width: 100%;
   resize: vertical;
   border: 1px solid var(--hairline-strong, var(--hairline));
@@ -661,26 +661,26 @@ a.crumb:hover {
   color: var(--ink);
 }
 
-.study-card-textarea:focus {
+.research-card-textarea:focus {
   outline: none;
   border-color: var(--accent, var(--ink-tertiary));
 }
 
-.study-card-actions {
+.research-card-actions {
   display: flex;
   gap: 6px;
   margin-top: 8px;
 }
 
-.study-card-note {
+.research-card-note {
   font-size: var(--type-meta);
   color: var(--ink-tertiary);
   line-height: 1.5;
   margin: 8px 0 0;
 }
 
-/* The six scientific stages and how many of the Study's Tasks sit at each. */
-.study-stage-list {
+/* The six scientific stages and how many of the Research's Tasks sit at each. */
+.research-stage-list {
   margin: 0;
   padding: 0;
   list-style: none;
@@ -689,7 +689,7 @@ a.crumb:hover {
   gap: 2px;
 }
 
-.study-stage {
+.research-stage {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -698,11 +698,11 @@ a.crumb:hover {
   font-size: var(--type-sub);
 }
 
-.study-stage-label {
+.research-stage-label {
   color: var(--ink-muted);
 }
 
-.study-stage-count {
+.research-stage-count {
   font-family: var(--font-mono);
   font-size: var(--type-meta);
   color: var(--ink-tertiary);
