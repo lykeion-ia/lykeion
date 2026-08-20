@@ -256,7 +256,7 @@ it("implements every method the contract declares", () => {
   const api = createHttpApi(transportReturning(null));
   const missing = Object.entries(api).filter(([, v]) => typeof v !== "function");
   expect(missing).toEqual([]);
-  expect(Object.keys(api)).toHaveLength(68);
+  expect(Object.keys(api)).toHaveLength(70);
 });
 
 it("propagates a contract failure as a LykeionError", async () => {

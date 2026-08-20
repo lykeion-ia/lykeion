@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   within,
 } from "@testing-library/react";
-import type { ExecutionLogEntry, TurnItem } from "@lykeion/api";
+import { createInMemoryApi, type ExecutionLogEntry, type TurnItem } from "@lykeion/api";
+import { ApiProvider } from "../../api/ApiContext";
 import {
   CONTROL_PLANE_TOOLS,
   SUMMARY_MAX_LEN,
@@ -1194,8 +1196,12 @@ describe("ToolStepCard — a row on the rail", () => {
     expect(screen.getByText(stepArgument(entry()))).toHaveClass("step-io-in");
   });
 
-  it("hides the command and its output until the row is opened, then reveals both", () => {
-    render(<ToolStepCard entry={entry()} />);
+  it("hides the command and its output until the row is opened, then reveals both", async () => {
+    render(
+      <ApiProvider api={createInMemoryApi()}>
+        <ToolStepCard entry={entry()} />
+      </ApiProvider>,
+    );
     // Collapsed: the SECOND line of the Bash command is not on screen (the row
     // shows the first), and the result's <pre> is the clamped preview, not the
     // detail's output pane.
@@ -1203,6 +1209,9 @@ describe("ToolStepCard — a row on the rail", () => {
     expect(screen.queryByTestId("tool-output")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /ls -la/i }));
+    // Opening the row mounts `ToolStepDetail`, which fetches its own cells —
+    // flushed here so that fetch settles inside this test's act, not after.
+    await act(async () => {});
 
     // Opened: the command (a Bash code block) and its STDOUT both appear, the
     // latter behind a "Hide output" toggle that starts open.

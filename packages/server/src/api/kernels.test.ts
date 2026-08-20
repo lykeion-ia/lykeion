@@ -270,6 +270,40 @@ async function recordCellVia(
               ts: Math.floor(Date.now() / 1000),
               outputs: [],
             },
+            // A daemon posts the record of how the cell ran on the same
+            // frame, which is what this route is handed in production.
+            provenance: {
+              version: "lykeion.provenance.v1",
+              identity: {
+                taskId: task.id,
+                sessionId: "se_1",
+                kernelId,
+                cellId: "cell_client",
+              },
+              input: {
+                code: params.source,
+                codeState: {
+                  lineage: { incarnation: 0, index: 0, digest: "d0" },
+                  git: { status: "unavailable", reason: "not_applicable" },
+                },
+              },
+              environment: {
+                host: {
+                  platform: "darwin",
+                  arch: "arm64",
+                  runtimes: { status: "unavailable", reason: "not_captured" },
+                },
+                kernel: {
+                  id: kernelId,
+                  language: "python",
+                  incarnation: 0,
+                  processId: 2,
+                  processStartedAt: 100,
+                },
+              },
+              outputs: { status: "succeeded", items: [] },
+              timestamps: { createdAt: 100, startedAt: 101, completedAt: 102 },
+            },
           },
         } satisfies RunEventFrame,
       ],
@@ -278,6 +312,115 @@ async function recordCellVia(
   if (!res.ok) throw new Error(`recordCellVia's postFrames answered ${res.status}`);
   const turn = lab.store.get(`SELECT session_id FROM turns WHERE id = ?`, [runId]);
   return { taskId: task.id, kernelId, runId, sessionId: turn!.session_id as string };
+}
+
+/** Posts a `log-entry` frame naming `toolUseId` and a `cell` frame recording
+ *  a cell against that same call, in one request — the Execution Log entry
+ *  `cellsForToolUse` resolves a Task through, and the cell and envelope
+ *  `taskNotebook` and `cellProvenance` read back out, both filed the way a
+ *  real daemon files them: on the same turn, joined by the same id.
+ *
+ *  `withStep: false` posts only the `cell` frame, carrying a `toolUseId`
+ *  no Execution Log entry ever named — a cell that arrived some way other
+ *  than the ordinary agent turn, which is what a `toolUseId` naming no
+ *  step actually looks like on a real notebook, as opposed to one nothing
+ *  ever used at all. */
+async function recordCellWithStep(
+  lab: KernelsLab,
+  params: { cellId: string; toolUseId: string; digest: string; withStep?: boolean },
+): Promise<{ taskId: string; runId: string }> {
+  const task = await lab.ownerApi.createTask({
+    researchId: lab.researchId,
+    stage: "background",
+    title: "step fixture",
+  });
+  const { runId } = await lab.ownerApi.startRun({
+    researchId: lab.researchId,
+    taskId: task.id,
+    prompt: "go",
+    options: { planMode: false, agent: "claude" },
+  });
+  const kernelId = `k_${randomBytes(8).toString("hex")}`;
+  const ts = Math.floor(Date.now() / 1000);
+  const withStep = params.withStep ?? true;
+  const stepFrame: RunEventFrame = {
+    seq: 1,
+    event: {
+      event: "log-entry",
+      entry: {
+        ts,
+        toolUseId: params.toolUseId,
+        tool: "execute",
+        input: { code: "x = 1" },
+        decision: "ran",
+        result: "ok",
+        isError: false,
+      },
+    },
+  };
+  const cellFrame: RunEventFrame = {
+    seq: withStep ? 2 : 1,
+    event: {
+      event: "cell",
+      cell: {
+        id: params.cellId,
+        kernelId,
+        name: "main",
+        language: "python",
+        environment: "python",
+        executionCount: 1,
+        source: "x = 1",
+        origin: { surface: "agent", by: "claude" },
+        ok: true,
+        wallMs: 5,
+        ts,
+        outputs: [],
+        toolUseId: params.toolUseId,
+      },
+      provenance: {
+        version: "lykeion.provenance.v1",
+        identity: {
+          taskId: task.id,
+          sessionId: "se_1",
+          kernelId,
+          cellId: params.cellId,
+        },
+        input: {
+          code: "x = 1",
+          codeState: {
+            lineage: { incarnation: 0, index: 0, digest: params.digest },
+            git: { status: "unavailable", reason: "not_applicable" },
+          },
+        },
+        environment: {
+          host: {
+            platform: "darwin",
+            arch: "arm64",
+            runtimes: { status: "unavailable", reason: "not_captured" },
+          },
+          kernel: {
+            id: kernelId,
+            language: "python",
+            incarnation: 0,
+            processId: 2,
+            processStartedAt: 100,
+          },
+        },
+        outputs: { status: "succeeded", items: [] },
+        timestamps: { createdAt: 100, startedAt: 101, completedAt: 102 },
+      },
+    },
+  };
+  const res = await fetch(`${lab.base}/daemon/run/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify({
+      runId,
+      frames: withStep ? [stepFrame, cellFrame] : [cellFrame],
+    }),
+  });
+  if (!res.ok) throw new Error(`recordCellWithStep's postFrames answered ${res.status}`);
+  return { taskId: task.id, runId };
 }
 
 /** Attaches to the machine's command stream the way a real daemon's own
@@ -361,6 +504,63 @@ it("answers an empty notebook for a real Task nothing has run", async () => {
   const lab = await freshLab();
   const task = await lab.ownerApi.createTask({ researchId: lab.researchId, stage: "methods", title: "quiet" });
   await expect(lab.ownerApi.taskNotebook(task.id)).resolves.toEqual([]);
+});
+
+it("attaches the code state a header renders to a notebook cell carrying a record", async () => {
+  const lab = await freshLab();
+  const digest = "ab".repeat(32);
+  const { taskId } = await recordCellWithStep(lab, {
+    cellId: "cell_state_1",
+    toolUseId: "toolu_state_1",
+    digest,
+  });
+  const [cell] = await lab.ownerApi.taskNotebook(taskId);
+  expect(cell.codeState).toEqual({ lineage: digest.slice(0, 8), index: 0 });
+});
+
+it("gives the full record of how a cell ran to whoever names the cell's own id", async () => {
+  const lab = await freshLab();
+  const digest = "cd".repeat(32);
+  // The wire's own `cellId` names the envelope's `identity.cellId`, never
+  // the row this lab records the cell under — that id is this lab's own,
+  // read back off the notebook, the same as every other reader of it.
+  const { taskId } = await recordCellWithStep(lab, {
+    cellId: "cell_prov_1",
+    toolUseId: "toolu_prov_1",
+    digest,
+  });
+  const [cell] = await lab.ownerApi.taskNotebook(taskId);
+  const record = await lab.ownerApi.cellProvenance(cell.id);
+  expect(record?.identity.cellId).toBe("cell_prov_1");
+  expect(record?.input.codeState.lineage.digest).toBe(digest);
+});
+
+it("finds the cells one tool call produced, through the step it logged", async () => {
+  const lab = await freshLab();
+  const digest = "ef".repeat(32);
+  const { taskId } = await recordCellWithStep(lab, {
+    cellId: "cell_join_1",
+    toolUseId: "toolu_join_1",
+    digest,
+  });
+  const [cell] = await lab.ownerApi.taskNotebook(taskId);
+  const cells = await lab.ownerApi.cellsForToolUse("toolu_join_1");
+  expect(cells.map((c) => c.id)).toEqual([cell.id]);
+});
+
+it("answers empty for a tool call id naming no step, even where a cell elsewhere carries it", async () => {
+  const lab = await freshLab();
+  // A cell can carry a `toolUseId` this lab never logged an Execution Log
+  // entry for. With no step to resolve a Task through, the honest answer
+  // is empty — never a query run without one.
+  await recordCellWithStep(lab, {
+    cellId: "cell_orphan_1",
+    toolUseId: "toolu_orphan",
+    digest: "01".repeat(32),
+    withStep: false,
+  });
+  await expect(lab.ownerApi.cellsForToolUse("toolu_orphan")).resolves.toEqual([]);
+  await expect(lab.ownerApi.cellsForToolUse("toolu_never_seen")).resolves.toEqual([]);
 });
 
 it("refuses to run a cell on a machine that is not yours", async () => {
@@ -1355,6 +1555,31 @@ it("refuses a second report of a cell it has already recorded", async () => {
   // rather than as this lab falling over.
   expect((await postCell(lab, body)).status).toBe(403);
   expect((await lab.ownerApi.taskNotebook(taskId)).filter((c) => c.id === cellId)).toHaveLength(1);
+});
+
+it("records a cell a machine named a record for, without that record's name on it", async () => {
+  // The route this cell arrives on stores no envelope and recomputes no
+  // hash — a `provenanceId` here would be a paired machine deciding what a
+  // row in a shared notebook points at. The cell is still recorded: the work
+  // happened, and only the claim about a record behind it is dropped.
+  const lab = await freshLab();
+  const { kernelId, taskId } = await recordCellVia(lab, { source: "x = 1" });
+  const stub = attachSilentDaemon(lab);
+  const { cellId } = await lab.ownerApi.kernelExecute(kernelId, "2 + 2");
+  const sent = stub.taken.at(-1)!;
+
+  const res = await postCell(
+    lab,
+    cellReport(
+      { cellId, sessionId: sent.sessionId!, taskId: sent.taskId!, kernelId },
+      { provenanceId: "d".repeat(64) },
+    ),
+  );
+
+  expect(res.status).toBe(200);
+  const recorded = (await lab.ownerApi.taskNotebook(taskId)).find((c) => c.id === cellId)!;
+  expect(recorded.source).toBe("2 + 2");
+  expect("provenanceId" in recorded).toBe(false);
 });
 
 it("refuses a cell whose counters are not whole numbers or whose outputs are not messages", async () => {

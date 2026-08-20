@@ -212,6 +212,19 @@
   white-space: nowrap;
 }
 
+.nbp-cell-env,
+.nbp-cell-code-state {
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-subtle);
+  background: var(--surface-3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex: 0 0 auto;
+}
+
 .code-block--numbered .code-block-pre code {
   counter-reset: nbp-line;
 }

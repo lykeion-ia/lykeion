@@ -1068,6 +1068,30 @@ export const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    version: 32,
+    up(store) {
+      // Nullable, and optional on the contract beside it: every cell already
+      // in this table ran before anything wrote an envelope, and a default
+      // here would be this lab inventing a record for them.
+      store.run(`ALTER TABLE cells ADD COLUMN provenance_id TEXT`);
+      // The body is kept whole, in the canonical form its id is the hash of.
+      // A form rebuilt out of columns could not be verified against that id,
+      // and a later version of the envelope stores here unchanged rather
+      // than needing a migration to hold new fields.
+      store.run(`
+        CREATE TABLE provenance_envelopes (
+          id         TEXT PRIMARY KEY,
+          version    TEXT NOT NULL,
+          body       TEXT NOT NULL,
+          task_id    TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          ts         INTEGER NOT NULL,
+          seq        INTEGER NOT NULL UNIQUE
+        )`);
+      store.run(`CREATE INDEX provenance_by_task ON provenance_envelopes(task_id, seq)`);
+    },
+  },
 ];
 
 assertAscending(MIGRATIONS);

@@ -11,6 +11,7 @@ import {
   type CoreInfo,
   type Invite,
   type Member,
+  type NotebookCell,
   type RunHandle,
   type User,
 } from "./index";
@@ -1540,6 +1541,38 @@ describe("kernel identity", () => {
     const research = (await api.listResearches())[0]!;
     const task = (await api.getResearch(research.id)).tasks[0]!;
     await expect(api.taskNotebook(task.id)).resolves.toEqual([]);
+  });
+
+  it("leaves provenanceId off a cell recorded before anything wrote one", () => {
+    // Absent, never null and never "": a cell that ran before the envelope
+    // existed has no record, and a key holding a falsy value would be this
+    // contract claiming it has one.
+    const cell: NotebookCell = {
+      id: "cell_1",
+      kernelId: "k_1",
+      name: "default",
+      language: "python",
+      environment: "default",
+      executionCount: 1,
+      source: "1 + 1",
+      origin: { surface: "repl", by: "u_you" },
+      ok: true,
+      wallMs: 4,
+      ts: 0,
+      outputs: [],
+    };
+    expect("provenanceId" in cell).toBe(false);
+    expect("codeState" in cell).toBe(false);
+  });
+
+  it("answers undefined for an envelope nothing wrote", async () => {
+    const api = createInMemoryApi();
+    expect(await api.cellProvenance("cell_nothing")).toBeUndefined();
+  });
+
+  it("answers no cells for a tool call that ran none", async () => {
+    const api = createInMemoryApi();
+    expect(await api.cellsForToolUse("toolu_nothing")).toEqual([]);
   });
 
   it("refuses to execute against a kernel the browser cannot hold", async () => {

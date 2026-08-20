@@ -54,7 +54,7 @@ export function absentApi(
   | "listGroups" | "createGroup"
   | "listMachines" | "listAgentClis" | "pairMachine" | "removeMachine"
   | "startRun" | "submitRunDecision" | "runHistory" | "revertTurn"
-  | "listRunningKernels" | "computeSnapshot" | "taskNotebook" | "kernelExecute" | "kernelInterrupt" | "kernelStop" | "kernelRestart"
+  | "listRunningKernels" | "computeSnapshot" | "taskNotebook" | "cellProvenance" | "cellsForToolUse" | "kernelExecute" | "kernelInterrupt" | "kernelStop" | "kernelRestart"
   | "kernelEnvSetup" | "kernelEnvReclaim" | "kernelEnvCreate" | "kernelEnvDelete"
 > {
   return {

@@ -1833,6 +1833,62 @@ label.question-option:hover {
   cursor: text;
 }
 
+/* The cells one step produced (see `StepCells`) — the transcript's own side
+   of the join between an Execution Log entry and the notebook cell it ran.
+   Sits beside a step's usual input/output, so a kernel call shows both what
+   it returned and what it ran into the notebook. */
+.step-cells {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.step-cells-heading {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+.step-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.step-cell-lang {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-subtle);
+  background: var(--surface-3);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.step-cell-source {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--type-meta);
+  line-height: 1.5;
+  color: var(--ink-subtle);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.step-cell--err .step-cell-source {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 /* A web search's results: a title over its muted URL. */
 .tool-results {
   margin: 0;

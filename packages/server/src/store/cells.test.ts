@@ -73,6 +73,20 @@ it("leaves the tool call absent on a cell the researcher typed", () => {
   expect("toolUseId" in notebookFor(store, "tk_1")[0]!).toBe(false);
 });
 
+it("joins a cell to the record of how it ran", () => {
+  const store = freshStore();
+  recordCell(store, frameFor({ taskId: "tk_1", provenanceId: "a".repeat(64) }), 1000);
+  expect(notebookFor(store, "tk_1")[0]!.provenanceId).toBe("a".repeat(64));
+});
+
+it("leaves the join absent on a cell no record was kept for", () => {
+  // An id here is a claim that the envelope it names is on disk. A
+  // placeholder would be a cell pointing at a record nothing wrote.
+  const store = freshStore();
+  recordCell(store, frameFor({ taskId: "tk_1" }), 1000);
+  expect("provenanceId" in notebookFor(store, "tk_1")[0]!).toBe(false);
+});
+
 it("mints a durable id distinct from the kernel identity", () => {
   const store = freshStore();
   const id = recordCell(store, frameFor(), 1000);
@@ -177,6 +191,29 @@ it("refuses a report whose installed packages are not names", () => {
   expect(readReportedCell(reportFor({ installed: "scanpy" }))).toBeUndefined();
   expect(readReportedCell(reportFor({ installed: [1, 2] }))).toBeUndefined();
   expect(readReportedCell(reportFor({ installed: [{ name: "scanpy" }] }))).toBeUndefined();
+});
+
+it("keeps a machine's own word for a record off the row it writes", () => {
+  // `/daemon/cell` takes what this returns, spreads it whole into
+  // `recordCell`, and that INSERT writes whatever `provenanceId` it finds. So
+  // a field read off a report here is a paired machine choosing the join key
+  // for a row in a notebook every member of the lab reads — with no envelope
+  // stored and no hash recomputed, which is the one property this join
+  // exists to carry. Read and then dropped, never refused: the cell itself is
+  // honest, and losing it over a field this lab was going to ignore would
+  // cost a researcher the row.
+  const store = freshStore();
+  const reported = readReportedCell(reportFor({ provenanceId: "c".repeat(64) }));
+  expect(reported).toBeDefined();
+  // Destructured exactly the way the route does it, because the route's
+  // `...ran` is what makes this reachable at all.
+  const { ts, ...ran } = reported!;
+  recordCell(
+    store,
+    { ...ran, id: "cell_asked_for", taskId: "tk_1", sessionId: "sess_1" },
+    ts,
+  );
+  expect("provenanceId" in notebookFor(store, "tk_1")[0]!).toBe(false);
 });
 
 it("folds an empty installed list to no field rather than losing the cell over it", () => {

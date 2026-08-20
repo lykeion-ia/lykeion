@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, within } from "@testing-library/react";
-import type { ExecutionLogEntry } from "@lykeion/api";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  createInMemoryApi,
+  type ExecutionLogEntry,
+  type LykeionApi,
+  type NotebookCell,
+} from "@lykeion/api";
+import { ApiProvider } from "../../api/ApiContext";
 import {
   ToolStepDetail,
   langForPath,
@@ -19,6 +25,39 @@ const entry = (over: Partial<ExecutionLogEntry> = {}): ExecutionLogEntry => ({
   isError: false,
   ...over,
 });
+
+function notebookCell(over: Partial<NotebookCell> = {}): NotebookCell {
+  return {
+    id: "cell_1",
+    kernelId: "k_1",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 1,
+    source: "x = 1",
+    origin: { surface: "agent", by: "claude" },
+    ok: true,
+    wallMs: 4,
+    ts: 1,
+    outputs: [],
+    ...over,
+  };
+}
+
+/**
+ * Renders inside an `ApiProvider` and flushes the two effects that follow
+ * (the provider's own directory fetch, `ToolStepDetail`'s `cellsForToolUse`
+ * fetch) before handing control back, so a caller's synchronous assertions
+ * never race a `setState` React would otherwise report outside `act`.
+ */
+async function renderDetail(
+  node: React.ReactElement,
+  api: LykeionApi = createInMemoryApi(),
+) {
+  const result = render(<ApiProvider api={api}>{node}</ApiProvider>);
+  await act(async () => {});
+  return result;
+}
 
 describe("langForPath", () => {
   it("maps known extensions to a bundled shiki language", () => {
@@ -100,8 +139,8 @@ describe("parseWebResults — defensive across the shapes a search can produce",
 });
 
 describe("ToolStepDetail — per-tool bodies", () => {
-  it("execute: renders the command over its STDOUT", () => {
-    render(
+  it("execute: renders the command over its STDOUT", async () => {
+    await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "execute",
@@ -114,8 +153,8 @@ describe("ToolStepDetail — per-tool bodies", () => {
     expect(screen.getByTestId("tool-output")).toHaveTextContent("total 0");
   });
 
-  it("read: renders the file contents with the cat -n numbering stripped", () => {
-    const { container } = render(
+  it("read: renders the file contents with the cat -n numbering stripped", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "read",
@@ -129,8 +168,8 @@ describe("ToolStepDetail — per-tool bodies", () => {
     expect(container.textContent).not.toContain("1\tconst");
   });
 
-  it("edit: renders a diff from old_string/new_string", () => {
-    const { container } = render(
+  it("edit: renders a diff from old_string/new_string", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "edit",
@@ -147,8 +186,8 @@ describe("ToolStepDetail — per-tool bodies", () => {
     expect(container.textContent).toContain("+BETA");
   });
 
-  it("edit (create): renders the written content", () => {
-    render(
+  it("edit (create): renders the written content", async () => {
+    await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "edit",
@@ -159,8 +198,8 @@ describe("ToolStepDetail — per-tool bodies", () => {
     expect(screen.getByText(/a,b/)).toBeInTheDocument();
   });
 
-  it("fetch (search): renders the query over a results list", () => {
-    render(
+  it("fetch (search): renders the query over a results list", async () => {
+    await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "fetch",
@@ -179,8 +218,8 @@ describe("ToolStepDetail — per-tool bodies", () => {
     ).toBeInTheDocument();
   });
 
-  it("fetch (search): falls back to raw text when results don't parse", () => {
-    render(
+  it("fetch (search): falls back to raw text when results don't parse", async () => {
+    await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "fetch",
@@ -195,8 +234,8 @@ describe("ToolStepDetail — per-tool bodies", () => {
     );
   });
 
-  it("fetch: renders the url over the fetched response", () => {
-    render(
+  it("fetch: renders the url over the fetched response", async () => {
+    await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "fetch",
@@ -211,8 +250,8 @@ describe("ToolStepDetail — per-tool bodies", () => {
     );
   });
 
-  it("falls back to a generic input/output view for a kind it does not draw", () => {
-    const { container } = render(
+  it("falls back to a generic input/output view for a kind it does not draw", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "hologram",
@@ -227,8 +266,8 @@ describe("ToolStepDetail — per-tool bodies", () => {
     );
   });
 
-  it("uses the live stdout as the output when a running step has no result yet", () => {
-    render(
+  it("uses the live stdout as the output when a running step has no result yet", async () => {
+    await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "execute",
@@ -243,8 +282,8 @@ describe("ToolStepDetail — per-tool bodies", () => {
 });
 
 describe("ToolStepDetail — every step opens onto something true", () => {
-  it("renders both text blocks of an output that carried two", () => {
-    render(
+  it("renders both text blocks of an output that carried two", async () => {
+    await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "execute",
@@ -261,8 +300,8 @@ describe("ToolStepDetail — every step opens onto something true", () => {
     expect(output).toHaveTextContent("second");
   });
 
-  it("draws a diff part as a diff over the path it names", () => {
-    const { container } = render(
+  it("draws a diff part as a diff over the path it names", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "edit",
@@ -283,8 +322,8 @@ describe("ToolStepDetail — every step opens onto something true", () => {
     expect(container.textContent).toContain("+BETA");
   });
 
-  it("draws a terminal part's output", () => {
-    render(
+  it("draws a terminal part's output", async () => {
+    await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "execute",
@@ -296,8 +335,8 @@ describe("ToolStepDetail — every step opens onto something true", () => {
     expect(screen.getByTestId("tool-output")).toHaveTextContent("12 rows");
   });
 
-  it("names a resource link as a reference rather than drawing it as content", () => {
-    const { container } = render(
+  it("names a resource link as a reference rather than drawing it as content", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "read",
@@ -312,8 +351,8 @@ describe("ToolStepDetail — every step opens onto something true", () => {
     expect(screen.getByTestId("tool-output-resource")).toBeInTheDocument();
   });
 
-  it("names a part type it cannot draw rather than leaving a blank", () => {
-    const { container } = render(
+  it("names a part type it cannot draw rather than leaving a blank", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail
         entry={entry({
           tool: "other",
@@ -325,23 +364,23 @@ describe("ToolStepDetail — every step opens onto something true", () => {
     expect(container.textContent).toContain("hologram");
   });
 
-  it("says a step ran and produced nothing, rather than showing an empty region", () => {
-    const { container } = render(
+  it("says a step ran and produced nothing, rather than showing an empty region", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail entry={entry({ tool: "execute", input: {}, result: "" })} />,
     );
     expect(container.textContent).toMatch(/produced no output/i);
   });
 
-  it("says a step's output was not captured, which is not the same as none", () => {
-    const { container } = render(
+  it("says a step's output was not captured, which is not the same as none", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail entry={entry({ tool: "execute", input: {}, decision: "ran" })} />,
     );
     expect(container.textContent).toMatch(/not captured/i);
     expect(container.textContent).not.toMatch(/produced no output/i);
   });
 
-  it("says a denied step never ran", () => {
-    const { container } = render(
+  it("says a denied step never ran", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail
         entry={entry({ tool: "edit", input: {}, decision: "denied", isError: true })}
       />,
@@ -350,8 +389,8 @@ describe("ToolStepDetail — every step opens onto something true", () => {
     expect(container.textContent).toMatch(/denied/i);
   });
 
-  it("tells a step stopped at the gate apart from one that was denied there", () => {
-    const { container } = render(
+  it("tells a step stopped at the gate apart from one that was denied there", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail
         entry={entry({ tool: "edit", input: {}, decision: "cancelled", isError: true })}
       />,
@@ -360,11 +399,32 @@ describe("ToolStepDetail — every step opens onto something true", () => {
     expect(container.textContent).toMatch(/stopped/i);
   });
 
-  it("renders a body for a step carrying neither input nor output", () => {
-    const { container } = render(
+  it("renders a body for a step carrying neither input nor output", async () => {
+    const { container } = await renderDetail(
       <ToolStepDetail entry={entry({ tool: "other", input: {} })} />,
     );
     expect(container.textContent?.trim()).not.toBe("");
+  });
+});
+
+describe("ToolStepDetail — the cells a step produced", () => {
+  it("renders the cells cellsForToolUse resolves for this step's toolUseId", async () => {
+    const api: LykeionApi = {
+      ...createInMemoryApi(),
+      cellsForToolUse: async (toolUseId) =>
+        toolUseId === "tu-kernel" ? [notebookCell({ id: "cell_1", source: "x = 1" })] : [],
+    };
+    await renderDetail(<ToolStepDetail entry={entry({ toolUseId: "tu-kernel" })} />, api);
+    expect(await screen.findByTestId("step-cell-source")).toHaveTextContent("x = 1");
+  });
+
+  it("renders nothing extra for a step cellsForToolUse resolves no cells for", async () => {
+    const api: LykeionApi = {
+      ...createInMemoryApi(),
+      cellsForToolUse: async () => [],
+    };
+    await renderDetail(<ToolStepDetail entry={entry({ toolUseId: "tu-other" })} />, api);
+    await waitFor(() => expect(screen.queryByTestId("step-cell")).not.toBeInTheDocument());
   });
 });
 

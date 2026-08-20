@@ -12,7 +12,8 @@ import type { RunCommand, RunRelay } from "../run-relay";
 import type { RawKernelReport } from "../kernel-list-registry";
 import type { Store } from "../store/store";
 import { nextSeq } from "../store/migrations";
-import { notebookFor } from "../store/cells";
+import { cellsForToolUse, notebookFor } from "../store/cells";
+import { codeStateFor, envelopeById, provenanceIdFor } from "../store/provenance";
 import { sessionOwner } from "../store/sessions";
 import { healthFor } from "../machine-health";
 
@@ -21,6 +22,8 @@ export type KernelsApi = Pick<
   | "listRunningKernels"
   | "computeSnapshot"
   | "taskNotebook"
+  | "cellProvenance"
+  | "cellsForToolUse"
   | "kernelExecute"
   | "kernelInterrupt"
   | "kernelStop"
@@ -388,7 +391,34 @@ export function kernelsApi(deps: Deps): KernelsApi {
       // Any member of the lab, not only whoever filed or is assigned the
       // Task — the same reach `getTask` already gives a cell's own
       // transcript, and a notebook is read the same way that is.
-      return notebookFor(store, taskId);
+      const cells = notebookFor(store, taskId);
+      const states = codeStateFor(store, cells.map((cell) => cell.id));
+      return cells.map((cell) => {
+        const state = states.get(cell.id);
+        return state === undefined ? cell : { ...cell, codeState: state };
+      });
+    },
+
+    async cellProvenance(cellId) {
+      const id = provenanceIdFor(store, cellId);
+      return id === undefined ? undefined : envelopeById(store, id);
+    },
+
+    async cellsForToolUse(toolUseId) {
+      // A `tool_use_id` on a cell is only trustworthy alongside the Task it
+      // ran under, and the only place that Task is known independently of
+      // the cell itself is the step the tool call logged. A call id naming
+      // no step has nothing to scope by, and the honest answer to "which
+      // cells did this tool call produce" is then the same as for a call
+      // that produced none: empty, not an unscoped guess.
+      const step = store.get(
+        `SELECT t.task_id AS task_id
+           FROM turn_steps s
+           JOIN turns t ON t.id = s.turn_id
+          WHERE s.tool_use_id = ?`,
+        [toolUseId],
+      );
+      return step === undefined ? [] : cellsForToolUse(store, toolUseId, step.task_id as string);
     },
 
     async kernelExecute(kernelId, code) {

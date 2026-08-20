@@ -12,6 +12,7 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Iterator, NamedTuple
 
 import pytest
@@ -69,7 +70,7 @@ class Spoken(NamedTuple):
 
 
 @pytest.fixture
-def spoken() -> Iterator[Spoken]:
+def spoken(tmp_path: Path) -> Iterator[Spoken]:
     """A host on a pipe pair, spoken to the way the daemon speaks to one.
 
     Its own stdio and its own thread, so what a test observes is the loop:
@@ -77,7 +78,10 @@ def spoken() -> Iterator[Spoken]:
     could have been read while the first was still running.
 
     Given no registry, which is what its own `main()` builds — every
-    boundary it holds arrives over the wire afterwards.
+    boundary it holds arrives over the wire afterwards. Given a store root,
+    which that `main()` does NOT: a host builds its own store where this
+    machine keeps its records, and a suite writing there would leave a
+    researcher's own directory holding the cells of every test run.
     """
     to_host_r, to_host_w = os.pipe()
     from_host_r, from_host_w = os.pipe()
@@ -87,7 +91,12 @@ def spoken() -> Iterator[Spoken]:
     # piece. A suite that only ever handed this a buffered stream would be
     # asserting nothing about two answers written at once.
     answers = io.TextIOWrapper(io.FileIO(from_host_w, "w"), write_through=True)
-    host = threading.Thread(target=serve, args=(os.fdopen(to_host_r), answers), daemon=True)
+    host = threading.Thread(
+        target=serve,
+        args=(os.fdopen(to_host_r), answers),
+        kwargs={"store_root": tmp_path / "provenance"},
+        daemon=True,
+    )
     host.start()
     stdin = os.fdopen(to_host_w, "w")
     stdout = os.fdopen(from_host_r)

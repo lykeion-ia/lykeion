@@ -2,8 +2,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import type { Language, NotebookCell, RunEvent } from "@lykeion/api";
+import type { Language, NotebookCell, ProvenanceEnvelope, RunEvent } from "@lykeion/api";
 import { allAgentHomes } from "./agent-home";
+import { probeCodeState } from "./code-state";
 import type { KernelHost } from "./kernel-host";
 import {
   confine,
@@ -279,16 +280,17 @@ export function kernelSessionToken(): string {
 
 /**
  * What a "cell" notification actually carries: the `NotebookCell` shape,
- * short its `id` — a cell mints no id of its own on the wire, and the id
- * that ends up on it is whichever end stores it durably — plus the session
- * and Task it ran in. Those two are not on `NotebookCell` itself: a stored
- * cell already stands inside one Task's notebook, so naming it again on
- * every row would be saying the same thing twice. The notification has no
- * such context to stand inside, so it says it directly rather than making
- * this machine invert a kernel's own id back into the identity that
- * produced it.
+ * plus the session and Task it ran in, plus the record of how it ran. Those
+ * two names are not on `NotebookCell` itself: a stored cell already stands
+ * inside one Task's notebook, so naming it again on every row would be
+ * saying the same thing twice. The notification has no such context to stand
+ * inside, so it says it directly rather than making this machine invert a
+ * kernel's own id back into the identity that produced it.
  */
 export interface CellAnnouncement {
+  /** The id the host minted, and the one the envelope beside this cell names
+   *  as the cell it describes. */
+  id: string;
   sessionId: string;
   taskId: string;
   kernelId: string;
@@ -312,6 +314,14 @@ export interface CellAnnouncement {
    *  provider forwarded one in the call's `_meta`. Absent otherwise — the
    *  forwarder may still fill it in from the session's own log. */
   toolUseId?: string;
+  /** What names the record beside this cell: the hash of that record's own
+   *  bytes, computed by the host that wrote them. */
+  provenanceId: string;
+  /** The record itself. Opaque here — nothing on this machine reads a field
+   *  of it, and nothing on this machine may rewrite one: its id is the hash
+   *  of exactly these bytes, and the lab it is travelling to recomputes that
+   *  hash before it trusts either. */
+  provenance: ProvenanceEnvelope;
 }
 
 /**
@@ -331,10 +341,14 @@ export interface CellAnnouncement {
  * under the id the lab minted. Both would be recorded, and a researcher
  * would read one cell twice.
  *
- * The `id` a forwarded cell carries is minted here and is not the id it
- * will be known by: this machine has no durable store of its own, and the
- * lab mints the one that lasts when it records the cell. What travels here
- * only has to be distinct enough to satisfy the shape a `RunEvent` carries.
+ * The `id` a forwarded cell carries is the one the host announced it under,
+ * carried through rather than replaced. It is not what the cell ends up
+ * being called: a `NotebookCell` has an `id`, so a frame has to hold one,
+ * and the lab mints the row's own on insert and joins the record to it
+ * through `cells.provenance_id`. What carrying the host's through unchanged
+ * buys is a frame that agrees with itself — the record travelling beside
+ * the cell names this same id in `identity.cellId`, and that record cannot
+ * be renamed, since it is addressed by the hash of its own bytes.
  *
  * A cell that arrives without a `toolUseId` — a provider that forwarded no
  * id of its own down the MCP channel — is offered to `claimToolUseId`, the
@@ -358,7 +372,7 @@ export function forwardKernelCells(
     emit(runId, {
       event: "cell",
       cell: {
-        id: `cell_${randomBytes(8).toString("base64url")}`,
+        id: announced.id,
         kernelId: announced.kernelId,
         name: announced.name,
         language: announced.language,
@@ -376,7 +390,72 @@ export function forwardKernelCells(
         // surface nothing anywhere can reach.
         ...(announced.installed === undefined ? {} : { installed: announced.installed }),
         ...(toolUseId === undefined ? {} : { toolUseId }),
+        // Spread like its neighbours rather than written flat: a host that
+        // announced none would otherwise put the key on the cell holding
+        // `undefined`, and absent is not a value on this wire.
+        ...(announced.provenanceId === undefined
+          ? {}
+          : { provenanceId: announced.provenanceId }),
       },
+      // Beside the cell rather than on it, and unread on the way past: the
+      // lab recomputes this record's hash over these very bytes, so a field
+      // this machine reshaped would be a record that no longer answers to
+      // the name it arrived under.
+      provenance: announced.provenance,
     });
   });
+}
+
+/**
+ * Tells this machine's kernel host what repository, if any, backs one
+ * session's workspace, so the record it writes for every cell run there can
+ * name it.
+ *
+ * Sent for a named session because the answer is drawn around that session's
+ * workspace and one host holds every session on this machine. Two Tasks
+ * taking turns at the same moment answer this differently, and a call that
+ * named no session would leave whichever spoke last stamped on the record of
+ * every cell running anywhere on the machine — records that are immutable and
+ * named by the hash of their own bytes, so nothing afterwards could correct
+ * one or even notice.
+ *
+ * The absence is sent as loudly as the answer. A session the host was told
+ * nothing about keeps a reason meaning "nobody looked", recorded against its
+ * cells on a machine where the real answer was there to be had.
+ *
+ * A host that will not take it costs nothing here. What travels is a fact
+ * ABOUT a turn rather than the turn itself, and a cell whose record says
+ * `not_captured` is a smaller loss than a turn refused over a `git`
+ * invocation.
+ */
+export async function tellHostCodeState(
+  host: KernelHost,
+  sessionId: string,
+  workspace: string,
+): Promise<void> {
+  const codeState = await probeCodeState(workspace);
+  try {
+    await host.call("kernel.set_code_state", { session_id: sessionId, codeState });
+  } catch {
+    // Said nowhere. This runs off the path a turn is waiting on, so there is
+    // no caller left to answer it, and a host that cannot take this is one
+    // that the call actually needing a kernel will report on for itself.
+  }
+}
+
+/**
+ * Where this machine keeps the record of how its cells ran.
+ *
+ * Under the daemon's own data directory rather than under a home directory
+ * the host would otherwise choose for itself: one directory is one daemon,
+ * and a second daemon run against a second lab must not write its records
+ * into the first one's pile.
+ *
+ * Inside `dataDir` and therefore inside what every kernel's boundary denies,
+ * which is the right side of that line for it: these records are written by
+ * the process that holds the kernels, and nothing running inside one has any
+ * business reading the lot.
+ */
+export function provenanceStoreRoot(dataDir: string): string {
+  return join(dataDir, "provenance");
 }

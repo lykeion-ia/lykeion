@@ -30,11 +30,13 @@ import queue
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, IO, NamedTuple
 
 from .kernels import KernelIdentity
 from .mcp.endpoint import Endpoints
 from .protocol import PROTOCOL_VERSION, is_reply, read_messages, write_message
+from .provenance.store import ProvenanceStore
 from .registry import Place, Registry
 from .sampler import total_memory
 
@@ -58,7 +60,18 @@ class Holding(NamedTuple):
 Handler = Callable[[Holding, dict[str, Any], Place | None], dict[str, Any]]
 
 
-def _hello(holding: Holding, _params: dict[str, Any], _place: Place | None) -> dict[str, Any]:
+def _hello(holding: Holding, params: dict[str, Any], _place: Place | None) -> dict[str, Any]:
+    # The greeting is where the daemon says which machine's state this host is
+    # holding kernels for, and the record of every cell run here belongs in
+    # that same state. Taken here rather than off this process's own command
+    # line because it is the daemon's answer, and the greeting is the first
+    # thing the daemon says — so the root is right before the first cell can
+    # run. It is not the LAST thing it says: a daemon greets this host again
+    # as each session opens, with the same path every time. See
+    # `Registry.set_store_root` for why that is safe and what would not be.
+    store_root = params.get("storeRoot")
+    if isinstance(store_root, str) and store_root:
+        holding.registry.set_store_root(Path(store_root))
     return {
         "protocol": PROTOCOL_VERSION,
         "languages": [
@@ -246,6 +259,24 @@ def _release_session(
     return {"released": holding.registry.release_session(_text(params, "session_id"))}
 
 
+def _set_code_state(
+    holding: Holding, params: dict[str, Any], _place: Place | None
+) -> dict[str, Any]:
+    """What backs ONE session's workspace.
+
+    Named by session because this host holds every session on the machine and
+    a repository is a fact about one workspace. A call that named none would
+    put whichever Task took a turn last onto the record of every cell running
+    anywhere on this machine, permanently — those records are immutable and
+    named by the hash of their own bytes.
+    """
+    state = params.get("codeState")
+    if not isinstance(state, dict):
+        raise ValueError("a code state is an object, even an unavailable one")
+    holding.registry.set_code_state(_text(params, "session_id"), state)
+    return {}
+
+
 METHODS: dict[str, Handler] = {
     "host.hello": _hello,
     "kernel.configure_session": _configure_session,
@@ -256,6 +287,7 @@ METHODS: dict[str, Handler] = {
     "kernel.restart_environment": _restart_environment,
     "kernel.list": _list,
     "kernel.release_session": _release_session,
+    "kernel.set_code_state": _set_code_state,
 }
 
 
@@ -492,17 +524,38 @@ def _sampling(registry: Registry, share: float | None = None) -> threading.Threa
     return thread
 
 
+def _default_store_root() -> Path:
+    """Where this machine keeps the record of every cell its kernels run,
+    when nothing has named somewhere else.
+
+    Under the researcher's own home, beside the rest of this lab's
+    per-machine state, rather than inside a workspace: a Task directory is
+    snapshotted, swept and in the end taken away, and a record of how a cell
+    ran has to outlive the directory it ran in.
+    """
+    return Path.home() / ".lykeion" / "provenance"
+
+
 def serve(
     stdin: IO[str],
     stdout: IO[str],
     registry: Registry | None = None,
     *,
     share: float | None = None,
+    store_root: Path | None = None,
 ) -> None:
     # No prefix of its own. Nothing in this process can render a boundary,
     # so a host that has not been handed one holds no kernels rather than
     # starting interpreters outside every boundary this machine has.
-    kernels = Registry([]) if registry is None else registry
+    #
+    # A registry the caller built arrives with whatever store that caller
+    # gave it; `store_root` decides only where a registry THIS call builds
+    # writes what it records.
+    kernels = (
+        Registry([], store=ProvenanceStore(store_root or _default_store_root()))
+        if registry is None
+        else registry
+    )
     holding = Holding(registry=kernels, endpoints=Endpoints(kernels))
     # The return is what the caller awaited; the notification is what reaches
     # the lab. One event, written twice, because the two ends of it are

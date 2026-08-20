@@ -5,7 +5,7 @@
  * where it does.
  */
 import type { CellOrigin, KernelMessage, Language, NotebookCell } from "@lykeion/api";
-import type { Store } from "./store";
+import type { Row, Store } from "./store";
 import { nextSeq } from "./migrations";
 
 /**
@@ -40,6 +40,11 @@ export interface CellToRecord {
    *  Absent where nothing was — see `NotebookCell.installed`. */
   installed?: string[];
   toolUseId?: string;
+  /** The record of how this cell ran, named by the hash of that record's own
+   *  bytes — computed by this lab over the bytes it stored, never read off a
+   *  report. Absent where this lab kept none — see `NotebookCell`, and see
+   *  `ReportedCell` for why no such field exists on the wire side. */
+  provenanceId?: string;
 }
 
 /**
@@ -47,6 +52,15 @@ export interface CellToRecord {
  * and nothing about where it is being filed. The Task and the session are
  * decided by this lab, from the run or the session the report came in on,
  * and are never read off the report.
+ *
+ * Nor is the record it is joined to. There is deliberately no
+ * `provenanceId` here: that id is the hash of bytes THIS lab stored and
+ * hashed, and a machine that could name one would be choosing what a row in
+ * a notebook every member reads points at, with no envelope behind it.
+ * `CellToRecord` carries the field because that is what this lab writes;
+ * this interface is what a machine may claim, and the two are separate for
+ * exactly this reason. Callers of `/daemon/cell` spread this whole object
+ * into `recordCell`, so a field added here is a field a sender fills in.
  */
 export interface ReportedCell {
   kernelId: string;
@@ -166,8 +180,9 @@ export function recordCell(store: Store, cell: CellToRecord, ts: number): string
   store.run(
     `INSERT INTO cells
        (id, task_id, session_id, kernel_id, name, language, environment, execution_count,
-        source, origin_surface, origin_by, ok, wall_ms, ts, outputs, installed, tool_use_id, seq)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        source, origin_surface, origin_by, ok, wall_ms, ts, outputs, installed, tool_use_id,
+        provenance_id, seq)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       cell.taskId,
@@ -190,10 +205,51 @@ export function recordCell(store: Store, cell: CellToRecord, ts: number): string
       // `notebookFor` would then have to invent the absence back out of.
       cell.installed === undefined ? null : JSON.stringify(cell.installed),
       cell.toolUseId ?? null,
+      // NULL where this lab kept no record of how the cell ran, which is
+      // also every cell recorded before it kept any. Both read the same way
+      // to whoever opens the notebook: there is nothing to point at.
+      cell.provenanceId ?? null,
       seq,
     ],
   );
   return id;
+}
+
+/** The columns a row needs to become a `NotebookCell` — shared by every
+ *  query that reads one, so a column added for one caller reaches every
+ *  other reader rather than becoming a second, drifting row shape. */
+const CELL_COLUMNS = `id, kernel_id, name, language, environment, execution_count, source,
+              origin_surface, origin_by, ok, wall_ms, ts, outputs, installed, tool_use_id,
+              provenance_id`;
+
+function cellFromRow(row: Row): NotebookCell {
+  return {
+    id: row.id as string,
+    kernelId: row.kernel_id as string,
+    name: row.name as string,
+    language: row.language as Language,
+    environment: row.environment as string,
+    executionCount: row.execution_count as number,
+    source: row.source as string,
+    origin: {
+      surface: row.origin_surface as CellOrigin["surface"],
+      by: row.origin_by as string,
+    },
+    ok: row.ok === 1,
+    wallMs: row.wall_ms as number,
+    ts: row.ts as number,
+    outputs: JSON.parse(row.outputs as string) as KernelMessage[],
+    // Absent for every cell recorded before this column existed and for
+    // every cell that installed nothing, which are the same answer to the
+    // reader: there is nothing to show on this cell.
+    ...(row.installed === null || row.installed === undefined
+      ? {}
+      : { installed: JSON.parse(row.installed as string) as string[] }),
+    ...(row.tool_use_id === null ? {} : { toolUseId: row.tool_use_id as string }),
+    ...(row.provenance_id === null || row.provenance_id === undefined
+      ? {}
+      : { provenanceId: row.provenance_id as string }),
+  };
 }
 
 /**
@@ -204,36 +260,25 @@ export function recordCell(store: Store, cell: CellToRecord, ts: number): string
  */
 export function notebookFor(store: Store, taskId: string): NotebookCell[] {
   return store
+    .all(`SELECT ${CELL_COLUMNS} FROM cells WHERE task_id = ? ORDER BY seq ASC`, [taskId])
+    .map(cellFromRow);
+}
+
+/**
+ * Every cell one tool call produced within one Task, oldest first.
+ *
+ * The Task is required rather than optional. A `tool_use_id` is minted per
+ * session by the provider and collision is not expected — but an unscoped
+ * join turns a collision into a cell from another Task appearing under this
+ * one's step, and that is a worse failure than a missing row. A caller that
+ * could omit the scope is a leak held off by convention; a signature that
+ * cannot express the unscoped query is one held off by the compiler.
+ */
+export function cellsForToolUse(store: Store, toolUseId: string, taskId: string): NotebookCell[] {
+  return store
     .all(
-      `SELECT id, kernel_id, name, language, environment, execution_count, source,
-              origin_surface, origin_by, ok, wall_ms, ts, outputs, installed, tool_use_id
-         FROM cells
-        WHERE task_id = ?
-        ORDER BY seq ASC`,
-      [taskId],
+      `SELECT ${CELL_COLUMNS} FROM cells WHERE tool_use_id = ? AND task_id = ? ORDER BY seq ASC`,
+      [toolUseId, taskId],
     )
-    .map((row) => ({
-      id: row.id as string,
-      kernelId: row.kernel_id as string,
-      name: row.name as string,
-      language: row.language as Language,
-      environment: row.environment as string,
-      executionCount: row.execution_count as number,
-      source: row.source as string,
-      origin: {
-        surface: row.origin_surface as CellOrigin["surface"],
-        by: row.origin_by as string,
-      },
-      ok: row.ok === 1,
-      wallMs: row.wall_ms as number,
-      ts: row.ts as number,
-      outputs: JSON.parse(row.outputs as string) as KernelMessage[],
-      // Absent for every cell recorded before this column existed and for
-      // every cell that installed nothing, which are the same answer to the
-      // reader: there is nothing to show on this cell.
-      ...(row.installed === null || row.installed === undefined
-        ? {}
-        : { installed: JSON.parse(row.installed as string) as string[] }),
-      ...(row.tool_use_id === null ? {} : { toolUseId: row.tool_use_id as string }),
-    }));
+    .map(cellFromRow);
 }

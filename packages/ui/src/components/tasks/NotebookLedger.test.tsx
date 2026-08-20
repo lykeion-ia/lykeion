@@ -29,10 +29,16 @@ function cell(overrides: Partial<NotebookCell> = {}): NotebookCell {
   };
 }
 
-function renderLedger(
+/**
+ * Renders and waits for `CodeBlock`'s async shiki highlighter to settle on
+ * every cell — the same wait `"shows loading, refresh warnings..."` already
+ * does explicitly below — so a caller's synchronous assertions never race a
+ * `setState` React would otherwise report outside `act`.
+ */
+async function renderLedger(
   props: Partial<ComponentProps<typeof NotebookLedger>> = {},
 ) {
-  return render(
+  const result = render(
     <DirectoryContext.Provider value={directoryOf([])}>
       <NotebookLedger
         cells={[]}
@@ -45,6 +51,11 @@ function renderLedger(
       />
     </DirectoryContext.Provider>,
   );
+  const expectedShiki = props.loading ? 0 : (props.cells ?? []).length;
+  await waitFor(() =>
+    expect(document.querySelectorAll(".shiki")).toHaveLength(expectedShiki),
+  );
+  return result;
 }
 
 it("opens only a fresh researcher cell and failures until the researcher changes them", async () => {
@@ -61,7 +72,7 @@ it("opens only a fresh researcher cell and failures until the researcher changes
       outputs: [{ kind: "error", ename: "ValueError", evalue: "bad", traceback: [] }],
     }),
   ];
-  const { container, rerender } = renderLedger({ cells, autoOpenCellId: "fresh" });
+  const { container, rerender } = await renderLedger({ cells, autoOpenCellId: "fresh" });
   const details = () => [...container.querySelectorAll<HTMLDetailsElement>("details")];
 
   expect(details().map((detail) => detail.open)).toEqual([false, true, false, true]);
@@ -115,7 +126,7 @@ it("shows loading, refresh warnings, and the selected context terminal row", asy
     cell({ id: "three" }),
     cell({ id: "four" }),
   ];
-  const { rerender } = renderLedger({ loading: true });
+  const { rerender } = await renderLedger({ loading: true });
   expect(screen.getByText("Loading notebook…")).toBeInTheDocument();
 
   rerender(
@@ -180,29 +191,127 @@ it("draws a cell's outputs as a code surface, not as loose text under one", () =
   expect(rule(".nbp-out")).toMatch(/font-size:\s*var\(--type-sub\)/);
 });
 
-it("says on the cell what it installed into this kernel only", () => {
+it("says on the cell what it installed into this kernel only", async () => {
   // The spec's own words for why this is drawn rather than merely recorded:
   // "so a researcher scrolling back next week finds the answer on the cell
   // that caused it." A record only the wire can see answers nobody.
-  renderLedger({ cells: [cell({ installed: ["scanpy", "anndata"] })] });
+  await renderLedger({ cells: [cell({ installed: ["scanpy", "anndata"] })] });
   expect(screen.getByText(/scanpy, anndata/)).toBeInTheDocument();
   // The impermanence is the fact that matters. A researcher reading this
   // next week is looking at packages that are already gone.
   expect(screen.getByText(/gone\s+when it restarts/i)).toBeInTheDocument();
 });
 
-it("says nothing on a cell that installed nothing", () => {
+it("says nothing on a cell that installed nothing", async () => {
   // Absent is not zero, on the surface a researcher actually reads. A badge
   // saying "installed none" would appear on almost every cell in the
   // notebook and mean nothing on any of them.
-  renderLedger({ cells: [cell()] });
+  await renderLedger({ cells: [cell()] });
   expect(screen.queryByText(/installed into this kernel only/i)).not.toBeInTheDocument();
 });
 
-it("says nothing for an empty install list either", () => {
+it("says nothing for an empty install list either", async () => {
   // The key should be absent rather than empty, and the wire is tested for
   // that at its own end — but this is the surface where an empty list would
   // become a visible claim, so it is refused here too rather than trusted.
-  renderLedger({ cells: [cell({ installed: [] })] });
+  await renderLedger({ cells: [cell({ installed: [] })] });
   expect(screen.queryByText(/installed into this kernel only/i)).not.toBeInTheDocument();
+});
+
+it("renders the environment a cell ran in", async () => {
+  await renderLedger({ cells: [cell({ environment: "genomics" })] });
+  expect(screen.getByText("genomics")).toBeInTheDocument();
+});
+
+it("says a tree was modified when the cell ran", async () => {
+  await renderLedger({
+    cells: [
+      cell({
+        codeState: {
+          lineage: "abc12345",
+          index: 3,
+          git: { branch: "trunk", commit: "c".repeat(40), dirty: true },
+        },
+      }),
+    ],
+  });
+  expect(screen.getByText("dirty")).toBeInTheDocument();
+});
+
+it("says a tree was clean when the cell ran", async () => {
+  await renderLedger({
+    cells: [
+      cell({
+        codeState: {
+          lineage: "abc12345",
+          index: 3,
+          git: { branch: "trunk", commit: "c".repeat(40), dirty: false },
+        },
+      }),
+    ],
+  });
+  expect(screen.getByText("clean")).toBeInTheDocument();
+});
+
+it("falls back to the lineage digest where no repository backed the cell", async () => {
+  await renderLedger({ cells: [cell({ codeState: { lineage: "abc12345", index: 3 } })] });
+  expect(screen.getByText("abc12345")).toBeInTheDocument();
+});
+
+it("renders no code state at all for a cell that has none", async () => {
+  // A cell from before the envelope. An em dash here would be this rail
+  // reporting a measurement that was never taken.
+  await renderLedger({ cells: [cell({})] });
+  expect(screen.queryByTestId("cell-code-state")).not.toBeInTheDocument();
+});
+
+it("names a payload this viewer cannot draw by its hash and its size", async () => {
+  // A `data_ref` entry carries a sha256, a size, and whether a copy of the
+  // payload reached the producing machine's store. It carries no path, so a
+  // path rendered here would name a file nothing anywhere writes.
+  await renderLedger({
+    cells: [
+      cell({
+        id: "ref",
+        outputs: [
+          {
+            kind: "display_data",
+            data: { "application/pdf": "%PDF-1.7" },
+            data_ref: {
+              "application/pdf": { sha256: "3f2a1b09c4d5e6f7", size: 2048, stored: true },
+            },
+            metadata: {},
+          },
+        ],
+      }),
+    ],
+    autoOpenCellId: "ref",
+  });
+
+  expect(screen.getByText("[application/pdf → 3f2a1b09, 2 KB]")).toBeInTheDocument();
+});
+
+it("names a payload whose reference says nothing by its MIME type alone", async () => {
+  // Nothing between the kernel and this row reads a `data_ref` VALUE, so a
+  // reference with no hash under it can arrive here. The MIME type is then
+  // the only true thing this row can say, and a stand-in hash or a stand-in
+  // size would be the viewer inventing a fact about a payload.
+  await renderLedger({
+    cells: [
+      cell({
+        id: "bare",
+        outputs: [
+          {
+            kind: "display_data",
+            data: { "application/pdf": "%PDF-1.7" },
+            data_ref: { "application/pdf": null },
+            metadata: {},
+          },
+        ] as unknown as NotebookCell["outputs"],
+      }),
+    ],
+    autoOpenCellId: "bare",
+  });
+
+  expect(screen.getByText("[application/pdf]")).toBeInTheDocument();
 });

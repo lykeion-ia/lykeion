@@ -449,6 +449,43 @@ function queuedPositions(
     .map((state) => state.ahead);
 }
 
+/** One cell as this machine's kernel host announces one: the cell itself, the
+ *  session and Task it ran in, and the record of how it ran — which the host
+ *  names by the hash of that record's own bytes. */
+function announcedCell(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "cell_host",
+    sessionId: "se_1",
+    taskId: "t_cmp",
+    kernelId: "k_1",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 1,
+    source: "1 + 1",
+    origin: { surface: "agent", by: "a_claude" },
+    ok: true,
+    wallMs: 4,
+    ts: 99,
+    outputs: [],
+    provenanceId: "p_1",
+    provenance: {
+      version: "lykeion.provenance.v1",
+      identity: { taskId: "t_cmp", sessionId: "se_1", kernelId: "k_1", cellId: "cell_host" },
+      outputs: { status: "succeeded", items: [] },
+    },
+    ...overrides,
+  };
+}
+
+/** What this machine asked its host in order to put a kernel within reach,
+ *  short what it tells the host about the workspace on its own clock: that
+ *  telling is awaited off the path a turn is on, so where it lands among
+ *  these is not something a caller decides or a test can pin. */
+function reaching(asked: string[]): string[] {
+  return asked.filter((method) => method !== "kernel.set_code_state");
+}
+
 /** A kernel host that answers, and says in what order it was asked.
  *
  *  `configuring` holds the boundary's reply open for as long as a test wants,
@@ -472,6 +509,9 @@ function stubKernelHost(
   environmentReads: Record<string, string[]> = {},
 ) {
   const asked: string[] = [];
+  /** The same asks, whole. `asked` answers "in what order", and a test about
+   *  what this daemon actually SAID needs the params beside the name. */
+  const calls: Array<{ method: string; params: unknown }> = [];
   const answering: { configured?: { token?: string }; refusing: boolean } = { refusing: false };
   /** Session ids this host will not take a boundary for, so a test can have
    *  ONE session's re-send fail while the others succeed. */
@@ -511,6 +551,7 @@ function stubKernelHost(
   const host: KernelHost = {
     call: async (method, params) => {
       asked.push(method);
+      calls.push({ method, params });
       if (method === "host.hello") return { protocol, languages, capable, environmentReads };
       if (method === "kernel.restart_environment") {
         environmentRestarts.push((params ?? {}) as Record<string, unknown>);
@@ -554,6 +595,7 @@ function stubKernelHost(
   return {
     host,
     asked,
+    calls,
     configurations,
     environmentRestarts,
     /** Asks this daemon for something, the way the real host does when it
@@ -657,7 +699,7 @@ it("gives a session a kernel before it starts the agent it names one to", async 
     mcpServers: Array<{ name: string; args: string[]; env: Array<{ name: string; value: string }> }>;
     _meta?: unknown;
   };
-  expect(kernels.asked).toEqual([
+  expect(reaching(kernels.asked)).toEqual([
     "host.hello",
     "kernel.configure_session",
     "the boundary landed",
@@ -1777,6 +1819,63 @@ it("leaves the declaration list absent when the lab's answer cannot be read", as
   expect(configured.environments).toBeDefined();
 });
 
+it("tells the host where to keep the record of every cell it runs", async () => {
+  // A host left to decide for itself writes under a home directory — the same
+  // pile for every daemon on this machine, whatever each was told to keep its
+  // own state in.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ sleep: 200 }, { endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_store_root"));
+  await until(() => existsSync(named), "the session opening");
+
+  const hello = kernels.calls.find((call) => call.method === "host.hello")!;
+  expect((hello.params as { storeRoot?: string }).storeRoot).toBe(join(data, "provenance"));
+});
+
+it("tells the host what backs the workspace as a turn starts", async () => {
+  // Nothing else connects the probe to the host. Unconnected, every record
+  // this lab keeps would say the repository behind a cell was never looked
+  // for — on a machine where looking is one `git` invocation away — and every
+  // test either side of this hop would still pass.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ sleep: 200 }, { endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const named = markerIn(data, "session-new.json");
+  process.env.LYKEION_STUB_SESSION_NEW_PARAMS = named;
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_code_state"));
+  await until(() => existsSync(named), "the session opening");
+
+  await until(
+    () => kernels.calls.some((call) => call.method === "kernel.set_code_state"),
+    "the code state reaching the host",
+  );
+  // Filed under the session whose turn this is, read off the confinement
+  // that opened it rather than written here: the workspace probed is that
+  // session's own directory, and the host holds every session on this
+  // machine. A record joining one session's `cwd` to another's branch is one
+  // nothing downstream can detect, since it is immutable and named by the
+  // hash of its own bytes.
+  const configured = kernels.calls.find((call) => call.method === "kernel.configure_session")!
+    .params as { session_id: string };
+  // A Task directory this machine made is not a repository, and saying so is
+  // a different fact from never having asked.
+  expect(kernels.calls.find((call) => call.method === "kernel.set_code_state")!.params).toEqual({
+    session_id: configured.session_id,
+    codeState: { status: "unavailable", reason: "not_applicable" },
+  });
+});
+
 it("forwards a cell the kernel host announces to the run currently taking its session's turn", async () => {
   // Held open past the point the cell is announced: `runOfSession` only
   // names this run for as long as its turn is actually the one running, and
@@ -1798,21 +1897,7 @@ it("forwards a cell the kernel host announces to the run currently taking its se
   // whole session has opened, which is what the marker below confirms.
   await until(() => existsSync(named), "the session opening");
 
-  kernels.announceCell({
-    sessionId: "se_1",
-    taskId: "t_cmp",
-    kernelId: "k_1",
-    name: "main",
-    language: "python",
-    environment: "python",
-    executionCount: 1,
-    source: "1 + 1",
-    origin: { surface: "agent", by: "a_claude" },
-    ok: true,
-    wallMs: 4,
-    ts: 99,
-    outputs: [],
-  });
+  kernels.announceCell(announcedCell({ sessionId: "se_1" }));
 
   await until(
     () =>
@@ -1877,21 +1962,7 @@ it("joins a forwarded cell to the kernel call the session's own log says it arri
     "the kernel call reaching the log",
   );
 
-  kernels.announceCell({
-    sessionId: "se_1",
-    taskId: "t_cmp",
-    kernelId: "k_1",
-    name: "main",
-    language: "python",
-    environment: "python",
-    executionCount: 1,
-    source: "1 + 1",
-    origin: { surface: "agent", by: "a_claude" },
-    ok: true,
-    wallMs: 4,
-    ts: 99,
-    outputs: [],
-  });
+  kernels.announceCell(announcedCell({ sessionId: "se_1" }));
 
   await until(
     () =>
@@ -1924,21 +1995,7 @@ it("drops a cell the kernel host announces for a session with no run currently t
   lab.send(startRunOn("run_no_cell"));
   await until(() => existsSync(named), "the session opening");
 
-  kernels.announceCell({
-    sessionId: "se_never_started_a_turn",
-    taskId: "t_cmp",
-    kernelId: "k_1",
-    name: "main",
-    language: "python",
-    environment: "python",
-    executionCount: 1,
-    source: "1 + 1",
-    origin: { surface: "agent", by: "a_claude" },
-    ok: true,
-    wallMs: 4,
-    ts: 99,
-    outputs: [],
-  });
+  kernels.announceCell(announcedCell({ sessionId: "se_never_started_a_turn" }));
 
   // A batched event waits out a 50ms flush window before it would ever
   // reach the lab at all — given long enough to have done that, and to have
@@ -4278,7 +4335,7 @@ it("names no tool server when this machine's kernel host speaks another protocol
   // No relay named, so no tool leads to a kernel that could never be
   // configured — and the session it was not named to still opened.
   expect(params.mcpServers).toEqual([]);
-  expect(kernels.asked).toEqual(["host.hello"]);
+  expect(reaching(kernels.asked)).toEqual(["host.hello"]);
   await until(
     () =>
       lab.events.some((post) =>

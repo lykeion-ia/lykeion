@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { KernelMessage, NotebookCell } from "@lykeion/api";
 import { useDirectory } from "../../hooks/useDirectory";
+import { formatBytes } from "../../lib/format";
 import { CodeBlock } from "./CodeBlock";
 
 export function outputSummary(outputs: KernelMessage[]): string {
@@ -123,6 +124,18 @@ function CellView({
             <span className="nbp-cell-by">
               <CellBy cell={cell} />
             </span>
+            {cell.environment !== "" && (
+              <span className="nbp-cell-env">{cell.environment}</span>
+            )}
+            {cell.codeState !== undefined && (
+              <span className="nbp-cell-code-state" data-testid="cell-code-state">
+                {cell.codeState.git === undefined
+                  ? cell.codeState.lineage
+                  : cell.codeState.git.dirty
+                    ? "dirty"
+                    : "clean"}
+              </span>
+            )}
           </span>
         }
       />
@@ -199,14 +212,30 @@ function OutputView({ output }: { output: KernelMessage }) {
   if (mimeTypes.length > 0) {
     return (
       <pre className="nbp-out nbp-result">
-        {mimeTypes
-          .map((mime) => {
-            const meta = references[mime] as { path?: string } | undefined;
-            return `[${mime} → ${meta?.path ?? ".lykeion/outputs"}]`;
-          })
-          .join("\n")}
+        {mimeTypes.map((mime) => `[${mime}${describeReference(references[mime])}]`).join("\n")}
       </pre>
     );
   }
   return null;
+}
+
+/**
+ * What a reference says about a payload this viewer has no renderer for: the
+ * first eight characters of the hash the payload is filed under everywhere
+ * else, and how large it is. Short enough to read off a notebook page, long
+ * enough to find the thing by.
+ *
+ * Nothing is supplied for a field `data_ref` does not carry. A stand-in
+ * hash is a name nothing answers to and a stand-in size is a measurement
+ * nobody took, and a reference with neither leaves the MIME type standing
+ * alone — which is the one thing this row then knows.
+ */
+function describeReference(value: unknown): string {
+  const reference = payload(value);
+  const known: string[] = [];
+  const sha256 = reference.sha256;
+  if (typeof sha256 === "string" && sha256 !== "") known.push(sha256.slice(0, 8));
+  const size = reference.size;
+  if (typeof size === "number" && Number.isFinite(size)) known.push(formatBytes(size));
+  return known.length === 0 ? "" : ` → ${known.join(", ")}`;
 }

@@ -93,7 +93,7 @@ def test_a_second_request_is_answered_while_a_cell_is_still_running(spoken, tmp_
     spoken.send({"id": 2, "method": "host.hello", "params": {}})
     answered = spoken.until(lambda: spoken.reply(2), "the second request answered")
 
-    assert answered["result"]["protocol"] == 4
+    assert answered["result"]["protocol"] == 5
     # Answered while the first is still in flight, rather than after it.
     assert spoken.reply(1) is None
 

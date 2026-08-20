@@ -178,6 +178,8 @@ export function createHttpApi(transport: Transport): LykeionApi {
     listRunningKernels: call("listRunningKernels"),
     computeSnapshot: call("computeSnapshot"),
     taskNotebook: call("taskNotebook"),
+    cellProvenance: call("cellProvenance"),
+    cellsForToolUse: call("cellsForToolUse"),
     kernelExecute: call("kernelExecute"),
     kernelInterrupt: call("kernelInterrupt"),
     kernelStop: call("kernelStop"),

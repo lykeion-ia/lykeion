@@ -6,6 +6,7 @@
  */
 
 import type { NotebookCell } from "./machine";
+import type { ProvenanceEnvelope } from "./provenance";
 import type { Priority, Stage, Task, TaskStatus } from "./types";
 
 /** A plan step's live status. Drives the run strip's
@@ -519,7 +520,11 @@ export type RunEvent =
   | { event: "permission-card"; request: PermissionRequest }
   | { event: "question-asked"; request: QuestionRequest }
   | { event: "log-entry"; entry: ExecutionLogEntry }
-  | { event: "cell"; cell: NotebookCell }
+  /** A cell, and the record of how it ran. The envelope travels beside the
+   *  cell rather than on it: it is named by the hash of its own bytes, and a
+   *  reader that had to lift it out of the cell it is embedded in would be
+   *  rehashing a form nobody wrote. */
+  | { event: "cell"; cell: NotebookCell; provenance: ProvenanceEnvelope }
   | { event: "live"; live: LiveTurn }
   | { event: "reviewing" }
   | { event: "completed"; state: TurnState; run?: RunRecord };

@@ -7,7 +7,12 @@ import { join } from "node:path";
 import type { RunEvent } from "@lykeion/api";
 import { allAgentHomes, confinementFor } from "./agent-home";
 import type { KernelHost } from "./kernel-host";
-import { forwardKernelCells, kernelConfinementFor, kernelSocketPath } from "./kernels";
+import {
+  forwardKernelCells,
+  kernelConfinementFor,
+  kernelSocketPath,
+  tellHostCodeState,
+} from "./kernels";
 import {
   canonicalPath,
   confine,
@@ -18,6 +23,7 @@ import {
   type SandboxPolicy,
 } from "./sandbox";
 import { freshDir } from "./test-support/fresh-dir";
+import { freshRepo } from "./test-support/git-repo";
 
 /** A machine with one Task directory, this machine's own data directory, and
  *  an environment a kernel would be run out of. */
@@ -294,10 +300,20 @@ onDarwin("the boundary a kernel is started inside", () => {
  *  `forwardKernelCells` builds on top of the host interface, not the wire
  *  protocol underneath it — `kernel-host.test.ts` already covers that
  *  against a real child process. */
-function fakeHost(): { host: KernelHost; announce: (method: string, params: unknown) => void } {
+function fakeHost(): {
+  host: KernelHost;
+  announce: (method: string, params: unknown) => void;
+  /** Everything this host was asked for, in order and whole: the params are
+   *  the point wherever what the daemon SAID is what a test is about. */
+  asked: Array<{ method: string; params: unknown }>;
+} {
   const listeners = new Map<string, Array<(params: unknown) => void>>();
+  const asked: Array<{ method: string; params: unknown }> = [];
   const host: KernelHost = {
-    call: () => Promise.resolve({}),
+    call: (method, params) => {
+      asked.push({ method, params });
+      return Promise.resolve({});
+    },
     on(method, handler) {
       listeners.set(method, [...(listeners.get(method) ?? []), handler]);
     },
@@ -313,9 +329,27 @@ function fakeHost(): { host: KernelHost; announce: (method: string, params: unkn
   };
   return {
     host,
+    asked,
     announce(method, params) {
       for (const handler of listeners.get(method) ?? []) handler(params);
     },
+  };
+}
+
+/** The record a cell announcement carries beside it, as the host builds one.
+ *  Opaque to this machine — nothing on this hop reads a field of it — so
+ *  what the tests below ask is only whether the same object comes out the
+ *  other side. */
+function announcedEnvelope(): Record<string, unknown> {
+  return {
+    version: "lykeion.provenance.v1",
+    identity: {
+      taskId: "tk_1",
+      sessionId: "sess_1",
+      kernelId: "k_1",
+      cellId: "cell_host",
+    },
+    outputs: { status: "succeeded", items: [] },
   };
 }
 
@@ -325,6 +359,7 @@ function fakeHost(): { host: KernelHost; announce: (method: string, params: unkn
  *  it says once it does. */
 function cellAnnouncement(sessionId: string): Record<string, unknown> {
   return {
+    id: "cell_host",
     sessionId,
     taskId: "tk_1",
     kernelId: "k_1",
@@ -338,6 +373,8 @@ function cellAnnouncement(sessionId: string): Record<string, unknown> {
     wallMs: 5,
     ts: 42,
     outputs: [],
+    provenanceId: "p_1",
+    provenance: announcedEnvelope(),
   };
 }
 
@@ -364,6 +401,65 @@ it("routes a cell notification to the run of the session it names", () => {
   // one Task's notebook.
   expect("sessionId" in forwarded.cell).toBe(false);
   expect("taskId" in forwarded.cell).toBe(false);
+});
+
+it("forwards the cell under the id the host gave it", () => {
+  // The envelope names this id. A second one minted here would leave the
+  // record pointing at a cell nothing else calls by that name.
+  const { host, announce } = fakeHost();
+  const events: Array<{ runId: string; event: RunEvent }> = [];
+  forwardKernelCells(
+    host,
+    () => "run_1",
+    (runId, event) => events.push({ runId, event }),
+    () => undefined,
+  );
+
+  announce("cell", { ...cellAnnouncement("sess_1"), id: "cell_host", provenanceId: "p_1" });
+
+  const forwarded = events[0]!.event as Extract<RunEvent, { event: "cell" }>;
+  expect(forwarded.cell.id).toBe("cell_host");
+  expect(forwarded.cell.provenanceId).toBe("p_1");
+});
+
+it("leaves the record's name off a cell announced without one, rather than sending an empty key", () => {
+  // Absent is not a value. A host that announced none would otherwise put the
+  // key on the cell carrying `undefined`, and any reader that shows the field
+  // where present would then show it everywhere.
+  const { host, announce } = fakeHost();
+  const events: Array<{ runId: string; event: RunEvent }> = [];
+  forwardKernelCells(
+    host,
+    () => "run_1",
+    (runId, event) => events.push({ runId, event }),
+    () => undefined,
+  );
+
+  const { provenanceId: _named, ...unnamed } = cellAnnouncement("sess_1");
+  announce("cell", unnamed);
+
+  const forwarded = events[0]!.event as Extract<RunEvent, { event: "cell" }>;
+  expect("provenanceId" in forwarded.cell).toBe(false);
+});
+
+it("carries the record of how the cell ran on the frame beside it", () => {
+  // Beside the cell rather than on it: the envelope is named by the hash of
+  // its own bytes, and this hop is the only thing between the kernel that
+  // built it and the lab that checks that name.
+  const { host, announce } = fakeHost();
+  const events: Array<{ runId: string; event: RunEvent }> = [];
+  forwardKernelCells(
+    host,
+    () => "run_1",
+    (runId, event) => events.push({ runId, event }),
+    () => undefined,
+  );
+
+  const envelope = announcedEnvelope();
+  announce("cell", { ...cellAnnouncement("sess_1"), provenance: envelope });
+
+  const forwarded = events[0]!.event as Extract<RunEvent, { event: "cell" }>;
+  expect(forwarded.provenance).toEqual(envelope);
 });
 
 it("carries what a cell installed into the kernel through to the run", () => {
@@ -535,6 +631,49 @@ it("forwards a cell nothing could join with no toolUseId at all", () => {
 
   const forwarded = events[0]!.event as Extract<RunEvent, { event: "cell" }>;
   expect("toolUseId" in forwarded.cell).toBe(false);
+});
+
+it("tells the host what backs the workspace when a kernel is launched", async () => {
+  const { host, asked } = fakeHost();
+  await tellHostCodeState(host, "sess_1", await freshRepo());
+  const told = asked.filter((a) => a.method === "kernel.set_code_state");
+  expect(told).toHaveLength(1);
+  const said = told[0]!.params as { codeState: { status: string; value: { branch: string } } };
+  expect(said.codeState.status).toBe("available");
+  expect(said.codeState.value.branch).toBe("trunk");
+});
+
+it("names the session the answer is about", async () => {
+  // The answer is drawn around ONE workspace, and one host holds every
+  // session on this machine. Unnamed, whichever Task took a turn last would
+  // be stamped on the record of every cell running anywhere on it — and a
+  // record is immutable and named by the hash of its own bytes, so nothing
+  // afterwards could correct one or even see that it was wrong.
+  const { host, asked } = fakeHost();
+  await tellHostCodeState(host, "sess_mine", await freshRepo());
+  const told = asked.filter((a) => a.method === "kernel.set_code_state");
+  expect((told[0]!.params as { session_id: string }).session_id).toBe("sess_mine");
+});
+
+it("tells the host the absence rather than staying silent about it", async () => {
+  // Silence and not_applicable are different facts, and a host left to
+  // default would record every cell as not_captured on a machine where the
+  // real answer was known.
+  const { host, asked } = fakeHost();
+  await tellHostCodeState(host, "sess_1", freshDir());
+  const told = asked.filter((a) => a.method === "kernel.set_code_state");
+  expect(told[0]!.params).toEqual({
+    session_id: "sess_1",
+    codeState: { status: "unavailable", reason: "not_applicable" },
+  });
+});
+
+it("does not cost a turn the answer a host will not take", async () => {
+  // What this carries is a fact ABOUT a turn, not the turn itself. A host
+  // that refuses it leaves every cell recording what it already would have.
+  const refusing = fakeHost();
+  refusing.host.call = () => Promise.reject(new Error("this host is not answering"));
+  await expect(tellHostCodeState(refusing.host, "sess_1", freshDir())).resolves.toBeUndefined();
 });
 
 /** The working directory a machine has on an ordinary install: the default

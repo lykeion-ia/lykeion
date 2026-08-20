@@ -1,7 +1,10 @@
 import { useState } from "react";
 import type { ExecutionLogEntry, ToolOutputPart } from "@lykeion/api";
+import { useApi } from "../../api/ApiContext";
+import { usePromise } from "../../hooks/usePromise";
 import { ChevronRightIcon } from "../icons";
 import { CodeBlock } from "./CodeBlock";
+import { StepCells } from "./StepCells";
 
 /**
  * The opened body of a tool-step card: the per-kind detail a researcher
@@ -622,9 +625,15 @@ export function ToolStepDetail({
   // the reason it was refused, which the note below states as the reason it
   // is rather than drawing it as output the call never produced.
   const parts = outcome === "never-ran" ? [] : outputPartsOf(entry, stdout);
+  const api = useApi();
+  const cells = usePromise(
+    () => api.cellsForToolUse(entry.toolUseId),
+    [api, entry.toolUseId],
+  );
   return (
     <>
       {detailBody(entry, parts)}
+      <StepCells cells={cells.data ?? []} />
       <StepOutcomeNote entry={entry} outcome={outcome} />
     </>
   );

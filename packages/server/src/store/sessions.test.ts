@@ -6,6 +6,7 @@ import { openStore } from "./sqlite";
 import { MIGRATIONS, migrate, nextSeq } from "./migrations";
 import * as sessionsStore from "./sessions";
 import { notebookFor } from "./cells";
+import { envelopeById } from "./provenance";
 import {
   openSession,
   recordTurn,
@@ -23,6 +24,7 @@ import {
   dropGrantsForResearch,
   dropGrantsForMachine,
 } from "./sessions";
+import { envelopeHash, type ProvenanceEnvelope } from "@lykeion/api";
 import type { ExecutionLogEntry, NotebookCell, RunEventFrame } from "@lykeion/api";
 import type { Store } from "./store";
 
@@ -153,11 +155,16 @@ it("folds a cell frame into the Task's notebook, keyed off the turn's own task, 
     toolUseId: "tu_1",
   };
 
-  recordRunFrames(store, turnId, [{ seq: 1, event: { event: "cell", cell } }], 100);
+  const provenance = envelopeFor() as unknown as ProvenanceEnvelope;
+  recordRunFrames(store, turnId, [{ seq: 1, event: { event: "cell", cell, provenance } }], 100);
 
   const notebook = notebookFor(store, "t_notebook");
   expect(notebook).toHaveLength(1);
-  expect(notebook[0]).toEqual({ ...cell, id: notebook[0]!.id });
+  expect(notebook[0]).toEqual({
+    ...cell,
+    id: notebook[0]!.id,
+    provenanceId: envelopeHash(provenance),
+  });
   // The wire id is a placeholder the daemon minted for transit; the row
   // mints its own durable one rather than trusting it.
   expect(notebook[0]!.id).not.toBe("wire-only");
@@ -189,7 +196,12 @@ it("carries what an agent's cell installed into its kernel all the way onto the 
     installed: ["anndata", "scanpy"],
   };
 
-  recordRunFrames(store, turnId, [{ seq: 1, event: { event: "cell", cell } }], 100);
+  recordRunFrames(
+    store,
+    turnId,
+    [{ seq: 1, event: { event: "cell", cell, provenance: envelopeFor() as unknown as ProvenanceEnvelope } }],
+    100,
+  );
 
   expect(notebookFor(store, "t_installed")[0]!.installed).toEqual(["anndata", "scanpy"]);
 });
@@ -221,6 +233,7 @@ it("drops a cell frame for a run that has already ended, the same as every other
             ts: 42,
             outputs: [],
           },
+          provenance: envelopeFor() as unknown as ProvenanceEnvelope,
         },
       },
     ],
@@ -229,6 +242,181 @@ it("drops a cell frame for a run that has already ended, the same as every other
 
   expect(accepted).toEqual([]);
   expect(notebookFor(store, "t_ended")).toEqual([]);
+});
+
+/** The record a cell's frame carries beside it, as a kernel host builds one.
+ *  Named by the hash of its own bytes, which is why the tests below compute
+ *  that hash rather than naming a literal: a fixture whose id was written out
+ *  by hand would stop being this envelope's id the moment a field moved. */
+function envelopeFor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    version: "lykeion.provenance.v1",
+    identity: {
+      taskId: "t_provenance",
+      sessionId: "se_1",
+      kernelId: "k_1",
+      cellId: "wire-only",
+    },
+    input: {
+      code: "1 + 1",
+      cwd: "/w",
+      codeState: {
+        lineage: { incarnation: 0, index: 0, digest: "d0" },
+        git: { status: "unavailable", reason: "not_applicable" },
+      },
+    },
+    environment: {
+      host: {
+        platform: "darwin",
+        arch: "arm64",
+        runtimes: { status: "unavailable", reason: "not_captured" },
+      },
+      kernel: {
+        id: "k_1",
+        language: "python",
+        incarnation: 0,
+        processId: 2,
+        processStartedAt: 100,
+      },
+    },
+    outputs: { status: "succeeded", items: [] },
+    timestamps: { createdAt: 40, startedAt: 41, completedAt: 42 },
+    ...overrides,
+  };
+}
+
+/** A cell as a frame carries one, with the id the machine that ran it
+ *  minted. */
+function cellFor(): NotebookCell {
+  return {
+    id: "wire-only",
+    kernelId: "k_1",
+    name: "main",
+    language: "python",
+    environment: "python",
+    executionCount: 1,
+    source: "1 + 1",
+    origin: { surface: "agent", by: "a_claude" },
+    ok: true,
+    wallMs: 8,
+    ts: 42,
+    outputs: [],
+  };
+}
+
+it("keeps the record a cell's frame carried, and joins the cell to it", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store, { taskId: "t_provenance" });
+  const provenance = envelopeFor();
+
+  recordRunFrames(
+    store,
+    turnId,
+    [{ seq: 1, event: { event: "cell", cell: cellFor(), provenance } }] as unknown as RunEventFrame[],
+    100,
+  );
+
+  const cell = notebookFor(store, "t_provenance")[0]!;
+  expect(cell.provenanceId).toBe(envelopeHash(provenance as never));
+  expect(envelopeById(store, cell.provenanceId!)).toEqual(provenance);
+});
+
+it("files a record under the Task the frame arrived on, never the one it names for itself", () => {
+  // A sender naming its own Task is a sender that can file a record anywhere.
+  // The Task and the session come from the turn, the same as the cell's do.
+  const store = freshStore();
+  const { turnId, sessionId } = freshTurn(store, { taskId: "t_provenance" });
+
+  recordRunFrames(
+    store,
+    turnId,
+    [
+      {
+        seq: 1,
+        event: {
+          event: "cell",
+          cell: cellFor(),
+          provenance: envelopeFor({
+            identity: {
+              taskId: "t_somewhere_else",
+              sessionId: "se_somewhere_else",
+              kernelId: "k_1",
+              cellId: "wire-only",
+            },
+          }),
+        },
+      },
+    ] as unknown as RunEventFrame[],
+    100,
+  );
+
+  const row = store.get(`SELECT task_id, session_id, ts FROM provenance_envelopes`)!;
+  expect(row.task_id).toBe("t_provenance");
+  expect(row.session_id).toBe(sessionId);
+  // The moment the cell reports, not the moment the batch landed.
+  expect(row.ts).toBe(42);
+});
+
+it("records a cell whose record this lab cannot read, with no join to one", () => {
+  // A notebook missing the cell would be a worse record than one missing the
+  // envelope behind it.
+  const store = freshStore();
+  const { turnId } = freshTurn(store, { taskId: "t_unreadable" });
+
+  const said: unknown[][] = [];
+  const reporting = console.error;
+  console.error = (...args: unknown[]) => said.push(args);
+  try {
+    recordRunFrames(
+      store,
+      turnId,
+      [
+        {
+          seq: 1,
+          event: {
+            event: "cell",
+            cell: cellFor(),
+            provenance: envelopeFor({ version: "lykeion.provenance.v9" }),
+          },
+        },
+      ] as unknown as RunEventFrame[],
+      100,
+    );
+  } finally {
+    console.error = reporting;
+  }
+
+  // A body was there and this lab refused it. Nothing else anywhere would
+  // surface that, so the fold says so the way it says it about a cell.
+  expect(said.filter((args) => String(args[0]).includes("cannot read"))).toHaveLength(1);
+  const notebook = notebookFor(store, "t_unreadable");
+  expect(notebook).toHaveLength(1);
+  expect("provenanceId" in notebook[0]!).toBe(false);
+  expect(store.get(`SELECT id FROM provenance_envelopes`)).toBeUndefined();
+});
+
+it("records a cell whose frame carried no record at all", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store, { taskId: "t_norecord" });
+
+  const said: unknown[][] = [];
+  const reporting = console.error;
+  console.error = (...args: unknown[]) => said.push(args);
+  try {
+    recordRunFrames(
+      store,
+      turnId,
+      [{ seq: 1, event: { event: "cell", cell: cellFor() } }] as unknown as RunEventFrame[],
+      100,
+    );
+  } finally {
+    console.error = reporting;
+  }
+
+  expect("provenanceId" in notebookFor(store, "t_norecord")[0]!).toBe(false);
+  // Silence, not a complaint: a daemon built before this field sends none,
+  // and saying so on every cell it forwards would be noise on every line.
+  expect(said).toEqual([]);
 });
 
 it("commits the valid frames around a run event the fold switch does not recognize, and keeps accepting frames after it", () => {

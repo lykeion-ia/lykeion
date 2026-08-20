@@ -10,6 +10,7 @@ import type {
 } from "@lykeion/api";
 import type { Row, Store } from "./store";
 import { readReportedCell, recordCell } from "./cells";
+import { readReportedEnvelope, recordEnvelope } from "./provenance";
 import { nextSeq } from "./migrations";
 
 /** A folder a Research's owner has granted standing access to on one machine.
@@ -795,6 +796,41 @@ export function recordRunFrames(
             );
             break;
           }
+          // Read out of the frame the same way the cell beside it is, and
+          // filed before the cell so the row that references it cannot name
+          // a record nothing wrote.
+          //
+          // Reached through `unknown` rather than off the narrowed event: the
+          // contract says every cell frame carries one, and a daemon is a
+          // separate program on somebody else's machine that may have been
+          // built before it did. What the type promises about a frame this
+          // lab MINTS says nothing about one it receives.
+          const envelope = readReportedEnvelope(
+            (event as { provenance?: unknown }).provenance,
+          );
+          // A frame whose envelope this lab cannot read still carries a cell,
+          // and a notebook missing the cell would be a worse record than one
+          // missing the envelope behind it.
+          //
+          // Said out loud only where a body was actually there. A frame that
+          // carries none is an older daemon and nothing to report; one that
+          // carries a body this lab refuses is a version skew, or a writer
+          // that sent a status its own cell had not reached — and nothing
+          // else anywhere would ever surface it.
+          if (envelope === undefined && (event as { provenance?: unknown }).provenance !== undefined)
+            console.error(
+              `recordRunFrames: keeping a cell whose record this lab cannot read: ${JSON.stringify((event as { provenance?: unknown }).provenance)}`,
+            );
+          const provenanceId =
+            envelope === undefined
+              ? undefined
+              : recordEnvelope(
+                  store,
+                  envelope,
+                  row.task_id as string,
+                  row.session_id as string,
+                  cell.ts,
+                );
           recordCell(
             store,
             {
@@ -815,6 +851,10 @@ export function recordRunFrames(
               // the other would make the surface depend on who ran the cell.
               ...(cell.installed === undefined ? {} : { installed: cell.installed }),
               ...(cell.toolUseId === undefined ? {} : { toolUseId: cell.toolUseId }),
+              // The id this lab computed over the bytes it stored, never the
+              // one the cell arrived carrying: a row joined on a sender's own
+              // word for it would point wherever that sender said.
+              ...(provenanceId === undefined ? {} : { provenanceId }),
             },
             cell.ts,
           );

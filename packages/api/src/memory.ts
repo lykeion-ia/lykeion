@@ -1615,6 +1615,17 @@ export function createInMemoryLab(
     async taskNotebook(_taskId: string) {
       return [];
     },
+    async cellProvenance(_cellId: string) {
+      // No kernel behind a browser core, so no cell has ever run and no
+      // envelope has ever been written. `undefined` is the honest answer,
+      // not a refusal.
+      return undefined;
+    },
+    async cellsForToolUse(_toolUseId: string) {
+      // Same reasoning as `cellProvenance`: nothing has run, so no tool call
+      // has ever produced a cell.
+      return [];
+    },
     async kernelExecute(_kernelId: string, _code: string): Promise<{ cellId: string }> {
       throw new LykeionError(
         "unsupported",

@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
-import type { ExecutionLogEntry } from "@lykeion/api";
+import { act, render, screen, fireEvent, within } from "@testing-library/react";
+import { createInMemoryApi, type ExecutionLogEntry } from "@lykeion/api";
+import { ApiProvider } from "../../api/ApiContext";
 import { ToolStepPreview } from "./ToolStepPreview";
 import { ToolStepCard } from "./ToolStep";
 
@@ -133,13 +134,20 @@ describe("the OUT pane is clamped, and fades rather than cuts", () => {
 });
 
 describe("the preview and the opened detail never both draw", () => {
-  it("gives way to the detail when the row is opened, and comes back", () => {
-    render(<ToolStepCard entry={entry()} />);
+  it("gives way to the detail when the row is opened, and comes back", async () => {
+    render(
+      <ApiProvider api={createInMemoryApi()}>
+        <ToolStepCard entry={entry()} />
+      </ApiProvider>,
+    );
     expect(screen.getByTestId("step-io")).toBeInTheDocument();
     expect(screen.queryByTestId("tool-step-detail")).toBeNull();
 
     const head = screen.getByRole("button", { name: /wc -l data\.csv/i });
     fireEvent.click(head);
+    // Opening the row mounts `ToolStepDetail`, which fetches its own cells —
+    // flushed here so that fetch settles inside this test's act, not after.
+    await act(async () => {});
 
     // Opened: the full detail, and the preview is gone — the two carry the same
     // content, and the row must not show it twice.
@@ -155,15 +163,20 @@ describe("the preview and the opened detail never both draw", () => {
     expect(screen.queryByTestId("tool-step-detail")).toBeNull();
   });
 
-  it("moves a live tail into the detail rather than drawing it in both", () => {
+  it("moves a live tail into the detail rather than drawing it in both", async () => {
     render(
-      <ToolStepCard
-        entry={entry({ decision: "ran", result: undefined })}
-        stdout="still arriving"
-      />,
+      <ApiProvider api={createInMemoryApi()}>
+        <ToolStepCard
+          entry={entry({ decision: "ran", result: undefined })}
+          stdout="still arriving"
+        />
+      </ApiProvider>,
     );
     expect(screen.getByTestId("step-stdout")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /wc -l data\.csv/i }));
+    // Opening the row mounts `ToolStepDetail`, which fetches its own cells —
+    // flushed here so that fetch settles inside this test's act, not after.
+    await act(async () => {});
     expect(screen.queryByTestId("step-stdout")).toBeNull();
     expect(screen.getAllByText(/still arriving/)).toHaveLength(1);
   });

@@ -261,3 +261,51 @@ it("a fresh database reaches head with a creator that may be absent, which is wh
   );
   expect(store.get(`SELECT created_by FROM kernel_envs WHERE name = 'python'`)!.created_by).toBeNull();
 });
+
+it("gives a record its own table, ordered on the workspace-wide sequence", () => {
+  const store = freshStore();
+
+  // Every ordered list in this store sorts on insertion as its final
+  // tiebreak, and that holds only while the column carrying it can be
+  // neither absent nor shared. Read from SQLite's own account of the table
+  // rather than from the migration's source text.
+  expect(notNull(store, "provenance_envelopes", "seq")).toBe(true);
+  store.run(
+    `INSERT INTO provenance_envelopes (id, version, body, task_id, session_id, ts, seq)
+     VALUES ('a', 'lykeion.provenance.v1', '{}', 'tk_1', 'se_1', ?, ?)`,
+    [NOW, nextSeq(store)],
+  );
+  expect(() =>
+    store.run(
+      `INSERT INTO provenance_envelopes (id, version, body, task_id, session_id, ts, seq)
+       VALUES ('b', 'lykeion.provenance.v1', '{}', 'tk_1', 'se_1', ?, 1)`,
+      [NOW],
+    ),
+  ).toThrow(/UNIQUE/);
+  expect(() =>
+    store.run(
+      `INSERT INTO provenance_envelopes (id, version, body, task_id, session_id, ts, seq)
+       VALUES ('c', 'lykeion.provenance.v1', '{}', 'tk_1', 'se_1', ?, NULL)`,
+      [NOW],
+    ),
+  ).toThrow(/NOT NULL/);
+});
+
+it("leaves every cell recorded before this lab kept a record pointing at none", () => {
+  // Nullable, and no default: a cell that ran before anything wrote an
+  // envelope has none, and a default here would be this lab inventing one.
+  const store = freshStore();
+
+  expect(notNull(store, "cells", "provenance_id")).toBe(false);
+  store.run(
+    `INSERT INTO cells
+       (id, task_id, session_id, kernel_id, name, language, environment, execution_count,
+        source, origin_surface, origin_by, ok, wall_ms, ts, outputs, seq)
+     VALUES ('cell_before', 'tk_1', 'se_1', 'k_1', 'main', 'python', 'python', 1,
+             '1 + 1', 'repl', 'u_1', 1, 5, ?, '[]', ?)`,
+    [NOW, nextSeq(store)],
+  );
+  expect(
+    store.get(`SELECT provenance_id AS p FROM cells WHERE id = 'cell_before'`)!.p,
+  ).toBeNull();
+});

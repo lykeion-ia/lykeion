@@ -45,6 +45,7 @@ import type {
   MachineCompute,
 } from "./machine";
 import type { AgentCli } from "./agent-cli";
+import type { ProvenanceEnvelope } from "./provenance";
 import type {
   Agent,
   CatalogEntry,
@@ -369,6 +370,14 @@ export interface LykeionApi {
    * kernel-scoped: each cell already carries both.
    */
   taskNotebook(taskId: string): Promise<NotebookCell[]>;
+
+  /** The full record of how one cell ran, or `undefined` where the cell has
+   *  none — a cell from before the envelope, or one whose frame carried a
+   *  body this lab could not read. */
+  cellProvenance(cellId: string): Promise<ProvenanceEnvelope | undefined>;
+  /** Every cell one tool call produced, oldest first. Empty for a call that
+   *  ran none, which is every call that is not a kernel execution. */
+  cellsForToolUse(toolUseId: string): Promise<NotebookCell[]>;
 
   /**
    * Run one cell on a kernel, from the researcher's own surface. Returns the

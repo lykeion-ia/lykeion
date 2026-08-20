@@ -25,7 +25,7 @@ export type HostMessage =
   | { method: string; params: unknown }
   | HostAsk;
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /**
  * Whether this is an answer to something, rather than an announcement or an

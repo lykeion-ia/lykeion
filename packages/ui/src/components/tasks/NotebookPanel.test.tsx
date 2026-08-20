@@ -1006,7 +1006,11 @@ it("highlights each cell under its own language, not one hardcoded grammar", asy
     listRunningKernels: async () => [kernel({ name: "main", language: "python", state: "idle" })],
   };
 
-  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+  const { container } = render(
+    <ApiProvider api={api}>
+      <NotebookPanel taskId="tk_1" />
+    </ApiProvider>,
+  );
 
   // Each cell shows the language it actually ran under — `CodeBlock` renders
   // that label itself, so it is exactly what a researcher sees on the cell.
@@ -1015,12 +1019,13 @@ it("highlights each cell under its own language, not one hardcoded grammar", asy
   await waitFor(() =>
     expect(screen.getByText("df <- read.csv('kinome.csv')")).toBeInTheDocument(),
   );
-  // Scoped to the cell stack: the kernel strip below it names the ENVIRONMENT
-  // a kernel runs in, and an environment is called "python" too — an
-  // unscoped match counts that as a third cell.
-  const langs = within(screen.getByTestId("notebook-cells"))
-    .getAllByText(/^(python|r)$/)
-    .map((el) => el.textContent);
+  // Scoped to the language chip specifically, not a text match: a cell's own
+  // ENVIRONMENT is named "python" too, right beside its language, and so is
+  // the kernel strip below the cell stack — an unscoped match over "python"
+  // counts both of those on top of the cells that actually ran under it.
+  const langs = [...container.querySelectorAll(".nbp-cell-lang")].map(
+    (el) => el.textContent,
+  );
   expect(langs).toEqual(["python", "r"]);
 });
 

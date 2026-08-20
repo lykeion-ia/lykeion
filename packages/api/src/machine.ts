@@ -276,22 +276,36 @@ export interface MachineCompute {
 /**
  * One kernel output message, forwarded from the bridge verbatim (structurally
  * isomorphic to a Jupyter message). Tagged on `kind`, with snake_case fields
- * — NOT camelCase. A payload too large to inline is spilled to
- * `.lykeion/outputs/` and referenced by `data_ref`.
+ * — NOT camelCase. Every payload travels on the message itself, whatever its
+ * size; `data_ref` names each of them by hash rather than by a path in a
+ * workspace that outlives nothing, and records which of them a copy of was
+ * also handed to the producing machine's content-addressed store.
  */
 export type KernelMessage =
   | { kind: "stream"; name: string; text: string }
   | {
       kind: "display_data";
       data: Record<string, unknown>;
-      data_ref: Record<string, unknown>;
+      /** What each of this output's payloads hashes to, keyed by MIME type.
+       *  `stored` says a copy was handed to the producing machine's blob
+       *  store; it does not say the payload is missing from `data`, which
+       *  carries every one of them whichever way it falls. The hash is
+       *  present either way, because it is what joins an output to the
+       *  record of the cell that produced it. */
+      data_ref: Record<string, { sha256: string; size: number; stored: boolean }>;
       metadata: unknown;
     }
   | {
       kind: "execute_result";
       execution_count: number;
       data: Record<string, unknown>;
-      data_ref: Record<string, unknown>;
+      /** What each of this output's payloads hashes to, keyed by MIME type.
+       *  `stored` says a copy was handed to the producing machine's blob
+       *  store; it does not say the payload is missing from `data`, which
+       *  carries every one of them whichever way it falls. The hash is
+       *  present either way, because it is what joins an output to the
+       *  record of the cell that produced it. */
+      data_ref: Record<string, { sha256: string; size: number; stored: boolean }>;
     }
   | { kind: "error"; ename: string; evalue: string; traceback: string[] };
 
@@ -356,4 +370,31 @@ export interface NotebookCell {
    *  typed, which is not a tool call, and on an agent's cell neither path
    *  could join truthfully. */
   toolUseId?: string;
+  /** The record of how this cell ran, named by the hash of that record's own
+   *  bytes — the join key onto the envelope the lab stored beside this row.
+   *
+   *  Absent on every cell recorded before this lab kept such a record, and on
+   *  one whose envelope arrived in a form this lab could not read. Never a
+   *  placeholder: an id here is a claim that the envelope it names is on
+   *  disk, and one invented for a cell that has none would be a record
+   *  pointing at nothing. */
+  provenanceId?: string;
+  /** What the cell header shows about the state this cell ran against, read
+   *  out of its envelope rather than stored twice. Absent wherever
+   *  `provenanceId` is. */
+  codeState?: CellCodeState;
+}
+
+/** The part of a cell's record its header renders, lifted out of the
+ *  envelope at read time so a notebook does not fetch one record per row. */
+export interface CellCodeState {
+  /** The lineage chain's digest, first 8 hex characters — what the header
+   *  shows where no repository backs the cell, which is the ordinary case. */
+  lineage: string;
+  /** Position in this incarnation's chain, from 0. */
+  index: number;
+  /** Present only where the envelope's git arm was `available`. Its absence
+   *  is why the header falls back to `lineage`, and is not an empty
+   *  repository. */
+  git?: { branch: string; commit: string; dirty: boolean };
 }

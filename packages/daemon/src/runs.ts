@@ -37,6 +37,8 @@ import {
   kernelConfinementFor,
   kernelSessionToken,
   kernelSocketPath,
+  provenanceStoreRoot,
+  tellHostCodeState,
 } from "./kernels";
 import { PROTOCOL_VERSION } from "./kernel-protocol";
 import { alreadySystemReadable, boundaryOf, policyFor } from "./sandbox";
@@ -1124,7 +1126,15 @@ export function startRuns(options: {
     taskId: string,
     grants: StandingGrant[],
   ): Promise<{ environments: EnvironmentEntry[]; declared?: string[] }> {
-    const hello = (await host.call("host.hello", {})) as {
+    // The greeting is where this daemon says which machine's state the host
+    // is holding kernels for, and the record of every cell it runs belongs
+    // in that same state rather than wherever a host with nothing to go on
+    // would put it. Sent on every greeting because it is a fact about this
+    // daemon rather than about any one session, and one daemon's answer to
+    // it never changes.
+    const hello = (await host.call("host.hello", {
+      storeRoot: provenanceStoreRoot(options.dataDir),
+    })) as {
       protocol?: unknown;
       languages?: Array<{
         language: string;
@@ -1711,10 +1721,12 @@ export function startRuns(options: {
     // is a turn running inside a boundary that describes grants the
     // researcher no longer gives it.
     let boundary: string;
+    let workspace: string;
     try {
+      workspace = ensureTaskDir(options.workDir, studyId, taskId);
       boundary = boundaryOf(
         policyFor({
-          workspace: ensureTaskDir(options.workDir, studyId, taskId),
+          workspace,
           grants,
           dataDir: options.dataDir,
           // The same read `startSession` renders, computed the same way. Two
@@ -1722,7 +1734,7 @@ export function startRuns(options: {
           // look changed, and every turn would retire the session in front of
           // it and spawn another.
           readable: daemonProgramPaths(),
-          ...confinementFor(agent, ensureTaskDir(options.workDir, studyId, taskId)),
+          ...confinementFor(agent, workspace),
         }),
       );
     } catch (err) {
@@ -1878,6 +1890,26 @@ export function startRuns(options: {
     }
 
     runOfSession.set(sessionId, runId);
+    // What backs this workspace, told to the host as the turn begins and once
+    // per turn: a tree gets committed to and written in between two of them,
+    // and `dirty` at any coarser grain would be a record of a state the cell
+    // did not run in. A session is only ever opened inside a turn, so this is
+    // also what the host is told when its kernels are first put within reach.
+    //
+    // Filed under THIS session, because `workspace` is this session's own
+    // directory and the host holds every session on the machine. A second
+    // Task taking its turn now answers this about a different tree, and one
+    // of the two answers would otherwise land on the other's cells for good.
+    //
+    // Not awaited. Asking costs a `git` process, and a cell that runs while
+    // the answer is still coming records that nothing was captured — which is
+    // true, and is cheaper than a turn that waits on it.
+    //
+    // Asking for the host can start one, which is the right thing to do
+    // here rather than a side effect to avoid: a turn is about to run, and
+    // the kernels its cells reach are behind that same process.
+    if (options.kernelHost !== undefined)
+      void tellHostCodeState(options.kernelHost(), sessionId, workspace);
     const settled = new Promise<void>((resolve) => settlers.set(runId, resolve));
     live.prompt(prompt);
     await settled;

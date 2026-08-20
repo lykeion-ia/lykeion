@@ -10,7 +10,9 @@ from typing import Any, IO
 import pytest
 
 from lykeion_kernel.host import Holding, _arriving, _execute, serve
+from lykeion_kernel.kernels import KernelIdentity
 from lykeion_kernel.mcp.endpoint import Endpoints
+from lykeion_kernel.provenance.store import ProvenanceStore
 from lykeion_kernel.registry import Registry
 
 CELL = {
@@ -44,6 +46,16 @@ def request(method: str, params: dict, request_id: int | None = None) -> io.Stri
     return io.StringIO(json.dumps(message) + "\n")
 
 
+def _identity(session_id: str, task_id: str) -> KernelIdentity:
+    """One session's main Python kernel, addressed directly rather than
+    through a confinement — what a host told nothing about a session falls
+    back to."""
+    return KernelIdentity(
+        session_id=session_id, task_id=task_id, name="main",
+        language="python", environment="python",
+    )
+
+
 def replies(stdout: io.StringIO) -> list[dict]:
     return [json.loads(line) for line in stdout.getvalue().splitlines()]
 
@@ -56,7 +68,90 @@ def test_answers_hello_with_what_it_is():
 
     line = stdout.getvalue().strip()
     assert '"id": 1' in line
-    assert '"protocol": 4' in line
+    assert '"protocol": 5' in line
+
+
+def test_the_greeting_says_where_this_machines_records_belong(tmp_path):
+    # A host left to choose for itself writes under a home directory — the
+    # same pile for every daemon on this machine, whatever each was told to
+    # keep its own state in. Only the daemon knows which directory is its own,
+    # so it says so on the greeting, before any session exists.
+    store = ProvenanceStore(tmp_path / "unchosen")
+    registry = Registry([], store=store)
+
+    serve(
+        request("host.hello", {"storeRoot": str(tmp_path / "chosen")}, request_id=1),
+        io.StringIO(),
+        registry,
+    )
+
+    digest = store.put_envelope({"version": "lykeion.provenance.v1"})
+    assert (tmp_path / "chosen" / "envelopes" / digest[:2] / digest).exists()
+    assert not (tmp_path / "unchosen").exists()
+
+
+def test_a_greeting_that_names_nowhere_leaves_the_records_where_they_were(tmp_path):
+    # Silence is not an instruction to move. A caller that built this registry
+    # with a store of its own already said where these belong.
+    store = ProvenanceStore(tmp_path / "given")
+    registry = Registry([], store=store)
+
+    serve(request("host.hello", {}, request_id=1), io.StringIO(), registry)
+
+    assert store.root == tmp_path / "given"
+
+
+def test_a_code_state_reaches_the_session_the_call_names(prefix, tmp_path):
+    """The wire call carries a session, and the record follows it.
+
+    One host holds every session on this machine. A call that named none, or
+    a handler that dropped the name it was given, would put whichever Task
+    spoke last onto the record of every cell running anywhere on the
+    machine — and those records are immutable and named by the hash of their
+    own bytes, so nothing downstream could ever tell.
+    """
+    said = {
+        "status": "available",
+        "value": {"repository": "/w", "branch": "trunk", "commit": "c" * 40, "dirty": False},
+    }
+    registry = Registry(prefix, store=ProvenanceStore(tmp_path / "records"))
+    origin = {"surface": "agent", "by": "claude"}
+    try:
+        serve(
+            request("kernel.set_code_state", {"session_id": "ses_told", "codeState": said}),
+            io.StringIO(),
+            registry,
+        )
+        told = registry.execute(_identity("ses_told", "tk_1"), "x = 1", origin=origin)
+        silent = registry.execute(_identity("ses_silent", "tk_2"), "x = 1", origin=origin)
+    finally:
+        registry.shutdown()
+
+    assert told["provenance"]["input"]["codeState"]["git"] == said
+    assert silent["provenance"]["input"]["codeState"]["git"] == {
+        "status": "unavailable",
+        "reason": "not_captured",
+    }
+
+
+def test_a_code_state_naming_no_session_is_refused():
+    # Filing it under a stand-in session would be this host deciding which
+    # Task a repository belongs to, which is a thing only the daemon knows.
+    stdout = io.StringIO()
+
+    serve(
+        request(
+            "kernel.set_code_state",
+            {"codeState": {"status": "unavailable", "reason": "not_applicable"}},
+            request_id=11,
+        ),
+        stdout,
+        Registry([]),
+    )
+
+    answered = json.loads(stdout.getvalue().strip())
+    assert answered["id"] == 11
+    assert "session_id" in answered["error"]["message"]
 
 
 def test_an_unknown_method_is_answered_rather_than_ignored():

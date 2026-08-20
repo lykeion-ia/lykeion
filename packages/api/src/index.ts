@@ -23,6 +23,7 @@ export * from "./account";
 export * from "./usage";
 export * from "./settings";
 export * from "./http";
+export * from "./provenance";
 // Also its own entry point, `@lykeion/api/routes`, so that the daemon can read
 // the register without pulling in the rest of this package to get it.
 export * from "./routes";
@@ -93,6 +94,8 @@ export const Commands = {
   listRunningKernels: "list_running_kernels",
   computeSnapshot: "compute_snapshot",
   taskNotebook: "task_notebook",
+  cellProvenance: "cell_provenance",
+  cellsForToolUse: "cells_for_tool_use",
   kernelExecute: "kernel_execute",
   kernelInterrupt: "kernel_interrupt",
   kernelStop: "kernel_stop",

@@ -9,8 +9,11 @@ that was planned.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
+import platform
+import secrets
 import sys
 import threading
 import time
@@ -35,6 +38,8 @@ from .overlay import (
     snapshot,
     sweep_overlays,
 )
+from .provenance.envelope import ENVELOPE_VERSION, envelope_hash, lineage_next, lineage_seed
+from .provenance.store import ProvenanceStore, stage_output_hashes
 from .sampler import Probe, Sample
 
 # One launcher per language this host can start a kernel in, called with the
@@ -70,6 +75,146 @@ DEFAULT_SHARE = 0.6
 # they just left taken, repeatedly — thrashing the exact workflow the tree on
 # the Runtimes screen exists to support.
 IDLE_FLOOR_S = 300
+
+# What an interrupted cell's error is called, in each language that has a name
+# for one: Python raises `KeyboardInterrupt` into the cell, and `driver.R`
+# emits `lykeionInterrupt` where R has no condition class of its own to name.
+# Read off the error the cell came back with rather than off a flag somebody
+# set when they asked: an interrupt is a signal aimed at a process, and
+# whether it reached the cell is answered by what the cell returned.
+INTERRUPTED = frozenset({"KeyboardInterrupt", "lykeionInterrupt"})
+
+
+def _status(result: dict[str, Any], *, cancelled: bool) -> str:
+    """Which ending this cell reached, as the record names them.
+
+    Never `queued` or `running`: this is asked once the cell has settled, and
+    a record is named by the hash of its own bytes — a status that went on
+    changing afterwards would change the identity of a record other cells
+    already name.
+
+    A cell somebody ended, a cell somebody interrupted and a cell that raised
+    on its own are three different things to read back, and only here are the
+    first two still distinguishable: further down the wire all three are a
+    cell that came back not ok.
+    """
+    if cancelled:
+        return "cancelled"
+    if result.get("ok"):
+        return "succeeded"
+    if any(
+        output.get("kind") == "error" and output.get("ename") in INTERRUPTED
+        for output in result.get("outputs", ())
+    ):
+        return "interrupted"
+    return "failed"
+
+
+def _lineage(incarnation: int, index: int, digest: str, parent: str | None) -> dict[str, Any]:
+    """Where a cell sits in the chain of cells that built the namespace it
+    ran in.
+
+    `parent` is absent on the first cell of an incarnation, never "": there is
+    no predecessor, and a key holding the empty string would be the record
+    claiming there was one.
+    """
+    lineage: dict[str, Any] = {"incarnation": incarnation, "index": index, "digest": digest}
+    if parent is not None:
+        lineage["parent"] = parent
+    return lineage
+
+
+def _not_captured() -> dict[str, Any]:
+    """What a session nobody has told this host about says about its
+    repository: nothing, and it says so out loud.
+
+    Built fresh on every call rather than shared from a module constant. This
+    goes into a record that is named by the hash of its own bytes and read
+    back by whoever holds the cell, and one object reachable from every such
+    record is one object a single mutation anywhere rewrites all of them
+    through.
+    """
+    return {"status": "unavailable", "reason": "not_captured"}
+
+
+def _envelope(
+    *,
+    identity: KernelIdentity,
+    kernel_id: str,
+    cell_id: str,
+    source: str,
+    cwd: str | None,
+    lineage: dict[str, Any],
+    code_state: dict[str, Any],
+    incarnation: int,
+    process_id: int,
+    process_started_at: int | None,
+    status: str,
+    items: list[dict[str, Any]],
+    created_at: int,
+    started_at: int,
+    completed_at: int,
+) -> dict[str, Any]:
+    """The record of how one cell ran, whole and about to be named.
+
+    A record is addressed by the hash of its own bytes, so this key set IS the
+    format: a key added, dropped or spelled differently makes a different
+    record of the same cell, and one this lab's server will not join anything
+    to. `ProvenanceEnvelope` is the other side of it, built in another
+    language against the same bytes.
+
+    Taken as parameters rather than read off a registry, and built here rather
+    than inside `execute`, so that what goes into a record is one readable
+    list of what a record is made of.
+
+    Two keys the contract carries are not written. `cwd` is absent for a
+    session confined without a workspace — absent rather than "", because a
+    record naming a directory nothing ran in is worse than one that names
+    none. `studyId` is absent always: this process is told the session and the
+    Task a cell runs under and nothing above them.
+    """
+    envelope: dict[str, Any] = {
+        "version": ENVELOPE_VERSION,
+        "identity": {
+            "taskId": identity.task_id,
+            "sessionId": identity.session_id,
+            "kernelId": kernel_id,
+            "cellId": cell_id,
+        },
+        "input": {
+            "code": source,
+            "codeState": {"lineage": lineage, "git": code_state},
+        },
+        "environment": {
+            "host": {
+                "platform": sys.platform,
+                "arch": platform.machine(),
+                "runtimes": {"status": "unavailable", "reason": "not_implemented"},
+            },
+            "kernel": {
+                "id": kernel_id,
+                "language": identity.language,
+                "incarnation": incarnation,
+                "processId": process_id,
+                # Never absent from a record this host writes: `_running`
+                # either found a process behind the entry or started one, and
+                # both leave it stamped with when that process began.
+                "processStartedAt": process_started_at,
+            },
+        },
+        # The outputs travel whole on the cell; `items` names each of their
+        # payloads by hash rather than carrying the bytes a second time — the
+        # join between this record and the cell it describes.
+        "outputs": {"status": status, "items": items},
+        "timestamps": {
+            "createdAt": created_at,
+            "startedAt": started_at,
+            "completedAt": completed_at,
+        },
+    }
+    if cwd is not None:
+        envelope["input"]["cwd"] = cwd
+    return envelope
 
 
 def _stopped_cell(reason: str | None, by: str | None, execution_count: int) -> dict[str, Any]:
@@ -358,6 +503,17 @@ class Entry:
     turn: Turn = field(default_factory=Turn)
     kernel: Kernel | None = None
     incarnation: int = 0
+    # Where this incarnation's chain has reached, and how many cells have
+    # extended it. Both reset when a kernel is replaced, because the
+    # namespace they describe does.
+    lineage_digest: str = ""
+    lineage_index: int = 0
+    # The record of the cell this incarnation ran last, which the next cell
+    # names as its parent. `None` on an incarnation that has run none, and
+    # never "": a cell with no predecessor and a cell whose predecessor was
+    # named the empty string are different claims, and only the first is
+    # ever true here. Reset with the two above, for the same reason.
+    lineage_parent: str | None = None
     execution_count: int = 0
     started_ts: int | None = None
     last_activity_ts: int | None = None
@@ -452,6 +608,7 @@ class Registry:
         prefix: list[str],
         *,
         interpreter: str = sys.executable,
+        store: ProvenanceStore | None = None,
     ) -> None:
         # Resolved once, here, because asking per session would put a
         # subprocess on the path of every turn.
@@ -478,6 +635,33 @@ class Registry:
         self._sessions: dict[str, Confinement] = {}
         self._entries: dict[str, Entry] = {}
         self._lock = threading.Lock()
+        # Where a cell's record is written. `None` on a registry nobody handed
+        # one, which every caller that builds one directly leaves it as: such
+        # a registry still NAMES each cell's record, since the name is the
+        # hash of the record's own bytes and needs nowhere to put them — only
+        # the writing needs somewhere to land.
+        self._store = store
+        # What the daemon last said about the repository behind each SESSION's
+        # workspace, keyed by session. Per session and not per machine: one
+        # host holds every session on this machine, two Tasks can be taking
+        # turns at the same moment, and a repository is a fact about one
+        # workspace. A single field here would be last-writer-wins, and the
+        # cell that lost would be permanently recorded — the record is
+        # immutable and named by the hash of its own bytes — as having run
+        # against another Task's branch and commit, inside an envelope whose
+        # `cwd` names this session's own directory. `execute` reads that `cwd`
+        # off this session's confinement, and reads this beside it.
+        #
+        # A session with no entry is the third value: not a repository that is
+        # clean and not one that is dirty, but nobody having looked yet. The
+        # daemon is the only thing that can look, and it says so through
+        # `set_code_state`.
+        #
+        # Copied on the way in, never held by reference. What is stored here
+        # is put into every record built from it, so a caller mutating what it
+        # handed over would move bytes that have already been hashed and
+        # named.
+        self._code_states: dict[str, dict[str, Any]] = {}
         # Where a cell goes once it has run, assigned by whatever holds the
         # stream the lab is reached over. A registry nobody has connected
         # still runs cells: a cell that ran is a fact whether or not
@@ -683,6 +867,54 @@ class Registry:
         with self._lock:
             return self._sessions.get(session_id)
 
+    def set_code_state(self, session_id: str, code_state: dict[str, Any]) -> None:
+        """What the daemon last said about the repository behind ONE session's
+        workspace. Refreshed on a turn rather than on a cell: asking costs a
+        process, and `dirty` at turn granularity is what the header shows.
+
+        Named by session because the answer is drawn around one workspace and
+        this host holds every session on the machine. A second Task starting
+        its turn says something about a different directory, and the two
+        answers are not versions of each other.
+
+        Filed for a session this host has been told nothing else about, too. A
+        confinement and this are separate things a daemon says, arriving on
+        separate calls, and a host that dropped one because the other had not
+        landed would record a repository as unlooked-for on the strength of
+        message ordering.
+
+        Copied, never held by reference: what is stored here is embedded in
+        every record built afterwards, and those records are named by the hash
+        of their own bytes.
+        """
+        with self._lock:
+            self._code_states[session_id] = copy.deepcopy(code_state)
+
+    def set_store_root(self, root: Path) -> None:
+        """Where the daemon holding this host keeps its own state, and so
+        where the record of every cell run here belongs.
+
+        This host cannot work it out: one directory is one daemon, and which
+        one started this process is something only that daemon knows. Said on
+        the greeting, and on every greeting after — a daemon re-greets this
+        host as each session opens and again whenever it reconfigures one, so
+        calls land with sessions live and cells in flight.
+
+        Safe to move under them only because one daemon's answer never
+        changes: this is a fact about the daemon holding the host rather than
+        about any session, so every one of those calls carries the same path.
+        A root derived from anything narrower — a session, a Task, a
+        workspace — would move the store out from under a cell already being
+        written, and nothing here would notice.
+
+        A registry nobody handed a store still names every record it builds —
+        the name is the hash of the record's own bytes — so there is nothing
+        here to re-root for one, and nothing lost by saying so quietly.
+        """
+        with self._lock:
+            if self._store is not None:
+                self._store.root = Path(root)
+
     def arriving(self, identity: KernelIdentity) -> Place:
         """This cell's place in its kernel's queue, taken where it arrived.
 
@@ -709,9 +941,17 @@ class Registry:
         that place; one that arrives here without a place takes it now.
         """
         self._runnable_for(identity.language)
+        # When this cell was accepted, which is before the turn in front of it
+        # has been waited out. The record keeps this apart from when the cell
+        # began running, because the difference between them IS the wait: one
+        # timestamp for both would report a cell that queued for a minute as a
+        # cell that took a minute.
+        created_at = int(time.time())
         kernel_id = kernel_id_for(identity)
         entry = self._entry_for(kernel_id, identity)
         with entry.turn.taken(place, identity):
+            # The queue has stopped holding it.
+            started_at = int(time.time())
             kernel = self._running(entry)
             # Read after `_running`, never before it: a lazy relaunch happens
             # inside that call and gives this entry a NEW overlay, so a path
@@ -722,8 +962,30 @@ class Registry:
             # source, because a source that says how it installed something is
             # a source that could have said it any other way.
             overlay = entry.overlay
+            # Read here for the same reason `overlay` is, and it is the same
+            # reason: these describe ONE incarnation, and `restart()` waits on
+            # this entry's turn. Inside the turn they are the process the cell
+            # is about to run on; outside it they can already be its
+            # successor's, which would put a dead process's id beside a live
+            # one's start time in a record that names neither honestly.
+            #
+            # Holding the turn is the whole of what guarantees that, here and
+            # at the advance below. Nothing downstream re-checks it, because
+            # by then there is nothing left to check against.
+            incarnation = entry.incarnation
+            process_started_at = entry.started_ts
+            # Where this cell ran, read off the boundary in force while it
+            # ran rather than from `os.getcwd()`, which is this host's own
+            # directory and not the cell's. `None` for a session confined
+            # without a workspace, which is nothing to name rather than a
+            # directory named "".
+            cwd = self._confinement_for(identity.session_id).workspace
             before = snapshot(overlay)
             began = time.monotonic()
+            # Whether this machine ended the cell rather than the cell
+            # ending. Only this end of the call can still tell: the two look
+            # the same everywhere downstream.
+            cancelled = False
             try:
                 result = kernel.execute(source)
             except RuntimeError:
@@ -737,6 +999,7 @@ class Registry:
                     # caller is owed the error it has always been given.
                     raise
                 result = _stopped_cell(entry.stop_reason, entry.stopped_by, entry.execution_count)
+                cancelled = True
                 # Under the lock, like every other write to this field:
                 # `stop()` and `_replace` both write it inside `self._lock`,
                 # and a lock only one side takes excludes nothing. Nothing
@@ -760,9 +1023,96 @@ class Registry:
             # nobody can read back.
             count = int(result.get("execution_count", 0))
             entry.execution_count = count
-            entry.last_activity_ts = int(time.time())
+            # One reading for both: the instant the cell settled is when this
+            # entry was last active, and is what the record calls
+            # `completedAt`.
+            completed_at = int(time.time())
+            entry.last_activity_ts = completed_at
+
+            # Minted here, where the cell becomes something that happened. The
+            # record names the cell by this and the cell names the record by
+            # the hash of that record's own bytes, and those two names are the
+            # join between them.
+            cell_id = f"cell_{secrets.token_urlsafe(8)}"
+
+            # The record, assembled while the turn is STILL HELD. Every fact
+            # in it belongs to one incarnation — the chain this entry has
+            # walked, the process behind the identity, the outcome the cell
+            # reached — and `restart()` waits on this same turn, so holding it
+            # is the whole of what keeps them describing one process. Read out
+            # in the tail below, each of them could already be a different
+            # incarnation's, and nothing downstream could tell.
+            #
+            # Per-entry rather than machine-wide: what waits on this is the
+            # next cell of THIS kernel, which cannot have started before the
+            # record of the one in front of it is whole anyway.
+            with self._lock:
+                previous = entry.lineage_digest or lineage_seed(kernel_id, incarnation)
+                index = entry.lineage_index
+                parent = entry.lineage_parent
+                # Read under the lock `set_code_state` writes it under, so a
+                # refresh landing mid-cell puts a whole answer in this record
+                # rather than half of one. Read for THIS cell's session, the
+                # same session `cwd` was read for above: one record must not
+                # name one session's directory beside another's repository.
+                code_state = self._code_states.get(identity.session_id, _not_captured())
+            # Hashed while the turn is still held, for the same reason
+            # everything above it is: the digest is a fact about what THIS
+            # incarnation produced, and a record built from anything read
+            # after the turn let go could be describing a different cell's
+            # outputs. What is above the store's ceiling comes back staged
+            # rather than written — the write is disk I/O, which belongs in
+            # the tail below beside `put_envelope`, not inside a lock a slow
+            # or failing store could hold onto the next cell in this queue.
+            items, blobs = stage_output_hashes(result.get("outputs", []))
+            envelope = _envelope(
+                identity=identity,
+                kernel_id=kernel_id,
+                cell_id=cell_id,
+                source=source,
+                cwd=cwd,
+                lineage=_lineage(incarnation, index, previous, parent),
+                code_state=code_state,
+                incarnation=incarnation,
+                process_id=kernel.pid,
+                process_started_at=process_started_at,
+                status=_status(result, cancelled=cancelled),
+                items=items,
+                created_at=created_at,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+            # What names the record: the hash of its own bytes. Computed here
+            # rather than taken from the write below because the chain
+            # advances on it and that advance belongs to this turn — and the
+            # write answers with this same digest, so it needs nothing from
+            # it.
+            provenance_id = envelope_hash(envelope)
+
+            # The chain advances only once the record it describes has a name:
+            # a link folded before the hash existed would name nothing.
+            #
+            # Written onto the incarnation captured above, and it is still
+            # that one: `entry.incarnation` is raised in `_replace` alone,
+            # which is reached from `restart()` — waiting on this turn — and
+            # from `_running` above, which ran inside it. The turn is what
+            # orders this against a relaunch, and it is the whole of what
+            # does. A path to `_replace` that did not hold this turn would
+            # corrupt the chain and the record's own `incarnation`,
+            # `processId` and `processStartedAt` with it, so nothing here
+            # tries to catch it: the invariant is that there is no such path.
+            #
+            # The lock is a separate job — `_replace` resets these same three
+            # fields under it, and a lock only one side takes excludes
+            # nothing. What it buys is that the three move as one set for
+            # anything reading them.
+            with self._lock:
+                entry.lineage_digest = lineage_next(previous, provenance_id)
+                entry.lineage_index = index + 1
+                entry.lineage_parent = provenance_id
 
         cell: dict[str, Any] = {
+            "id": cell_id,
             "kernelId": kernel_id,
             # Carried so whoever receives the `cell` notification can tell
             # which session and Task ran it without inverting `kernelId`'s
@@ -778,7 +1128,7 @@ class Registry:
             "origin": {"surface": origin["surface"], "by": origin["by"]},
             "ok": bool(result.get("ok", False)),
             "wallMs": wall_ms,
-            "ts": int(time.time()),
+            "ts": completed_at,
             "outputs": list(result.get("outputs", [])),
         }
         # What this cell installed into THIS kernel and nowhere else, absent
@@ -791,6 +1141,34 @@ class Registry:
             cell["installed"] = installed
         if tool_use_id is not None:
             cell["toolUseId"] = tool_use_id
+
+        cell["provenanceId"] = provenance_id
+        cell["provenance"] = envelope
+        # The writes, and the only thing in this method that touches a disk.
+        # Left outside the turn because nothing inside it wants an answer
+        # from either: `put_envelope` returns the digest already computed
+        # above, and a blob is already named by the key it is staged under
+        # in `blobs`, computed in the same place.
+        #
+        # A store that cannot be written to must not cost a cell. The cell is
+        # the record of work that happened and the envelope is a record ABOUT
+        # it; the envelope is already named without the store and travels up
+        # beside the cell on its own frame, so a full disk or a read-only home
+        # loses a local copy of something the lab is being told anyway — where
+        # a raise here would lose the outputs of a cell that really ran. Each
+        # blob is its own attempt, for the same reason: one payload too big
+        # for a failing disk is not a reason to withhold the others.
+        if self._store is not None:
+            for data in blobs.values():
+                try:
+                    self._store.put_blob(data)
+                except OSError:
+                    pass
+            try:
+                self._store.put_envelope(envelope)
+            except OSError:
+                pass
+
         if self.on_cell is not None:
             self.on_cell(cell)
         return cell
@@ -1186,8 +1564,11 @@ class Registry:
         coming back for its namespaces, and an identity nothing can address
         again is a kernel a machine would otherwise list forever.
 
-        Its boundary goes with them. A session that closed and one that never
-        opened reach the same distance, which is none.
+        Its boundary goes with them, and so does what the daemon said about
+        the repository behind its workspace. A session that closed and one
+        that never opened reach the same distance, which is none — and the
+        state of one Task's tree is not a fact this host should keep once
+        nothing can run a cell against it.
 
         And what those kernels installed goes with them too. A kernel's id
         digests its session, so nothing will ever address these identities
@@ -1199,6 +1580,7 @@ class Registry:
         """
         with self._lock:
             confinement = self._sessions.pop(session_id, None)
+            self._code_states.pop(session_id, None)
             going = [
                 kernel_id
                 for kernel_id, entry in self._entries.items()
@@ -1410,6 +1792,17 @@ class Registry:
         # exact race that turns a chosen stop into a reported crash, and a
         # lock only one side takes excludes nothing.
         with self._lock:
+            # Reset in here rather than beside `incarnation` above, because
+            # the advance in `execute` reads and writes these three under
+            # this same lock — and a lock only one side takes excludes
+            # nothing. What it guards: a cell of the namespace this call is
+            # wiping landing its link on the fresh chain begun here.
+            entry.lineage_digest = lineage_seed(kernel_id_for(entry.identity), entry.incarnation)
+            entry.lineage_index = 0
+            # A new namespace has no predecessor. Left standing, this would
+            # have the first cell of this incarnation name a cell that ran in
+            # the one it replaced as its parent.
+            entry.lineage_parent = None
             entry.stopped = False
             # Cleared with it. A reason left standing from one incarnation
             # would be found by the first abandoned cell of the next, and a
