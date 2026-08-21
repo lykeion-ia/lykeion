@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PermissionRequest } from "@lykeion/api";
 import { PermissionCard } from "./PermissionCard";
@@ -561,5 +561,69 @@ describe("PermissionCard — an environment", () => {
     expect(
       screen.getByText("Add scanpy and anndata to python?"),
     ).toBeInTheDocument();
+  });
+
+  describe("a cell in this Task's kernel", () => {
+    /** Renders and lets the code block's highlighting settle. A cell card
+     *  always carries one, and leaving it in flight reports an unwrapped
+     *  update against every test here. */
+    const renderCell = async (target: {
+      language: "python" | "r" | "shell";
+      code?: string;
+    }) => {
+      const view = render(
+        <PermissionCard
+          request={{
+            id: "perm-cell",
+            access: { kind: "notebook-cell", target },
+            tool: "toolu_01",
+          }}
+          onAllow={() => {}}
+          onDeny={() => {}}
+        />,
+      );
+      await act(async () => {});
+      return view;
+    };
+
+    it("asks about the kernel rather than about a shell", async () => {
+      // The two are different questions. A shell command runs against the
+      // machine; a cell runs in the namespace the notebook has been building,
+      // and answering one does not answer the other.
+      await renderCell({ language: "python", code: "x = 6 * 7" });
+      expect(
+        screen.getByText("Run a Python cell in this Task's kernel?"),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Run a shell command?")).not.toBeInTheDocument();
+    });
+
+    it("shows the cell's source with no interaction", async () => {
+      const { container } = await renderCell({ language: "python", code: "x = 6 * 7" });
+      expect(container.textContent).toContain("x = 6 * 7");
+    });
+
+    it("names the language it will run in", async () => {
+      await renderCell({ language: "r", code: "summary(x)" });
+      expect(
+        screen.getByText("Run an R cell in this Task's kernel?"),
+      ).toBeInTheDocument();
+    });
+
+    it("carries no agent-supplied reason, because a tool's name is not one", async () => {
+      // Every other kind puts the agent's title here. An MCP call's title is
+      // the tool's own name, and a name presented as a reason tells a reader
+      // nothing while looking like it does.
+      await renderCell({ language: "python", code: "x = 1" });
+      expect(screen.queryByText("Agent-supplied reason.")).not.toBeInTheDocument();
+    });
+
+    it("says so when the agent asked before saying what it would run", async () => {
+      // An empty code block under a question about running code would read as
+      // a cell that runs nothing.
+      const { container } = await renderCell({ language: "python" });
+      expect(container.textContent).toContain(
+        "This agent asked before it said what the cell would run.",
+      );
+    });
   });
 });

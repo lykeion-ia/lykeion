@@ -223,6 +223,17 @@ it("renders the environment a cell ran in", async () => {
   expect(screen.getByText("genomics")).toBeInTheDocument();
 });
 
+it("does not name the environment where it only repeats the language", async () => {
+  // A Task on the default environment names it after its language, which is
+  // the ordinary case rather than a corner of one. Rendering both puts the
+  // same word twice in a header meant to be read at a glance.
+  const { container } = await renderLedger({
+    cells: [cell({ language: "python", environment: "python" })],
+  });
+  expect(container.querySelector(".nbp-cell-env")).toBeNull();
+  expect(container.querySelector(".nbp-cell-lang")?.textContent).toBe("python");
+});
+
 it("says a tree was modified when the cell ran", async () => {
   await renderLedger({
     cells: [

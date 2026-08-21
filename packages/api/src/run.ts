@@ -33,6 +33,22 @@ export type AccessKind =
   | { kind: "read-path"; target: string }
   | { kind: "write-path"; target: string }
   | { kind: "execute"; target: string }
+  /** Code in this Task's own kernel, which is not a shell command and must
+   *  not be asked about as one. The distinction is the researcher's: a shell
+   *  command runs against the machine, while a cell runs in the namespace a
+   *  notebook has been building, and answering the first question does not
+   *  answer the second.
+   *
+   *  `code` is the cell's own source, which is what a researcher is actually
+   *  consenting to — the tool's name says nothing about what it will run. It
+   *  is OPTIONAL because an agent announces the call and asks for permission
+   *  as two messages, and nothing orders them: a card that arrives first has
+   *  no source to show yet, and saying so is better than showing a name in
+   *  the place a person is looking for code. */
+  | {
+      kind: "notebook-cell";
+      target: { language: "python" | "r" | "shell"; code?: string };
+    }
   | { kind: "network"; target: string }
   | { kind: "connector"; target: { server: string; tool: string } }
   | { kind: "remote-job"; target: string }

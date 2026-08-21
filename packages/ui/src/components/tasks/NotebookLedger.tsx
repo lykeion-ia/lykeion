@@ -124,7 +124,11 @@ function CellView({
             <span className="nbp-cell-by">
               <CellBy cell={cell} />
             </span>
-            {cell.environment !== "" && (
+            {/* Only where it says something the language chip does not. A
+                Task on the default environment names it after its language,
+                so rendering both puts the same word twice in a rail whose
+                whole job is to be read at a glance. */}
+            {cell.environment !== "" && cell.environment !== cell.language && (
               <span className="nbp-cell-env">{cell.environment}</span>
             )}
             {cell.codeState !== undefined && (

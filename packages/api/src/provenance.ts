@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 /** The envelope format. Raised rather than migrated: a reader keeps every
  *  version it has ever been handed, because the record is immutable and the
  *  hash that names it is over the bytes of the version it was written in. */
@@ -135,9 +133,4 @@ function sorted(value: unknown): unknown {
     out[key] = sorted((value as Record<string, unknown>)[key]);
   }
   return out;
-}
-
-/** An envelope's own hash, which is the id a cell references it by. */
-export function envelopeHash(envelope: ProvenanceEnvelope): string {
-  return createHash("sha256").update(canonicalJson(envelope), "utf8").digest("hex");
 }

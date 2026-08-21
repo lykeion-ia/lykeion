@@ -24,7 +24,8 @@ import {
   dropGrantsForResearch,
   dropGrantsForMachine,
 } from "./sessions";
-import { envelopeHash, type ProvenanceEnvelope } from "@lykeion/api";
+import { type ProvenanceEnvelope } from "@lykeion/api";
+import { envelopeHash } from "@lykeion/api/provenance-hash";
 import type { ExecutionLogEntry, NotebookCell, RunEventFrame } from "@lykeion/api";
 import type { Store } from "./store";
 

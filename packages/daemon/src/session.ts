@@ -337,6 +337,22 @@ function pathFrom(title: string): string | undefined {
   return match?.[1];
 }
 
+/**
+ * Which notebook cell tool a call is, read off the name the agent gave it.
+ *
+ * The kernel host publishes one tool per language, and their names are the
+ * only thing distinguishing a cell from any other call by the time a
+ * permission request arrives — ACP's `title` for an MCP call is the tool's
+ * own name, and it carries no path for `pathFrom` to find. Without this a
+ * cell falls through to `execute`, and the card then asks whether to run a
+ * shell command, which is not what is about to happen.
+ */
+function notebookCellLanguage(title: string): "python" | "r" | "shell" | undefined {
+  const match = /(?:^|__)execute_(python|r|shell)_cell$/.exec(title.trim());
+  if (match === null) return undefined;
+  return match[1] as "python" | "r" | "shell";
+}
+
 /** Recovers the path and mode a raised card asked about, from the access it
  *  carries — the same shape `decide` needs to know what to remember. An
  *  `execute` card names no path, so there is nothing standing to grant. */
@@ -815,6 +831,43 @@ export async function startSession(options: {
     };
     const target = pathFrom(title);
     const mode: "read" | "write" = /write|edit|create|delete/i.test(title) ? "write" : "read";
+    const cellLanguage = notebookCellLanguage(title);
+
+    /**
+     * What this call is asking to do, and the one line of prose the card puts
+     * under the question.
+     *
+     * A cell's `detail` is deliberately absent. For every other kind it holds
+     * the agent's own title, which the card renders as an agent-supplied
+     * reason — but an MCP call's title is the tool's name, and a name
+     * presented as a reason tells a researcher nothing while looking like it
+     * does. What a cell is consenting to is its source, and that goes where
+     * the code goes.
+     */
+    const asked = (): Pick<PermissionRequest, "access" | "detail"> => {
+      if (target !== undefined)
+        return {
+          access:
+            mode === "write"
+              ? { kind: "write-path", target }
+              : { kind: "read-path", target },
+          detail: title,
+        };
+      if (cellLanguage !== undefined) {
+        const announced = steps.get(params.toolCall?.toolCallId ?? "");
+        const code = (announced?.input as { code?: unknown } | undefined)?.code;
+        return {
+          access: {
+            kind: "notebook-cell",
+            target: {
+              language: cellLanguage,
+              ...(typeof code === "string" && code !== "" ? { code } : {}),
+            },
+          },
+        };
+      }
+      return { access: { kind: "execute", target: title }, detail: title };
+    };
 
     // Before anything is asked of anyone. A card offering Allow and Deny is a
     // promise that either answer can be delivered, and an agent that offered
@@ -840,13 +893,8 @@ export async function startSession(options: {
     if (sessionGrant || studyGrant) {
       const card: PermissionRequest = {
         id: `pr_${nextRequest++}`,
-        access: target
-          ? mode === "write"
-            ? { kind: "write-path", target }
-            : { kind: "read-path", target }
-          : { kind: "execute", target: title },
         tool: params.toolCall?.toolCallId ?? "tool",
-        detail: title,
+        ...asked(),
       };
       const allowed = answer("allow");
       if (allowed === undefined) return unanswerable();
@@ -892,13 +940,8 @@ export async function startSession(options: {
     const id = `pr_${nextRequest++}`;
     const request: PermissionRequest = {
       id,
-      access: target
-        ? mode === "write"
-          ? { kind: "write-path", target }
-          : { kind: "read-path", target }
-        : { kind: "execute", target: title },
       tool: params.toolCall?.toolCallId ?? "tool",
-      detail: title,
+      ...asked(),
     };
     // The same two questions the fast path above asked, asked again if this
     // card ever reaches the head of the queue. A batch is raised all at once,

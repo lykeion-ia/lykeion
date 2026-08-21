@@ -370,6 +370,35 @@ it("raises a permission card and does not answer it by itself", async () => {
   await until(() => settled(events));
 });
 
+it("asks about a notebook cell as a cell, not as a shell command", async () => {
+  // An MCP call's title is the tool's own NAME, and it carries no path — so
+  // without recognising the kernel's tools a cell falls through to `execute`,
+  // and the card then asks whether to run a shell command. It is not one, and
+  // the researcher answering is deciding about their notebook's namespace.
+  const { s, events } = await session([
+    {
+      ask: "permission",
+      toolCallId: "t-cell",
+      title: "mcp__notebook__execute_python_cell",
+    },
+  ]);
+  s.prompt("go");
+  await until(() => events.some((e) => e.event === "permission-card"));
+  const card = events.find((e) => e.event === "permission-card") as {
+    request: { id: string; access: { kind: string; target: unknown }; detail?: string };
+  };
+  expect(card.request.access.kind).toBe("notebook-cell");
+  expect(card.request.access.target).toMatchObject({ language: "python" });
+  // The tool's name is not a reason, so it is not carried as one.
+  expect(card.request.detail).toBeUndefined();
+  s.decide({
+    action: "permission",
+    requestId: card.request.id,
+    decision: { decision: "allow", scope: "once" },
+  });
+  await until(() => settled(events));
+});
+
 it("leaves the permission gate as soon as the researcher answers it", async () => {
   const { s, events } = await session([
     { ask: "permission", toolCallId: "t1", title: "Write out.csv" },

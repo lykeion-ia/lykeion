@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   ENVELOPE_VERSION,
   canonicalJson,
-  envelopeHash,
   type ProvenanceEnvelope,
 } from "./provenance.js";
+import { envelopeHash } from "./provenance-hash.js";
 import { createHash } from "node:crypto";
 
 describe("canonicalJson", () => {

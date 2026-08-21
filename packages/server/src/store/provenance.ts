@@ -5,10 +5,10 @@
 import {
   ENVELOPE_VERSION,
   canonicalJson,
-  envelopeHash,
   type CellCodeState,
   type ProvenanceEnvelope,
 } from "@lykeion/api";
+import { envelopeHash } from "@lykeion/api/provenance-hash";
 import { nextSeq } from "./migrations";
 import type { Store } from "./store";
 

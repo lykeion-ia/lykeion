@@ -34,8 +34,17 @@ function accessCode(access: AccessKind): string {
     return access.target.packages.length === 0
       ? `${access.target.name} — no packages, the interpreter only`
       : access.target.packages.join("\n");
+  if (access.kind === "notebook-cell")
+    // Said rather than left blank. An empty code block under a question about
+    // running code reads as a cell that runs nothing, when what happened is
+    // that the agent asked before it said what it would run.
+    return access.target.code ?? "This agent asked before it said what the cell would run.";
   return access.target;
 }
+
+/** The language a cell's source is highlighted as. A shell cell wraps its
+ *  command in a subprocess template, so `bash` is what it reads as. */
+const CELL_LANG = { python: "python", r: "r", shell: "bash" } as const;
 
 /**
  * The card's headline, as a question naming what is about to happen: "Run a
@@ -60,6 +69,14 @@ function accessTitle(access: AccessKind, tool: string): string {
       return `Connect to ${access.target}?`;
     case "execute":
       return "Run a shell command?";
+    case "notebook-cell":
+      // Named by language, and by where it runs. A researcher deciding this
+      // is deciding about the namespace their notebook has been building,
+      // which is a different question from whether to let something at the
+      // machine — and the two must not be asked in the same words.
+      return access.target.language === "shell"
+        ? "Run a shell cell in this Task's kernel?"
+        : `Run ${access.target.language === "r" ? "an R" : "a Python"} cell in this Task's kernel?`;
     case "write-path":
       return `Write ${access.target}?`;
     case "read-path":
@@ -123,6 +140,9 @@ function accessTitle(access: AccessKind, tool: string): string {
  */
 function payloadLabel(access: AccessKind): { label: string; open: boolean } {
   if (access.kind === "execute") return { label: "Code", open: true };
+  // Open for the same reason a shell command is: approving what you cannot
+  // see is not consent, and a cell's source is the whole of what is asked.
+  if (access.kind === "notebook-cell") return { label: "Code", open: true };
   if (access.kind === "environment") return { label: "Packages", open: true };
   return { label: "Details", open: false };
 }
@@ -267,7 +287,13 @@ export function PermissionCard({
         </summary>
         <CodeBlock
           code={accessCode(request.access)}
-          lang={request.access.kind === "execute" ? "bash" : undefined}
+          lang={
+            request.access.kind === "execute"
+              ? "bash"
+              : request.access.kind === "notebook-cell"
+                ? CELL_LANG[request.access.target.language]
+                : undefined
+          }
         />
         <div className="perm-meta">
           <span className="perm-tool">{request.tool}</span>

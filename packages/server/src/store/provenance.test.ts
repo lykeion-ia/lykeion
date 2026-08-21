@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { envelopeHash, type ProvenanceEnvelope } from "@lykeion/api";
+import { type ProvenanceEnvelope } from "@lykeion/api";
+import { envelopeHash } from "@lykeion/api/provenance-hash";
 import { cellsForToolUse, recordCell } from "./cells";
 import { migrate } from "./migrations";
 import {

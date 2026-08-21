@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./conformance": "./src/conformance.ts",
     "./routes": "./src/routes.ts",
-    "./pair-code": "./src/pair-code.ts"
+    "./pair-code": "./src/pair-code.ts",
+    "./provenance-hash": "./src/provenance-hash.ts"
   },
   "scripts": {
     "test": "vitest run",
