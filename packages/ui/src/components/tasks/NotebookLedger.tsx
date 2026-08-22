@@ -35,16 +35,12 @@ export function NotebookLedger({
   loading,
   warning,
   autoOpenCellId,
-  contextLabel,
-  writable,
   emptyNote,
 }: {
   cells: NotebookCell[];
   loading: boolean;
   warning: string | null;
   autoOpenCellId: string | null;
-  contextLabel: string | null;
-  writable: boolean;
   /** What an empty ledger means, where the caller knows better than the
    *  default does — a language lens with nothing under it has cells, just not
    *  these, and telling the researcher to ask the agent to run some would be
@@ -78,17 +74,6 @@ export function NotebookLedger({
         )}
       </div>
 
-      {contextLabel && (
-        <div className="nbp-footer" data-testid="notebook-footer">
-          <span>
-            {contextLabel}
-            {writable && " — writable"}
-          </span>
-          <span className="nbp-footer-count">
-            {cells.length === 1 ? " · 1 cell" : ` · ${cells.length} cells`}
-          </span>
-        </div>
-      )}
     </>
   );
 }

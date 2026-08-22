@@ -45,6 +45,25 @@ export interface LiveTranscriptTurn {
   content: ReactNode;
 }
 
+/** The same neutral provenance row for a system continuation whether it is
+ * live, recovered, or already settled in history. */
+export function EnvironmentContinuationStatus({
+  continuation,
+}: {
+  continuation?: TaskTurn["continuation"];
+}) {
+  return (
+    <div
+      className="run-line run-line--system"
+      data-testid="environment-continuation-status"
+    >
+      {continuation?.kind === "environment-setup"
+        ? `${continuation.environmentName} is ready. Continuing the work blocked above.`
+        : "Continuing earlier work."}
+    </div>
+  );
+}
+
 /**
  * Group persisted turns for render: each `subagent` turn nests under the
  * last plain (non-subagent) turn that preceded it, so a delegated turn draws
@@ -318,6 +337,8 @@ export function UserBubble({
  * for what Edit and Revert do, and which turns carry them.
  */
 function TurnView({
+  origin,
+  continuation,
   prompt,
   messages,
   stream,
@@ -325,6 +346,8 @@ function TurnView({
   cancelled,
   revert,
 }: {
+  origin?: TaskTurn["origin"];
+  continuation?: TaskTurn["continuation"];
   prompt: string;
   messages: string[];
   stream?: TurnItem[];
@@ -334,7 +357,11 @@ function TurnView({
 }) {
   return (
     <>
-      <UserBubble prompt={prompt} {...(revert ? { revert } : {})} />
+      {origin === "system" ? (
+        <EnvironmentContinuationStatus continuation={continuation} />
+      ) : (
+        <UserBubble prompt={prompt} {...(revert ? { revert } : {})} />
+      )}
       <AssistantReply text={replyText(messages, stream)}>
         {/* Both paths rail. A turn recorded before live streaming existed has
             only its prose, and it is still the agent's reply to this prompt —
@@ -423,7 +450,7 @@ export function TaskTranscript({
   const newest = chronologicalHistory[chronologicalHistory.length - 1];
   for (const { turn, subagents } of groupTaskTurns(chronologicalHistory)) {
     const revert: TurnRevert | undefined =
-      turn.runId === newest?.runId && (onRevertTurn || onEditTurn)
+      turn.origin === "user" && turn.runId === newest?.runId && (onRevertTurn || onEditTurn)
         ? {
             available: turn.revert?.available === true,
             ...(turn.revert?.reason === undefined ? {} : { reason: turn.revert.reason }),
@@ -440,6 +467,8 @@ export function TaskTranscript({
       content: (
         <>
           <TurnView
+            origin={turn.origin}
+            continuation={turn.continuation}
             prompt={turn.prompt}
             messages={turn.messages}
             stream={turn.stream}

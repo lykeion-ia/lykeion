@@ -10,7 +10,8 @@
     "./conformance": "./src/conformance.ts",
     "./routes": "./src/routes.ts",
     "./pair-code": "./src/pair-code.ts",
-    "./provenance-hash": "./src/provenance-hash.ts"
+    "./provenance-hash": "./src/provenance-hash.ts",
+    "./environment-setup-evidence": "./src/environment-setup-evidence.ts"
   },
   "scripts": {
     "test": "vitest run",

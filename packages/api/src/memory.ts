@@ -22,6 +22,7 @@ import type {
   Task,
 } from "./types";
 import type { KernelEnvCreateInput, KernelEnvDeclaration, KernelEnvManager, Language } from "./machine";
+import type { ResearchEnvironmentDefault } from "./environment-setup";
 import type {
   Conversation,
   ConversationSummary,
@@ -67,6 +68,17 @@ interface SimulatedRun extends RunHandle {
   onEventFrom(cursor: number, cb: (event: RunEvent) => void): () => void;
   onFrameFrom(cursor: number, cb: (frame: RunEventFrame) => void): () => void;
 }
+
+/**
+ * One Research as this core keeps it: the record, and no defaults on it.
+ *
+ * Which environment a Research defaults to lives in one store of its own
+ * beside these, exactly as it lives in `research_environment_defaults` rather
+ * than in a `studies` column on the server. A copy here would be a second
+ * answer to the same question, and the two would disagree the first time an
+ * environment was deleted.
+ */
+type StoredResearch = Omit<Research, "environmentDefaults">;
 
 /**
  * The shape `createInMemoryApi` starts life from. Exported because it is
@@ -809,6 +821,11 @@ export function defaultSeed(): Seed {
       title,
       description,
       agentContext,
+      // Stated by this seed, not asserted by a projection: the curated lab
+      // declares no environment at all, so no Research in it can have
+      // confirmed one. `createInMemoryLab` reads these into the store that
+      // owns them, and every Research read answers from there.
+      environmentDefaults: [],
       createdBy: "u_you",
       createdTs: T0 - n * 86_400,
       updatedTs: T0 - 3600,
@@ -937,7 +954,26 @@ export function createInMemoryLab(
   seed: Seed = defaultSeed(),
   options?: InMemoryApiOptions,
 ): InMemoryLab {
-  const researches = [...seed.researches];
+  // Stored WITHOUT its defaults, exactly as the server's `studies` row has no
+  // column for them. A copy on the record would be a second answer to "which
+  // environment does this Research default to", and the two would disagree
+  // the first time an environment is deleted.
+  const researches: StoredResearch[] = seed.researches.map(
+    ({ environmentDefaults: _defaults, ...rest }) => rest,
+  );
+  /**
+   * Which environment each Research has confirmed, per language — the one
+   * place that owns the answer, keyed by Research id, the way the server owns
+   * `research_environment_defaults`.
+   *
+   * Seeded from whatever the seed states, so a seed that names a default
+   * reaches every read path. A browser core confirms none of its own: doing
+   * so means a build it cannot run, and this core refuses to provision rather
+   * than pretend to.
+   */
+  const researchDefaults = new Map<string, ResearchEnvironmentDefault[]>(
+    seed.researches.map((s) => [s.id, s.environmentDefaults ?? []]),
+  );
   const tasks = [...seed.tasks];
   const conversations = [...seed.conversations];
   const messages = [...seed.messages];
@@ -948,6 +984,16 @@ export function createInMemoryLab(
   const nextId = (prefix: string) => `${prefix}_${counter++}`;
 
   const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+
+  /** One Research as every read below answers it, with the defaults read from
+   *  the one place that holds them. The single expression every path goes
+   *  through, so a new read cannot be added that quietly answers `[]` because
+   *  it had nothing in front of it. */
+  const readResearch = (research: StoredResearch): Research =>
+    clone({
+      ...research,
+      environmentDefaults: researchDefaults.get(research.id) ?? [],
+    });
 
   const members = clone(seed.members);
   const invites = clone(seed.invites);
@@ -1125,6 +1171,7 @@ export function createInMemoryLab(
     const turns = transcripts.get(task.id) ?? [];
     const turn: TaskTurn = {
       runId: run?.runId ?? `run_${counter++}`,
+      origin: "user",
       sequence: meta?.sequence ?? turns.length + 1,
       ts,
       prompt: input.prompt,
@@ -1203,7 +1250,7 @@ export function createInMemoryLab(
       const visible = options?.includeArchived
         ? researches
         : researches.filter((s) => s.archivedTs === undefined);
-      return clone(visible).sort((a, b) => b.createdTs - a.createdTs);
+      return visible.map(readResearch).sort((a, b) => b.createdTs - a.createdTs);
     },
     async getResearch(researchId) {
       const research = researches.find((s) => s.id === researchId);
@@ -1211,7 +1258,10 @@ export function createInMemoryLab(
       const forResearch = tasks
         .filter((t) => t.researchId === researchId)
         .sort((a, b) => a.number - b.number);
-      return clone<ResearchDetail>({ research, tasks: forResearch });
+      return {
+        research: readResearch(research),
+        tasks: clone<ResearchDetail["tasks"]>(forResearch),
+      };
     },
     async createResearch(input: NewResearch) {
       // Held to the same rule an edit is held to. A Research whose title is
@@ -1220,7 +1270,7 @@ export function createInMemoryLab(
       const title = input.title.trim();
       if (!title) throw new LykeionError("invalid", "research title must not be empty");
       const now = tick();
-      const research: Research = {
+      const research: StoredResearch = {
         id: nextId("s"),
         key: input.key,
         title,
@@ -1231,7 +1281,10 @@ export function createInMemoryLab(
         updatedTs: now,
       };
       researches.push(research);
-      return clone(research);
+      // Its defaults come back from the store like every other read's do. A
+      // fresh Research has confirmed none — which is a fact this answers with
+      // rather than a literal it asserts.
+      return readResearch(research);
     },
     async updateResearch(researchId, patch) {
       // A blank title is rejected, and the key is never touched. Blank agent
@@ -1253,19 +1306,19 @@ export function createInMemoryLab(
         else delete research.pinned;
       }
       research.updatedTs = tick();
-      return clone(research);
+      return readResearch(research);
     },
     async archiveResearch(researchId: string): Promise<Research> {
       const research = researches.find((s) => s.id === researchId);
       if (!research) throw new LykeionError("not-found", `no such research: ${researchId}`);
       research.archivedTs = tick();
-      return clone(research);
+      return readResearch(research);
     },
     async restoreResearch(researchId: string): Promise<Research> {
       const research = researches.find((s) => s.id === researchId);
       if (!research) throw new LykeionError("not-found", `no such research: ${researchId}`);
       delete research.archivedTs;
-      return clone(research);
+      return readResearch(research);
     },
     async deleteResearch(researchId) {
       // Deleting a Research removes it from the registry, taking everything its
@@ -1275,6 +1328,7 @@ export function createInMemoryLab(
       const at = researches.findIndex((s) => s.id === researchId);
       if (at === -1) throw new LykeionError("not-found", `no such research: ${researchId}`);
       researches.splice(at, 1);
+      researchDefaults.delete(researchId);
       for (let i = tasks.length - 1; i >= 0; i--) {
         if (tasks[i].researchId === researchId) {
           // The Reviewer's findings and the Task's transcript both hang off
@@ -1535,8 +1589,8 @@ export function createInMemoryLab(
     },
     async kernelEnvList() {
       // The declaration is pure metadata — no filesystem or machine
-      // involved — so unlike `kernelEnvSetup` this core answers it for
-      // real rather than with a fixed empty list.
+      // involved — so unlike the calls that provision, this core answers it
+      // for real rather than with a fixed empty list.
       return clone(kernelEnvs);
     },
     async kernelEnvCreate(input: KernelEnvCreateInput) {
@@ -1590,17 +1644,29 @@ export function createInMemoryLab(
       if (index === -1) throw new LykeionError("not-found", `no such environment: ${name}`);
       kernelEnvs.splice(index, 1);
     },
-    async kernelEnvSetup(machineId: string) {
+    async requestKernelEnvironmentSetup(_input) {
+      throw new LykeionError(
+        "unsupported",
+        "the browser core cannot provision software",
+      );
+    },
+    async taskEnvironmentSetups(_taskId) {
+      return [];
+    },
+    async retryKernelEnvironmentSetup(_waiterId) {
+      throw new LykeionError(
+        "unsupported",
+        "the browser core cannot provision software",
+      );
+    },
+    async answerEnvironmentDefaultSuggestion(suggestionId, _useByDefault) {
+      throw new LykeionError("not-found", `no such environment default suggestion: ${suggestionId}`);
+    },
+    async kernelEnvReclaim(machineId: string) {
       // No `uv` and no filesystem in the browser core, and no machine ever
       // paired to it either: `listMachines` here always answers `[]`, so
       // any `machineId` a caller names is honestly one this core has never
-      // heard of, precisely — not a vaguer "nothing is online" now that the
-      // caller must name a specific machine.
-      throw new LykeionError("not-found", `no such machine: ${machineId}`);
-    },
-    async kernelEnvReclaim(machineId: string) {
-      // Same reasoning as `kernelEnvSetup`: no machine behind a browser
-      // core, ever, so there is nothing named `machineId` to free.
+      // heard of, and there is nothing of that name to free.
       throw new LykeionError("not-found", `no such machine: ${machineId}`);
     },
     async listRunningKernels() {
@@ -1870,6 +1936,7 @@ export function createInMemoryLab(
         snapshot: {
           runId: handle.runId,
           sequence,
+          origin: "user",
           prompt: input.prompt,
           agent,
           state: { state: "planning" },

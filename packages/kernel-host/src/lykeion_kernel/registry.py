@@ -390,8 +390,34 @@ class Confinement:
     """
 
     environments: dict[tuple[str, str], Environment]
-    # Which environment an unaddressed cell of each language runs in.
-    defaults: dict[str, str]
+    # Which environment an unaddressed cell of each language runs in, as the
+    # RESEARCH decided — a soft default a researcher confirmed once and every
+    # later cell inherits.
+    #
+    # Its own map, and not a flag on an entry, because a Research can name an
+    # environment this machine has not built. There is no entry to hang the
+    # flag on in that case, and dropping it would turn the one refusal a
+    # researcher can act on — `meta-analysis-r is not built on this machine
+    # yet` — into `this session has no r environment`, which is true of the
+    # machine and says nothing about the work.
+    #
+    # Empty where the Research confirmed nothing, which is an answer rather
+    # than an absence: `built_defaults` below then decides, exactly as it did
+    # before a Research could name one at all. The daemon always knows what
+    # the lab said here — the answer rides in on the command that starts the
+    # turn — so there is no third "nobody asked" value to keep, which is what
+    # sets this apart from `declared`.
+    defaults: dict[str, str] = field(default_factory=dict)
+    # Which environment an unaddressed cell of each language runs in according
+    # to THIS MACHINE — the entry the daemon marked `default`, which is its
+    # own floor for that language, or the built environment that replaced it
+    # under the same name.
+    #
+    # The fallback, never the override. A Research that confirmed an R default
+    # has said nothing about Python, and Python must go on landing where this
+    # machine says; a single map would take that away the moment one language
+    # got a default.
+    built_defaults: dict[str, str] = field(default_factory=dict)
     # Both absent on the one this host was constructed with, which describes
     # no Task and no directory: what the daemon supplies is drawn around one
     # Task's workspace, and what a constructor supplies is drawn around none.
@@ -420,16 +446,31 @@ class Confinement:
         return self.environments.get((language, name))
 
     def default_for(self, language: str) -> str | None:
-        # Absent rather than "": a language nobody named a default for and a
-        # default someone genuinely named the empty string are different
-        # facts, and `environment_for`'s own absence is already `None` — a
-        # sentinel `""` here is the one this pair's neighbour does not use.
-        return self.defaults.get(language)
+        """Where a cell of this language that names no environment lands.
+
+        The Research first, this machine second — the soft default's whole
+        precedence in one line. What it deliberately does NOT beat is a cell
+        that named an environment itself: `identity_for` consults this only
+        when the cell said nothing, so the researcher writing the cell always
+        outranks the researcher who confirmed the default.
+
+        Absent rather than "": a language nobody named a default for and a
+        default someone genuinely named the empty string are different facts,
+        and `environment_for`'s own absence is already `None` — a sentinel
+        `""` here is the one this pair's neighbour does not use.
+        """
+        named = self.defaults.get(language)
+        return self.built_defaults.get(language) if named is None else named
 
 
 def _environments_from(entries: Any) -> tuple[dict[tuple[str, str], Environment], dict[str, str]]:
     """One entry per environment a session's kernels may start in, and which
-    of them an unaddressed cell of each language runs in.
+    of them THIS MACHINE says an unaddressed cell of each language runs in.
+
+    The second half of that answer is the machine's own floor, read off the
+    entries carrying `"default": true`. It is the fallback a Research's
+    confirmed default overrides — see `Confinement.default_for` — never the
+    other way round.
 
     The one place this shape is parsed, whether it arrived over the wire or
     from a caller standing in for it directly — `configure_session` is
@@ -441,7 +482,7 @@ def _environments_from(entries: Any) -> tuple[dict[tuple[str, str], Environment]
     if not isinstance(entries, list):
         raise ValueError("a confinement is a list of environments")
     built: dict[tuple[str, str], Environment] = {}
-    defaults: dict[str, str] = {}
+    built_defaults: dict[str, str] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             raise ValueError("a confinement is a list of environments")
@@ -470,10 +511,37 @@ def _environments_from(entries: Any) -> tuple[dict[tuple[str, str], Environment]
             # two conflicting answers was meant, and a last-write-wins
             # accident is a session's kernels landing wherever it happened
             # to be sorted rather than where it was asked to be.
-            if language in defaults:
+            if language in built_defaults:
                 raise ValueError("a confinement is a list of environments")
-            defaults[language] = name
-    return built, defaults
+            built_defaults[language] = name
+    return built, built_defaults
+
+
+def _defaults_from(value: Any) -> dict[str, str]:
+    """Which environment the RESEARCH says an unaddressed cell of each
+    language runs in, or nothing where it has confirmed none.
+
+    A map of language to environment name, and every name is one this process
+    may later be asked to resolve — which is why nothing about it is checked
+    against what this machine has built. A default naming an environment
+    nobody here built is not malformed; it is the case the whole map exists
+    to carry, and it is answered at the cell with a refusal that names it.
+
+    Validated here for the same reason `_environments_from` is: this arrives
+    from the wire and from callers standing in for it directly, and a
+    `Confinement` built from an unchecked one is the thing nothing here may
+    hold. `None` becomes `{}` rather than staying absent — unlike `declared`,
+    there is no "nobody asked" state to keep apart from "nothing confirmed",
+    because the daemon learns this from the command that starts the turn.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(
+        isinstance(language, str) and language and isinstance(name, str) and name
+        for language, name in value.items()
+    ):
+        raise ValueError("a confinement's defaults are one environment name per language")
+    return dict(value)
 
 
 def _declared_from(names: Any) -> frozenset[str] | None:
@@ -630,7 +698,9 @@ class Registry:
                 )
                 for runnable in self._runnables
             },
-            defaults={runnable.language: runnable.environment for runnable in self._runnables},
+            built_defaults={
+                runnable.language: runnable.environment for runnable in self._runnables
+            },
         )
         self._sessions: dict[str, Confinement] = {}
         self._entries: dict[str, Entry] = {}
@@ -732,6 +802,7 @@ class Registry:
         task_id: str,
         workspace: str | None,
         environments: list[dict[str, Any]],
+        defaults: dict[str, str] | None = None,
         token: str | None = None,
         declared: list[str] | None = None,
     ) -> None:
@@ -753,6 +824,14 @@ class Registry:
         nothing that calls this can hold a `Confinement` neither of them
         agreed to.
 
+        `defaults` is where a cell of each language that names NO environment
+        lands, as the Research itself confirmed. Distinct from the `default`
+        flag an entry above may carry — that one is this machine's own floor,
+        and this one overrides it. Kept as its own map because a Research can
+        name an environment this machine has not built, which no entry can
+        stand for; the cell is then refused by that name rather than as a
+        session with no environment of its language.
+
         `declared` is what the lab says exists, which is a different list
         from the one above: an environment can be declared lab-wide and not
         built here, and a cell naming one is owed a different sentence than a
@@ -761,12 +840,14 @@ class Registry:
         configured on one of those, because a lab too slow to answer must not
         be a machine that starts no kernels.
         """
-        built, defaults = _environments_from(environments)
+        built, built_defaults = _environments_from(environments)
+        research_defaults = _defaults_from(defaults)
         names = _declared_from(declared)
         with self._lock:
             self._sessions[session_id] = Confinement(
                 environments=built,
-                defaults=defaults,
+                defaults=research_defaults,
+                built_defaults=built_defaults,
                 task_id=task_id,
                 workspace=workspace,
                 token=token,
@@ -1482,6 +1563,13 @@ class Registry:
         declared nothing has the same rows and says so: the two differ
         nowhere else, so collapsing them would lose the distinction entirely.
 
+        A row also says when it is where a cell of its language that names no
+        environment lands — the Research's own soft default. Marked on the row
+        rather than announced separately so the default and the environment it
+        points at cannot drift apart in what an agent reads, and marked on an
+        unbuilt row too, since a default this machine has not built is exactly
+        the one an agent should offer to build.
+
         Each row also says whether this session's kernels in that environment
         were last started by something other than a cell, and why — which for
         this phase means an environment rebuilt underneath them. That is the
@@ -1512,6 +1600,12 @@ class Registry:
                 for entry in self._entries.values()
                 if entry.identity.session_id == session_id and entry.restart_reason is not None
             }
+        # Which language, if any, this Research asks each name to answer for
+        # when a cell of that language names none. Read by name for the rows
+        # this machine has NOT built, which carry no language of their own —
+        # and a lab's environment names are unique lab-wide, so a name that is
+        # a default is the default for exactly one language.
+        default_of = {name: language for language, name in confinement.defaults.items()}
         rows: list[dict[str, Any]] = [
             {
                 "name": name,
@@ -1521,6 +1615,14 @@ class Registry:
                 # restart nobody explained are both "nothing to say", and a
                 # key holding an empty sentence would read as one.
                 **({} if name not in restarts else {"restartedBecause": restarts[name]}),
+                # By the exact pair for a built row, since this row knows its
+                # own language and a name matching under some other one would
+                # be a claim this row cannot make.
+                **(
+                    {"defaultFor": language}
+                    if confinement.defaults.get(language) == name
+                    else {}
+                ),
             }
             for language, name in confinement.environments
         ]
@@ -1535,7 +1637,15 @@ class Registry:
             # refuses to invent everywhere else.
             here = {name for _, name in confinement.environments}
             rows += [
-                {"name": name, "builtHere": False}
+                {
+                    "name": name,
+                    "builtHere": False,
+                    # The row this whole mechanism exists for: a Research
+                    # default nobody here has built. It is the one an agent
+                    # should offer to build, and saying nothing about it would
+                    # leave the model with no reason to.
+                    **({"defaultFor": default_of[name]} if name in default_of else {}),
+                }
                 for name in confinement.declared - here
             ]
         # By name, so what an agent reads is in an order it can scan rather

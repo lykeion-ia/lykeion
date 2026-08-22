@@ -40,6 +40,90 @@ import { recordDemotion } from "./agent-demotions";
  */
 const DEFAULT_CANCEL_GRACE_MS = 45_000;
 
+/**
+ * The tools whose provider wrapper this machine answers itself, by the exact
+ * title the adapter announces the call under.
+ *
+ * An environment change arrives as TWO questions and is ONE decision. The
+ * agent's own provider asks whether this tool may run at all — a card naming
+ * a tool and nothing else, because that is all the provider knows; this
+ * machine's kernel host then asks the question that matters, naming the
+ * environment, the packages and the fact that they land on every machine in
+ * this lab. Stacked, a researcher answers a card that says nothing and then a
+ * card that says everything, and the first one teaches them that these cards
+ * are noise. So the wrapper is answered here and the real card is the only
+ * one raised.
+ *
+ * **Only these two, and only exactly.** Suppressing a provider card is safe
+ * for one reason and no other: the kernel-host method behind each of these
+ * performs no mutation before this daemon's own `askPermission` has been
+ * answered — `_created` and `_managed_packages` read their arguments and this
+ * session's own environment list, then ask, and every write is on the far
+ * side of that. A tool without that property would be running unasked. The
+ * match is therefore exact: no prefix, no suffix, no substring, no case
+ * folding. A near-miss title an allowlist accepts is the whole defect this
+ * exists to avoid, and an agent names its own tools.
+ *
+ * **Allowlisted by NAME, so every action of a named tool is covered.** A
+ * provider card asks about the tool and never about the action, so there is no
+ * per-action question here to suppress or keep. `manage_environments` carries
+ * three: `create` is the consequential one and is guarded by the inner card
+ * above; `list` reads back what this session was already told; and `require`
+ * records that a declared, unbuilt environment is blocking this Task —
+ * verified to write one waiter row and a change-log entry and to dispatch
+ * nothing at all (`attachWaiter` in the lab's environment setup coordinator;
+ * its route's own contract is "this route creates no physical job"). That is
+ * what makes covering it safe, and it is a STANDING CONSTRAINT rather than an
+ * observation: the day `require` starts physical work, it stops being covered
+ * by this entry and this allowlist has to be keyed by tool AND action instead.
+ *
+ * **And the ARGUMENTS have to fit the tool the title claims.** The safety
+ * argument above is a property of these two tools; the key is a string an
+ * adapter supplies, on the same field `pathFrom` elsewhere treats as prose. A
+ * call that is not one of these tools but announces itself under one of these
+ * exact titles would have its provider card answered here with no inner card
+ * behind it — the kernel host was never involved, so the suppressed card was
+ * that call's ONLY gate. So each entry carries the shape its tool's published
+ * `inputSchema` requires, checked against what the call actually announced,
+ * and a call whose arguments are not that tool's arguments gets its card. The
+ * shapes are the agent-facing ones — what the model sends to the MCP tool —
+ * and not the kernel host's own `session_id`-carrying call to this daemon,
+ * which the agent never writes and no `tool_call` update ever carries.
+ *
+ * This is also the answer to the per-action question left open above: an
+ * action outside a tool's published enum is not that tool's argument shape,
+ * so `require` and `create` are told apart here by value rather than by a
+ * second allowlist keyed on `(tool, action)`.
+ */
+const BROKERED_ENVIRONMENT_TOOLS = new Map<string, (input: unknown) => boolean>([
+  [
+    "mcp__notebook__manage_environments",
+    (input) => {
+      if (!isRecord(input)) return false;
+      // `action` is the tool's one required property, and its enum is closed.
+      // `list` names nothing; `create` and `require` both name an
+      // environment, which is the argument the inner card is raised about.
+      if (input.action === "list") return true;
+      if (input.action !== "create" && input.action !== "require") return false;
+      return typeof input.name === "string" && input.name.length > 0;
+    },
+  ],
+  [
+    "mcp__notebook__manage_packages",
+    (input) => {
+      if (!isRecord(input)) return false;
+      // `packages` is required and non-empty — "adding nothing is not a
+      // request this tool takes" — and every entry is a package name.
+      const packages = input.packages;
+      return (
+        Array.isArray(packages) &&
+        packages.length > 0 &&
+        packages.every((name) => typeof name === "string" && name.length > 0)
+      );
+    },
+  ],
+]);
+
 export type StandingGrant = SandboxGrant;
 
 /**
@@ -144,8 +228,23 @@ export function carriesThinking(agent: string): boolean {
  * Always present on an allowance, and a no-op for `once` — so the caller
  * calls it unconditionally and there is no second decision anywhere about
  * what a scope means.
+ *
+ * `scope` is that same answer said out loud, for the one caller that cannot
+ * act on it here: this lab keeps a conversation's grants durably, so whoever
+ * performs the act carries the scope to the lab with it and the lab writes
+ * the grant inside the very transaction that makes the change — a change that
+ * did not happen leaves no authority behind, on either side. `once` and
+ * `conversation` are the whole set an environment card takes; a card answered
+ * with anything wider is refused in `decide` and never reaches a caller.
+ *
+ * It says what THIS card was answered with, never what already stood. A card
+ * drained against a grant this session already holds was answered by nobody
+ * and reports `once`: whatever covered it is already durable, and re-declaring
+ * a standing grant off a question nobody was shown is not this end's to do.
  */
-export type Answered = { allowed: false } | { allowed: true; remember: () => void };
+export type Answered =
+  | { allowed: false }
+  | { allowed: true; scope: "once" | "conversation"; remember(): void };
 
 export interface LiveSession {
   /**
@@ -418,6 +517,36 @@ export function permissionAnswer(
   return match?.optionId;
 }
 
+/**
+ * The id this agent gave to "allow this call, once" — and only to that.
+ *
+ * The one answer a BROKERED card may be given. `permissionAnswer` above is
+ * right for its own callers and is deliberately not reused here: there a
+ * researcher chose the verdict and that function's job is to map their choice
+ * onto whatever menu the agent happens to offer, falling back to `allow_always`
+ * when nothing narrower exists. On the brokered path nobody chose anything, and
+ * falling back would have this machine hand the agent a durable permission of
+ * its own for a question no researcher ever saw. Suppressing a card is what the
+ * design licenses; granting one is not.
+ *
+ * So the match is exact, on the kind the protocol fixes — the same discipline
+ * `BROKERED_ENVIRONMENT_TOOLS` is matched with, and for the same reason. An
+ * agent offering no `allow_once` gets `undefined`, and the caller raises the
+ * ordinary card: the stacked pair of questions this brokering exists to remove
+ * comes back for that adapter, which is a visible regression somebody can act
+ * on rather than an invisible standing grant.
+ */
+function allowOnceAnswer(offered: unknown): string | undefined {
+  const options = Array.isArray(offered) ? (offered as PermissionOption[]) : [];
+  const match = options.find(
+    (option): option is { optionId: string; kind: string } =>
+      option.kind === "allow_once" &&
+      typeof option.optionId === "string" &&
+      option.optionId.length > 0,
+  );
+  return match?.optionId;
+}
+
 export async function startSession(options: {
   /** The adapter to run. It is confined HERE rather than by the caller, so
    *  spawning one outside a boundary is not something a caller can express:
@@ -439,6 +568,21 @@ export async function startSession(options: {
    *  none and this machine's own platform is used. */
   platform?: string;
   grants: StandingGrant[];
+  /** The environments this conversation has ALREADY been given standing
+   *  permission to change, by name — what the lab persisted when a researcher
+   *  answered an earlier environment card "for this conversation".
+   *
+   *  A conversation outlives the process holding it: a daemon restarts, a
+   *  session is retired when its boundary changes, and the next turn opens a
+   *  new one. Held only in memory, "for this conversation" would quietly mean
+   *  "until something restarts" — and the researcher would be asked again
+   *  about an environment they already allowed, in the same conversation.
+   *  So the set is seeded from what the lab holds rather than from anything
+   *  this process remembers, and grows from there as this session's own cards
+   *  are answered.
+   *
+   *  Absent is empty: a conversation nobody has allowed anything in. */
+  environmentGrants?: readonly string[];
   /** The tool servers this session's agent is told it may reach. Absent is
    *  the same as none: a session opens either way, and an agent given none is
    *  told so rather than left to guess whether the list was withheld. */
@@ -550,7 +694,12 @@ export async function startSession(options: {
   // names neither. Without this the card's two scopes would be one — `once`
   // and `conversation` both asking again next time, which teaches a
   // researcher their last answer meant less than it said.
-  const environmentGrants = new Set<string>();
+  //
+  // Seeded from what the LAB holds for this conversation, so a grant survives
+  // the process it was given in — see the option's own note. What this session
+  // then adds to it is minted the same way it always was: by whoever performed
+  // the act, once it has landed.
+  const environmentGrants = new Set<string>(options.environmentGrants ?? []);
   // What each card this machine raised itself was ANSWERED with, from the
   // moment `decide` records it until `askPermission` reads it back one line
   // later. Not a grant and not a decision — those are `environmentGrants` and
@@ -935,6 +1084,41 @@ export async function startSession(options: {
       // saying it was refused.
       emitStep(entry);
       return answer("reject") ?? { outcome: { outcome: "cancelled" } };
+    }
+
+    // The provider's own wrapper around a tool that asks the real question
+    // itself. Answered here, so the researcher is asked once — by the card
+    // that names the environment rather than by the one that names a tool.
+    //
+    // Read off the EXECUTION LOG rather than off this request: an adapter's
+    // permission title is often prose ("Run a shell command"), while the
+    // `tool_call` update it announced the call with carries the tool's own
+    // name, which is what the allowlist is written in. A call this session
+    // has no log entry for — an adapter that asked before it announced, or
+    // announced no title — matches nothing and gets its card, which is the
+    // safe direction for an absence. The same entry carries the arguments the
+    // call announced, and they have to be the named tool's own: a title is
+    // free text an adapter supplies, and a call that merely SAYS it is one of
+    // these two has no inner card behind it to fall back on.
+    //
+    // Nothing is written here: no card, because none was raised, and no
+    // grant, because nothing has been consented to yet. What the researcher
+    // decides is decided one layer down, on `askPermission`'s own card, and
+    // the arguments that reach it are not this end's to trust either — the
+    // kernel-host method behind both of these tools mutates nothing before
+    // that card is answered.
+    //
+    // And only ever with the agent's own `allow_once`. An agent that offers
+    // none is answered by nobody here — the card below is raised instead, and
+    // the researcher answers the provider's question the way they always did.
+    // See `allowOnceAnswer`.
+    const logged = steps.get(params.toolCall?.toolCallId ?? "");
+    const brokered =
+      logged?.title === undefined ? undefined : BROKERED_ENVIRONMENT_TOOLS.get(logged.title);
+    if (brokered !== undefined && brokered(logged?.input)) {
+      const allowedOnce = allowOnceAnswer(params.options);
+      if (allowedOnce !== undefined)
+        return { outcome: { outcome: "selected" as const, optionId: allowedOnce } };
     }
 
     const id = `pr_${nextRequest++}`;
@@ -1394,6 +1578,13 @@ export async function startSession(options: {
       if (verdict !== "allow") return { allowed: false };
       return {
         allowed: true,
+        // What this card was answered with, for the caller to carry to the
+        // lab beside the act itself. `once` for a card nobody answered —
+        // drained against a grant that already stands, and therefore already
+        // durable. `study` and `global` cannot arrive: `decide` refuses an
+        // environment card answered with either, so this never resolves
+        // `allow` holding one.
+        scope: scope === "conversation" ? "conversation" : "once",
         // The whole of what "for this conversation" means on an environment
         // card, held until the caller says the act actually happened. See
         // `Answered`. `once` leaves nothing behind, which is what makes this

@@ -1,13 +1,27 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Store } from "../store/store";
 import type { ChangeRecorder } from "../api/changes";
-import { isLykeionError, type AgentOption, type ErrorCode } from "@lykeion/api";
+import {
+  isLykeionError,
+  type AgentOption,
+  type ErrorCode,
+  type KernelEnvStatus,
+} from "@lykeion/api";
+import {
+  environmentLockfileFingerprint,
+  environmentPackageFingerprint,
+  isEnvironmentEvidenceFingerprint,
+} from "@lykeion/api/environment-setup-evidence";
 import { hashSecret, newToken } from "../auth";
 import { nextSeq } from "../store/migrations";
 import { environmentStore } from "../store/environments";
-import { buildEnvironmentOn, declareEnvironment, planFor } from "../api/environments";
-import type { EnvSetupRegistry } from "../env-setup-registry";
+import { declareEnvironment, planFor } from "../api/environments";
 import type { RunRelay } from "../run-relay";
+import {
+  kernelEnvironmentStatusAnswers,
+  type EnvironmentSetupCoordinator,
+} from "../environment-setup-coordinator";
+import { environmentSetupStore } from "../store/environment-setups";
 
 /** The machine a bearer token names. */
 export interface Machine {
@@ -32,10 +46,9 @@ export interface DaemonRequest {
   body: unknown;
   authorization: string | undefined;
   now: number;
-  /** The `kernel-env-setup` asks this lab is currently waiting on. Read, never
-   *  settled, by `/daemon/kernel-env/lock` — which needs to know a machine
-   *  posting a pin was actually asked to produce one. */
-  envSetups: EnvSetupRegistry;
+  /** Durable setup attempts: the lifecycle every `kernel-env-setup` ask on
+   *  this wire is classified against before it is settled or authorized. */
+  coordinator: EnvironmentSetupCoordinator;
   /** The command queue a route reaches a machine over. Only
    *  `/daemon/kernel-env/packages` uses it: adding packages to a declaration
    *  is the one thing on this wire that has to send a command back down to
@@ -83,6 +96,7 @@ const OWNED_ROUTES = new Set([
   "POST /daemon/report",
   "POST /daemon/workspaces",
   "POST /daemon/kernel-envs",
+  "POST /daemon/kernel-env/require",
   "POST /daemon/kernel-env/create",
   "POST /daemon/kernel-env/packages",
   "POST /daemon/kernel-env/lock",
@@ -345,6 +359,41 @@ function environmentsField(body: unknown): string | null {
   return value === undefined ? null : JSON.stringify(value);
 }
 
+export function isKernelEnvStatus(value: unknown): value is KernelEnvStatus {
+  if (value === null || typeof value !== "object") return false;
+  const status = value as Record<string, unknown>;
+  return (
+    (status.state === "absent" || status.state === "ready" || status.state === "broken") &&
+    typeof status.name === "string" && status.name.length > 0 &&
+    (status.language === "python" || status.language === "r") &&
+    (status.manager === "uv" || status.manager === "conda") &&
+    typeof status.platform === "string" && status.platform.length > 0 &&
+    typeof status.root === "string" && status.root.length > 0 &&
+    (status.version === undefined || typeof status.version === "string") &&
+    (status.packageCount === undefined ||
+      (typeof status.packageCount === "number" && Number.isInteger(status.packageCount) && status.packageCount >= 0)) &&
+    (status.lockRevision === undefined ||
+      (typeof status.lockRevision === "number" && Number.isInteger(status.lockRevision) && status.lockRevision >= 0)) &&
+    (status.setupRequestId === undefined ||
+      (typeof status.setupRequestId === "string" && status.setupRequestId.length > 0)) &&
+    (status.lockfileFingerprint === undefined ||
+      isEnvironmentEvidenceFingerprint(status.lockfileFingerprint)) &&
+    (status.packageFingerprint === undefined ||
+      isEnvironmentEvidenceFingerprint(status.packageFingerprint)) &&
+    (status.declarationGenerationId === undefined ||
+      (typeof status.declarationGenerationId === "string" &&
+        status.declarationGenerationId.length > 0)) &&
+    (status.declarationCreatedTs === undefined ||
+      (typeof status.declarationCreatedTs === "number" &&
+        Number.isInteger(status.declarationCreatedTs) && status.declarationCreatedTs >= 0))
+  );
+}
+
+function environmentStatusesField(body: unknown): KernelEnvStatus[] | undefined {
+  const value = arrayField(body, "environments");
+  return value === undefined ? undefined : value.filter(isKernelEnvStatus);
+}
+
 function optionsKeeper(stored: StoredCli[]): (cli: ReportedCli) => string | null {
   const held = new Map(stored.map((row) => [row.cliId, row.options]));
   return (cli) =>
@@ -520,6 +569,7 @@ function report(req: DaemonRequest): DaemonResult {
   const kernelsReason = kernelsReasonField ?? null;
   const processVisibility = optionalStringField(body, "processVisibility") ?? null;
   const environments = environmentsField(body);
+  const environmentStatuses = environmentStatusesField(body);
 
   store.tx(() => {
     const current = store.get(
@@ -639,6 +689,12 @@ function report(req: DaemonRequest): DaemonResult {
     if (changed) req.changes.record("runtime-clis-changed", {}, machine.ownerId);
   });
 
+  // After the report transaction commits: a ready transition is its own
+  // durable write and must never observe a machine status that the runtime
+  // row then rolls back. An absent field is not an empty report and causes
+  // no transition inside the coordinator.
+  req.coordinator.reconcileMachine(machine.machineId, environmentStatuses, req.changes.record);
+
   return { status: 200, json: { ok: true } };
 }
 
@@ -656,6 +712,110 @@ function kernelEnvs(req: DaemonRequest): DaemonResult {
   const machine = resolveMachine(req.store, req.authorization);
   if (!machine) return { status: 401, json: { error: "no such machine" } };
   return { status: 200, json: { declarations: environmentStore(req.store).list() } };
+}
+
+/** Records one exact source turn as waiting for one declared, unbuilt
+ * environment. This route creates no physical job: setup remains an explicit
+ * Machines/Notebook-surface action. */
+function kernelEnvRequire(req: DaemonRequest): DaemonResult {
+  const machine = resolveMachine(req.store, req.authorization);
+  if (!machine) return { status: 401, json: { error: "no such machine" } };
+  const runId = field(req.body, "runId");
+  const sessionId = field(req.body, "sessionId");
+  const environmentName = field(req.body, "environmentName");
+  if (!runId || !sessionId || !environmentName)
+    return {
+      status: 400,
+      json: { error: "a runId, sessionId and environmentName are required" },
+    };
+
+  const source = req.store.get(
+    `SELECT t.id, t.task_id, t.session_id, t.origin, t.ended_ts,
+            s.study_id AS session_study_id, s.runtime_id,
+            s.ended_ts AS session_ended_ts, k.study_id AS task_study_id
+       FROM turns t
+       JOIN sessions s ON s.id = t.session_id
+       JOIN tasks k ON k.id = t.task_id
+      WHERE t.id = ?`,
+    [runId],
+  );
+  if (
+    !source ||
+    source.ended_ts !== null ||
+    source.session_ended_ts !== null ||
+    source.origin !== "user" ||
+    source.session_id !== sessionId ||
+    source.runtime_id !== machine.machineId ||
+    source.session_study_id !== source.task_study_id
+  ) return {
+    status: 403,
+    json: { error: "this machine does not hold that exact live source turn" },
+  };
+  const newest = req.store.get(
+    `SELECT id FROM turns WHERE task_id = ? AND origin = 'user' ORDER BY seq DESC LIMIT 1`,
+    [source.task_id],
+  );
+  if (newest?.id !== runId)
+    return {
+      status: 409,
+      json: { error: "that source is not the newest researcher turn for this Task" },
+    };
+  const declaration = environmentStore(req.store).get(environmentName);
+  if (!declaration)
+    return { status: 404, json: { error: `no such environment: ${environmentName}` } };
+
+  const reported = req.store.get(`SELECT environments FROM runtimes WHERE id = ?`, [machine.machineId]);
+  let statuses: KernelEnvStatus[] = [];
+  if (typeof reported?.environments === "string") {
+    try {
+      const value = JSON.parse(reported.environments as string) as unknown;
+      if (Array.isArray(value)) statuses = value.filter(isKernelEnvStatus);
+    } catch {
+      // Malformed is unknown, never evidence that the environment is ready.
+    }
+  }
+  const currentLock = environmentStore(req.store).readLock(
+    declaration.name,
+    declaration.lockRevision,
+  );
+  if (
+    declaration.declarationGenerationId !== undefined &&
+    currentLock !== undefined &&
+    statuses.some((status) =>
+      kernelEnvironmentStatusAnswers(
+        {
+          environmentName: declaration.name,
+          language: declaration.language,
+          manager: declaration.manager,
+          lockRevision: declaration.lockRevision,
+          declarationGenerationId: declaration.declarationGenerationId!,
+          lockfileFingerprint: environmentLockfileFingerprint(currentLock),
+          packageFingerprint: environmentPackageFingerprint(declaration.packages),
+        },
+        status,
+      ),
+    )
+  )
+    return {
+      status: 409,
+      json: { error: `${environmentName} is already ready on this machine` },
+    };
+
+  const result = req.coordinator.attachWaiter(
+    {
+      studyId: source.task_study_id as string,
+      taskId: source.task_id as string,
+      sessionId,
+      sourceTurnId: runId,
+      sourceRunId: runId,
+      language: declaration.language,
+      environmentName,
+      runtimeId: machine.machineId,
+      createdTs: req.now,
+    },
+    req.changes.record,
+  );
+  return { status: 200, json: result };
 }
 
 /** What status a typed refusal from `declareEnvironment` goes out as. The
@@ -716,9 +876,79 @@ function researcherOfSession(
   return { openedBy: session.opened_by as string };
 }
 
+/**
+ * The Task this session belongs to, or `undefined` for a session holding no
+ * turns at all.
+ *
+ * `sessions` names a Research and never a Task; `turns` is where the two meet.
+ * Read from the session's newest turn and NOT restricted to a live one, which
+ * is a lookup rather than a guess: a session serves exactly one Task by
+ * construction. `liveSessionFor` and `activeTurnForTask`
+ * (`store/sessions.ts`) both find a session by the Task it already holds turns
+ * for, so a session is only ever reused for that same Task, and its newest
+ * turn names it whether or not that turn has ended.
+ *
+ * Restricting this to a LIVE turn is the tempting version and it is wrong.
+ * `manage_packages` is answered on a card, and the turn can end between the
+ * researcher answering it and this call landing — a narrow race, but one that
+ * would then file no interest, and an add with no interest is one
+ * `uncoveredInterests` cannot carry onto another round when the build it
+ * joined settles without its packages. Nothing surfaces that: the bar reads
+ * "Ready" off the machine's status, `KernelEnvCard`'s "a revision behind"
+ * badge compares lock revisions a joined build leaves equal, and no passive
+ * surface compares the declaration's packages against what was built. The
+ * researcher would be told their packages were added, and they would be
+ * declared, and no machine would hold them.
+ */
+function taskOfSession(store: Store, sessionId: string): string | undefined {
+  const row = store.get(
+    `SELECT task_id FROM turns
+      WHERE session_id = ?
+      ORDER BY seq DESC LIMIT 1`,
+    [sessionId],
+  );
+  return row === undefined ? undefined : (row.task_id as string);
+}
+
 const NOT_THIS_MACHINES_SESSION = {
   status: 403,
   json: { error: "this machine is not running a session with that id" },
+};
+
+/**
+ * How far the card behind this call was answered, or `undefined` for an
+ * answer this route will not take.
+ *
+ * Two scopes, and only two: an environment card offers `once` and
+ * `conversation` and nothing wider, because a grant "across all projects" to
+ * change what is installed on every machine in this lab is a permanent,
+ * unasked licence to run other people's build scripts on colleagues'
+ * computers. The daemon refuses `study` and `global` in front of the
+ * researcher; this refuses them again, because this route is reachable from
+ * anything holding a machine token and what it does is WRITE.
+ *
+ * Refused rather than narrowed. A caller told "for this Study" and given one
+ * call would believe the wrong thing, and the change itself would be written
+ * either way — so the whole call is turned away and nothing happens at all.
+ *
+ * ABSENT is `once`, and absent is the only thing that is: a daemon older than
+ * this field still changes environments for researchers who allowed it, and
+ * reading its silence as a standing grant would mint authority nobody was
+ * asked for. Anything else — a scope this lab does not have, a number, null —
+ * is a caller to refuse, not a caller to guess at.
+ */
+function answeredScope(body: unknown): "once" | "conversation" | undefined {
+  const value = (body as Record<string, unknown> | null)?.permissionScope;
+  if (value === undefined) return "once";
+  return value === "once" || value === "conversation" ? value : undefined;
+}
+
+const SCOPE_THIS_ROUTE_WILL_NOT_TAKE = {
+  status: 400,
+  json: {
+    error:
+      "an environment change is remembered for one call or for this conversation, and for nothing wider",
+  },
 };
 
 function kernelEnvCreate(req: DaemonRequest): DaemonResult {
@@ -764,21 +994,42 @@ function kernelEnvCreate(req: DaemonRequest): DaemonResult {
       status: 400,
       json: { error: `an environment is for python or r, and ${JSON.stringify(language)} is neither` },
     };
+  const scope = answeredScope(req.body);
+  if (scope === undefined) return SCOPE_THIS_ROUTE_WILL_NOT_TAKE;
   const session = researcherOfSession(req.store, machine, sessionId);
   if (!session) return NOT_THIS_MACHINES_SESSION;
   try {
-    const declaration = declareEnvironment(
-      req.store,
-      (kind, payload, ownerId) => req.changes.record(kind, payload, ownerId),
-      // The language the daemon was asked for, not a constant. This wire
-      // carried none while the provisioner built Python environments alone;
-      // it carries one now, and `declareEnvironment` derives the package
-      // manager from it (`python` → uv, `r` → conda) so that deriving it is
-      // done once, here, for every caller.
-      { name, language, packages },
-      session.openedBy,
-      req.now,
-    );
+    // One transaction for the declaration and the standing permission over
+    // it. A create this lab refuses — the name is taken, most often by a
+    // colleague's environment — must leave nothing behind: minted anyway, the
+    // conversation would hold uncarded authority to install software into
+    // something the researcher was never shown, off a card for an environment
+    // that does not exist. `declareEnvironment` opens its own transaction and
+    // this nests inside it, so its refusal takes the grant with it.
+    const declaration = req.store.tx(() => {
+      const declared = declareEnvironment(
+        req.store,
+        (kind, payload, ownerId) => req.changes.record(kind, payload, ownerId),
+        // The language the daemon was asked for, not a constant. This wire
+        // carried none while the provisioner built Python environments alone;
+        // it carries one now, and `declareEnvironment` derives the package
+        // manager from it (`python` → uv, `r` → conda) so that deriving it is
+        // done once, here, for every caller.
+        { name, language, packages },
+        session.openedBy,
+        req.now,
+      );
+      // Under the session's own researcher, the same way the declaration is:
+      // a grant is one person's answer, and the token names only a machine.
+      if (scope === "conversation")
+        environmentSetupStore(req.store).rememberEnvironmentGrant(
+          sessionId,
+          declared.name,
+          session.openedBy,
+          req.now,
+        );
+      return declared;
+    });
     return { status: 200, json: { declaration } };
   } catch (err) {
     // The lab's own sentence travels: the researcher just approved this
@@ -826,8 +1077,8 @@ function whyCatchingUp(asked: string[], name: string): string {
  * text this lab does not hold; neither is a build this route can usefully
  * dispatch, and answering `false` claims only that no build is running
  * because of this call, which is exactly true. The second of those is a
- * broken store, and `kernelEnvSetup` already refuses it by name in front of a
- * researcher who can act on it.
+ * broken store, and the Setup surface already refuses it by name in front of
+ * a researcher who can act on it.
  */
 function buildStillOwed(store: Store, name: string): boolean {
   try {
@@ -877,6 +1128,23 @@ function buildStillOwed(store: Store, name: string): boolean {
  * HTTP request both parked for the length of a package download. The answer
  * says a build is running instead, which is what the tool then has to tell
  * the model so it does not import something that is not there yet.
+ *
+ * **Coalesce, then re-check.** The coordinator owns the one physical job per
+ * machine and environment, so an add landing while a build is already running
+ * joins that build rather than starting a second `uv venv --clear` over the
+ * same directory. Joining it is not the same as being satisfied by it: the
+ * build was planned from the declaration as it read when it STARTED, and this
+ * caller arrived afterwards having just appended to it. What closes that gap
+ * is the Task INTEREST this route files with the ask — when the joined build
+ * settles, `uncoveredInterests` compares what it actually covered against what
+ * each interest asked for and carries the ones it missed onto another round,
+ * to a fourth. Without that, the second of two adds is answered `building:
+ * true`, is never built on any machine, and every kernel in the environment
+ * restarts announcing only the first one.
+ *
+ * The same follow-up catches the other direction: an add landing while a Setup
+ * click is REPLAYING the old pin joins that replay, which resolves nothing —
+ * the interest is uncovered, and the round it earns resolves.
  */
 function kernelEnvPackages(req: DaemonRequest): DaemonResult {
   const machine = resolveMachine(req.store, req.authorization);
@@ -901,8 +1169,14 @@ function kernelEnvPackages(req: DaemonRequest): DaemonResult {
       status: 400,
       json: { error: "a sessionId, a name and at least one package name are required" },
     };
+  const scope = answeredScope(req.body);
+  if (scope === undefined) return SCOPE_THIS_ROUTE_WILL_NOT_TAKE;
   const session = researcherOfSession(req.store, machine, sessionId);
   if (!session) return NOT_THIS_MACHINES_SESSION;
+  // Which Task this add belongs to. Only the rebuild below uses it, and only
+  // to file this Task's interest in the build; the declaration and the grant
+  // are the researcher's answer and are written either way.
+  const taskId = taskOfSession(req.store, sessionId);
   const envs = environmentStore(req.store);
   const declaration = envs.get(name);
   // 404 rather than a create in disguise. `manage_packages` adds to what
@@ -912,7 +1186,22 @@ function kernelEnvPackages(req: DaemonRequest): DaemonResult {
   if (declaration === undefined)
     return { status: 404, json: { error: `this lab declares no environment named ${name}` } };
 
-  const { packages: held, added } = envs.addPackages(name, packages);
+  // The append and the standing permission over the name, together — the same
+  // rule the create keeps: an add this lab would not make leaves no grant
+  // behind it. `added: []` is not that case; it is everything asked for
+  // already being declared, which is the state the researcher asked for,
+  // already reached, and the answer they gave still stands over the name.
+  const { packages: held, added } = req.store.tx(() => {
+    const appended = envs.addPackages(name, packages);
+    if (scope === "conversation")
+      environmentSetupStore(req.store).rememberEnvironmentGrant(
+        sessionId,
+        name,
+        session.openedBy,
+        req.now,
+      );
+    return appended;
+  });
   // Recorded only for a real append. A call that added nothing wrote nothing,
   // and a change-log row for it would be this lab reporting a declaration
   // that moved when it did not.
@@ -933,27 +1222,48 @@ function kernelEnvPackages(req: DaemonRequest): DaemonResult {
     };
 
   const reason = added.length > 0 ? whyRebuilding(added, name) : whyCatchingUp(packages, name);
-  // Dispatched, never awaited — see the note above. The rejection is
+  // Asked for, never waited on — see the note above. A failure to ask is
   // swallowed rather than reported: this call has already written the
   // declaration every machine in the lab builds from, and a machine that
   // cannot be reached down its own command stream right now is a machine
   // whose researcher will click Setup, or whose next session will find the
   // environment missing and say so by name.
-  const machineName = req.store.get(`SELECT name FROM runtimes WHERE id = ?`, [
-    machine.machineId,
-  ])?.name as string | undefined;
-  void buildEnvironmentOn(
-    { store: req.store, runs: req.runs, envSetups: req.envSetups },
-    { machineId: machine.machineId, name: machineName ?? machine.machineId },
-    name,
-    // What THIS call is owed — the declaration its own append just produced.
-    // A build already in flight was planned before these packages existed, so
-    // joining it is not the same as being satisfied by it; `buildEnvironmentOn`
-    // compares this list against what the build it joined actually covered and
-    // asks for another round when they are not in it.
-    held,
-    reason,
-  ).catch(() => {});
+  let asked: { jobId: string } | undefined;
+  try {
+    asked = req.coordinator.requestRebuild(
+      {
+        machineId: machine.machineId,
+        environmentName: name,
+        // What THIS call is owed — the declaration its own append just
+        // produced. A build already in flight was planned before these
+        // packages existed, so joining it is not the same as being satisfied
+        // by it. Recorded as this Task's interest so that when the build it
+        // joined settles without them, `uncoveredInterests` carries the Task
+        // onto another round rather than leaving the packages declared and
+        // built nowhere.
+        requestedPackages: held,
+        requestedBy: session.openedBy,
+        ...(taskId === undefined ? {} : { taskId }),
+        reason,
+      },
+      req.changes.record,
+    );
+  } catch {
+    // Same swallow as before, in the shape this ask now has: it is
+    // synchronous, so the refusal arrives here rather than as a rejection.
+    // The declaration this call already wrote stands either way.
+  }
+  // `building` says what happened, not what was attempted. `requestRebuild`
+  // answers `undefined` where no build could be asked for — a declaration
+  // deleted underneath this call, or a pinned revision whose text this lab
+  // does not hold — and a throw leaves it unset. Telling the agent a build is
+  // running in either case is how it comes to import something that is not
+  // there and never will be.
+  if (asked === undefined)
+    return {
+      status: 200,
+      json: { declaration: { ...declaration, packages: held }, added, building: false },
+    };
   return {
     status: 200,
     json: { declaration: { ...declaration, packages: held }, added, building: true, reason },
@@ -986,13 +1296,14 @@ function kernelEnvPackages(req: DaemonRequest): DaemonResult {
  * the way one machine overrules the rest.
  *
  * And a machine sent a REPLAY has no pin to post at all: it was handed this
- * lab's own lockfile and asked to materialize it, and `oneSetup` records
- * that by sending no `resolvedFrom` with the ask. Accepted anyway, its text
- * would become a revision this lab cannot say what was resolved from — which
- * is precisely the state `planFor` answers by widening every other machine
- * to `resolve`. One materialize-only machine would turn D4 off lab-wide for
- * that environment, durably, and every colleague would re-resolve
- * independently from then on. `askedToResolve` is what refuses it.
+ * lab's own lockfile and asked to materialize it, and the job records that by
+ * carrying no `resolvedFrom`. Accepted anyway, its text would become a
+ * revision this lab cannot say what was resolved from — which is precisely
+ * the state `planFor` answers by widening every other machine to `resolve`.
+ * One materialize-only machine would turn D4 off lab-wide for that
+ * environment, durably, and every colleague would re-resolve independently
+ * from then on. `bindResolvedLock` is what refuses it, on the job's own
+ * `resolved_from` rather than on anything the machine says.
  */
 function kernelEnvLock(req: DaemonRequest): DaemonResult {
   const machine = resolveMachine(req.store, req.authorization);
@@ -1000,24 +1311,29 @@ function kernelEnvLock(req: DaemonRequest): DaemonResult {
   const requestId = field(req.body, "requestId");
   const name = field(req.body, "name");
   const lockfile = field(req.body, "lockfile");
+  const declarationGenerationId = field(req.body, "declarationGenerationId");
   if (!requestId || !name || !lockfile)
     return { status: 400, json: { error: "a requestId, a name and a lockfile are required" } };
-  // Read rather than settled: this machine is still mid-build and this lab
-  // goes on waiting for the result that follows.
-  if (!req.envSetups.askedToResolve(machine.machineId, requestId, name))
+  // A request id this lab holds no setup job for was asked for nothing, and a
+  // pin is the one thing on this wire every other machine replays verbatim.
+  const durable = environmentSetupStore(req.store).jobByRequest(requestId);
+  if (!durable)
     return { status: 403, json: { error: "this machine was not asked to resolve that environment" } };
-  const envs = environmentStore(req.store);
-  if (envs.get(name) === undefined)
-    return { status: 404, json: { error: `this lab no longer declares an environment named ${name}` } };
-  // What THIS lab asked to be resolved, written beside the text it produced
-  // — never the declaration as it reads at this instant. The declaration can
-  // have grown while the resolve was running (that is precisely what
-  // `manage_packages` does), and stamping the pin with the newer list would
-  // claim the lockfile covers packages it was never resolved from. The next
-  // machine would then replay it and silently hold none of them.
-  const resolvedFrom = req.envSetups.resolvedFrom(machine.machineId, requestId, name);
-  const lockRevision = envs.writeLock(name, lockfile, req.now, resolvedFrom);
-  req.changes.record("environment-lock-written", { name }, machine.ownerId);
+  if (!declarationGenerationId)
+    return {
+      status: 400,
+      json: { error: "a durable environment lock requires its declarationGenerationId" },
+    };
+  const lockRevision = req.coordinator.bindResolvedLock(
+    machine.machineId,
+    requestId,
+    name,
+    declarationGenerationId,
+    lockfile,
+    req.changes.record,
+  );
+  if (lockRevision === undefined)
+    return { status: 403, json: { error: "this machine was not asked to resolve that environment" } };
   return { status: 200, json: { lockRevision } };
 }
 
@@ -1034,6 +1350,7 @@ export function handleDaemonRoute(req: DaemonRequest): DaemonResult | undefined 
   if (req.path === "/daemon/report") return report(req);
   if (req.path === "/daemon/workspaces") return workspaces(req);
   if (req.path === "/daemon/kernel-envs") return kernelEnvs(req);
+  if (req.path === "/daemon/kernel-env/require") return kernelEnvRequire(req);
   if (req.path === "/daemon/kernel-env/create") return kernelEnvCreate(req);
   if (req.path === "/daemon/kernel-env/packages") return kernelEnvPackages(req);
   if (req.path === "/daemon/kernel-env/lock") return kernelEnvLock(req);

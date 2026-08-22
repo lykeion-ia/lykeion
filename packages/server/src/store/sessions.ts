@@ -12,6 +12,7 @@ import type { Row, Store } from "./store";
 import { readReportedCell, recordCell } from "./cells";
 import { readReportedEnvelope, recordEnvelope } from "./provenance";
 import { nextSeq } from "./migrations";
+import { environmentSetupStore } from "./environment-setups";
 
 /** A folder a Research's owner has granted standing access to on one machine.
  *  Scoped to (research, machine) rather than to the Research alone: the path only
@@ -35,6 +36,8 @@ export class RunFrameSequenceGapError extends Error {}
 /** An authoritative run snapshot plus the durable session ownership Task 2
  *  needs to authorize and reconnect its transport. */
 export interface StoredRunSnapshot extends ActiveRunSnapshot {
+  origin: "user" | "system";
+  continuation?: TaskTurn["continuation"];
   sessionId: string;
   machineId: string;
   openedBy: string;
@@ -191,11 +194,25 @@ export function recordTurnSnapshot(
  * Never called before the machine has said the files are back: a record
  * truncated over an un-restored directory describes a state that never
  * existed.
+ *
+ * `settleWaiters` is what the durable environment-setup lifecycle hangs off,
+ * and it is a required argument rather than an optional one on purpose. A
+ * waiter references this turn through foreign keys that carry no `ON DELETE`,
+ * so a caller that had no way to settle them would not silently leave
+ * something stale — the `DELETE FROM turns` below would fail outright, after
+ * a machine had already put the files back. It runs inside this transaction,
+ * before that delete; the runs it names are the CALLER's to recall once the
+ * transaction has committed, which is why they are returned rather than
+ * dispatched here.
  */
-export function truncateTurn(store: Store, turnId: string): void {
-  store.tx(() => {
+export function truncateTurn(
+  store: Store,
+  turnId: string,
+  settleWaiters: (turnId: string) => Array<{ machineId: string; runId: string }>,
+): Array<{ machineId: string; runId: string }> {
+  return store.tx(() => {
     const turn = store.get(`SELECT task_id, session_id FROM turns WHERE id = ?`, [turnId]);
-    if (!turn) return;
+    if (!turn) return [];
     const taskId = turn.task_id as string;
     store.run(
       `DELETE FROM turn_steps WHERE id IN (SELECT step_id FROM turn_items WHERE turn_id = ?)`,
@@ -203,6 +220,7 @@ export function truncateTurn(store: Store, turnId: string): void {
     );
     store.run(`DELETE FROM turn_items WHERE turn_id = ?`, [turnId]);
     store.run(`DELETE FROM turn_steps WHERE turn_id = ?`, [turnId]);
+    const cancellations = settleWaiters(turnId);
     store.run(`DELETE FROM turns WHERE id = ?`, [turnId]);
     // The session the turn belonged to is over: the protocol carries no way
     // to take a turn out of what an agent remembers, so the conversation
@@ -224,6 +242,7 @@ export function truncateTurn(store: Store, turnId: string): void {
       latestStatus === undefined ? null : latestStatus === "ok" ? "ok" : "failed",
       taskId,
     ]);
+    return cancellations;
   });
 }
 
@@ -335,6 +354,8 @@ export function recordTurn(
     taskId: string;
     prompt: string;
     startedTs: number;
+    origin?: "user" | "system";
+    continuation?: TaskTurn["continuation"];
   },
 ): string {
   const seq = nextSeq(store);
@@ -342,8 +363,9 @@ export function recordTurn(
   store.tx(() => {
     store.run(
       `INSERT INTO turns
-         (id, session_id, task_id, prompt, started_ts, status, seq, last_frame_seq, recovery_snapshot)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+         (id, session_id, task_id, prompt, started_ts, status, origin, continuation,
+          seq, last_frame_seq, recovery_snapshot)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
       [
         id,
         params.sessionId,
@@ -351,6 +373,8 @@ export function recordTurn(
         params.prompt,
         params.startedTs,
         "running",
+        params.origin ?? "user",
+        params.continuation === undefined ? null : JSON.stringify(params.continuation),
         seq,
         JSON.stringify(INITIAL_RECOVERY),
       ],
@@ -693,6 +717,31 @@ export function recordRunFrames(
   if (accepted.length === 0) return [];
 
   store.tx(() => {
+    let preExecutionCancellation = false;
+    // Queue position and a terminal-only pre-start refusal are not evidence
+    // that an agent executed this continuation. Everything produced from an
+    // actual prompt (planning/executing state, prose, tools, cards, etc.) is.
+    // Mark that evidence in the same transaction as the frame that carries it.
+    const executionBegan = accepted.some(({ event }) => {
+      if (event.event === "completed") return false;
+      if (event.event === "state") return event.state.state !== "queued";
+      if (event.event === "snapshot") return event.snapshot.state.state !== "queued";
+      return true;
+    });
+    const setups = environmentSetupStore(store);
+    if (executionBegan) {
+      setups.markWaiterResumed(turnId, nowTs);
+    } else if (accepted.some(({ event }) => event.event === "completed")) {
+      // A completion with no planning/executing/content evidence consumed no
+      // agent execution. Converge both adapter pre-start refusal and a direct
+      // Stop of a deferred identity on an explicit durable cancellation,
+      // rather than leaving a waiter queued against an ended turn.
+      preExecutionCancellation = setups.cancelQueuedWaiterForContinuation(
+        turnId,
+        "continuation-ended-before-start",
+        nowTs,
+      ) !== undefined;
+    }
     let recovery = parseRecovery(row.recovery_snapshot as string);
     for (const frame of accepted) {
       const { event } = frame;
@@ -867,9 +916,14 @@ export function recordRunFrames(
           recovery.reviewing = true;
           break;
         case "completed":
-          if (event.state.state === "failed")
-            appendTurnText(store, turnId, event.state.reason, false, "error");
-          recovery.state = event.state;
+          {
+            const state: TurnState = preExecutionCancellation
+              ? { state: "cancelled" }
+              : event.state;
+            if (state.state === "failed")
+              appendTurnText(store, turnId, state.reason, false, "error");
+            recovery.state = state;
+          }
           recovery.stream = turnStream(store, turnId);
           recovery.live = {};
           recovery.reviewing = false;
@@ -908,18 +962,21 @@ export function recordRunFrames(
       );
 
       if (event.event === "completed") {
+        const state: TurnState = preExecutionCancellation
+          ? { state: "cancelled" }
+          : event.state;
         finishTurn(store, turnId, {
           endedTs: nowTs,
           status:
-            event.state.state === "failed"
+            state.state === "failed"
               ? "failed"
-              : event.state.state === "cancelled"
-                ? event.state.unacknowledged
+              : state.state === "cancelled"
+                ? state.unacknowledged
                   ? "cancelled-unacknowledged"
                   : "cancelled"
                 : "ok",
         });
-        if (event.state.state === "cancelled" && event.state.unacknowledged)
+        if (state.state === "cancelled" && state.unacknowledged)
           endSessionForTurn(store, turnId, nowTs);
       }
     }
@@ -933,6 +990,10 @@ function storedRunSnapshot(row: Row): StoredRunSnapshot {
     runId: row.id as string,
     sequence: row.seq as number,
     prompt: row.prompt as string,
+    origin: row.origin as "user" | "system",
+    ...(row.continuation === null
+      ? {}
+      : { continuation: JSON.parse(row.continuation as string) as TaskTurn["continuation"] }),
     agent: row.agent as string,
     state: recovery.state,
     ...(recovery.plan === undefined ? {} : { plan: recovery.plan }),
@@ -949,7 +1010,8 @@ function storedRunSnapshot(row: Row): StoredRunSnapshot {
 /** The authoritative durable snapshot for one run, active or settled. */
 export function runSnapshot(store: Store, runId: string): StoredRunSnapshot | undefined {
   const row = store.get(
-    `SELECT t.id, t.seq, t.prompt, t.last_frame_seq, t.recovery_snapshot, t.session_id,
+    `SELECT t.id, t.seq, t.prompt, t.origin, t.continuation,
+            t.last_frame_seq, t.recovery_snapshot, t.session_id,
             s.agent, s.runtime_id, s.opened_by
        FROM turns t
        JOIN sessions s ON s.id = t.session_id
@@ -963,7 +1025,8 @@ export function runSnapshot(store: Store, runId: string): StoredRunSnapshot | un
 export function activeRunSnapshotsForTask(store: Store, taskId: string): StoredRunSnapshot[] {
   return store
     .all(
-      `SELECT t.id, t.seq, t.prompt, t.last_frame_seq, t.recovery_snapshot, t.session_id,
+      `SELECT t.id, t.seq, t.prompt, t.origin, t.continuation,
+              t.last_frame_seq, t.recovery_snapshot, t.session_id,
               s.agent, s.runtime_id, s.opened_by
          FROM turns t
          JOIN sessions s ON s.id = t.session_id
@@ -994,6 +1057,7 @@ export function taskTurnsForTask(store: Store, taskId: string): TaskTurn[] {
   return store
     .all(
       `SELECT t.id, t.seq, t.prompt, t.started_ts, t.status, t.text,
+              t.origin, t.continuation,
               t.snapshot_taken, t.snapshot_reason, s.agent
          FROM turns t
          JOIN sessions s ON s.id = t.session_id
@@ -1006,6 +1070,10 @@ export function taskTurnsForTask(store: Store, taskId: string): TaskTurn[] {
       const stream = turnStream(store, row.id as string);
       return {
         runId: row.id as string,
+        origin: row.origin as "user" | "system",
+        ...(row.continuation === null
+          ? {}
+          : { continuation: JSON.parse(row.continuation as string) as TaskTurn["continuation"] }),
         sequence: row.seq as number,
         ts: row.started_ts as number,
         prompt: row.prompt as string,
@@ -1043,10 +1111,17 @@ export function taskTurnsForTask(store: Store, taskId: string): TaskTurn[] {
 export function turnsForTask(
   store: Store,
   taskId: string,
-): Array<{ id: string; prompt: string; startedTs: number; status: string }> {
+): Array<{
+  id: string;
+  prompt: string;
+  startedTs: number;
+  status: string;
+  origin: "user" | "system";
+  continuation?: TaskTurn["continuation"];
+}> {
   return store
     .all(
-      `SELECT id, prompt, started_ts, status FROM turns
+      `SELECT id, prompt, started_ts, status, origin, continuation FROM turns
         WHERE task_id = ? AND ended_ts IS NOT NULL
         ORDER BY seq ASC`,
       [taskId],
@@ -1056,6 +1131,10 @@ export function turnsForTask(
       prompt: row.prompt as string,
       startedTs: row.started_ts as number,
       status: row.status as string,
+      origin: row.origin as "user" | "system",
+      ...(row.continuation === null
+        ? {}
+        : { continuation: JSON.parse(row.continuation as string) as TaskTurn["continuation"] }),
     }));
 }
 

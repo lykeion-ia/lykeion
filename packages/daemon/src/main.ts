@@ -298,6 +298,10 @@ export async function reportIfChanged(machine: PairedState, dataDir: string, wor
         .filter(([, reason]) => reason !== ""),
     ),
   );
+  // A valid start-run may have arrived while this probe still held its agent
+  // back. Reconsider those exact commands against the maps just published;
+  // no new run id or server-side continuation is minted.
+  runSubsystem?.adaptersChanged();
   const totalMemoryBytes = totalmem();
   const cores = cpus().length;
   // The CLI catalogue on its own, widened with the figures below: a machine

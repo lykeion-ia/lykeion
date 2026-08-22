@@ -16,6 +16,7 @@ const research: Research = {
   id: "s1",
   key: "AAA",
   title: "Alpha research",
+  environmentDefaults: [],
   createdBy: "u_you",
   createdTs: 1000,
   updatedTs: 2000,

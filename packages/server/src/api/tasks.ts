@@ -135,7 +135,7 @@ export function taskRowsToTasks(store: Store, rows: Row[]): Task[] {
 }
 
 export function tasksApi(deps: Deps): TasksApi {
-  const { store, actor, now } = deps;
+  const { store, actor, now, runs, coordinator } = deps;
   const { record } = deps.changes;
   return {
     async listTasks(options) {
@@ -242,13 +242,34 @@ export function tasksApi(deps: Deps): TasksApi {
     },
 
     async deleteTask(taskId) {
-      store.tx(() => {
+      const { cancellations } = store.tx(() => {
         if (!store.get(`SELECT id FROM tasks WHERE id = ?`, [taskId]))
           throw new LykeionError("not-found", `no such task: ${taskId}`);
+        // Before the DELETE, because the DELETE is what takes these away: a
+        // waiter cascades on `task_env_setup_waiters.task_id`, so reading them
+        // afterwards finds nothing.
+        //
+        // The cascade alone is not enough, and the difference is a turn. A
+        // `queued` waiter owns a durable system-origin continuation whose
+        // `start-run` is already on a machine, and `turns.task_id` carries no
+        // foreign key — so that turn survives its Task and would go on running
+        // with nothing left in this lab that could ever settle it. The
+        // coordinator finishes it and names the run to recall, in this same
+        // transaction; the recall itself is dispatched once it has committed.
+        const cancelled = coordinator.cancelForDeletedTask(taskId);
         // Assignee rows cascade on the foreign key.
         store.run(`DELETE FROM tasks WHERE id = ?`, [taskId]);
         record("task-deleted", { taskId });
+        return cancelled;
       });
+      // Outside the transaction: a machine told to stop a run that a
+      // rolled-back delete would have left running is a command this lab
+      // cannot take back.
+      for (const cancellation of cancellations)
+        runs.enqueue(cancellation.machineId, {
+          type: "cancel",
+          runId: cancellation.runId,
+        });
     },
 
     async getTask(taskId) {

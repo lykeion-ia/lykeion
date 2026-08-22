@@ -195,6 +195,7 @@ it("reconstructs resumed handles from JSON and opens each stream after its snaps
   const snapshot: ActiveRunSnapshot = {
     runId: "run_1",
     sequence: 3,
+    origin: "user",
     prompt: "continue",
     agent: "claude",
     state: { state: "executing", plan: { steps: [], raw: "" } },
@@ -256,7 +257,7 @@ it("implements every method the contract declares", () => {
   const api = createHttpApi(transportReturning(null));
   const missing = Object.entries(api).filter(([, v]) => typeof v !== "function");
   expect(missing).toEqual([]);
-  expect(Object.keys(api)).toHaveLength(70);
+  expect(Object.keys(api)).toHaveLength(73);
 });
 
 it("propagates a contract failure as a LykeionError", async () => {

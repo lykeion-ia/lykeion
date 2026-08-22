@@ -60,6 +60,7 @@ const plan = (name: string) => ({
 const questionSnapshot: ActiveRunSnapshot = {
   runId: "run-codex",
   sequence: 4,
+  origin: "user",
   prompt: "Codex live prompt",
   agent: "codex",
   state: {
@@ -144,6 +145,7 @@ describe("the Task page with recovered live turns", () => {
             snapshot: {
               runId: "run-after-retry",
               sequence: 3,
+              origin: "user",
               prompt: "preserve this prompt",
               agent: "claude",
               state: { state: "planning" },
@@ -203,6 +205,7 @@ describe("the Task page with recovered live turns", () => {
     const handoff = resumed({
       runId: "run-after-recovery",
       sequence: 3,
+      origin: "user",
       prompt: "resume only after recovery",
       agent: "claude",
       state: { state: "planning" },
@@ -254,6 +257,7 @@ describe("the Task page with recovered live turns", () => {
     const live = resumed({
       runId: "run-status-refresh",
       sequence: 1,
+      origin: "user",
       prompt: "finish this task",
       agent: "claude",
       state: { state: "executing", plan: { steps: [], raw: "" } },
@@ -264,6 +268,7 @@ describe("the Task page with recovered live turns", () => {
     });
     const settledTurn: TaskTurn = {
       runId: "run-status-refresh",
+      origin: "user",
       sequence: 1,
       ts: 10,
       prompt: "finish this task",
@@ -317,6 +322,7 @@ describe("the Task page with recovered live turns", () => {
     const live = resumed({
       runId: "run-delayed-status",
       sequence: 1,
+      origin: "user",
       prompt: "finish despite the delayed read",
       agent: "claude",
       state: { state: "executing", plan: { steps: [], raw: "" } },
@@ -327,6 +333,7 @@ describe("the Task page with recovered live turns", () => {
     });
     const settledTurn: TaskTurn = {
       runId: "run-delayed-status",
+      origin: "user",
       sequence: 1,
       ts: 11,
       prompt: "finish despite the delayed read",

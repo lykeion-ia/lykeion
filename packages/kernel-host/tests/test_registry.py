@@ -1935,3 +1935,60 @@ def test_the_registry_hands_each_language_its_own_overlay(registry, monkeypatch,
     assert set(captured["r"] or {}) == {"R_LIBS_USER"}
     # And it is this incarnation's directory, not some other kernel's.
     assert captured["r"]["R_LIBS_USER"].startswith(workspace)
+
+
+def test_a_research_default_is_soft_and_an_explicit_environment_still_wins(registry):
+    """The precedence this phase turns on, proven end to end in one session.
+
+    A Research that has confirmed `meta-analysis-r` is saying where an R cell
+    that names nothing lands. It is not saying where an R cell that DOES name
+    something lands — that is the researcher writing the cell, and a default
+    that overrode them would make the environment in a cell's own header a
+    suggestion rather than a fact.
+
+    The third arm is the one that makes the default worth confirming before
+    the build has landed anywhere: a declared default this machine has not
+    built is still the default, and the cell is refused BY NAME, with the
+    sentence that tells a researcher what to build.
+    """
+    registry.configure_session(
+        session_id="s", task_id="t", workspace="/tmp",
+        environments=[
+            {"language": "python", "name": "python", "interpreter": sys.executable,
+             "prefix": ["/usr/bin/env"], "default": True},
+            {"language": "r", "name": "r-explicit", "interpreter": "/nonexistent/bin/Rscript",
+             "prefix": ["/usr/bin/env"]},
+        ],
+        defaults={"python": "python", "r": "meta-analysis-r"},
+        declared=["python", "r-explicit", "meta-analysis-r"],
+    )
+    confinement = registry.confinement_for("s")
+
+    assert confinement.default_for("r") == "meta-analysis-r"
+    assert registry.identity_for("s", "t", "main", "r", "r-explicit").environment == "r-explicit"
+    with pytest.raises(ValueError, match="not built on this machine yet"):
+        registry.identity_for("s", "t", "main", "r", None)
+
+
+def test_a_language_with_no_research_default_still_falls_back_to_the_built_one(registry):
+    """The other half of `default_for`, and the reason the two maps are
+    separate rather than one.
+
+    A Research that has confirmed an R default has said nothing about Python,
+    and Python must go on landing where this machine's own floor says — the
+    behaviour every session had before a Research could name one at all. A
+    single map, overwritten by whatever the daemon last sent, would take that
+    away the moment one language got a default.
+    """
+    registry.configure_session(
+        session_id="s", task_id="t", workspace="/tmp",
+        environments=[
+            {"language": "python", "name": "python", "interpreter": sys.executable,
+             "prefix": ["/usr/bin/env"], "default": True},
+        ],
+        defaults={"r": "meta-analysis-r"},
+        declared=["python", "meta-analysis-r"],
+    )
+
+    assert registry.default_environment_for("s", "python") == "python"
+    assert registry.identity_for("s", "t", "main", "python", None).environment == "python"

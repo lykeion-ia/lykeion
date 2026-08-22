@@ -190,6 +190,13 @@ def _configure_session(
         task_id=_text(params, "task_id"),
         workspace=workspace,
         environments=params.get("environments"),
+        # `.get` and not a default of `{}` for the same reason `declared`
+        # uses one: what arrives is passed straight through, and the registry
+        # is where the shape is decided — see `_defaults_from`. Unlike
+        # `declared` the two collapse there, because a daemon that says
+        # nothing about defaults and one that says none were confirmed mean
+        # the same thing: this machine's own floor answers.
+        defaults=params.get("defaults"),
         token=token if isinstance(token, str) and token else None,
         # `.get` rather than a default of `[]`: a message carrying no
         # `declared` key is a daemon whose own ask of the lab failed, and a

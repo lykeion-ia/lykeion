@@ -3,6 +3,8 @@
  * camelCase fields, kebab-case enums.
  */
 
+import type { ResearchEnvironmentDefault } from "./environment-setup";
+
 /** Identity of the running core. */
 export interface CoreInfo {
   name: string;
@@ -163,6 +165,7 @@ export interface Research {
   description?: string;
   /** Context injected into every agent's system prompt for this Research. */
   agentContext?: string;
+  environmentDefaults: ResearchEnvironmentDefault[];
   /** The `User.id` of whoever opened this research line. */
   createdBy: string;
   /**

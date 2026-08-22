@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,24 +57,51 @@ describe("the machine's own copy of an environment", () => {
     expect(status.state).toBe("broken");
   });
 
-  it("reports ready with the revision it was built from, not the lab's", () => {
+  it("fails a legacy marker without exact request, lock, and package evidence closed", () => {
     const work = mkdtempSync(join(tmpdir(), "lyk-envs-"));
     const root = envRoot(work, "crispr");
     mkdirSync(join(root, "bin"), { recursive: true });
     writeFileSync(join(root, "bin", "python3"), "");
     writeFileSync(
       join(root, ".lykeion-env.json"),
-      JSON.stringify({ lockRevision: 1, packageCount: 91, version: "3.12.7" }),
+      JSON.stringify({
+        lockRevision: 1,
+        declarationCreatedTs: 41,
+        packageCount: 91,
+        version: "3.12.7",
+      }),
     );
     const status = readEnvStatus(work, {
       name: "crispr", language: "python", manager: "uv",
       packages: ["scanpy"], createdBy: "u_ana", createdTs: 1, lockRevision: 2,
     });
-    expect(status.state).toBe("ready");
-    // One revision behind, and readable as such. This is why there is no
-    // fourth KernelEnvState: an older pin is still a pin.
-    expect(status.lockRevision).toBe(1);
-    expect(status.packageCount).toBe(91);
+    expect(status.state).toBe("broken");
+    expect(status.lockRevision).toBeUndefined();
+    expect(status.packageCount).toBeUndefined();
+  });
+
+  it("reports the exact declaration generation recorded by a ready marker", () => {
+    const work = mkdtempSync(join(tmpdir(), "lyk-envs-"));
+    const root = envRoot(work, "crispr");
+    mkdirSync(join(root, "bin"), { recursive: true });
+    writeFileSync(join(root, "bin", "python3"), "");
+    writeFileSync(
+      join(root, ".lykeion-env.json"),
+      JSON.stringify({
+        lockRevision: 0,
+        declarationGenerationId: "envgen_exact_marker",
+        declarationCreatedTs: 41,
+        packageCount: 1,
+        version: "3.12.7",
+      }),
+    );
+
+    const status = readEnvStatus(work, {
+      name: "crispr", language: "python", manager: "uv",
+      packages: ["scanpy"], createdBy: "u_ana", createdTs: 99, lockRevision: 0,
+    });
+    expect(status.state).toBe("broken");
+    expect(status.declarationGenerationId).toBeUndefined();
   });
 
   it("refuses a name that would resolve outside workDir", () => {
@@ -236,6 +264,7 @@ const DECLARATION = {
   packages: ["tinypkg"],
   createdBy: "u_ana",
   createdTs: 1,
+  declarationGenerationId: "envgen_fixture_crispr",
   lockRevision: 3,
 };
 
@@ -319,6 +348,7 @@ onDarwin("runConfinedIn", () => {
 onDarwin("provisioning an environment from a stubbed uv", () => {
   it("materializes ready, with the marker's own revision and package count, from a lockfile it never resolved itself", async () => {
     const work = workDir();
+    const lockfile = "tinypkg==1.0.0\n    # via -r requirements.in\n";
     const uv = stubUv({
       lockfile: "tinypkg==1.0.0\n    # via -r requirements.in\n",
       syncSucceeds: true,
@@ -327,10 +357,13 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
 
     const built = await materializeEnvironment({
       workDir: work,
+      requestId: "envsetup_uv_marker",
       name: "crispr",
       manager: "uv",
-      lockfile: "tinypkg==1.0.0\n    # via -r requirements.in\n",
+      lockfile,
       lockRevision: 3,
+      requestedPackages: ["tinypkg"],
+      declarationGenerationId: DECLARATION.declarationGenerationId,
       dataDir: stateDir(),
       path: uv,
     });
@@ -340,6 +373,12 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
     expect(status.state).toBe("ready");
     expect(status.version).toBe("9.9.9");
     expect(status.packageCount).toBe(1);
+    expect(status).toMatchObject({
+      setupRequestId: "envsetup_uv_marker",
+      declarationGenerationId: DECLARATION.declarationGenerationId,
+      lockfileFingerprint: createHash("sha256").update(lockfile, "utf8").digest("hex"),
+      packageFingerprint: createHash("sha256").update('["tinypkg"]', "utf8").digest("hex"),
+    });
     // D8: the revision THIS MACHINE built from, not necessarily the lab's
     // current one (which `DECLARATION.lockRevision` stands in for here).
     expect(status.lockRevision).toBe(3);
@@ -360,10 +399,13 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
     await expect(
       materializeEnvironment({
         workDir: work,
+        requestId: "envsetup_uv_failed_sync",
         name: "crispr",
         manager: "uv",
         lockfile: "tinypkg==1.0.0\n    # via -r requirements.in\n",
         lockRevision: 3,
+        declarationGenerationId: DECLARATION.declarationGenerationId,
+        requestedPackages: ["tinypkg"],
         dataDir: stateDir(),
         path: uv,
       }),
@@ -390,10 +432,13 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
     await expect(
       materializeEnvironment({
         workDir: work,
+        requestId: "envsetup_uv_cache_failed",
         name: "crispr",
         manager: "uv",
         lockfile,
         lockRevision: 3,
+        declarationGenerationId: DECLARATION.declarationGenerationId,
+        requestedPackages: ["tinypkg"],
         dataDir: stateDir(),
         path: failingUv,
       }),
@@ -413,10 +458,13 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
     const succeedingUv = stubUv({ lockfile, syncSucceeds: true, versionInfo: "9.9.9" });
     await materializeEnvironment({
       workDir: work,
+      requestId: "envsetup_uv_cache_recovered",
       name: "crispr",
       manager: "uv",
       lockfile,
       lockRevision: 4,
+      declarationGenerationId: DECLARATION.declarationGenerationId,
+      requestedPackages: ["tinypkg"],
       dataDir: stateDir(),
       path: succeedingUv,
     });
@@ -439,6 +487,7 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
 
     const resolved = await resolveEnvironment({
       workDir: work,
+      requestId: "envsetup_uv_progress",
       name: "crispr",
       manager: "uv",
       packages: ["tinypkg"],
@@ -467,6 +516,7 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
 
     const resolved = await resolveEnvironment({
       workDir: work,
+      requestId: "envsetup_uv_resolve_only",
       name: "crispr",
       manager: "uv",
       packages: ["tinypkg"],
@@ -489,6 +539,7 @@ onDarwin("provisioning an environment from a stubbed uv", () => {
 
     await resolveEnvironment({
       workDir: work,
+      requestId: "envsetup_uv_source",
       name: "crispr",
       manager: "uv",
       packages: ["tinypkg"],
@@ -519,6 +570,7 @@ const integration = process.env.LYKEION_INTEGRATION === "1";
 
     const resolved = await resolveEnvironment({
       workDir: work,
+      requestId: "envsetup_uv_integration",
       name: declaration.name,
       manager: "uv",
       packages: declaration.packages,
@@ -529,10 +581,13 @@ const integration = process.env.LYKEION_INTEGRATION === "1";
 
     const built = await materializeEnvironment({
       workDir: work,
+      requestId: "envsetup_uv_integration",
       name: declaration.name,
       manager: "uv",
       lockfile: resolved.lockfile,
       lockRevision: 1,
+      declarationGenerationId: declaration.declarationGenerationId!,
+      requestedPackages: declaration.packages,
       dataDir: stateDir(),
       timeoutMs: 5 * 60_000,
     });

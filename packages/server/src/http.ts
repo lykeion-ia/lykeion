@@ -4,19 +4,20 @@ import { readFileSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
 import { assertBindable, assertServable, type ServerConfig } from "./config";
 import { openStore } from "./store/sqlite";
-import { migrate, nextSeq } from "./store/migrations";
+import { migrate } from "./store/migrations";
 import { seedLabContent } from "./store/seed";
 import { handleAuthRoute } from "./routes/auth-routes";
-import { handleDaemonRoute, resolveMachine } from "./routes/daemon-routes";
+import { handleDaemonRoute, isKernelEnvStatus, resolveMachine } from "./routes/daemon-routes";
 import { readCookie, resolveActor, SESSION_COOKIE } from "./auth";
 import { createWorkspaceApi } from "./api/index";
 import { changeRecorder } from "./api/changes";
 import {
   isLykeionError,
-  KERNEL_SETUP_CHANNEL,
+  ENVIRONMENT_SETUP_OUTCOME_LIMITS,
+  boundedRedactedUtf8,
   type ActiveRunSnapshot,
+  type EnvironmentSetupStage,
   type KernelEnvStatus,
-  type KernelSetupProgress,
   type RunEventFrame,
 } from "@lykeion/api";
 import { dispatch, rpcMethods } from "./rpc";
@@ -27,8 +28,17 @@ import { createRevertRegistry, type RevertRegistry } from "./run-revert";
 import { createKernelListRegistry, type KernelListRegistry, type RawKernelReport } from "./kernel-list-registry";
 import { createTitleRegistry, type TitleRegistry } from "./title-registry";
 import { createPendingCells, type PendingCells } from "./kernel-cells";
-import { createEnvSetupRegistry, type EnvSetupRegistry, type EnvSetupResult } from "./env-setup-registry";
+import {
+  createEnvironmentSetupCoordinator,
+  type EnvironmentSetupCoordinator,
+} from "./environment-setup-coordinator";
+import { environmentSetupStore } from "./store/environment-setups";
 import { failDroppedRuns } from "./run-recovery";
+import {
+  completedPackagesForEnvironmentSetupFingerprint,
+  fingerprintEnvironmentSetupOutcome,
+  type EnvSetupResult,
+} from "./environment-setup-outcome";
 import { readReportedCell, recordCell } from "./store/cells";
 import {
   activeRunIdsForMachine,
@@ -162,7 +172,10 @@ export async function startServer(
   const kernelLists: KernelListRegistry = createKernelListRegistry();
   const titles: TitleRegistry = createTitleRegistry();
   const pendingCells: PendingCells = createPendingCells();
-  const envSetups: EnvSetupRegistry = createEnvSetupRegistry();
+  const coordinator = createEnvironmentSetupCoordinator({ store, runs, now });
+  const startupChanges = changeRecorder({ store, actorId: null, now, channel });
+  coordinator.recover(startupChanges.record);
+  startupChanges.flush();
   // Every open `/events` or `/daemon/commands` response, so `close()` can
   // end them itself: a stream nobody tears down keeps its heartbeat alive
   // (harmless — it is `unref`'d) but also keeps `server.close()` waiting on
@@ -181,7 +194,7 @@ export async function startServer(
 
   const listener = createRequestListener({
     store, config, secure, indexHtml, now, channel, openStreams, runs, reverts, kernelLists, titles,
-    pendingCells, envSetups,
+    pendingCells, coordinator,
   });
   const server = secure
     ? createHttpsServer(
@@ -238,9 +251,8 @@ export function createRequestListener(deps: {
   /** The REPL cells this lab has asked a machine to run, so `/daemon/cell`
    *  can recognize the one it is being told about. */
   pendingCells: PendingCells;
-  /** `kernel-env-setup` asks waiting on the machine they were sent to, so
-   *  `/daemon/kernel-env/result` can settle the one it names. */
-  envSetups: EnvSetupRegistry;
+  /** Durable environment attempts. One coordinator per server/store. */
+  coordinator: EnvironmentSetupCoordinator;
   /** Every open `/events` or `/daemon/commands` response's teardown, so the
    *  server that built this listener can end them from `close()`. */
   openStreams: Set<() => void>;
@@ -250,9 +262,9 @@ export function createRequestListener(deps: {
 }): (req: IncomingMessage, res: ServerResponse) => void {
   const {
     store, config, secure, indexHtml, channel, openStreams, runs, reverts, kernelLists, titles, pendingCells,
-    envSetups,
   } = deps;
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
+  const { coordinator } = deps;
 
   return (req, res) => {
     void (async () => {
@@ -594,38 +606,169 @@ export function createRequestListener(deps: {
         if (path === "/daemon/kernel-env/progress") {
           const machine = resolveMachine(store, req.headers.authorization);
           if (!machine) return sendJson(res, 401, { error: "no such machine" });
-          const b = body as { requestId?: unknown; name?: unknown; line?: unknown } | null;
-          if (typeof b?.requestId !== "string" || typeof b.name !== "string" || typeof b.line !== "string")
-            return sendJson(res, 400, { error: "a requestId, a name, and a line are required" });
-          // Best-effort and unauthenticated-against-the-registry on purpose:
-          // unlike `/daemon/kernel-env/result`, nothing here is waiting on
-          // this specific line, so there is no pending entry to check the
-          // reporting machine against — only a live channel to publish it
-          // to, which every subscriber reads regardless of which machine's
-          // build it came from. `machineId` is this machine's own, taken
-          // from the token rather than trusted from the body — the one
-          // fact a machine cannot misreport about itself — and `name` is
-          // what actually lets two builds running at once stay legible on
-          // one lab-wide channel.
-          const payload: KernelSetupProgress = { machineId: machine.machineId, name: b.name, line: b.line };
-          channel.publish({ seq: nextSeq(store), kind: KERNEL_SETUP_CHANNEL, payload });
+          const b = body as {
+            requestId?: unknown;
+            name?: unknown;
+            progress?: { stage?: unknown; line?: unknown };
+          } | null;
+          const stage = b?.progress?.stage;
+          const line = b?.progress?.line;
+          const validStage = (value: unknown): value is EnvironmentSetupStage =>
+            value === "resolving" || value === "installing" || value === "finalizing";
+          if (
+            typeof b?.requestId !== "string" ||
+            typeof b.name !== "string" ||
+            !validStage(stage) ||
+            typeof line !== "string"
+          ) return sendJson(res, 400, { error: "a requestId, a name, and structured progress are required" });
+          const safeLine = boundedRedactedUtf8(
+            line,
+            ENVIRONMENT_SETUP_OUTCOME_LIMITS.errorBytes,
+          );
+          const durable = environmentSetupStore(store).jobByRequest(b.requestId);
+          if (!durable) return sendJson(res, 403, { error: "this machine was not asked for that environment setup" });
+          if (durable.machineId !== machine.machineId || durable.environmentName !== b.name)
+            return sendJson(res, 403, { error: "this machine was not asked for that environment setup" });
+          const changes = changeRecorder({ store, actorId: null, now, channel });
+          try {
+            const progressResult = coordinator.progress(
+              machine.machineId,
+              b.requestId,
+              stage,
+              safeLine,
+              changes.record,
+            );
+            if (!progressResult.accepted)
+              return sendJson(res, 403, { error: "this environment setup is not accepting progress" });
+          } finally {
+            changes.flush();
+          }
           return sendJson(res, 200, { ok: true });
         }
         if (path === "/daemon/kernel-env/result") {
           const machine = resolveMachine(store, req.headers.authorization);
           if (!machine) return sendJson(res, 401, { error: "no such machine" });
-          const b = body as { requestId?: unknown; ok?: unknown; status?: unknown; error?: unknown } | null;
-          if (typeof b?.requestId !== "string" || typeof b.ok !== "boolean")
-            return sendJson(res, 400, { error: "a requestId and an ok flag are required" });
-          const result: EnvSetupResult =
-            b.ok === true
-              ? { ok: true, status: b.status as KernelEnvStatus }
-              : { ok: false, error: typeof b.error === "string" ? b.error : "the machine did not say why" };
-          // Held to the same binding as `/daemon/kernel/list` and
-          // `/daemon/task/title`: the bearer token proves some paired
-          // machine is calling, never that it is the one this ask went to.
-          if (!envSetups.settle(machine.machineId, b.requestId, result))
+          const b = body as {
+            requestId?: unknown;
+            name?: unknown;
+            declarationGenerationId?: unknown;
+            ok?: unknown;
+            status?: unknown;
+            error?: unknown;
+          } | null;
+          if (
+            typeof b?.requestId !== "string" ||
+            typeof b.name !== "string" ||
+            typeof b.ok !== "boolean"
+          )
+            return sendJson(res, 400, {
+              error: "a requestId, a name, and an ok flag are required",
+            });
+          if (b.ok === true && (!isKernelEnvStatus(b.status) || b.status.name !== b.name))
+            return sendJson(res, 400, { error: "a successful setup needs one exact environment status" });
+          if (b.ok === false && (typeof b.error !== "string" || b.error.length === 0))
+            return sendJson(res, 400, { error: "a failed setup needs an environment name and error" });
+          const durable = environmentSetupStore(store).jobByRequest(b.requestId);
+          if (durable?.machineId !== undefined && durable.machineId !== machine.machineId)
             return sendJson(res, 403, { error: "this machine was not asked to set up that environment" });
+
+          // A v39 active quarantine predates opaque generations. Its first
+          // old-daemon result may terminalize the physical singleton, but it
+          // can never mint canonical replay authority: the resulting row
+          // keeps a NULL fingerprint and every later duplicate fails closed.
+          if (
+            durable !== undefined &&
+            durable.declarationGenerationId === undefined &&
+            typeof b.declarationGenerationId !== "string"
+          ) {
+            if (durable.state === "ready" || durable.state === "failed")
+              return sendJson(res, 409, {
+                error: "this legacy terminal setup has no canonical outcome fingerprint",
+              });
+            if (durable.environmentName !== b.name)
+              return sendJson(res, 403, {
+                error: "the result does not match this legacy environment setup identity",
+              });
+            const legacyResult: EnvSetupResult = b.ok
+              ? { ok: true, status: b.status as KernelEnvStatus }
+              : {
+                  ok: false,
+                  name: b.name,
+                  error: boundedRedactedUtf8(
+                    b.error as string,
+                    ENVIRONMENT_SETUP_OUTCOME_LIMITS.errorBytes,
+                  ),
+                };
+            const changes = changeRecorder({ store, actorId: null, now, channel });
+            try {
+              if (!coordinator.settle(machine.machineId, b.requestId, legacyResult, changes.record))
+                return sendJson(res, 403, {
+                  error: "this machine was not asked to set up that legacy environment",
+                });
+            } finally {
+              changes.flush();
+            }
+            return sendJson(res, 200, { ok: true });
+          }
+          if (typeof b.declarationGenerationId !== "string")
+            return sendJson(res, 400, {
+              error: "a declarationGenerationId is required for an exact environment setup result",
+            });
+          let canonical: ReturnType<typeof fingerprintEnvironmentSetupOutcome>;
+          try {
+            canonical = fingerprintEnvironmentSetupOutcome({
+              requestId: b.requestId,
+              name: b.name,
+              declarationGenerationId: b.declarationGenerationId,
+              result: b.ok === true
+                ? { ok: true, status: b.status }
+                : { ok: false, name: b.name, error: b.error },
+            });
+          } catch {
+            return sendJson(res, 400, { error: "the environment setup result is not a bounded exact outcome" });
+          }
+          const result: EnvSetupResult = canonical.outcome.result;
+          if (durable) {
+            if (
+              durable.environmentName !== canonical.outcome.name ||
+              durable.declarationGenerationId !== canonical.outcome.declarationGenerationId
+            )
+              return sendJson(
+                res,
+                durable.state === "ready" || durable.state === "failed" ? 409 : 403,
+                { error: "the result does not match this exact environment setup identity" },
+              );
+            const exactFingerprint = fingerprintEnvironmentSetupOutcome(
+              canonical.outcome,
+              result.ok
+                ? completedPackagesForEnvironmentSetupFingerprint(store, durable)
+                : undefined,
+            ).fingerprint;
+            if (durable.state === "ready" || durable.state === "failed") {
+              if (durable.terminalOutcomeFingerprint !== exactFingerprint)
+                return sendJson(res, 409, {
+                  error: "the result conflicts with this setup's canonical terminal outcome",
+                });
+              return sendJson(res, 200, { ok: true, duplicate: true });
+            }
+            const changes = changeRecorder({ store, actorId: null, now, channel });
+            try {
+              if (
+                !coordinator.settle(
+                  machine.machineId,
+                  b.requestId,
+                  result,
+                  changes.record,
+                  exactFingerprint,
+                )
+              )
+                return sendJson(res, 403, { error: "this machine was not asked to set up that environment" });
+            } finally {
+              changes.flush();
+            }
+          } else {
+            return sendJson(res, 403, { error: "this machine was not asked to set up that environment" });
+          }
           return sendJson(res, 200, { ok: true });
         }
         if (path === "/daemon/cell") {
@@ -701,7 +844,8 @@ export function createRequestListener(deps: {
         try {
           const result = handleDaemonRoute({
             store, changes: daemonChanges, method: req.method, path, body,
-            authorization: req.headers.authorization, now: now(), envSetups, runs,
+            authorization: req.headers.authorization, now: now(), runs,
+            coordinator,
           });
           if (result) return sendJson(res, result.status, result.json);
           return sendJson(res, 404, { error: "no such route" });
@@ -733,7 +877,7 @@ export function createRequestListener(deps: {
         const changes = changeRecorder({ store, actorId: actor.userId, now, channel });
         const api = createWorkspaceApi({
           store, actor, now, config, channel, changes, runs, reverts, kernelLists, titles, pendingCells,
-          envSetups,
+          coordinator,
         });
         const method = path.slice("/rpc/".length);
         if (!rpcMethods(api).has(method)) return sendJson(res, 404, { error: `no such method: ${method}` });

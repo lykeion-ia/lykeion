@@ -30,6 +30,8 @@ interface StartOptions {
 export interface ManagedRun {
   runId: string;
   sequence: number;
+  origin: ActiveRunSnapshot["origin"];
+  continuation?: ActiveRunSnapshot["continuation"];
   prompt: string;
   /** The provider recorded when this turn started, never the current composer choice. */
   agent: string;
@@ -134,6 +136,8 @@ function isTerminal(state: TurnState["state"]): boolean {
 interface RunEntry {
   runId: string;
   sequence: number;
+  origin: ActiveRunSnapshot["origin"];
+  continuation?: ActiveRunSnapshot["continuation"];
   prompt: string;
   agent: string;
   state: TurnState;
@@ -172,6 +176,8 @@ function entryFromSnapshot(snapshot: ActiveRunSnapshot): RunEntry {
   return {
     runId: snapshot.runId,
     sequence: snapshot.sequence,
+    origin: snapshot.origin,
+    ...(snapshot.continuation === undefined ? {} : { continuation: snapshot.continuation }),
     prompt: snapshot.prompt,
     agent: snapshot.agent,
     state: snapshot.state,
@@ -629,6 +635,8 @@ export function useRun(
         .map((entry) => ({
           runId: entry.runId,
           sequence: entry.sequence,
+          origin: entry.origin,
+          ...(entry.continuation === undefined ? {} : { continuation: entry.continuation }),
           prompt: entry.prompt,
           agent: entry.agent,
           state: entry.state,

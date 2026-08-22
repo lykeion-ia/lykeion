@@ -62,6 +62,18 @@ type Directive =
       title: string;
       followUp?: boolean;
       followUpContent?: string;
+      /** Reports the answer this agent actually received as the follow-up
+       *  update's content: the KIND of the option the client selected, or
+       *  `none` for a client that selected nothing this agent offered.
+       *  Overrides `followUpContent`, which is a fixed string a script wrote
+       *  in advance and therefore cannot say what arrived.
+       *
+       *  The only way a test can read what a client answered a provider
+       *  card with. Everything else about an answer is the client's own
+       *  side of the wire — and a client that answers a card the researcher
+       *  was never shown is precisely the thing worth reading off the far
+       *  end rather than off the end under test. */
+      reportAnswer?: boolean;
       /** Overrides what this agent offers to answer with. An empty array is
        *  an agent offering nothing answerable, which a client has to say out
        *  loud rather than guess its way past. */
@@ -434,21 +446,30 @@ async function askPermission(
 ): Promise<void> {
   if (step.delayMs !== undefined)
     await new Promise<void>((resolve) => setTimeout(resolve, step.delayMs));
+  // Deliberately arbitrary ids. An agent names its own options and no
+  // two name them alike, so a client that answers with an id it made
+  // up rather than one of these is answering nothing — which is what
+  // these ids exist to catch. Anything recognisable here would let a
+  // hardcoded guess pass this suite and fail every real agent.
+  const offered = step.options ?? [
+    { optionId: "opt-7f1", name: "Allow once", kind: "allow_once" },
+    { optionId: "opt-7f2", name: "Allow always", kind: "allow_always" },
+    { optionId: "opt-7f3", name: "Deny", kind: "reject_once" },
+  ];
   const answer = (await ask("session/request_permission", {
     sessionId,
     toolCall: { toolCallId: step.toolCallId, title: step.title },
-    // Deliberately arbitrary ids. An agent names its own options and no
-    // two name them alike, so a client that answers with an id it made
-    // up rather than one of these is answering nothing — which is what
-    // these ids exist to catch. Anything recognisable here would let a
-    // hardcoded guess pass this suite and fail every real agent.
-    options: step.options ?? [
-      { optionId: "opt-7f1", name: "Allow once", kind: "allow_once" },
-      { optionId: "opt-7f2", name: "Allow always", kind: "allow_always" },
-      { optionId: "opt-7f3", name: "Deny", kind: "reject_once" },
-    ],
+    options: offered,
   })) as { outcome?: { outcome?: string; optionId?: string } };
   if (step.followUp === false) return;
+  // Only an id this agent actually offered counts as an answer. One it never
+  // offered is not a denial and not an allowance — it is a call that was
+  // never decided, and `selected` stays undefined for it below.
+  const selected = offered.find((option) => option.optionId === answer.outcome?.optionId);
+  // What arrived, said in the vocabulary the protocol fixes rather than in
+  // this agent's own ids — a test reading `allow_once` back is reading the
+  // kind every real agent would have been answered with.
+  const reported = step.reportAnswer ? (selected?.kind ?? "none") : step.followUpContent;
   send({
     jsonrpc: "2.0",
     method: "session/update",
@@ -457,17 +478,19 @@ async function askPermission(
       update: {
         sessionUpdate: "tool_call_update",
         toolCallId: step.toolCallId,
-        // Only an id this agent actually offered counts as an answer.
-        // One it never offered is not a denial and not an allowance —
-        // it is a call that was never decided, and reporting it as
-        // completed would hide exactly the defect this catches.
+        // Derived from the KIND of the option actually selected, not from
+        // one script's hardcoded ids — a step that supplies its own options
+        // (a different allow id, a real adapter's own vocabulary) is reported
+        // as allowed or not by what it means rather than by which literal id
+        // happened to spell "allow once" in the default menu above. An id
+        // this agent never offered selects nothing, so `selected` is
+        // undefined and this still reports "failed" — the same case the
+        // comment this replaced was written to protect.
         status:
-          answer.outcome?.optionId === "opt-7f1" || answer.outcome?.optionId === "opt-7f2"
+          selected?.kind === "allow_once" || selected?.kind === "allow_always"
             ? "completed"
             : "failed",
-        ...(step.followUpContent === undefined
-          ? {}
-          : { content: [{ content: { text: step.followUpContent } }] }),
+        ...(reported === undefined ? {} : { content: [{ content: { text: reported } }] }),
       },
     },
   });

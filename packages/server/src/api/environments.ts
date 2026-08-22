@@ -3,7 +3,6 @@ import {
   type KernelEnvCreateInput,
   type KernelEnvDeclaration,
   type KernelEnvManager,
-  type KernelEnvStatus,
   type Language,
   type LykeionApi,
 } from "@lykeion/api";
@@ -11,19 +10,20 @@ import type { Deps } from "./index";
 import type { ChangeRecorder } from "./changes";
 import type { Store } from "../store/store";
 import type { Actor } from "../auth";
-import type { RunRelay } from "../run-relay";
-import type { EnvSetupRegistry } from "../env-setup-registry";
 import { environmentStore } from "../store/environments";
+import { environmentSetupStore } from "../store/environment-setups";
 import { nextSeq } from "../store/migrations";
 import { healthFor } from "../machine-health";
 import { deliverOrRefuse } from "./kernels";
 
 export type EnvironmentsApi = Pick<
   LykeionApi,
-  "kernelEnvList" | "kernelEnvCreate" | "kernelEnvDelete" | "kernelEnvSetup" | "kernelEnvReclaim"
+  | "kernelEnvList" | "kernelEnvCreate" | "kernelEnvDelete" | "kernelEnvReclaim"
+  | "requestKernelEnvironmentSetup" | "taskEnvironmentSetups"
+  | "retryKernelEnvironmentSetup" | "answerEnvironmentDefaultSuggestion"
 >;
 
-/** The runtime a `kernelEnvSetup`/`kernelEnvReclaim` call may act on, or the
+/** The runtime a `kernelEnvReclaim` call may act on, or the
  *  refusal that keeps it off one it should not touch — the same three
  *  checks `authorizedKernelRuntime` (`kernels.ts`) holds a kernel command
  *  to, minus the kernel-identity fields neither command needs: this one
@@ -54,48 +54,13 @@ async function authorizedOwnRuntime(
   return { machineId, name: row.name as string };
 }
 
-/**
- * One in-flight `kernelEnvSetup` per (machine, environment), shared by
- * however many callers ask while it is in flight — the coalescing wrapper
- * `sweep(deps)` (`kernels.ts`) uses for the same reason: two researchers
- * asking the same machine to build the same environment must collapse into
- * one build, not race two `uv venv --clear` invocations over the same
- * directory. Module-level, like `sweep`'s own `inFlight`, and for the same
- * reason — it coalesces across every request in this process, not just the
- * one that happened to start it.
- */
-const inFlightSetups = new Map<string, Promise<SetupRound>>();
-
-/** One finished build, and the package request it was planned against —
- *  which is what a caller who JOINED it needs in order to tell whether that
- *  build was ever told about the packages they came here for. */
-interface SetupRound {
-  status: KernelEnvStatus;
-  /** The declaration's `packages` as the build read them when it was
-   *  dispatched. On the resolving branch it is what the machine resolved
-   *  from; on the replaying branch it is what the pin was already known to
-   *  answer (that equality is why it replayed). Either way it is the request
-   *  this build satisfies, and nothing added afterwards is in it. */
-  covered: string[];
-}
-
-function coalescedSetup(key: string, run: () => Promise<SetupRound>): Promise<SetupRound> {
-  const existing = inFlightSetups.get(key);
-  if (existing) return existing;
-  const started = run().finally(() => {
-    inFlightSetups.delete(key);
-  });
-  inFlightSetups.set(key, started);
-  return started;
-}
-
 /** Whether two package requests are the same request, whatever order they
  *  arrived in. `["a","b"]` and `["b","a"]` describe one environment, and a
  *  comparison that called them different would re-resolve — and so re-pin
  *  the whole lab — because somebody's list came back sorted. Duplicates are
  *  not collapsed: `environmentStore.addPackages` de-duplicates on the way in,
  *  so a repeated name is a shape neither side of this comparison produces. */
-function sameRequest(a: string[], b: string[]): boolean {
+export function sameRequest(a: string[], b: string[]): boolean {
   // Length first, and it is load-bearing rather than an optimization: without
   // it the element-wise walk below compares only as far as the shorter list
   // goes, so a pinned request that is a sorted PREFIX of the declaration —
@@ -153,163 +118,6 @@ export function planFor(store: Store, name: string): SetupPlan {
   if (pinnedFrom === undefined || !sameRequest(pinnedFrom, declaration.packages))
     return { resolve: true, packages: declaration.packages };
   return { resolve: false, lockfile, lockRevision: declaration.lockRevision };
-}
-
-/**
- * How many builds one call will sit through before it gives up.
- *
- * A caller that JOINS an in-flight build re-checks when that build settles and
- * builds again if the declaration has moved past what got pinned (see
- * `buildEnvironmentOn`). Each round absorbs every addition made during the
- * previous one — the second round carries everything added while the first was
- * running, and so on — so the sequence terminates as soon as one whole build
- * window passes with nobody adding packages. Two rounds is the realistic worst
- * case (a build, and everything asked for while it ran); four leaves room for a
- * burst without letting a lab where something adds a package on a timer spin a
- * caller forever. A caller that exhausts this says so rather than reporting a
- * build that is not coming.
- */
-const MAX_SETUP_ROUNDS = 4;
-
-/**
- * One machine building (or replaying) one environment, and the wait for it
- * to say what it came to.
- *
- * Both callers of this reach it having ALREADY decided that this machine may
- * be asked — `kernelEnvSetup` through `authorizedOwnRuntime`, and
- * `/daemon/kernel-env/packages` because the machine it dispatches to is the
- * one whose bearer token authenticated the call, which is a machine
- * rebuilding its own copy. Neither fact is re-derived here.
- *
- * `reason` is why this rebuild is happening, in words, and rides the command
- * so the machine can carry it into the ending of every kernel the rebuild
- * displaces. Absent for a plain Setup click — a build nobody needs a
- * sentence for, because the researcher is looking at the button they pressed.
- *
- * **Coalesce, then re-check.** Two `uv venv --clear` runs racing over one
- * directory is the worse failure, so builds still collapse — but a caller who
- * joins an in-flight one does not get to assume it satisfies them. The build
- * they joined was planned from the declaration as it read when it STARTED; a
- * caller who arrived afterwards, having just appended packages, is asking for
- * something that build was never told about. So when it settles, this checks
- * what that build actually covered against what THIS caller came for, and
- * builds again if its own packages are not in it. Without that, the second of
- * two adds is answered `building: true`, is never built on any machine, and
- * every kernel in the environment restarts announcing only the first one.
- *
- * The same loop catches the other direction: an add landing while a Setup
- * click is REPLAYING the old pin joins that replay, which resolves nothing —
- * the re-check finds the caller's own packages absent from what was covered
- * and resolves.
- *
- * `wanted` is what this caller is owed: the declaration as it stood when the
- * call arrived, which for the packages route is the list its own append
- * produced. Checked as a SUBSET of what a build covered rather than as
- * equality, and that distinction is what keeps the reasons straight: the
- * caller who asked for `scanpy` is satisfied by the build that carried it and
- * returns, so the extra round is started by the caller who asked for
- * `anndata` and carries `anndata`'s sentence into the kernels it restarts.
- * Equality would have both loop, and the second build would announce the
- * first one's reason. A subset is sound here because there is no remove (D7):
- * a declaration only ever grows.
- */
-export async function buildEnvironmentOn(
-  parts: { store: Store; runs: RunRelay; envSetups: EnvSetupRegistry },
-  machine: { machineId: string; name: string },
-  name: string,
-  wanted: string[],
-  reason?: string,
-): Promise<KernelEnvStatus> {
-  for (let round = 0; round < MAX_SETUP_ROUNDS; round++) {
-    // Coalesced BEFORE anything is delivered: two callers racing in must
-    // never each mint their own `kernel-env-setup` and send this machine
-    // building the same directory twice.
-    const { status, covered } = await coalescedSetup(`${machine.machineId}:${name}`, () =>
-      oneSetup(parts, machine, name, reason),
-    );
-    const held = new Set(covered);
-    if (wanted.every((entry) => held.has(entry))) return status;
-  }
-  throw new LykeionError(
-    "conflict",
-    `${name} kept changing while ${machine.name} was building it — the packages are declared, but ` +
-      `this lab gave up waiting for a build that includes them; set it up again once the changes stop`,
-  );
-}
-
-/** One build: plan it, send it, wait for the machine to say what it came to. */
-async function oneSetup(
-  parts: { store: Store; runs: RunRelay; envSetups: EnvSetupRegistry },
-  machine: { machineId: string; name: string },
-  name: string,
-  reason: string | undefined,
-): Promise<SetupRound> {
-  const { store, runs, envSetups } = parts;
-  const envs = environmentStore(store);
-  // Read INSIDE the coalesced body, never before it. `planFor` turns on
-  // `lockRevision` and on what that revision was resolved from, and both move
-  // the moment some machine finishes a resolve — so a plan made before this
-  // point can be stale by the time it is used, and stale here means resolving
-  // a package list this lab has already pinned. Two independent resolutions of
-  // one list drift as soon as a maintainer publishes, which is the whole
-  // failure D4 exists to prevent.
-  //
-  // The real race is untouched either way: two machines whose reads land in
-  // the same instant both still resolve, and write revisions 1 and 2. See the
-  // ledger's R25 for why that residue is parked rather than fixed here —
-  // closing it needs a serialization point spanning two processes, which is
-  // not a change to make without a test that can actually exercise it.
-  const declaration = envs.get(name);
-  if (declaration === undefined)
-    throw new LykeionError("not-found", `no such environment: ${name}`);
-  const plan = planFor(store, name);
-  const requestId = `envsetup_${nextSeq(store)}`;
-  const base = {
-    type: "kernel-env-setup" as const,
-    runId: requestId,
-    name,
-    language: declaration.language,
-    manager: declaration.manager,
-    ...(reason === undefined ? {} : { reason }),
-  };
-  deliverOrRefuse(
-    runs,
-    machine,
-    plan.resolve
-      ? { ...base, packages: plan.packages }
-      : { ...base, lockfile: plan.lockfile, lockRevision: plan.lockRevision },
-  );
-
-  const result = await envSetups.await(machine.machineId, requestId, name, {
-    // What this machine was asked to resolve from, remembered against this one
-    // ask so that `/daemon/kernel-env/lock` can write it down beside the
-    // lockfile it produces. Only ever set on the resolving branch: a replay
-    // resolves nothing and pins nothing.
-    ...(plan.resolve ? { resolvedFrom: plan.packages } : {}),
-  });
-  if (result === undefined)
-    throw new LykeionError(
-      "conflict",
-      `${machine.name} did not finish setting up ${name} in time — check the machine and try again`,
-    );
-  // `conflict`, never `unsupported`. A build that failed is a build that can
-  // be retried — a network blip mid-`uv pip sync`, a package that would not
-  // compile today. `unsupported` is what `kernelEnvSetup`'s own removed
-  // refusal meant ("this lab cannot set up managed environments yet"), so a
-  // client reading it would take a transient failure for a permanent
-  // capability gap and stop offering Setup at all. Same code as the timeout
-  // above, which is the same class of fact: it did not work this time.
-  if (!result.ok) throw new LykeionError("conflict", result.error);
-  // Nothing here writes `lock_revision`: on the resolve branch, that already
-  // happened — synchronously, from the machine's own mid-build call to
-  // `/daemon/kernel-env/lock` — before this reply could ever arrive, so a
-  // caller reading `envs.get(name)` right after this resolves already sees the
-  // new revision.
-  //
-  // `covered` is the declaration as it read at DISPATCH, not as it reads now:
-  // this is the request this build answers, and the whole point of handing it
-  // back is that anything appended since is provably not in it.
-  return { status: result.status, covered: declaration.packages };
 }
 
 /** A name every machine will be able to build: one path segment, and the
@@ -444,7 +252,7 @@ export function declareEnvironment(
  * The lab's environment declarations, over `environmentStore`, and the wire
  * that turns a declaration into a build on a researcher's own machine.
  *
- * `buildEnvironmentOn` is where D4 lives: a machine resolves when nothing is
+ * `planFor` is where D4 lives: a machine resolves when nothing is
  * pinned yet, or when what IS pinned was resolved from a package request
  * this declaration has since grown past, and otherwise replays this lab's
  * stored lockfile. Get that branch wrong in one direction and two machines
@@ -454,9 +262,10 @@ export function declareEnvironment(
  * they asked for is silently absent everywhere.
  */
 export function environmentsApi(deps: Deps): EnvironmentsApi {
-  const { store, actor, now, runs, envSetups } = deps;
+  const { store, actor, now, runs, coordinator } = deps;
   const { record } = deps.changes;
   const envs = environmentStore(store);
+  const setups = environmentSetupStore(store);
 
   return {
     async kernelEnvList() {
@@ -472,7 +281,7 @@ export function environmentsApi(deps: Deps): EnvironmentsApi {
     },
 
     async kernelEnvDelete(name: string) {
-      store.tx(() => {
+      const { cancellations } = store.tx(() => {
         const declaration = envs.get(name);
         if (declaration === undefined) {
           throw new LykeionError("not-found", `no such environment: ${name}`);
@@ -500,31 +309,64 @@ export function environmentsApi(deps: Deps): EnvironmentsApi {
           );
         }
         envs.remove(name);
+        // Inside the same transaction as the removal, because a Research
+        // default naming an environment this lab no longer declares is not a
+        // stale default — it is a default nothing can ever resolve, and every
+        // unaddressed cell of that language would be refused by a name that
+        // exists nowhere. The pending question goes with it for the same
+        // reason: answering "use it by default" about a deleted environment
+        // would write exactly the row this line just swept.
+        //
+        // And every Task still waiting on this name goes with them, because
+        // the build it is waiting for can no longer be planned at all: the
+        // declaration is gone, so nothing will ever settle that waiter and no
+        // continuation will ever start. That cancellation is the coordinator's
+        // rather than this line's — it is the half-operation this used to
+        // decline to perform, and the coordinator is what pairs it with
+        // `finishTurn` for a `queued` waiter's own continuation turn and with
+        // the `cancel` command dispatched below, after this transaction has
+        // committed.
+        //
+        // Reclaim does none of this and must not: freeing a machine's own
+        // copy leaves the declaration standing, so the default still names
+        // something this lab has, and the next machine to build it makes the
+        // default reachable again.
+        const cancelled = coordinator.cancelForEnvironment(name);
         record("environment-deleted", { name });
+        return cancelled;
       });
+      // Outside the transaction: a machine told to stop a run that a
+      // rolled-back delete would have left running is a command this lab
+      // cannot take back.
+      for (const cancellation of cancellations)
+        runs.enqueue(cancellation.machineId, {
+          type: "cancel",
+          runId: cancellation.runId,
+        });
     },
 
-    async kernelEnvSetup(machineId: string, name: string, _onProgress?: (line: string) => void) {
-      // `onProgress` is part of the contract's shape and is honoured by no
-      // implementation at all — not this one, and not the in-memory core
-      // either, which refuses `kernelEnvSetup` outright rather than
-      // pretending to provision. Progress lines reach the browser over
-      // `KERNEL_SETUP_CHANNEL` instead (this lab publishes them the moment
-      // `/daemon/kernel-env/progress` reports one), and subscribing to that
-      // channel is the client's job, not this method's.
-      const declared = envs.get(name);
-      if (declared === undefined)
-        throw new LykeionError("not-found", `no such environment: ${name}`);
-      const resolved = await authorizedOwnRuntime(deps, actor, now(), machineId);
-      // What this click is owed: the declaration as it reads right now. A
-      // package somebody adds while the build runs is not something this
-      // researcher asked for, so it must not keep their Setup waiting — the
-      // caller who added it does its own round for it.
-      //
-      // No `reason`: a researcher clicking Setup is looking at the button
-      // they pressed, and a sentence explaining why their kernels restarted
-      // would be this lab telling them what they just did.
-      return buildEnvironmentOn({ store, runs, envSetups }, resolved, name, declared.packages);
+    async requestKernelEnvironmentSetup(input) {
+      return coordinator.request(input, actor, record);
+    },
+
+    async taskEnvironmentSetups(taskId) {
+      const task = store.get(`SELECT id FROM tasks WHERE id = ?`, [taskId]);
+      if (!task) throw new LykeionError("not-found", `no such Task: ${taskId}`);
+      return setups.forTask(taskId);
+    },
+
+    async retryKernelEnvironmentSetup(waiterId) {
+      return coordinator.retry(waiterId, actor, record);
+    },
+
+    async answerEnvironmentDefaultSuggestion(suggestionId, useByDefault) {
+      if (!setups.answerSuggestion(suggestionId, actor.userId, useByDefault, now())) {
+        throw new LykeionError(
+          "not-found",
+          `no such pending environment default suggestion: ${suggestionId}`,
+        );
+      }
+      record("environment-setup-changed", { suggestionId });
     },
 
     async kernelEnvReclaim(machineId: string, name: string) {

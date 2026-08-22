@@ -6,7 +6,7 @@ import type { Deps } from "./index";
  *  actually connected to a machine — the one failure no request to this
  *  server, on its own, can ever work around. Exported for the one family
  *  that has to choose between this reason and a truer one: `kernelsApi`
- *  gives `kernelEnvSetup` this refusal only after looking at the machines
+ *  gives a kernel command this refusal only after looking at the machines
  *  table and finding nothing online. */
 export const NO_MACHINE =
   "no machine is connected to this lab — install the Lykeion daemon on the machine you want to run on.";
@@ -55,7 +55,7 @@ export function absentApi(
   | "listMachines" | "listAgentClis" | "pairMachine" | "removeMachine"
   | "startRun" | "submitRunDecision" | "runHistory" | "revertTurn"
   | "listRunningKernels" | "computeSnapshot" | "taskNotebook" | "cellProvenance" | "cellsForToolUse" | "kernelExecute" | "kernelInterrupt" | "kernelStop" | "kernelRestart"
-  | "kernelEnvSetup" | "kernelEnvReclaim" | "kernelEnvCreate" | "kernelEnvDelete"
+  | "kernelEnvReclaim" | "kernelEnvCreate" | "kernelEnvDelete"
 > {
   return {
     async listConversations() {
@@ -88,6 +88,27 @@ export function absentApi(
 
     async kernelEnvList() {
       return [];
+    },
+    async requestKernelEnvironmentSetup() {
+      throw new LykeionError(
+        "unsupported",
+        "this lab cannot provision software",
+      );
+    },
+    async taskEnvironmentSetups() {
+      return [];
+    },
+    async retryKernelEnvironmentSetup() {
+      throw new LykeionError(
+        "unsupported",
+        "this lab cannot provision software",
+      );
+    },
+    async answerEnvironmentDefaultSuggestion(suggestionId) {
+      throw new LykeionError(
+        "not-found",
+        `no such environment default suggestion: ${suggestionId}`,
+      );
     },
 
     async delegateSubagent(_input) {

@@ -46,6 +46,10 @@ async function session(
      *  test can prove what happens when the researcher's own home variable is
      *  already set in the process this daemon is running as. */
     env?: Record<string, string>;
+    /** The environments this conversation already had standing permission to
+     *  change when it was reopened — what the lab persisted, handed to a
+     *  session that is opening for the first time in this process. */
+    environmentGrants?: string[];
   } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "lykeion-sess-"));
@@ -85,6 +89,9 @@ async function session(
     },
     ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
     ...(options.cancelGraceMs !== undefined ? { cancelGraceMs: options.cancelGraceMs } : {}),
+    ...(options.environmentGrants === undefined
+      ? {}
+      : { environmentGrants: options.environmentGrants }),
   });
   live.push(s);
   /** What `session/new` actually carried, read back off the agent's own side
@@ -1636,4 +1643,378 @@ it("tells claude to offer no skills at all", async () => {
 it("carries no session meta for an agent that has no such channel", async () => {
   expect(await sessionMetaFor("codex")).toBeUndefined();
   expect(await sessionMetaFor("copilot")).toBeUndefined();
+});
+
+// ---- one environment permission, brokered
+//
+// An environment change is TWO questions on the wire and must be one in
+// front of the researcher. The agent's own provider wraps the MCP call in a
+// generic "may this tool run?" card; this machine's kernel host then asks the
+// real question — which environment, which packages, on every machine in this
+// lab — through `askPermission`. Stacked, a researcher answers a card that
+// names nothing and then a card that names everything. So the provider's
+// wrapper is answered here, and only for the exact tools whose consequential
+// path is guarded by that inner card.
+
+/** One step of a brokered environment call, in the order the wire carries
+ *  it: what the adapter announced, what its provider asked about, and what
+ *  this machine's own kernel host then asked the researcher. */
+type BrokeredStep =
+  | { step: "tool_call"; title: string; rawInput: unknown }
+  | {
+      step: "provider_permission";
+      title: string;
+      /** What this agent offers to be answered with, where a test needs
+       *  something other than the ordinary menu — an agent with no way to
+       *  allow a call just once, most of all. */
+      options?: Array<{ optionId: string; name: string; kind: string }>;
+    }
+  | { step: "inner_environment_permission"; name: string };
+
+/** One tool call, announced the way an adapter announces one: the title is
+ *  what the agent calls the tool, which is what the log entry carries and
+ *  what a broker has to match on. */
+const toolCall = (title: string, rawInput: unknown): BrokeredStep => ({
+  step: "tool_call",
+  title,
+  rawInput,
+});
+
+/** The agent's provider asking whether the call announced just above may
+ *  run. Its own title, which for a real adapter is often prose rather than
+ *  the tool's name. */
+const providerPermission = (
+  title: string,
+  options?: Array<{ optionId: string; name: string; kind: string }>,
+): BrokeredStep => ({
+  step: "provider_permission",
+  title,
+  ...(options === undefined ? {} : { options }),
+});
+
+/** This machine's own card about the environment the call is changing —
+ *  what `serveEnvironmentCreate` raises once the tool actually reaches the
+ *  kernel host, which only happens after the provider has been answered. */
+const innerEnvironmentPermission = (name: string): BrokeredStep => ({
+  step: "inner_environment_permission",
+  name,
+});
+
+/** Every card raised about an environment. */
+const environmentCards = (events: RunEvent[]) =>
+  cardsOf(events).filter((request) => request.access.kind === "environment");
+
+/** Every card raised about running something, which is the shape a provider
+ *  wrapper around a tool call takes: no path, so nothing but the tool's own
+ *  title to go on. */
+const genericExecuteCards = (events: RunEvent[]) =>
+  cardsOf(events).filter((request) => request.access.kind === "execute");
+
+/**
+ * A session driven through the two-sided shape a brokered environment call
+ * actually has.
+ *
+ * The adapter's half is scripted into the stub. This machine's half — the
+ * inner `askPermission` a kernel host raises — is made from here, and only
+ * once the provider's own request has been answered, because that is the
+ * only order it can happen in: the tool does not reach the host until the
+ * provider lets the call run.
+ *
+ * A generic card that IS raised is answered here rather than left standing,
+ * so what the researcher would have had to answer is counted rather than
+ * being the reason the turn stalls.
+ */
+async function brokeredSession(steps: BrokeredStep[]) {
+  const script: unknown[] = [];
+  /** Which call each provider request and each inner card belongs to. */
+  const answering = new Set<string>();
+  const inner = new Map<string, string[]>();
+  let current: string | undefined;
+  let calls = 0;
+  for (const step of steps) {
+    if (step.step === "tool_call") {
+      calls += 1;
+      current = `t${calls}`;
+      script.push({
+        emit: "tool_call",
+        toolCallId: current,
+        title: step.title,
+        rawInput: step.rawInput,
+      });
+      continue;
+    }
+    if (current === undefined) throw new Error("a permission step needs a tool call before it");
+    if (step.step === "provider_permission") {
+      answering.add(current);
+      script.push({
+        ask: "permission",
+        toolCallId: current,
+        title: step.title,
+        reportAnswer: true,
+        ...(step.options === undefined ? {} : { options: step.options }),
+      });
+      continue;
+    }
+    inner.set(current, [...(inner.get(current) ?? []), step.name]);
+  }
+  // The turn stays in flight past the last scripted step, so a card raised
+  // by either side is a card a live turn can still carry. The session is
+  // closed in `afterEach` long before this elapses.
+  script.push({ sleep: 5_000 });
+
+  const events: RunEvent[] = [];
+  /** What the agent's provider was actually answered with, read off the
+   *  agent's own side of the wire. */
+  const providerAnswers: string[] = [];
+  const reported = new Set<string>();
+  let session: LiveSession | undefined;
+  const cwd = mkdtempSync(join(tmpdir(), "lykeion-broker-"));
+  dirs.push(cwd);
+  const dataDir = mkdtempSync(join(tmpdir(), "lykeion-broker-state-"));
+  dirs.push(dataDir);
+  session = await startSession({
+    adapter: { command: process.execPath, args: ["--experimental-strip-types", STUB] },
+    agent: "stub",
+    cwd,
+    dataDir,
+    grants: [],
+    onEvent: (event) => {
+      events.push(event);
+      if (event.event === "permission-card" && event.request.access.kind !== "environment")
+        // Answered the way a researcher would, so the only thing this test
+        // reads off it is that it was raised at all. Deferred rather than
+        // decided inside the emit that raised it: `decide` publishes the next
+        // card, and re-entering the gate from inside its own event would be a
+        // shape nothing in production produces.
+        queueMicrotask(() =>
+          session?.decide({
+            action: "permission",
+            requestId: event.request.id,
+            decision: { decision: "allow", scope: "once" },
+          }),
+        );
+      if (event.event !== "log-entry") return;
+      const { toolUseId, result } = event.entry;
+      if (!answering.has(toolUseId) || typeof result !== "string") return;
+      if (reported.has(toolUseId)) return;
+      reported.add(toolUseId);
+      providerAnswers.push(result);
+      // The call has reached the tool server now, which is where the inner
+      // question comes from.
+      for (const name of inner.get(toolUseId) ?? [])
+        void session?.askPermission(
+          { kind: "environment", target: { name, packages: [] } },
+          "manage_environments",
+          `Create the environment ${name}, holding only its interpreter`,
+        );
+    },
+    onGrant: () => {},
+    env: process.env,
+    extraEnv: { LYKEION_STUB_SCRIPT: JSON.stringify(script) },
+  });
+  live.push(session);
+  return { session, events, providerAnswers };
+}
+
+it("auto-allows only the provider wrapper around a self-authorizing environment tool", async () => {
+  const { session, events, providerAnswers } = await brokeredSession([
+    toolCall("mcp__notebook__manage_environments", { action: "create", name: "rstats", language: "r", packages: [] }),
+    providerPermission("mcp__notebook__manage_environments"),
+    innerEnvironmentPermission("rstats"),
+  ]);
+  session.prompt("create it");
+  await until(() => environmentCards(events).length === 1);
+  expect(providerAnswers).toEqual(["allow_once"]);
+  expect(environmentCards(events)).toHaveLength(1);
+  expect(genericExecuteCards(events)).toHaveLength(0);
+});
+
+it("keeps an ordinary shell permission visible", async () => {
+  const { session, events } = await brokeredSession([
+    toolCall("shell", { command: "curl example.org" }),
+    providerPermission("Run a shell command"),
+  ]);
+  session.prompt("run it");
+  await until(() => genericExecuteCards(events).length === 1);
+  expect(genericExecuteCards(events)).toHaveLength(1);
+});
+
+/** How many provider cards a call announced under `title`, with `rawInput`
+ *  for arguments, raises — once the provider has actually been answered, by
+ *  the broker where it matched and by the researcher through a card where it
+ *  did not. The default arguments are a real `manage_environments` create, so
+ *  a test varying only the title varies only the title. */
+async function providerCardsFor(
+  title: string,
+  rawInput: unknown = { action: "create", name: "rstats", language: "r", packages: [] },
+): Promise<number> {
+  const { session, events, providerAnswers } = await brokeredSession([
+    toolCall(title, rawInput),
+    providerPermission(title),
+  ]);
+  session.prompt("create it");
+  await until(() => providerAnswers.length === 1);
+  return genericExecuteCards(events).length;
+}
+
+it("keeps the provider's card for a title that is not EXACTLY an allowlisted tool", async () => {
+  // The security property of this whole brokering, pinned. Suppressing a
+  // provider card is safe only for the two tools whose consequential path is
+  // guarded by an inner card, and "these two" is decided by a string
+  // comparison — so a comparison that admits a near miss admits a tool nobody
+  // checked. `mcp__notebook__manage_environments_v2` is a name an agent can
+  // publish; matched by prefix it would run unasked.
+  //
+  // Three misses, one per way a match gets loosened by somebody being
+  // helpful: a suffix (`startsWith`), a different case (a `.toLowerCase()`
+  // added for tidiness), and a title one character short of an entry (a match
+  // run the other way round, or a normalisation that trims). Every one of
+  // them has to keep the ordinary card. `"shell"` above proves nothing here —
+  // it is nowhere near the allowlist, so every loosening in this list still
+  // passes it.
+  const raised: Record<string, number> = {};
+  for (const near of [
+    "mcp__notebook__manage_environments_v2",
+    "MCP__NOTEBOOK__MANAGE_ENVIRONMENTS",
+    "mcp__notebook__manage_environment",
+  ])
+    raised[near] = await providerCardsFor(near);
+  // Keyed by the title rather than counted, so a failure names which miss got
+  // through rather than only that one did.
+  expect(raised).toEqual({
+    "mcp__notebook__manage_environments_v2": 1,
+    "MCP__NOTEBOOK__MANAGE_ENVIRONMENTS": 1,
+    "mcp__notebook__manage_environment": 1,
+  });
+});
+
+it("keeps the provider's card when the arguments are not the tool the title names", async () => {
+  // The other half of that property, and the one the exact title match cannot
+  // reach on its own. A title is free text the ADAPTER supplies, on the same
+  // field `pathFrom` elsewhere reads as prose — so a call that is not one of
+  // these two tools, announced under one of these exact titles, would have
+  // its provider card answered here with nothing behind it. There is no inner
+  // card for a call the kernel host never sees, which makes the suppressed
+  // card that call's only gate.
+  //
+  // So the arguments have to be the named tool's own. Every forgery below
+  // carries an allowlisted title EXACTLY and arguments that are not that
+  // tool's, and every one of them has to keep the ordinary card.
+  const raised: Record<string, number> = {};
+  for (const [label, title, rawInput] of [
+    ["a shell command", "mcp__notebook__manage_environments", { command: "curl example.org" }],
+    // An action outside the published enum, which is also the answer to
+    // keying this by `(tool, action)`: an unknown action is not this tool's
+    // argument shape, so it is refused by value here.
+    ["an unpublished action", "mcp__notebook__manage_environments", { action: "delete", name: "rstats" }],
+    ["a create naming nothing", "mcp__notebook__manage_environments", { action: "create" }],
+    ["no arguments at all", "mcp__notebook__manage_packages", {}],
+    ["adding no packages", "mcp__notebook__manage_packages", { packages: [] }],
+  ] as const)
+    raised[label] = await providerCardsFor(title, rawInput);
+  // Keyed by what was forged, so a failure names which one got through.
+  expect(raised).toEqual({
+    "a shell command": 1,
+    "an unpublished action": 1,
+    "a create naming nothing": 1,
+    "no arguments at all": 1,
+    "adding no packages": 1,
+  });
+
+  // And the real calls still go through, which is what stops this check from
+  // quietly turning the brokering off: one per tool, arguments as published.
+  expect(
+    await providerCardsFor("mcp__notebook__manage_environments", { action: "list" }),
+  ).toBe(0);
+  expect(
+    await providerCardsFor("mcp__notebook__manage_environments", {
+      action: "require",
+      name: "rstats",
+    }),
+  ).toBe(0);
+  expect(
+    await providerCardsFor("mcp__notebook__manage_packages", { packages: ["ggplot2"] }),
+  ).toBe(0);
+});
+
+it("opens a session already holding the conversation grants this lab persisted, and no others", async () => {
+  // What makes "for this conversation" survive a restart. The grant a
+  // researcher gave was written durably by the lab beside the change it
+  // authorised; the daemon that reopens this conversation is a different
+  // process — quite possibly a different machine's — and the set it carries
+  // has to come from the lab rather than from anything this process
+  // remembers.
+  //
+  // And ONLY the environment they answered about. A grant is kept by name
+  // for exactly this reason: a researcher who allowed changes to `rstats`
+  // for this conversation allowed nothing at all about `other-r`.
+  const { s, events } = await session([{ sleep: 5_000 }], [], {
+    environmentGrants: ["rstats"],
+  });
+  s.prompt("go");
+  await until(() => events.some((e) => e.event === "state" && e.state.state === "planning"));
+
+  const covered = s.askPermission(
+    { kind: "environment", target: { name: "rstats", packages: ["ggplot2"] } },
+    "manage_packages",
+  );
+  // Whichever way it went: a card in front of the researcher, or a decision
+  // recorded without one. Waited on rather than assumed so the assertion
+  // below reads a settled ask rather than one still crossing the queue.
+  await until(() => cardsOf(events).length > 0 || decisionsOf(events).size > 0);
+  expect(cardsOf(events)).toEqual([]);
+  const granted = await covered;
+  expect(granted.allowed).toBe(true);
+  // The scope this reports is what THIS card was answered with, and nobody
+  // answered it — the standing grant that covered it is already durable, and
+  // re-declaring one off a card nobody saw is not this end's to do.
+  expect(granted.allowed ? granted.scope : undefined).toBe("once");
+
+  const asked = s.askPermission(
+    { kind: "environment", target: { name: "other-r", packages: ["ggplot2"] } },
+    "manage_packages",
+  );
+  await until(() => cardsOf(events).length === 1);
+  expect(cardsOf(events)[0]!.access).toEqual({
+    kind: "environment",
+    target: { name: "other-r", packages: ["ggplot2"] },
+  });
+  s.decide({
+    action: "permission",
+    requestId: cardsOf(events)[0]!.id,
+    decision: { decision: "deny" },
+  });
+  expect((await asked).allowed).toBe(false);
+});
+
+it("raises the provider's own card when the agent offers no way to allow just once", async () => {
+  // The broker suppresses a card; it does not widen anything. `allow_always`
+  // is the agent remembering an authorization of its own — durably, for a
+  // question nobody was asked — and an auto-answer that escalated to it would
+  // be this machine granting on a researcher's behalf rather than asking one
+  // question instead of two. So the lookup is exact, and an agent that offers
+  // no `allow_once` gets the ordinary card: the stacked pair this task exists
+  // to remove comes back, for that adapter alone, which is a visible
+  // regression somebody can act on rather than an invisible standing grant.
+  const { session, events, providerAnswers } = await brokeredSession([
+    toolCall("mcp__notebook__manage_environments", {
+      action: "create",
+      name: "rstats",
+      language: "r",
+      packages: [],
+    }),
+    providerPermission("mcp__notebook__manage_environments", [
+      { optionId: "opt-always", name: "Allow always", kind: "allow_always" },
+      { optionId: "opt-deny", name: "Deny", kind: "reject_once" },
+    ]),
+  ]);
+  session.prompt("create it");
+  // The provider being answered AT ALL — by the broker where the defect is,
+  // by the researcher through the card where it is not — so what is asserted
+  // below is a settled question rather than a race with one.
+  await until(() => providerAnswers.length === 1);
+  expect(genericExecuteCards(events)).toHaveLength(1);
+  // And the researcher's own answer still maps onto whatever this agent
+  // offered, which is the existing rule for a card a person actually saw.
+  expect(providerAnswers).toEqual(["allow_always"]);
 });

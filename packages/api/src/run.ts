@@ -380,6 +380,14 @@ export interface RunArtifact {
 /** A durable past run on a Task — one entry per settled turn in its chat. */
 export interface RunSummary {
   runId: string;
+  origin: "user" | "system";
+  continuation?: {
+    kind: "environment-setup";
+    waiterId: string;
+    sourceTurnId: string;
+    environmentName: string;
+    machineId: string;
+  };
   /** The prompt that started the run (the Task's title). */
   command: string;
   ts: number;
@@ -394,6 +402,14 @@ export interface RunSummary {
 /** One turn of a Task — a single run's user prompt + assistant replies. */
 export interface TaskTurn {
   runId: string;
+  origin: "user" | "system";
+  continuation?: {
+    kind: "environment-setup";
+    waiterId: string;
+    sourceTurnId: string;
+    environmentName: string;
+    machineId: string;
+  };
   /** Durable insertion order of this turn within the workspace. */
   sequence: number;
   ts: number;
@@ -510,6 +526,10 @@ export interface ActiveRunSnapshot {
   runId: string;
   /** Durable turn order, independent of timestamps that may tie. */
   sequence: number;
+  /** Authoritative actor provenance; system continuations are never user prompts. */
+  origin: "user" | "system";
+  /** Exact continuation identity when `origin` is `system`. */
+  continuation?: TaskTurn["continuation"];
   prompt: string;
   agent: string;
   state: TurnState;

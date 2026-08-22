@@ -23,6 +23,7 @@ import {
   truncateTurn,
   turnsForTask,
 } from "../store/sessions";
+import { environmentSetupStore } from "../store/environment-setups";
 import type { RunCommand } from "../run-relay";
 
 export type SessionsApi = Pick<
@@ -85,7 +86,7 @@ export function resolveMachineForAgent(
 }
 
 export function sessionsApi(deps: Deps): SessionsApi {
-  const { store, actor, now, runs, reverts, changes } = deps;
+  const { store, actor, now, runs, reverts, changes, coordinator } = deps;
   return {
     async startRun(input) {
       const resolved = resolveMachineForAgent(store, input.options.agent, actor.userId);
@@ -116,7 +117,11 @@ export function sessionsApi(deps: Deps): SessionsApi {
           `${resolved.name} is offline — it has to be running and connected before a run can start on it`,
         );
 
-      const { runId, sessionId } = store.tx(() => {
+      const { runId, sessionId, cancellations } = store.tx(() => {
+        // Provisional inside this outer transaction: cancellable automatic
+        // work must not block the user who supersedes it, while any genuine
+        // admission failure below rolls these writes back with no mutation.
+        const { cancellations } = deps.coordinator.cancelPendingForTask(input.taskId);
         // What the Task is already working in, if anything. A later turn joins
         // THAT session rather than opening one of its own, which is what makes
         // it wait its place: a session runs one turn at a time, so the queue is
@@ -159,10 +164,26 @@ export function sessionsApi(deps: Deps): SessionsApi {
             WHERE id = ? AND status = 'done'`,
           [ts, input.taskId],
         );
-        return { runId, sessionId };
+        return { runId, sessionId, cancellations };
       });
 
+      for (const cancellation of cancellations)
+        runs.enqueue(cancellation.machineId, { type: "cancel", runId: cancellation.runId });
+      if (cancellations.length > 0)
+        changes.record("environment-setup-continuation-cancelled", {
+          taskId: input.taskId,
+          count: cancellations.length,
+        });
+
       const grants = listGrants(store, input.researchId, resolved.machineId);
+      const setups = environmentSetupStore(store);
+      // Read off the Research, mapped down to what the machine actually needs
+      // to resolve a cell: who confirmed the default and when are this lab's
+      // record of the decision, not part of the decision.
+      const environmentDefaults = setups
+        .defaultsForResearch(input.researchId)
+        .map(({ language, environmentName }) => ({ language, environmentName }));
+      const environmentGrants = setups.environmentGrantsForSession(sessionId);
       const command: RunCommand = {
         type: "start-run",
         runId,
@@ -170,9 +191,13 @@ export function sessionsApi(deps: Deps): SessionsApi {
         taskId: input.taskId,
         sessionId,
         agent: resolved.agent,
+        // The researcher's own words, and only those. The defaults and grants
+        // below travel beside the prompt rather than inside it.
         prompt: input.prompt,
         ...(input.options.model === undefined ? {} : { model: input.options.model }),
         ...(grants.length > 0 ? { grants } : {}),
+        ...(environmentDefaults.length > 0 ? { environmentDefaults } : {}),
+        ...(environmentGrants.length > 0 ? { environmentGrants } : {}),
       };
       runs.enqueue(resolved.machineId, command);
       const subscriptions = new Set<() => void>();
@@ -304,7 +329,24 @@ export function sessionsApi(deps: Deps): SessionsApi {
           err instanceof Error ? err.message : String(err),
         );
       }
-      truncateTurn(store, runId);
+      // A requirement this turn recorded is settled and removed in the same
+      // transaction that drops the turn, because it is what stops the turn
+      // from being dropped at all: `task_env_setup_waiters` references
+      // `turns(id)` twice with no `ON DELETE`, and the delete fails while a
+      // waiter names this turn. Reverting the turn that asked discards what
+      // it asked for — the durable requirement goes with it.
+      const cancellations = truncateTurn(store, runId, (turnId) =>
+        coordinator.cancelForRevertedTurn(turnId).cancellations,
+      );
+      // Outside that transaction, on the rule every cancel path on this
+      // branch keeps: a machine told to stop a run that a rolled-back
+      // truncate would have left running is a command this lab cannot take
+      // back.
+      for (const cancellation of cancellations)
+        runs.enqueue(cancellation.machineId, {
+          type: "cancel",
+          runId: cancellation.runId,
+        });
       // Published, so a colleague with the Task open sees the turn go rather
       // than holding one the server no longer has.
       changes.record("task-updated", { taskId });
@@ -319,6 +361,8 @@ export function sessionsApi(deps: Deps): SessionsApi {
         runId: turn.id,
         command: turn.prompt,
         ts: turn.startedTs,
+        origin: turn.origin,
+        ...(turn.continuation === undefined ? {} : { continuation: turn.continuation }),
         ...(turn.status === "cancelled-unacknowledged"
           ? { status: "cancelled" as const, unacknowledged: true as const }
           : { status: turn.status as "ok" | "failed" | "cancelled" }),

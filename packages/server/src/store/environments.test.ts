@@ -112,6 +112,25 @@ describe("the lab's environment declarations", () => {
     expect(envs.readLock("crispr", 1)).toBe("lock-v2");
   });
 
+  it("mints a new opaque generation even when delete and redeclare share one timestamp", () => {
+    const store = freshStore();
+    addUser(store, "u_ana");
+    const envs = environmentStore(store);
+    const first = envs.declare({
+      name: "crispr", language: "python", manager: "uv",
+      packages: ["scanpy"], createdBy: "u_ana", createdTs: 100,
+    }) as ReturnType<typeof envs.declare> & { declarationGenerationId?: string };
+    envs.remove("crispr");
+    const second = envs.declare({
+      name: "crispr", language: "python", manager: "uv",
+      packages: ["anndata"], createdBy: "u_ana", createdTs: 100,
+    }) as ReturnType<typeof envs.declare> & { declarationGenerationId?: string };
+
+    expect(first.declarationGenerationId).toMatch(/^envgen_/);
+    expect(second.declarationGenerationId).toMatch(/^envgen_/);
+    expect(second.declarationGenerationId).not.toBe(first.declarationGenerationId);
+  });
+
   it("keeps a pin nobody named a request for apart from one resolved from nothing", () => {
     // Absent is not zero, on the field the whole resolve-or-replay branch
     // turns on. A pin this lab cannot name the request for — a row written

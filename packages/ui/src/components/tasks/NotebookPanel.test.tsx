@@ -4,16 +4,18 @@ import { act, render, screen, cleanup, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import {
   createInMemoryApi,
+  type EnvironmentSetupJob,
   type KernelEnvDeclaration,
   type KernelEnvState,
   type KernelEnvStatus,
   type LykeionApi,
   type MachineCompute,
   type NotebookCell,
+  type TaskEnvironmentSetup,
   type RunningKernel,
   type Machine,
 } from "@lykeion/api";
-import { ApiProvider } from "../../api/ApiContext";
+import { ApiProvider, useDataVersion } from "../../api/ApiContext";
 import { NotebookPanel as NotebookPanelUnderTest } from "./NotebookPanel";
 import recordedRCell from "./__fixtures__/r-cell.json";
 
@@ -102,7 +104,7 @@ const paired = (id: string, name: string): Machine => ({
 
 /** `kernelEnvList` now answers with the lab's declarations, not a
  *  per-machine status — a different shape from `env()` above, which is
- *  still what a machine reports and what `kernelEnvSetup` returns. */
+ *  still what a machine reports. */
 const envDecl = (name: string): KernelEnvDeclaration => ({
   name,
   language: name === "r" ? "r" : "python",
@@ -111,6 +113,30 @@ const envDecl = (name: string): KernelEnvDeclaration => ({
   createdBy: "u_test",
   createdTs: 0,
   lockRevision: 0,
+});
+
+/** One durable setup job for `crispr` on `rt_1`, as the server projects it.
+ *  Nothing here is a claim the browser makes: these fixtures stand in for the
+ *  answers `taskEnvironmentSetups` gives, which is the only place the panel
+ *  learns any of it from. */
+const setupFixture = (
+  over: Partial<EnvironmentSetupJob> = {},
+): TaskEnvironmentSetup => ({
+  job: {
+    id: "job_1",
+    machineId: "rt_1",
+    machineName: "rt_1",
+    environmentName: "crispr",
+    language: "python",
+    manager: "conda",
+    lockRevision: 0,
+    state: "requested",
+    stage: "waiting-for-machine",
+    requestedTs: 1_700_000_000_000,
+    updatedTs: 1_700_000_000_000,
+    log: [],
+    ...over,
+  },
 });
 
 function deferred<T>() {
@@ -156,6 +182,17 @@ function renderPanel({
   };
   return render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 }
+
+/** The bar's own live region. Addressed through the bar rather than as "the
+ *  live region", because the panel keeps a second one for a failed poll and a
+ *  bare `getByRole("status")` would be asking which of the two a test meant. */
+const barStatus = () =>
+  within(screen.getByTestId("environment-bar")).getByRole("status");
+
+/** The control that opens the environment list. Its accessible name carries
+ *  what is chosen, which is how these tests read the selection without
+ *  reaching for a class name. */
+const envTrigger = () => screen.getByRole("button", { name: /^Kernel environment:/ });
 
 it("withdraws the previous Task's cells and kernel authority immediately", async () => {
   const pendingCells = deferred<NotebookCell[]>();
@@ -344,14 +381,19 @@ it("keeps confirmed cells visible when a notebook refresh fails", async () => {
   });
 
   expect(screen.getByTestId("notebook-cells")).toHaveTextContent("confirmed_result = 42");
-  expect(screen.getByRole("status")).toHaveTextContent(
-    "Could not refresh the notebook. Showing the last confirmed cells.",
-  );
+  // Addressed by its words rather than by "the live region": the
+  // environment bar keeps one of its own now, and a bare `getByRole("status")`
+  // would be asking which of two announcements this test meant.
+  expect(
+    screen.getByText("Could not refresh the notebook. Showing the last confirmed cells."),
+  ).toHaveAttribute("role", "status");
 
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1500);
   });
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(
+    screen.queryByText("Could not refresh the notebook. Showing the last confirmed cells."),
+  ).not.toBeInTheDocument();
 });
 
 it("withdraws live-kernel authority when kernel status cannot be refreshed", async () => {
@@ -381,15 +423,17 @@ it("withdraws live-kernel authority when kernel status cannot be refreshed", asy
   });
 
   expect(screen.getByTestId("notebook-status")).toHaveTextContent(/view only/);
-  expect(screen.getByRole("status")).toHaveTextContent(
-    "Kernel status is unavailable. Code execution is disabled.",
-  );
+  expect(
+    screen.getByText("Kernel status is unavailable. Code execution is disabled."),
+  ).toHaveAttribute("role", "status");
   expect(screen.queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
 
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1500);
   });
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(
+    screen.queryByText("Kernel status is unavailable. Code execution is disabled."),
+  ).not.toBeInTheDocument();
   expect(screen.getByTestId("notebook-status")).toHaveTextContent(/shared with the agent/);
   expect(screen.getByRole("button", { name: "Restart" })).toBeInTheDocument();
 });
@@ -406,92 +450,63 @@ it("names the language of the kernel it is showing", async () => {
   expect(screen.getByTestId("notebook-status")).not.toHaveTextContent(/Python/);
 });
 
-it("says what it is showing and how much of it", async () => {
+it("offers to build the environment on screen when the machine reports it absent", async () => {
+  // The two facts the bar joins. The lab declared this environment; the
+  // machine holding this Task's kernel says it has not built it — so the one
+  // control offers exactly that build, named for both of them, because a
+  // button reading "Set up" alone leaves out which computer downloads the
+  // gigabyte.
   const api: LykeionApi = {
     ...createInMemoryApi(),
-    taskNotebook: async () => [cell({}), cell({})],
-    listRunningKernels: async () => [kernel({ name: "main", language: "python", state: "idle" })],
-  };
-  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
-  await waitFor(() => expect(screen.getByTestId("notebook-footer")).toHaveTextContent("2 cells"));
-});
-
-it("offers Setup for the environment this Task's cells name that the machine lacks", async () => {
-  // Two facts joined. The notebook's own cells say which environments this
-  // Task needs; the machine holding its kernels says which of those it has
-  // actually built. Setup is offered exactly where the two disagree — and
-  // nowhere else, because an offer to rebuild what is already there asks a
-  // researcher to spend a gigabyte on nothing.
-  const api: LykeionApi = {
-    ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("crispr")],
     taskNotebook: async () => [
-      cell({ name: "main", environment: "python", source: "import numpy as np" }),
       cell({ name: "main", environment: "crispr", source: "import scanpy" }),
     ],
     listRunningKernels: async () => [
       kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
     ],
-    computeSnapshot: async () => [
-      machine("rt_1", [env("python", "ready"), env("crispr", "absent")]),
-    ],
+    computeSnapshot: async () => [machine("rt_1", [env("crispr", "absent")])],
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  expect(await screen.findByRole("button", { name: "Set up crispr" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Set up python" })).not.toBeInTheDocument();
+  const button = await screen.findByRole("button", { name: "Set up crispr on rt_1" });
+  expect(button).toHaveAttribute("aria-disabled", "false");
+  expect(barStatus()).toHaveTextContent("Setup needed");
 });
 
-it("offers a re-provision for an environment the machine reports broken, and says so", async () => {
-  // `broken` is a provision that began and was interrupted, and its own
-  // documented remedy is to provision it again. Offered on `absent` alone,
-  // the entire surface hides for it: no button, no sentence, no way forward
-  // on the only screen in this product where building happens.
-  //
-  // And it is owed a sentence of its own rather than the absent one. "Has
-  // never been built on this machine" is false about a copy that was built
-  // and interrupted — it is a statement about the researcher's own machine
-  // that they can see is wrong, on the surface asking them to trust it with
-  // a gigabyte.
-  const user = userEvent.setup();
-  const kernelEnvSetup = vi.fn(
-    async (
-      _runtimeId: string,
-      name: string,
-      onProgress?: (line: string) => void,
-    ): Promise<KernelEnvStatus> => {
-      onProgress?.("provisioning…");
-      return env(name);
-    },
-  );
+it("names a rebuild rather than a first build for a copy the machine reports broken", async () => {
+  // `broken` is a provision that began and was interrupted, and its remedy is
+  // to provision it again. Telling a researcher their half-built environment
+  // has never been built is telling them something false about their own
+  // machine — and a job that has not failed does not make this a failure
+  // either, so the line still reads as work outstanding rather than as an
+  // error.
   const api: LykeionApi = {
     ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("crispr")],
     taskNotebook: async () => [cell({ name: "main", environment: "crispr" })],
     listRunningKernels: async () => [
       kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
     ],
     computeSnapshot: async () => [machine("rt_1", [env("crispr", "broken")])],
-    kernelEnvSetup,
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  const rebuild = await screen.findByRole("button", { name: "Rebuild crispr" });
-  const surface = screen.getByTestId("notebook-setup");
-  expect(surface).toHaveTextContent(/was built on this machine and the build was interrupted/);
-  expect(surface).not.toHaveTextContent(/never been built/);
-
-  // One button, two sentences: the remedy is the same provision either way.
-  await user.click(rebuild);
-  await waitFor(() =>
-    expect(kernelEnvSetup).toHaveBeenCalledWith("rt_1", "crispr", expect.any(Function)),
-  );
+  expect(
+    await screen.findByRole("button", { name: "Rebuild crispr on rt_1" }),
+  ).toBeInTheDocument();
+  expect(barStatus()).toHaveTextContent("Setup needed");
+  expect(barStatus()).not.toHaveTextContent("Setup failed");
 });
 
-it("says nothing about an environment the machine already holds", async () => {
-  // The whole surface stays away, rather than appearing with nothing in it:
-  // a Task whose every environment is built has no provisioning left to
-  // describe.
+it("says Ready for an environment the machine already holds, and offers nothing to press", async () => {
+  // Nothing to provision, so nothing offers to provision it. The BAR stays —
+  // it is the one line that says what this notebook runs in — but an offer to
+  // rebuild what is already there asks a researcher to spend a gigabyte on
+  // nothing, and this Task has asked for no build to keep a control alive for.
   const api: LykeionApi = {
     ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("python")],
     taskNotebook: async () => [cell({ name: "main", environment: "python" })],
     listRunningKernels: async () => [
       kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
@@ -500,19 +515,54 @@ it("says nothing about an environment the machine already holds", async () => {
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  await waitFor(() => expect(screen.getByTestId("notebook-cells")).toBeInTheDocument());
-  await waitFor(() => expect(screen.getByTestId("notebook-status")).toBeInTheDocument());
-  expect(screen.queryByTestId("notebook-setup")).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /Set up/i })).not.toBeInTheDocument();
+  await waitFor(() => expect(barStatus()).toHaveTextContent("Ready"));
+  expect(screen.getByRole("button", { name: "Kernel environment: python" })).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: /^(Set up|Rebuild)/ }),
+  ).not.toBeInTheDocument();
+});
+
+it("offers a rebuild once a build this Task asked for has gone ready", async () => {
+  // The other half of the same rule. A durable job for this Task is what puts
+  // the control on the bar and what keeps it there — through `requested`,
+  // `building` and the tick it finishes on, which is the tick a researcher's
+  // finger is still resting on it.
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("python")],
+    taskNotebook: async () => [cell({ name: "main", environment: "python" })],
+    listRunningKernels: async () => [
+      kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
+    ],
+    computeSnapshot: async () => [machine("rt_1", [env("python", "ready")])],
+    taskEnvironmentSetups: async () => [
+      setupFixture({
+        environmentName: "python",
+        state: "ready",
+        stage: "finalizing",
+        startedTs: 1_700_000_000_000,
+        finishedTs: 1_700_000_030_000,
+        updatedTs: 1_700_000_030_000,
+      }),
+    ],
+  };
+  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+
+  await waitFor(() => expect(barStatus()).toHaveTextContent("Ready"));
+  expect(
+    await screen.findByRole("button", { name: "Rebuild python on rt_1" }),
+  ).toBeInTheDocument();
 });
 
 it("reads a machine with no environments field as one that has not reported", async () => {
   // Absent is not zero. A machine that has never told this lab what it holds
-  // and a machine that told it "none" are different facts, and only the
-  // second is something Setup can act on. Offering the build here would be
-  // asking for a download on the strength of silence.
+  // and one that told it "none" are different facts, and only the second is
+  // something a press can act on. The button stays on the bar and refuses,
+  // rather than vanishing: what is missing is the machine's answer, not the
+  // control.
   const api: LykeionApi = {
     ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("crispr")],
     taskNotebook: async () => [cell({ name: "main", environment: "crispr" })],
     listRunningKernels: async () => [
       kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
@@ -521,30 +571,27 @@ it("reads a machine with no environments field as one that has not reported", as
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  expect(await screen.findByTestId("notebook-setup")).toHaveTextContent(
-    /has not said which environments it holds/,
+  await waitFor(() =>
+    expect(barStatus()).toHaveTextContent("Waiting for rt_1 to report"),
   );
-  expect(screen.queryByRole("button", { name: /Set up/i })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Set up crispr on rt_1" })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
 });
 
 it("asks which machine should build when several are paired and no kernel names one", async () => {
   // A phase-4 ruling: inferring the machine would be this product silently
   // choosing which of a member's several paired computers downloads a
-  // gigabyte. With no kernel running there is nothing here that knows, so
-  // the researcher is asked rather than guessed at.
+  // gigabyte. With no kernel running there is nothing here that knows, so the
+  // researcher is asked — and until they answer there is no build to name,
+  // because a build with no machine in its sentence is the same silent pick
+  // wearing a shorter label.
   const user = userEvent.setup();
-  const kernelEnvSetup = vi.fn(
-    async (
-      _runtimeId: string,
-      name: string,
-      onProgress?: (line: string) => void,
-    ): Promise<KernelEnvStatus> => {
-      onProgress?.("provisioning…");
-      return env(name);
-    },
-  );
+  const requestKernelEnvironmentSetup = vi.fn(async () => ({ jobId: "job_1" }));
   const api: LykeionApi = {
     ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("crispr")],
     taskNotebook: async () => [cell({ name: "main", environment: "crispr" })],
     listRunningKernels: async () => [],
     computeSnapshot: async () => [
@@ -552,33 +599,41 @@ it("asks which machine should build when several are paired and no kernel names 
       machine("rt_2", [env("crispr", "absent")]),
     ],
     listMachines: async () => [paired("rt_1", "laptop"), paired("rt_2", "workstation")],
-    kernelEnvSetup,
+    requestKernelEnvironmentSetup,
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  const asking = await screen.findByRole("group", { name: "Which machine" });
-  expect(within(asking).getByRole("button", { name: "laptop" })).toBeInTheDocument();
-  expect(within(asking).getByRole("button", { name: "workstation" })).toBeInTheDocument();
-  // Nothing is chosen for them: until they say which, there is no build to
-  // offer.
-  expect(screen.queryByRole("button", { name: /Set up/i })).not.toBeInTheDocument();
+  await waitFor(() =>
+    expect(barStatus()).toHaveTextContent("Choose which machine builds it"),
+  );
+  expect(screen.queryByRole("button", { name: /^Set up/ })).not.toBeInTheDocument();
 
-  await user.click(within(asking).getByRole("button", { name: "workstation" }));
+  await user.click(screen.getByRole("button", { name: /^Machine:/ }));
+  const list = screen.getByRole("listbox", { name: "Machine" });
+  expect(within(list).getByRole("option", { name: "laptop" })).toBeVisible();
+  await user.click(within(list).getByRole("option", { name: "workstation" }));
 
-  await user.click(await screen.findByRole("button", { name: "Set up crispr" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Set up crispr on workstation" }),
+  );
   // The machine they chose, and not the first one in the list.
   await waitFor(() =>
-    expect(kernelEnvSetup).toHaveBeenCalledWith("rt_2", "crispr", expect.any(Function)),
+    expect(requestKernelEnvironmentSetup).toHaveBeenCalledWith({
+      taskId: "tk_1",
+      machineId: "rt_2",
+      environmentName: "crispr",
+    }),
   );
 });
 
 it("asks which machine when this Task's kernels are running on two of them", async () => {
-  // A running kernel names the machine this Task executes on — but only
-  // where this Task's running kernels agree on one. Taking the first of two
-  // would be the same silent pick the phase-4 ruling forbids, wearing a
-  // running kernel as its excuse.
+  // A running kernel names the machine this Task executes on — but only where
+  // this Task's running kernels agree on one. Taking the first of two would
+  // be the same silent pick the phase-4 ruling forbids, wearing a running
+  // kernel as its excuse.
   const api: LykeionApi = {
     ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("crispr")],
     taskNotebook: async () => [cell({ name: "main", environment: "crispr" })],
     listRunningKernels: async () => [
       kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
@@ -592,16 +647,11 @@ it("asks which machine when this Task's kernels are running on two of them", asy
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  const asking = await screen.findByRole("group", { name: "Which machine" });
-  expect(within(asking).getByRole("button", { name: "laptop" })).toBeInTheDocument();
-  expect(within(asking).getByRole("button", { name: "workstation" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /Set up/i })).not.toBeInTheDocument();
-  // Asked about the silence they are actually in: two kernels running is not
-  // "nothing is holding a kernel", and a researcher reading that sentence
-  // with two of theirs running would rightly stop believing this surface.
-  expect(screen.getByTestId("notebook-setup")).toHaveTextContent(
-    /running on more than one of your machines/,
+  await waitFor(() =>
+    expect(barStatus()).toHaveTextContent("Choose which machine builds it"),
   );
+  expect(screen.getByRole("button", { name: /^Machine:/ })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^Set up/ })).not.toBeInTheDocument();
 });
 
 it("still offers to build when listMachines fails, and names the machine by its raw id", async () => {
@@ -609,11 +659,12 @@ it("still offers to build when listMachines fails, and names the machine by its 
   // and one `catch`, so a rejecting `listMachines` threw away a
   // `computeSnapshot` that had already succeeded and the whole build surface
   // went silent over a failed *label* lookup. `Promise.allSettled` publishes
-  // each independently now, so the offer survives — with the id fallback at
-  // `:298` standing in for the name this poll could never read.
+  // each independently, so the offer survives — under the only identifier
+  // that outlived the failed lookup.
   const user = userEvent.setup();
   const api: LykeionApi = {
     ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("crispr")],
     taskNotebook: async () => [cell({ name: "main", environment: "crispr" })],
     listRunningKernels: async () => [],
     computeSnapshot: async () => [
@@ -626,84 +677,86 @@ it("still offers to build when listMachines fails, and names the machine by its 
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  const asking = await screen.findByRole("group", { name: "Which machine" });
-  // No name could be read for either machine, so each is offered by the only
-  // identifier that survived the failed lookup: its own runtime id.
-  expect(within(asking).getByRole("button", { name: "rt_1" })).toBeInTheDocument();
-  expect(within(asking).getByRole("button", { name: "rt_2" })).toBeInTheDocument();
+  await user.click(await screen.findByRole("button", { name: /^Machine:/ }));
+  const list = screen.getByRole("listbox", { name: "Machine" });
+  expect(within(list).getByRole("option", { name: "rt_1" })).toBeVisible();
+  expect(within(list).getByRole("option", { name: "rt_2" })).toBeVisible();
 
-  await user.click(within(asking).getByRole("button", { name: "rt_1" }));
+  await user.click(within(list).getByRole("option", { name: "rt_1" }));
 
-  // The assertion that would have failed before the fix: a rejecting
-  // `listMachines` left `machines` null under the old coupled `Promise.all`,
-  // and this button never appeared at all.
-  expect(await screen.findByRole("button", { name: "Set up crispr" })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: "Set up crispr on rt_1" }),
+  ).toBeInTheDocument();
 });
 
 it("says there is nowhere to build when no machine is paired with this lab", async () => {
   // The honest alternative to a button that cannot work. Nothing is paired,
-  // so there is no machine to download a gigabyte onto — said plainly,
-  // rather than offering a Set up that would fail on press.
+  // so there is no machine to download a gigabyte onto — said plainly, rather
+  // than offering a Set up that would fail on press.
   const api: LykeionApi = {
     ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("crispr")],
     taskNotebook: async () => [cell({ name: "main", environment: "crispr" })],
     listRunningKernels: async () => [],
     computeSnapshot: async () => [],
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  expect(await screen.findByTestId("notebook-setup")).toHaveTextContent(
-    /No machine is paired with this lab, so there is nowhere to build an environment/,
+  await waitFor(() =>
+    expect(barStatus()).toHaveTextContent("No machine is paired with this lab"),
   );
-  expect(screen.queryByRole("button", { name: /Set up/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^Set up/ })).not.toBeInTheDocument();
 });
 
-it("says only the environment that is building is building", async () => {
-  // A build belongs to the environment it provisions. Panel-wide, one build
-  // put "Setting up…" on every other row and disabled it — every one of them
-  // claiming to be doing something nobody asked it to do.
+it("describes the build for the environment on screen and no other of this Task's", async () => {
+  // A Task accumulates one durable job per environment it has ever asked for.
+  // The bar is about the one being looked at, so another environment's failure
+  // must not appear on it — and must appear the moment that environment is
+  // the one selected.
   const user = userEvent.setup();
-  const inFlight = deferred<KernelEnvStatus>();
-  const kernelEnvSetup = vi.fn(
-    async (): Promise<KernelEnvStatus> => inFlight.promise,
-  );
   const api: LykeionApi = {
     ...createInMemoryApi(),
-    taskNotebook: async () => [
-      cell({ name: "main", environment: "crispr" }),
-      cell({ name: "main", environment: "spatial" }),
-    ],
+    kernelEnvList: async () => [envDecl("crispr"), envDecl("spatial")],
+    taskNotebook: async () => [],
     listRunningKernels: async () => [
       kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
     ],
     computeSnapshot: async () => [
       machine("rt_1", [env("crispr", "absent"), env("spatial", "absent")]),
     ],
-    kernelEnvSetup,
+    taskEnvironmentSetups: async () => [
+      setupFixture({ state: "building", stage: "installing" }),
+      setupFixture({
+        id: "job_2",
+        environmentName: "spatial",
+        state: "failed",
+        stage: "resolving",
+        errorSummary: "no candidate version for spatial",
+      }),
+    ],
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  await user.click(await screen.findByRole("button", { name: "Set up crispr" }));
+  await waitFor(() => expect(barStatus()).toHaveTextContent("Installing packages"));
+  expect(screen.queryByText(/no candidate version for spatial/)).not.toBeInTheDocument();
 
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Setting up…" })).toBeDisabled(),
+  await user.click(envTrigger());
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Kernel environment" })).getByRole(
+      "option",
+      { name: "spatial" },
+    ),
   );
-  // The one nobody pressed is neither building nor out of reach.
-  const other = screen.getByRole("button", { name: "Set up spatial" });
-  expect(other).toBeEnabled();
 
-  await act(async () => {
-    inFlight.resolve(env("crispr"));
-    await Promise.resolve();
-  });
+  await waitFor(() => expect(barStatus()).toHaveTextContent("Setup failed"));
+  expect(screen.getByRole("alert")).toHaveTextContent("no candidate version for spatial");
 });
 
 it("reaches a declared environment no cell of this Task has used yet", async () => {
-  // The chip row is the only control that can add a name to the set this
-  // Task needs. Rendered inside the Setup surface it appeared only where an
-  // offer already existed, so an environment a colleague declared and no
-  // cell here has used could never be selected — and therefore never built,
-  // on the only screen in this product where building happens.
+  // The list is the lab's declarations, not this notebook's history. An
+  // environment a colleague declared and no cell here has run in is still the
+  // one a researcher may want built, and this panel holds the only control
+  // that builds one.
   const user = userEvent.setup();
   const api: LykeionApi = {
     ...createInMemoryApi(),
@@ -718,30 +771,33 @@ it("reaches a declared environment no cell of this Task has used yet", async () 
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  // Nothing to offer: every environment this Task has actually used is
-  // built. The row is still reachable, which is the whole point.
-  const chip = await screen.findByRole("tab", { name: "crispr" });
-  expect(screen.queryByTestId("notebook-setup")).not.toBeInTheDocument();
+  await waitFor(() => expect(barStatus()).toHaveTextContent("Ready"));
 
-  await user.click(chip);
+  await user.click(envTrigger());
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Kernel environment" })).getByRole(
+      "option",
+      { name: "crispr" },
+    ),
+  );
 
-  expect(await screen.findByRole("button", { name: "Set up crispr" })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: "Set up crispr on rt_1" }),
+  ).toBeInTheDocument();
 });
 
 it("keeps an unbuilt environment of another language selectable, so it can be built", async () => {
-  // The picker shows one language at a time, and it is also the only route
-  // to `kernelEnvSetup` — the single call in this product that builds
-  // anything. Scoped to the viewed language alone, those two facts combine
-  // into a trap: an environment that was never built can be in no cell,
-  // `neededEnvs` is cells plus the selection, so a Task holding one Python
-  // cell could not build the lab's `r` starter from the only screen that
-  // builds. Offering it costs nothing — a cell naming an environment this
-  // machine lacks is refused by name either way.
+  // The lens is a lens, not a filter on the lab. An environment that was
+  // never built can be in no cell, and this panel holds the only control that
+  // builds one — scoped to the viewed language, a Task holding one Python
+  // cell could not build this lab's `r` starter at all.
   const user = userEvent.setup();
   const api: LykeionApi = {
     ...createInMemoryApi(),
     kernelEnvList: async () => [envDecl("python"), envDecl("r")],
-    taskNotebook: async () => [cell({ name: "main", language: "python", environment: "python" })],
+    taskNotebook: async () => [
+      cell({ name: "main", language: "python", environment: "python" }),
+    ],
     listRunningKernels: async () => [
       kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
     ],
@@ -751,38 +807,18 @@ it("keeps an unbuilt environment of another language selectable, so it can be bu
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  // Offered even though this notebook is being viewed as Python and holds no
-  // R cell — because it is not built here.
-  const chip = await screen.findByRole("tab", { name: "r" });
-  await user.click(chip);
+  await waitFor(() => expect(barStatus()).toHaveTextContent("Ready"));
+  await user.click(envTrigger());
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Kernel environment" })).getByRole(
+      "option",
+      { name: "r" },
+    ),
+  );
 
-  expect(await screen.findByRole("button", { name: "Set up r" })).toBeInTheDocument();
-});
-
-it("drops an environment of another language from the picker once it is built", async () => {
-  // The other half, and what keeps the rule above from undoing the language
-  // scoping entirely: an environment that EXISTS here is a real cell target
-  // in its own language and a guaranteed refusal in any other, so once it is
-  // built it goes back to being none of a Python notebook's business.
-  const api: LykeionApi = {
-    ...createInMemoryApi(),
-    kernelEnvList: async () => [envDecl("python"), envDecl("r")],
-    taskNotebook: async () => [cell({ name: "main", language: "python", environment: "python" })],
-    listRunningKernels: async () => [
-      kernel({ name: "main", language: "python", state: "idle", machineId: "rt_1" }),
-    ],
-    computeSnapshot: async () => [
-      machine("rt_1", [env("python", "ready"), env("r", "ready")]),
-    ],
-  };
-  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
-
-  // Settled on the CELL, not on the Setup surface: with everything built
-  // there is nothing to set up, so that surface never appears here and
-  // waiting for it would time out. Asserting the absence before the panel
-  // loads would pass against any implementation at all.
-  await screen.findByText("1 + 1");
-  expect(screen.queryByRole("tab", { name: "r" })).not.toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: "Set up r on rt_1" }),
+  ).toBeInTheDocument();
 });
 
 it("shows a Task's cells and its kernel while an environment it needs is still absent", async () => {
@@ -794,6 +830,10 @@ it("shows a Task's cells and its kernel while an environment it needs is still a
   // them is in.
   const api: LykeionApi = {
     ...createInMemoryApi(),
+    // `crispr` leads the declarations, so it is what the bar opens on and the
+    // outstanding build is the one on screen — which is the state this test
+    // needs the cells and the kernel strip to survive.
+    kernelEnvList: async () => [envDecl("crispr"), envDecl("python")],
     taskNotebook: async () => [
       cell({ name: "main", environment: "python", source: "import numpy as np" }),
       cell({ name: "main", environment: "crispr", source: "import scanpy" }),
@@ -807,7 +847,9 @@ it("shows a Task's cells and its kernel while an environment it needs is still a
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  expect(await screen.findByTestId("notebook-setup")).toBeInTheDocument();
+  await waitFor(() =>
+    expect(barStatus()).toHaveTextContent("Setup needed"),
+  );
   await waitFor(() => expect(screen.getByText("import numpy as np")).toBeInTheDocument());
   expect(screen.getByText("Main agent")).toBeInTheDocument();
   // `listRunningKernels` vouches for a kernel on this Task, so the status bar
@@ -851,42 +893,41 @@ it("says nothing has run when the Task has neither cells nor kernels", async () 
   expect(screen.queryByTestId("notebook-status")).not.toBeInTheDocument();
 });
 
-it("renders one sub-tab per environment, labeled by name", async () => {
+it("lists every environment this lab has declared, by name", async () => {
+  const user = userEvent.setup();
   const api: LykeionApi = {
     ...createInMemoryApi(),
     kernelEnvList: async () => [envDecl("python"), envDecl("single-cell")],
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
-  expect(
-    await screen.findByRole("tab", { name: /python/i }),
-  ).toBeInTheDocument();
-  expect(
-    await screen.findByRole("tab", { name: /single-cell/i }),
-  ).toBeInTheDocument();
-  // No-mock-data: an R env is never invented — a chip appears for an
-  // environment once kernelEnvList actually reports it, and for no other.
-  expect(screen.queryByRole("tab", { name: "r" })).not.toBeInTheDocument();
-  expect(screen.getAllByRole("tab")).toHaveLength(2);
+
+  await user.click(await screen.findByRole("button", { name: /^Kernel environment:/ }));
+  const list = screen.getByRole("listbox", { name: "Kernel environment" });
+  expect(within(list).getByRole("option", { name: "python" })).toBeVisible();
+  expect(within(list).getByRole("option", { name: "single-cell" })).toBeVisible();
+  // No-mock-data: an R env is never invented — an option appears for an
+  // environment once `kernelEnvList` reports it, and for no other.
+  expect(within(list).queryByRole("option", { name: "r" })).not.toBeInTheDocument();
+  expect(within(list).getAllByRole("option")).toHaveLength(2);
 });
 
-it("draws no environment row when the lab declares only one (nothing to choose)", async () => {
+it("draws the same bar when the lab declares only one environment", async () => {
+  // The bar is not a control that appears when there is a choice; it is the
+  // line that says what this notebook runs in. One declaration is still an
+  // answer to that, and a line that came and went with the number of
+  // declarations would be one a researcher could not learn to look at.
   const api: LykeionApi = {
     ...createInMemoryApi(),
     kernelEnvList: async () => [envDecl("python")],
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  // The surface below it still speaks — this panel has something to say
-  // about that one environment either way.
-  await waitFor(() => expect(screen.getByTestId("notebook-setup")).toBeInTheDocument());
-  // One declaration is not a choice: it is already the selected one, so a
-  // permanent row for it would spend a line of a dense, keyboard-first panel
-  // on a control with nothing to do.
-  expect(screen.queryByRole("tablist", { name: "Kernel environment" })).toBeNull();
-  expect(screen.queryByRole("tab")).toBeNull();
+  expect(
+    await screen.findByRole("button", { name: "Kernel environment: python" }),
+  ).toBeInTheDocument();
 });
 
-it("offers only environments of the language being viewed", async () => {
+it("lists an environment of another language rather than hiding it behind the lens", async () => {
   renderPanel({
     envs: [
       { name: "python", language: "python", manager: "uv", packages: [], createdTs: 0, lockRevision: 1 },
@@ -895,30 +936,22 @@ it("offers only environments of the language being viewed", async () => {
     ],
     cells: [cell({ language: "r" })],
   });
-  // Settled first. `shownLang` is null until the cells arrive, and with no
-  // language to scope by the picker legitimately shows the whole lab-wide
-  // list for that moment — so a `findByRole` that resolves on the tablist's
-  // first appearance can read the pre-settle state and see `python`. Under a
-  // full-suite load that is not hypothetical: it is how this test failed
-  // once before being written this way.
-  //
-  // Anchored on the CELL rather than on the Setup surface, because these
-  // fixtures build everything: with nothing to set up, that surface never
-  // renders and waiting for it only times out.
+  // Settled on the cell first: `shownLang` is null until the cells arrive, and
+  // the selection this test reads is only the R one after they have.
   await screen.findByText("1 + 1");
-  const picker = await screen.findByRole("tablist", { name: "Kernel environment" });
-  expect(within(picker).getByRole("tab", { name: "r" })).toBeInTheDocument();
-  expect(within(picker).getByRole("tab", { name: "rstats" })).toBeInTheDocument();
-  await waitFor(() =>
-    expect(within(picker).queryByRole("tab", { name: "python" })).not.toBeInTheDocument(),
-  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Kernel environment: r" }));
+  const list = screen.getByRole("listbox", { name: "Kernel environment" });
+  expect(within(list).getByRole("option", { name: "r" })).toBeVisible();
+  expect(within(list).getByRole("option", { name: "rstats" })).toBeVisible();
+  // Present, not hidden: selecting it is the only route to building it.
+  expect(within(list).getByRole("option", { name: "python" })).toBeVisible();
 });
 
 it("defaults to an environment of the viewed language, not merely the first declared", async () => {
-  // THREE declarations, two of them R, and the third is not decoration: the
-  // picker only renders where the viewed language has something to choose
-  // between, so a fixture of one-per-language hides the very control this
-  // assertion reads. The default is only observable where a choice exists.
+  // THREE declarations, two of them R. The R cell must not open onto the
+  // python environment because it happened to be declared first — `python`
+  // leads the lab-wide list, and leading it is not an answer about R.
   renderPanel({
     envs: [
       { name: "python", language: "python", manager: "uv", packages: [], createdTs: 0, lockRevision: 1 },
@@ -927,71 +960,43 @@ it("defaults to an environment of the viewed language, not merely the first decl
     ],
     cells: [cell({ language: "r" })],
   });
-  // The R cell must not open onto the python environment because it happened
-  // to be declared first — `python` leads the lab-wide list and led the
-  // selection before this change.
-  expect(await screen.findByRole("tab", { name: "r", selected: true })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: "Kernel environment: r" }),
+  ).toBeInTheDocument();
 });
 
-it("hides the picker when the viewed language has only one environment", async () => {
-  renderPanel({
-    envs: [
-      { name: "python", language: "python", manager: "uv", packages: [], createdTs: 0, lockRevision: 1 },
-      { name: "r", language: "r", manager: "conda", packages: [], createdTs: 0, lockRevision: 1 },
-    ],
-    cells: [cell({ language: "python" })],
-  });
-  // Awaited BEFORE the absence is asserted, and that is the whole of whether
-  // this test says anything: `queryBy` on a panel that has not finished
-  // loading finds nothing whatever the code does, so the first draft of this
-  // passed identically against the unfixed component.
-  //
-  // Both environments are BUILT here, which the fixture now says out loud.
-  // Left unbuilt, `r` is offered in the picker however the language lens is
-  // set — that is the only way to build one — and whether this assertion saw
-  // it depended on when the compute snapshot landed. It passed on timing and
-  // failed in the public repo's gate.
-  await screen.findByText("1 + 1");
-  // Two declared, one per language: a control with nothing to choose between
-  // is not a control. This is the gate that has never rendered until now.
-  expect(screen.queryByRole("tablist", { name: "Kernel environment" })).not.toBeInTheDocument();
-});
-
-it("provisions the R env (not Python) when Setup runs from the R tab", async () => {
+it("asks the server to build the R environment, not Python, when Set up runs under R", async () => {
   const user = userEvent.setup();
-  const kernelEnvSetup = vi.fn(
-    async (
-      _runtimeId: string,
-      name: string,
-      onProgress?: (line: string) => void,
-    ): Promise<KernelEnvStatus> => {
-      onProgress?.("provisioning…");
-      return env(name);
-    },
-  );
+  const requestKernelEnvironmentSetup = vi.fn(async () => ({ jobId: "job_1" }));
   const api: LykeionApi = {
     ...createInMemoryApi(),
     kernelEnvList: async () => [envDecl("python"), envDecl("r")],
     computeSnapshot: async () => [
       machine("rt_1", [env("python", "absent"), env("r", "absent")]),
     ],
-    kernelEnvSetup,
+    requestKernelEnvironmentSetup,
   };
   render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
 
-  await waitFor(() =>
-    expect(screen.getByTestId("notebook-setup")).toBeInTheDocument(),
+  await user.click(await screen.findByRole("button", { name: /^Kernel environment:/ }));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Kernel environment" })).getByRole(
+      "option",
+      { name: "r" },
+    ),
   );
-  await user.click(await screen.findByRole("tab", { name: "r" }));
-  await user.click(await screen.findByRole("button", { name: "Set up r" }));
+  await user.click(await screen.findByRole("button", { name: "Set up r on rt_1" }));
+
   await waitFor(() =>
     // One machine is paired and nothing is holding a kernel, so that machine
-    // is the one there is nothing to choose between — the id it is asked
-    // under is real, not a placeholder. What this test is chiefly about is
-    // the env NAME: the R tab's own setup must ask for "r", never the
-    // hardcoded "python" this bug used to send regardless of which tab was
-    // selected.
-    expect(kernelEnvSetup).toHaveBeenCalledWith("rt_1", "r", expect.any(Function)),
+    // is the one there is nothing to choose between. What this test is chiefly
+    // about is the env NAME: a Set up under the R selection must ask for "r",
+    // never the first declaration the list happens to lead with.
+    expect(requestKernelEnvironmentSetup).toHaveBeenCalledWith({
+      taskId: "tk_1",
+      machineId: "rt_1",
+      environmentName: "r",
+    }),
   );
 });
 
@@ -1260,5 +1265,79 @@ it("says which lens is empty rather than asking for cells that already exist", a
   await user.click(screen.getByRole("radio", { name: "All" }));
   await waitFor(() =>
     expect(screen.getByTestId("notebook-cells").querySelectorAll(".nbp-cell")).toHaveLength(1),
+  );
+});
+
+/** A bystander under the same provider. The data version is the app-wide
+ *  "read again" signal, and it is the only way to see an invalidation from
+ *  outside the component that fired it — the panel's own poll never moves
+ *  it, so a change here is a write's doing and nothing else's. */
+function VersionProbe() {
+  return <p data-testid="data-version">{useDataVersion()}</p>;
+}
+
+it("takes the setup state from the server rather than deriving one locally", async () => {
+  // The whole of the ownership rule in one assertion. Nothing on this screen
+  // pressed anything: the server holds a durable job for this Task, and the
+  // bar says what that job says.
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("crispr")],
+    taskNotebook: async () => [],
+    listRunningKernels: async () => [],
+    computeSnapshot: async () => [machine("rt_1", [env("crispr", "absent")])],
+    taskEnvironmentSetups: async () => [
+      setupFixture({ state: "building", stage: "installing" }),
+    ],
+  };
+  render(<ApiProvider api={api}><NotebookPanel taskId="tk_1" /></ApiProvider>);
+
+  expect(await screen.findByRole("status")).toHaveTextContent("Installing packages");
+});
+
+it("invalidates only once the setup command returns, and never guesses in between", async () => {
+  // A Set up press asks the server and nothing else: no local flag flips the
+  // bar to "building" while the request is still in the air. The app-wide read
+  // signal moves when the command returns, and not a moment before.
+  const user = userEvent.setup();
+  const inFlight = deferred<{ jobId: string }>();
+  const requestKernelEnvironmentSetup = vi.fn(async () => inFlight.promise);
+  const api: LykeionApi = {
+    ...createInMemoryApi(),
+    kernelEnvList: async () => [envDecl("crispr")],
+    taskNotebook: async () => [],
+    listRunningKernels: async () => [],
+    computeSnapshot: async () => [machine("rt_1", [env("crispr", "absent")])],
+    taskEnvironmentSetups: async () => [],
+    requestKernelEnvironmentSetup,
+  };
+  render(
+    <ApiProvider api={api}>
+      <VersionProbe />
+      <NotebookPanel taskId="tk_1" />
+    </ApiProvider>,
+  );
+
+  const before = screen.getByTestId("data-version").textContent;
+  await user.click(await screen.findByRole("button", { name: "Set up crispr on rt_1" }));
+
+  await waitFor(() =>
+    expect(requestKernelEnvironmentSetup).toHaveBeenCalledWith({
+      taskId: "tk_1",
+      machineId: "rt_1",
+      environmentName: "crispr",
+    }),
+  );
+  // Still the server's answer, unchanged: the press asked, it did not decide.
+  expect(screen.getByRole("status")).toHaveTextContent("Setup needed");
+  expect(screen.getByTestId("data-version")).toHaveTextContent(String(before));
+
+  await act(async () => {
+    inFlight.resolve({ jobId: "job_1" });
+    await Promise.resolve();
+  });
+
+  await waitFor(() =>
+    expect(screen.getByTestId("data-version")).not.toHaveTextContent(String(before)),
   );
 });

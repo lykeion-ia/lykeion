@@ -2,6 +2,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { MaterializeEnvironmentOptions, Provisioner, ResolveEnvironmentOptions } from "./environments";
 import { envRoot, PACKAGE_SOURCES, writeMarker } from "./environments";
+import {
+  environmentLockfileFingerprint,
+  environmentPackageFingerprint,
+} from "@lykeion/api/environment-setup-evidence";
 import { runConfinedIn } from "./probe";
 
 /**
@@ -287,7 +291,21 @@ export const condaProvisioner: Provisioner = {
         `built the environment but could not read its R version: ${(asked.stderr || asked.stdout).trim()}`,
       );
     const packageCount = countCondaPackages(opts.lockfile);
-    writeMarker(workspace, { lockRevision: opts.lockRevision, packageCount, version });
+    writeMarker(workspace, {
+      schemaVersion: 2,
+      requestId: opts.requestId,
+      name: opts.name,
+      manager: opts.manager,
+      lockRevision: opts.lockRevision,
+      declarationGenerationId: opts.declarationGenerationId,
+      lockfileFingerprint: environmentLockfileFingerprint(opts.lockfile),
+      packageFingerprint: environmentPackageFingerprint(opts.requestedPackages),
+      ...(opts.declarationCreatedTs === undefined
+        ? {}
+        : { declarationCreatedTs: opts.declarationCreatedTs }),
+      packageCount,
+      version,
+    });
     return { version, packageCount };
   },
 

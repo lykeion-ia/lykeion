@@ -1,5 +1,6 @@
 import type { Store } from "./store";
 import type { KernelEnvDeclaration, Language } from "@lykeion/api";
+import { randomUUID } from "node:crypto";
 
 export interface DeclareInput {
   name: string;
@@ -20,6 +21,9 @@ function rowToEnv(row: Record<string, unknown>): KernelEnvDeclaration {
     packages: JSON.parse(row.packages as string) as string[],
     ...(row.created_by === null ? {} : { createdBy: row.created_by as string }),
     createdTs: row.created_ts as number,
+    ...(row.declaration_generation_id == null
+      ? {}
+      : { declarationGenerationId: row.declaration_generation_id as string }),
     lockRevision: row.lock_revision as number,
   };
 }
@@ -29,11 +33,13 @@ export function environmentStore(store: Store) {
     declare(input: DeclareInput): KernelEnvDeclaration {
       store.run(
         `INSERT INTO kernel_envs
-           (name, language, manager, packages, created_by, created_ts, lock_revision)
-         VALUES (?, ?, ?, ?, ?, ?, 0)`,
+           (name, language, manager, packages, created_by, created_ts, lock_revision,
+            declaration_generation_id)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
         [
           input.name, input.language, input.manager,
           JSON.stringify(input.packages), input.createdBy ?? null, input.createdTs,
+          `envgen_${randomUUID()}`,
         ],
       );
       return this.get(input.name)!;
@@ -90,7 +96,7 @@ export function environmentStore(store: Store) {
      * appending genuinely-new names in the order they were asked for: a list
      * that grew a second `scanpy` every time one was asked for would be a
      * declaration whose text changes while what it describes does not, and
-     * `kernelEnvSetup`'s own comparison would then read that as a reason to
+     * `planFor`'s own comparison would then read that as a reason to
      * re-pin the whole lab.
      *
      * A call adding only names already declared is not an error — it is the

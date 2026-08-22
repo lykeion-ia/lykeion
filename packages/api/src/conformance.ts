@@ -1769,17 +1769,6 @@ export function absentCapabilityConformance(makeApi: () => Promise<LykeionApi>):
       ).toEqual([]);
     });
 
-    it("kernelEnvSetup refuses a machine nothing here has ever heard of", async () => {
-      // A refusal, not a resolved no-op: a Setup that "succeeds" while
-      // provisioning nothing leaves the surface reporting an install that
-      // never happened. `machineId` names a specific machine, so the honest
-      // refusal on a fresh core names that machine rather than a vaguer
-      // "no runtime is connected" — a core with that machine in reach
-      // answers differently, and that behaviour belongs to its own suite.
-      const api = await makeApi();
-      await expectRejection(api.kernelEnvSetup("rt_bogus", "python"), "not-found", /rt_bogus/);
-    });
-
     it("kernelEnvReclaim refuses a machine nothing here has ever heard of", async () => {
       const api = await makeApi();
       await expectRejection(api.kernelEnvReclaim("rt_bogus", "python"), "not-found", /rt_bogus/);
@@ -1863,9 +1852,9 @@ export function kernelAxisConformance(makeApi: () => Promise<LykeionApi>): void 
 /**
  * The lab's environment declarations — name, language, manager, requested
  * packages, who and when — held with nothing but storage: no path, no build
- * state, no machine. `kernelEnvSetup`, which actually provisions, is not
- * this area's concern and lives in `kernelAxisConformance` and the areas
- * that assert its absence.
+ * state, no machine. Provisioning, which `requestKernelEnvironmentSetup`
+ * asks for, is not this area's concern and lives in `kernelAxisConformance`
+ * and the areas that assert its absence.
  */
 export function environmentDeclarationsConformance(makeApi: () => Promise<LykeionApi>): void {
   describe("the lab's environment declarations", () => {

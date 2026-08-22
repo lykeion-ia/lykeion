@@ -41,6 +41,7 @@ import { ArtifactPane } from "../components/tasks/ArtifactPane";
 import { ModelSwitcher } from "../components/tasks/ModelSwitcher";
 import {
   TaskTranscript,
+  EnvironmentContinuationStatus,
   StreamView,
   UserBubble,
 } from "../components/tasks/TaskTranscript";
@@ -119,7 +120,11 @@ function LiveRunBlock({
       data-testid="live-turn"
       data-run-id={run.runId}
     >
-      <UserBubble prompt={run.prompt} />
+      {run.origin === "system" ? (
+        <EnvironmentContinuationStatus continuation={run.continuation} />
+      ) : (
+        <UserBubble prompt={run.prompt} />
+      )}
       {/* ONE rail for the whole reply: the blocks that have landed and the tail
           still arriving. The tail is the newest thing the agent has said, so it
           belongs at the bottom of the same timeline — hung off the rail it will
@@ -1473,6 +1478,12 @@ export function TaskScreen({
               <NotebookPanel
                 taskId={task.id}
                 sessionLabel={task.title}
+                // Read here rather than again inside the panel. This screen
+                // already holds the Research, and its environment defaults
+                // are a soft preference about which environment the notebook
+                // opens on — one read, one answer, and nothing for a second
+                // one to go stale against.
+                environmentDefaults={research.environmentDefaults}
                 embedded
               />
             ) : null}

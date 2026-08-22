@@ -1,6 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import type { KernelEnvDeclaration, KernelEnvManager, KernelEnvStatus } from "@lykeion/api";
+import {
+  environmentLockfileFingerprint,
+  environmentPackageFingerprint,
+  isEnvironmentEvidenceFingerprint,
+} from "@lykeion/api/environment-setup-evidence";
 import { condaProvisioner } from "./environments-conda";
 import { platformTag, runConfinedIn } from "./probe";
 
@@ -129,7 +134,16 @@ const MARKER_NAME = ".lykeion-env.json";
  *  revision it was built from, how many packages that lockfile named, and
  *  which interpreter `uv venv` produced. */
 export interface EnvMarker {
+  schemaVersion: 2;
+  requestId: string;
+  name: string;
+  manager: KernelEnvManager;
   lockRevision: number;
+  declarationGenerationId: string;
+  lockfileFingerprint: string;
+  packageFingerprint: string;
+  /** Legacy evidence only; never authoritative for readiness. */
+  declarationCreatedTs?: number;
   packageCount: number;
   version: string;
 }
@@ -146,9 +160,26 @@ function readMarker(path: string): EnvMarker | undefined {
     if (
       typeof parsed === "object" &&
       parsed !== null &&
-      typeof (parsed as EnvMarker).lockRevision === "number" &&
-      typeof (parsed as EnvMarker).packageCount === "number" &&
-      typeof (parsed as EnvMarker).version === "string"
+      (parsed as EnvMarker).schemaVersion === 2 &&
+      typeof (parsed as EnvMarker).requestId === "string" &&
+      (parsed as EnvMarker).requestId.length > 0 &&
+      typeof (parsed as EnvMarker).name === "string" &&
+      SAFE_ID.test((parsed as EnvMarker).name) &&
+      ((parsed as EnvMarker).manager === "uv" || (parsed as EnvMarker).manager === "conda") &&
+      Number.isSafeInteger((parsed as EnvMarker).lockRevision) &&
+      (parsed as EnvMarker).lockRevision >= 0 &&
+      typeof (parsed as EnvMarker).declarationGenerationId === "string" &&
+      (parsed as EnvMarker).declarationGenerationId.length > 0 &&
+      isEnvironmentEvidenceFingerprint((parsed as EnvMarker).lockfileFingerprint) &&
+      isEnvironmentEvidenceFingerprint((parsed as EnvMarker).packageFingerprint) &&
+      Number.isSafeInteger((parsed as EnvMarker).packageCount) &&
+      (parsed as EnvMarker).packageCount >= 0 &&
+      typeof (parsed as EnvMarker).version === "string" &&
+      (parsed as EnvMarker).version.length > 0 &&
+      ((parsed as EnvMarker).declarationCreatedTs === undefined ||
+        (typeof (parsed as EnvMarker).declarationCreatedTs === "number" &&
+          Number.isInteger((parsed as EnvMarker).declarationCreatedTs) &&
+          (parsed as EnvMarker).declarationCreatedTs! >= 0))
     )
       return parsed as EnvMarker;
   } catch {
@@ -172,6 +203,11 @@ function readMarker(path: string): EnvMarker | undefined {
  */
 export function writeMarker(workspace: string, marker: EnvMarker): void {
   writeFileSync(join(workspace, MARKER_NAME), JSON.stringify(marker));
+}
+
+/** Exact completion evidence for crash recovery. Legacy/partial markers fail closed. */
+export function readEnvironmentMarker(workDir: string, name: string): EnvMarker | undefined {
+  return readMarker(join(envRoot(workDir, name), MARKER_NAME));
 }
 
 /**
@@ -223,7 +259,8 @@ export function readEnvStatus(workDir: string, declaration: KernelEnvDeclaration
   if (!existsSync(interpreter)) return { ...base, state: "absent" };
 
   const marker = readMarker(join(root, MARKER_NAME));
-  if (marker === undefined) return { ...base, state: "broken" };
+  if (marker === undefined || marker.name !== declaration.name || marker.manager !== declaration.manager)
+    return { ...base, state: "broken" };
 
   return {
     ...base,
@@ -231,6 +268,13 @@ export function readEnvStatus(workDir: string, declaration: KernelEnvDeclaration
     version: marker.version,
     packageCount: marker.packageCount,
     lockRevision: marker.lockRevision,
+    setupRequestId: marker.requestId,
+    lockfileFingerprint: marker.lockfileFingerprint,
+    packageFingerprint: marker.packageFingerprint,
+    declarationGenerationId: marker.declarationGenerationId,
+    ...(marker.declarationCreatedTs === undefined
+      ? {}
+      : { declarationCreatedTs: marker.declarationCreatedTs }),
   };
 }
 
@@ -269,6 +313,7 @@ interface ProvisionOptions {
 }
 
 export interface ResolveEnvironmentOptions extends ProvisionOptions {
+  requestId: string;
   workDir: string;
   name: string;
   /** What was asked for — `declaration.packages`. Not the resolved closure;
@@ -288,6 +333,7 @@ export interface ResolvedEnvironment {
 }
 
 export interface MaterializeEnvironmentOptions extends ProvisionOptions {
+  requestId: string;
   workDir: string;
   name: string;
   /** The lockfile text to build from — this machine's own resolve, or one
@@ -299,6 +345,12 @@ export interface MaterializeEnvironmentOptions extends ProvisionOptions {
    *  `readEnvStatus` answers "which revision THIS MACHINE built from" rather
    *  than assuming it matches whatever the lab currently holds. */
   lockRevision: number;
+  /** Exact declaration generation to stamp. */
+  declarationGenerationId: string;
+  /** Exact requested set this authoritative lock was resolved for. */
+  requestedPackages: string[];
+  /** Legacy evidence only; never authoritative for readiness. */
+  declarationCreatedTs?: number;
   /** Which backend materializes `name` — see `ResolveEnvironmentOptions.manager`. */
   manager: KernelEnvManager;
 }
@@ -424,7 +476,21 @@ const uvProvisioner: Provisioner = {
 
     const version = readVenvVersion(workspace);
     const packageCount = countLockedPackages(opts.lockfile);
-    writeMarker(workspace, { lockRevision: opts.lockRevision, packageCount, version });
+    writeMarker(workspace, {
+      schemaVersion: 2,
+      requestId: opts.requestId,
+      name: opts.name,
+      manager: opts.manager,
+      lockRevision: opts.lockRevision,
+      declarationGenerationId: opts.declarationGenerationId,
+      lockfileFingerprint: environmentLockfileFingerprint(opts.lockfile),
+      packageFingerprint: environmentPackageFingerprint(opts.requestedPackages),
+      ...(opts.declarationCreatedTs === undefined
+        ? {}
+        : { declarationCreatedTs: opts.declarationCreatedTs }),
+      packageCount,
+      version,
+    });
 
     return { version, packageCount };
   },

@@ -40,6 +40,7 @@ function scriptedApi() {
               snapshot: {
                 runId: `run-${idx}`,
                 sequence: idx + 1,
+                origin: "user",
                 prompt: input.prompt,
                 agent: input.options.agent ?? "default",
                 state: { state: "planning" },
@@ -64,6 +65,7 @@ function scriptedApi() {
 }
 
 const turn = (over: Partial<TaskTurn> & Pick<TaskTurn, "runId" | "sequence" | "prompt">): TaskTurn => ({
+  origin: "user",
   ts: over.sequence,
   messages: [],
   status: "ok",

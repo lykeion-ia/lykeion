@@ -46,6 +46,7 @@ const freshSnapshot = (runId: string, prompt: string): RunEvent => ({
   snapshot: {
     runId,
     sequence: 3,
+    origin: "user",
     prompt,
     agent: "default",
     state: { state: "planning" },
@@ -70,6 +71,7 @@ const apiWithTurns = (turns: TaskTurn[]): LykeionApi => {
 
 const STREAM_TURN: TaskTurn = {
   runId: "run-stream",
+  origin: "user",
   sequence: 1,
   ts: 1,
   prompt: "how big is the dataset?",
@@ -98,6 +100,7 @@ const STREAM_TURN: TaskTurn = {
  *  path (`ToolStepGroup` draws a synthesized header + step count). */
 const GROUP_TURN: TaskTurn = {
   runId: "run-group",
+  origin: "user",
   sequence: 1,
   ts: 1,
   prompt: "count both files",
@@ -202,6 +205,7 @@ const apiWithFailedLandedRun = (): LykeionApi => ({
  */
 const CANCELLED_TURN: TaskTurn = {
   runId: "run-cancelled",
+  origin: "user",
   sequence: 1,
   ts: 1,
   prompt: "write the results",
@@ -231,6 +235,7 @@ const CANCELLED_TURN: TaskTurn = {
  *  in-memory simulation reproduces. */
 const PARAGRAPHS_TURN: TaskTurn = {
   runId: "run-paragraphs",
+  origin: "user",
   sequence: 1,
   ts: 1,
   prompt: "how big is it?",
@@ -246,6 +251,7 @@ const PARAGRAPHS_TURN: TaskTurn = {
 
 const LEGACY_TURN: TaskTurn = {
   runId: "run-legacy",
+  origin: "user",
   sequence: 1,
   ts: 1,
   prompt: "summarize the notes",
@@ -495,6 +501,7 @@ describe("assistant prose — one bubble per whole message", () => {
     // whitespace hack required, and `task.css` no longer declares one.
     const EMBEDDED_LIST_TURN: TaskTurn = {
       runId: "run-embedded-list",
+      origin: "user",
       sequence: 1,
       ts: 1,
       prompt: "how big is it?",
@@ -610,6 +617,7 @@ describe("Task transcript refresh on landing", () => {
           cb({ event: "assistant-text", text: "There are 518.", partial: false });
           persisted.push({
             runId: record.runId,
+            origin: "user",
             sequence: 1,
             ts: 1,
             prompt: "count the kinases",
@@ -805,6 +813,7 @@ describe("Task run strip", () => {
 describe("Task inspector pane", () => {
   const TURN_WITH_ARTIFACTS: TaskTurn = {
     runId: "run-art",
+    origin: "user",
     sequence: 1,
     ts: 1,
     prompt: "build the kinome set",

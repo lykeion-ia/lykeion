@@ -703,3 +703,51 @@ def test_hello_says_what_an_environment_of_each_language_must_read():
         assert reads, f"{language} claims to be launchable and names nothing to read"
         for path in reads:
             assert Path(path).is_dir(), f"{language} names {path}, which is not a directory"
+
+
+def test_the_research_default_arrives_from_the_wire_or_is_left_empty():
+    """Which environment an unaddressed cell of each language lands in, as
+    the Research itself decided rather than as this machine happened to
+    build.
+
+    Separate from the entries on purpose: a Research can name a default this
+    machine has not built, and a map folded into the entry list would lose
+    exactly that case — the one where a researcher most needs to be told the
+    environment by name.
+    """
+    whole = {
+        "session_id": "ses_1",
+        "task_id": "tk_1",
+        "workspace": "/w",
+        "environments": python_environment(),
+    }
+
+    said = Registry([])
+    serve(
+        request(
+            "kernel.configure_session",
+            {**whole, "defaults": {"r": "meta-analysis-r"}},
+            1,
+        ),
+        io.StringIO(),
+        said,
+    )
+    assert said.confinement_for("ses_1").defaults == {"r": "meta-analysis-r"}
+
+    # No Research default is an empty map, not a missing one: the fallback to
+    # this machine's own floor is what answers then, and it is read the same
+    # way whether the daemon said nothing or said nothing was set.
+    unsaid = Registry([])
+    serve(request("kernel.configure_session", whole, 1), io.StringIO(), unsaid)
+    assert unsaid.confinement_for("ses_1").defaults == {}
+    assert unsaid.confinement_for("ses_1").default_for("python") == "python"
+
+    stdout = io.StringIO()
+    serve(
+        request("kernel.configure_session", {**whole, "defaults": {"r": 7}}, 1),
+        stdout,
+    )
+    assert (
+        "a confinement's defaults are one environment name per language"
+        in replies(stdout)[0]["error"]["message"]
+    )

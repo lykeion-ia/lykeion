@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { backoffDelayMs, heartbeat, LabRefused, report } from "./lab";
+import { backoffDelayMs, heartbeat, LabRefused, postKernelEnvProgress, report } from "./lab";
 
 interface RecordedRequest {
   method: string | undefined;
@@ -97,6 +97,27 @@ it("heartbeat posts an empty body, with the same authorization", async () => {
   expect(request!.headers.authorization).toBe("Bearer a-token");
   expect(request!.headers["content-type"]).toContain("application/json");
   expect(request!.body).toEqual({});
+});
+
+it("redacts and byte-bounds setup progress before it crosses the daemon HTTP boundary", async () => {
+  const lab = await stubLab(() => ({ status: 200, body: { ok: true } }));
+  const secret = "daemon-progress-secret with spaces";
+
+  await postKernelEnvProgress(
+    lab.base,
+    "a-token",
+    "envsetup_safe_progress",
+    "analysis",
+    {
+      stage: "installing",
+      line: `${"🙂".repeat(1_000)} {"GITHUB_TOKEN": "${secret}"}`,
+    },
+  );
+
+  const progress = (lab.requests[0]!.body as { progress: { line: string } }).progress.line;
+  expect(new TextEncoder().encode(progress).byteLength).toBeLessThanOrEqual(4_096);
+  expect(progress).not.toContain(secret);
+  expect(progress).toContain("[redacted]");
 });
 
 it("throws LabRefused on a 401, from either call", async () => {

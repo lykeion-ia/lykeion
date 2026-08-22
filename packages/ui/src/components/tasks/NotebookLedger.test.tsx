@@ -45,8 +45,6 @@ async function renderLedger(
         loading={false}
         warning={null}
         autoOpenCellId={null}
-        contextLabel={null}
-        writable={false}
         {...props}
       />
     </DirectoryContext.Provider>,
@@ -89,8 +87,6 @@ it("opens only a fresh researcher cell and failures until the researcher changes
         loading={false}
         warning={null}
         autoOpenCellId="fresh"
-        contextLabel={null}
-        writable={false}
       />
     </DirectoryContext.Provider>,
   );
@@ -119,7 +115,7 @@ it("summarizes figures, text lines, and message-only output deterministically", 
   ).toBe("output · 2 messages");
 });
 
-it("shows loading, refresh warnings, and the selected context terminal row", async () => {
+it("shows loading and refresh warnings", async () => {
   const cells = [
     cell({ id: "one" }),
     cell({ id: "two" }),
@@ -136,16 +132,11 @@ it("shows loading, refresh warnings, and the selected context terminal row", asy
         loading={false}
         warning="Could not refresh the notebook. Showing the last confirmed cells."
         autoOpenCellId={null}
-        contextLabel="Main agent"
-        writable
       />
     </DirectoryContext.Provider>,
   );
   expect(screen.getByRole("status")).toHaveTextContent(
     "Could not refresh the notebook. Showing the last confirmed cells.",
-  );
-  expect(screen.getByTestId("notebook-footer")).toHaveTextContent(
-    "Main agent — writable · 4 cells",
   );
   await waitFor(() => expect(document.querySelectorAll(".shiki")).toHaveLength(4));
 });

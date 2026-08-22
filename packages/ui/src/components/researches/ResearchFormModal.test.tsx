@@ -10,6 +10,7 @@ const existing: Research = {
   id: "s_cmp",
   key: "CMP",
   title: "Cross-modal plasticity in the brain",
+  environmentDefaults: [],
   description: "Whether visual cortex reallocated to touch.",
   agentContext: "Traces are ΔF/F.",
   createdBy: "u_you",

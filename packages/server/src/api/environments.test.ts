@@ -5,13 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import {
-  KERNEL_SETUP_CHANNEL,
   type KernelEnvStatus,
-  type KernelSetupProgress,
   type Language,
   type LykeionApi,
 } from "@lykeion/api";
 import { expectRejection } from "@lykeion/api/conformance";
+import {
+  environmentLockfileFingerprint,
+  environmentPackageFingerprint,
+} from "@lykeion/api/environment-setup-evidence";
 import { openStore } from "../store/sqlite";
 import { migrate, nextSeq } from "../store/migrations";
 import { environmentStore } from "../store/environments";
@@ -22,14 +24,20 @@ import { createRevertRegistry } from "../run-revert";
 import { createKernelListRegistry } from "../kernel-list-registry";
 import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
-import { createEnvSetupRegistry, type EnvSetupRegistry } from "../env-setup-registry";
+import {
+  createEnvironmentSetupCoordinator,
+  type EnvironmentSetupCoordinator,
+} from "../environment-setup-coordinator";
+import { environmentSetupStore } from "../store/environment-setups";
+import type { StoredEnvironmentSetupJob } from "../store/environment-setups";
+import { openSession, recordTurn } from "../store/sessions";
 import { createRequestListener } from "../http";
 import { handleDaemonRoute } from "../routes/daemon-routes";
 import { hashSecret } from "../auth";
 import { apiFor, signUpOwner } from "../test-support/server-api";
 import { seedLabContent } from "../store/seed";
 import { changeRecorder } from "./changes";
-import { buildEnvironmentOn, environmentsApi } from "./environments";
+import { environmentsApi } from "./environments";
 import type { Deps } from "./index";
 import type { Store } from "../store/store";
 
@@ -79,17 +87,21 @@ function addOwner(store: Store, id: string): void {
 function depsFor(store: Store, overrides: Partial<Deps> = {}): Deps {
   const actor = { userId: "u_ana", role: "owner" } as const;
   const channel = createChannel(store, 1000);
+  const runs = overrides.runs ?? createRunRelay();
   return {
     store,
     actor,
     now: () => NOW,
     config: readConfig({}),
     channel,
-    runs: createRunRelay(),
+    runs,
     reverts: createRevertRegistry(),
     kernelLists: createKernelListRegistry(),
     titles: createTitleRegistry(),
-    pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
+    pendingCells: createPendingCells(),
+    coordinator: overrides.coordinator ?? createEnvironmentSetupCoordinator({
+      store, runs, now: () => NOW,
+    }),
     changes: changeRecorder({ store, actorId: actor.userId, now: () => NOW, channel }),
     ...overrides,
   };
@@ -97,7 +109,7 @@ function depsFor(store: Store, overrides: Partial<Deps> = {}): Deps {
 
 /** A machine of `ownerId`'s, last heard from at `lastSeenTs` — enough of a
  *  `runtimes` row for `authorizedOwnRuntime` to resolve and for `healthFor`
- *  to judge, which is all `kernelEnvSetup` reads. */
+ *  to judge, which is all a setup ask reads. */
 function addRuntime(store: Store, id: string, ownerId: string, lastSeenTs: number): void {
   store.run(
     `INSERT INTO runtimes (id, owner_id, name, platform, daemon_version, capabilities, created_ts, last_seen_ts, seq)
@@ -106,21 +118,391 @@ function addRuntime(store: Store, id: string, ownerId: string, lastSeenTs: numbe
   );
 }
 
-/** The registry the server itself wires in, waiting milliseconds instead of
- *  forty. `await`'s `timeoutMs` is already part of its own signature, so the
- *  timeout branch is reachable from a test without production code growing
- *  a parameter it would otherwise not have. */
-function waitingOnly(timeoutMs: number): EnvSetupRegistry {
-  const real = createEnvSetupRegistry();
-  return {
-    await: (machineId, requestId, name, options) =>
-      real.await(machineId, requestId, name, { ...options, timeoutMs }),
-    settle: (machineId, requestId, result) => real.settle(machineId, requestId, result),
-    askedToResolve: (machineId, requestId, name) =>
-      real.askedToResolve(machineId, requestId, name),
-    resolvedFrom: (machineId, requestId, name) => real.resolvedFrom(machineId, requestId, name),
-  };
+function addResearchTask(store: Store, researchId = "s_1", taskId = "t_1"): void {
+  store.run(
+    `INSERT INTO studies (id, key, title, created_by, created_ts, updated_ts, seq)
+     VALUES (?, 'ENV', 'Environment', 'u_ana', ?, ?, ?)`,
+    [researchId, NOW, NOW, nextSeq(store)],
+  );
+  store.run(
+    `INSERT INTO tasks
+       (id, number, study_id, stage, title, status, priority, created_by,
+        created_ts, updated_ts, seq)
+     VALUES (?, 1, ?, 'background', 'Set up', 'todo', 'no-priority', 'u_ana', ?, ?, ?)`,
+    [taskId, researchId, NOW, NOW, nextSeq(store)],
+  );
 }
+
+it("returns durable setup intent immediately and projects it for the Task", async () => {
+  const store = freshStore();
+  addOwner(store, "u_ana");
+  addResearchTask(store);
+  addRuntime(store, "rt_durable", "u_ana", NOW);
+  const runs = createRunRelay();
+  const taken: RunCommand[] = [];
+  runs.attach("rt_durable", (_seq, command) => taken.push(command));
+  const coordinator = createEnvironmentSetupCoordinator({ store, runs, now: () => NOW });
+  const envs = environmentsApi(depsFor(store, { runs, coordinator }));
+  await envs.kernelEnvCreate({ name: "analysis", language: "python", packages: ["scanpy"] });
+
+  const requested = await envs.requestKernelEnvironmentSetup({
+    taskId: "t_1",
+    machineId: "rt_durable",
+    environmentName: "analysis",
+  });
+
+  expect(requested.jobId).toMatch(/^envjob_/);
+  expect(taken).toHaveLength(1);
+  expect(await envs.taskEnvironmentSetups("t_1")).toMatchObject([
+    { job: { id: requested.jobId, state: "requested", environmentName: "analysis" } },
+  ]);
+  await expect(envs.retryKernelEnvironmentSetup("wait_missing")).rejects.toMatchObject({
+    code: "conflict",
+  });
+});
+
+it("offers the Research a default the moment its build becomes ready, and not before", async () => {
+  // The suggestion is what a FINISHED build offers. Created mid-build it
+  // would be a default for an environment that may still fail, and answering
+  // it would pin this Research to something no machine holds.
+  const store = freshStore();
+  addOwner(store, "u_ana");
+  addResearchTask(store);
+  addRuntime(store, "rt_ready", "u_ana", NOW);
+  const runs = createRunRelay();
+  const taken: RunCommand[] = [];
+  runs.attach("rt_ready", (_seq, command) => taken.push(command));
+  const coordinator = createEnvironmentSetupCoordinator({ store, runs, now: () => NOW });
+  const envs = environmentsApi(depsFor(store, { runs, coordinator }));
+  const declarations = environmentStore(store);
+  await envs.kernelEnvCreate({ name: "meta-analysis-r", language: "r", packages: ["metafor"] });
+  const lockfile = "metafor=4.6\n";
+  declarations.writeLock("meta-analysis-r", lockfile, NOW, ["metafor"]);
+
+  await envs.requestKernelEnvironmentSetup({
+    taskId: "t_1",
+    machineId: "rt_ready",
+    environmentName: "meta-analysis-r",
+  });
+
+  expect((await envs.taskEnvironmentSetups("t_1"))[0]!.suggestion).toBeUndefined();
+
+  coordinator.settle(
+    "rt_ready",
+    taken[0]!.runId,
+    {
+      ok: true,
+      status: {
+        state: "ready",
+        name: "meta-analysis-r",
+        language: "r",
+        manager: "conda",
+        platform: "macos-aarch64",
+        root: "/work/envs/meta-analysis-r",
+        version: "4.6.1",
+        packageCount: 1,
+        lockRevision: 1,
+        setupRequestId: taken[0]!.runId,
+        lockfileFingerprint: environmentLockfileFingerprint(lockfile),
+        packageFingerprint: environmentPackageFingerprint(["metafor"]),
+        declarationGenerationId: declarations.get("meta-analysis-r")!.declarationGenerationId,
+        declarationCreatedTs: NOW,
+      },
+    },
+    () => {},
+  );
+
+  const [setup] = await envs.taskEnvironmentSetups("t_1");
+  expect(setup!.job.state).toBe("ready");
+  expect(setup!.suggestion).toMatchObject({
+    language: "r",
+    environmentName: "meta-analysis-r",
+    state: "pending",
+  });
+});
+
+it("writes Not now as declined and leaves the Research's existing default untouched", async () => {
+  // Declining is an answer, not a deferral: the suggestion stops being
+  // pending — so nothing offers it again — and the Research is left exactly
+  // as it was, down to the default it already held. "Not now" is about the
+  // question, and touches nothing else.
+  const store = freshStore();
+  addOwner(store, "u_ana");
+  addResearchTask(store);
+  addRuntime(store, "rt_declined", "u_ana", NOW);
+  const runs = createRunRelay();
+  const coordinator = createEnvironmentSetupCoordinator({ store, runs, now: () => NOW });
+  const envs = environmentsApi(depsFor(store, { runs, coordinator }));
+  const setups = environmentSetupStore(store);
+  // Declared, because a setup job in production always names one this lab
+  // holds — and a suggestion is only ever raised about an environment the lab
+  // still declares.
+  await envs.kernelEnvCreate({ name: "analysis", language: "python", packages: ["scanpy"] });
+  const job = setups.requestJob({
+    studyId: "s_1",
+    taskId: "t_1",
+    runtimeId: "rt_declined",
+    environmentName: "analysis",
+    language: "python",
+    manager: "uv",
+    lockRevision: 0,
+    declarationGenerationId: "envgen_declined",
+    declarationCreatedTs: NOW,
+    requestId: "req_declined",
+    requestedBy: "u_ana",
+    requestedTs: NOW,
+    requestedPackages: ["scanpy"],
+    resolvedFrom: ["scanpy"],
+  }).job;
+  setups.markReady(job.requestId, NOW + 1);
+  const [suggestion] = setups.createSuggestionsForReadyJob(job.id, NOW + 2);
+  // A default this Research already holds for the SAME language, seeded after
+  // the question was raised — which is the only order that can produce the
+  // pair, since a Research that already had one would have been asked
+  // nothing. Written directly because no API reaches this state, and the
+  // point is what declining does to a default that EXISTS: asserting an empty
+  // list stay empty could not fail however `answerSuggestion` behaved.
+  store.run(
+    `INSERT INTO research_environment_defaults
+       (study_id, language, environment_name, set_by, set_ts)
+     VALUES ('s_1', 'python', 'already-chosen', 'u_ana', ?)`,
+    [NOW],
+  );
+
+  await envs.answerEnvironmentDefaultSuggestion(suggestion!.id, false);
+
+  // Untouched, down to who set it and when. Declining is an answer about the
+  // question, never a write to the default.
+  expect(setups.defaultsForResearch("s_1")).toEqual([
+    {
+      language: "python",
+      environmentName: "already-chosen",
+      setBy: "u_ana",
+      setTs: NOW,
+    },
+  ]);
+  expect((await envs.taskEnvironmentSetups("t_1"))[0]!.suggestion).toMatchObject({
+    state: "declined",
+  });
+});
+
+it("deleting an environment forgets its defaults and cancels every Task waiting on it", async () => {
+  // This case used to assert the opposite of its second half — that a delete
+  // left every waiter exactly where it was — and it was right to, for as long
+  // as the only alternative on offer was a HALF cancellation: marking the row
+  // cancelled from this path, without finishing the continuation turn a
+  // `queued` waiter owns or recalling the run already dispatched for it, would
+  // have left both of those going with nothing that could ever settle them.
+  //
+  // The whole operation is now built, in the one place that can do it: the
+  // coordinator's `cancelForEnvironment` cancels the waiter, finishes its
+  // continuation turn and names the run to recall, all inside the delete's own
+  // transaction, and `kernelEnvDelete` dispatches the `cancel` commands only
+  // once that transaction has committed. Leaving the waiters alone is no
+  // longer the safe option it was: once the declaration is gone nothing can
+  // plan that build, so a waiter left standing is a Task blocked forever on a
+  // build that will never be asked for again.
+  const store = freshStore();
+  addOwner(store, "u_ana");
+  addResearchTask(store);
+  addRuntime(store, "rt_waiting", "u_ana", NOW);
+  const runs = createRunRelay();
+  const coordinator = createEnvironmentSetupCoordinator({ store, runs, now: () => NOW });
+  const envs = environmentsApi(depsFor(store, { runs, coordinator }));
+  await envs.kernelEnvCreate({ name: "meta-analysis-r", language: "r", packages: ["metafor"] });
+  const setups = environmentSetupStore(store);
+  const sessionId = openSession(store, {
+    researchId: "s_1",
+    machineId: "rt_waiting",
+    agent: "claude",
+    openedBy: "u_ana",
+    openedTs: NOW,
+  });
+  const sourceRunId = recordTurn(store, {
+    sessionId,
+    taskId: "t_1",
+    prompt: "pool the trials",
+    startedTs: NOW,
+  });
+  const waiter = setups.recordRequirement({
+    studyId: "s_1",
+    taskId: "t_1",
+    sessionId,
+    sourceTurnId: sourceRunId,
+    sourceRunId,
+    language: "r",
+    environmentName: "meta-analysis-r",
+    runtimeId: "rt_waiting",
+    createdTs: NOW,
+  });
+  // Queued, which is the state that makes the whole operation necessary: this
+  // waiter owns a durable continuation turn and a run on somebody's laptop, so
+  // cancelling it means ending both as well.
+  const continuationTurnId = recordTurn(store, {
+    sessionId,
+    taskId: "t_1",
+    prompt: "The environment meta-analysis-r is ready on this machine.",
+    startedTs: NOW,
+    origin: "system",
+    continuation: {
+      kind: "environment-setup",
+      waiterId: waiter.id,
+      sourceTurnId: sourceRunId,
+      environmentName: "meta-analysis-r",
+      machineId: "rt_waiting",
+    },
+  });
+  expect(setups.queueWaiter(waiter.id, continuationTurnId, NOW)).toBe(true);
+  store.run(
+    `INSERT INTO research_environment_defaults
+       (study_id, language, environment_name, set_by, set_ts)
+     VALUES ('s_1', 'r', 'meta-analysis-r', 'u_ana', ?)`,
+    [NOW],
+  );
+
+  const taken: RunCommand[] = [];
+  const detach = runs.attach("rt_waiting", (_seq, command) => taken.push(command));
+
+  await envs.kernelEnvDelete("meta-analysis-r");
+
+  expect(setups.defaultsForResearch("s_1")).toEqual([]);
+  expect(setups.waiter(waiter.id)).toMatchObject({
+    state: "cancelled",
+    cancelledReason: "environment-deleted",
+    continuationTurnId,
+    environmentName: "meta-analysis-r",
+  });
+  // All three halves of one fact, not one of them: the waiter is cancelled,
+  // the turn it owned is finished, and the machine holding that run is told
+  // to stop it.
+  expect(store.get(`SELECT ended_ts, status FROM turns WHERE id = ?`, [continuationTurnId]))
+    .toEqual({ ended_ts: NOW, status: "cancelled" });
+  expect(taken).toEqual([{ type: "cancel", runId: continuationTurnId }]);
+  detach();
+});
+
+it("offers no default for an environment this lab no longer declares", async () => {
+  // A job carries the name it was requested for and goes on carrying it after
+  // the lab deletes that declaration — nothing joins the two, and deleting a
+  // declaration leaves every job that named it exactly where it was. The
+  // delete path sweeps the defaults and the outstanding questions that exist
+  // when it runs; what it cannot do is stop a later one being written. So the
+  // guard belongs where the suggestion is WRITTEN: a default naming an
+  // environment nothing in this lab has could never resolve, and accepting
+  // one would put the lab back in the state the delete path exists to leave
+  // it out of.
+  //
+  // The one route from a build in flight is separately shut, one layer up:
+  // `settle` refuses a result whose declaration generation is no longer this
+  // lab's, so a delete DURING a build fails that job rather than readying it.
+  // This is the state that route cannot produce and the store still must not
+  // allow — a job that genuinely reached ready, asked again after the delete.
+  const store = freshStore();
+  addOwner(store, "u_ana");
+  addResearchTask(store);
+  addRuntime(store, "rt_deleted", "u_ana", NOW);
+  const runs = createRunRelay();
+  const taken: RunCommand[] = [];
+  runs.attach("rt_deleted", (_seq, command) => taken.push(command));
+  const coordinator = createEnvironmentSetupCoordinator({ store, runs, now: () => NOW });
+  const envs = environmentsApi(depsFor(store, { runs, coordinator }));
+  const declarations = environmentStore(store);
+  await envs.kernelEnvCreate({ name: "meta-analysis-r", language: "r", packages: ["metafor"] });
+  const lockfile = "metafor=4.6\n";
+  declarations.writeLock("meta-analysis-r", lockfile, NOW, ["metafor"]);
+  const declarationGenerationId = declarations.get("meta-analysis-r")!.declarationGenerationId!;
+  await envs.requestKernelEnvironmentSetup({
+    taskId: "t_1",
+    machineId: "rt_deleted",
+    environmentName: "meta-analysis-r",
+  });
+  const setups = environmentSetupStore(store);
+  const jobId = setups.jobByRequest(taken[0]!.runId)!.id;
+  coordinator.settle(
+    "rt_deleted",
+    taken[0]!.runId,
+    {
+      ok: true,
+      status: {
+        state: "ready",
+        name: "meta-analysis-r",
+        language: "r",
+        manager: "conda",
+        platform: "macos-aarch64",
+        root: "/work/envs/meta-analysis-r",
+        version: "4.6.1",
+        packageCount: 1,
+        lockRevision: 1,
+        setupRequestId: taken[0]!.runId,
+        lockfileFingerprint: environmentLockfileFingerprint(lockfile),
+        packageFingerprint: environmentPackageFingerprint(["metafor"]),
+        declarationGenerationId,
+        declarationCreatedTs: NOW,
+      },
+    },
+    () => {},
+  );
+  // The build landed and the Research was asked, which is the whole of the
+  // ordinary flow — and the precondition for what follows.
+  expect(setups.job(jobId)!.state).toBe("ready");
+  expect((await envs.taskEnvironmentSetups("t_1"))[0]!.suggestion).toMatchObject({
+    state: "pending",
+  });
+
+  await envs.kernelEnvDelete("meta-analysis-r");
+
+  // Swept, and it stays swept: asking the same ready job again raises nothing.
+  expect(setups.createSuggestionsForReadyJob(jobId, NOW + 3)).toEqual([]);
+  expect(store.all(`SELECT id FROM environment_default_suggestions`)).toEqual([]);
+  expect((await envs.taskEnvironmentSetups("t_1"))[0]!.suggestion).toBeUndefined();
+});
+
+it("answers a durable environment default suggestion through the setup store", async () => {
+  const store = freshStore();
+  addOwner(store, "u_ana");
+  addResearchTask(store);
+  addRuntime(store, "rt_suggestion", "u_ana", NOW);
+  const runs = createRunRelay();
+  const coordinator = createEnvironmentSetupCoordinator({ store, runs, now: () => NOW });
+  const envs = environmentsApi(depsFor(store, { runs, coordinator }));
+  const setups = environmentSetupStore(store);
+  // Declared, because a setup job in production always names one this lab
+  // holds — and a suggestion is only ever raised about an environment the lab
+  // still declares.
+  await envs.kernelEnvCreate({ name: "analysis", language: "python", packages: ["scanpy"] });
+  const job = setups.requestJob({
+    studyId: "s_1",
+    taskId: "t_1",
+    runtimeId: "rt_suggestion",
+    environmentName: "analysis",
+    language: "python",
+    manager: "uv",
+    lockRevision: 0,
+    declarationGenerationId: "envgen_suggestion",
+    declarationCreatedTs: NOW,
+    requestId: "req_suggestion",
+    requestedBy: "u_ana",
+    requestedTs: NOW,
+    requestedPackages: ["scanpy"],
+    resolvedFrom: ["scanpy"],
+  }).job;
+  setups.markReady(job.requestId, NOW + 1);
+  const [suggestion] = setups.createSuggestionsForReadyJob(job.id, NOW + 2);
+
+  await envs.answerEnvironmentDefaultSuggestion(suggestion!.id, true);
+
+  expect(setups.defaultsForResearch("s_1")).toEqual([
+    {
+      language: "python",
+      environmentName: "analysis",
+      setBy: "u_ana",
+      setTs: NOW,
+    },
+  ]);
+  await expect(
+    envs.answerEnvironmentDefaultSuggestion("suggest_missing", true),
+  ).rejects.toMatchObject({ code: "not-found" });
+});
 
 it("declares with the actor who asked, when, and the manager derived for python", async () => {
   const store = freshStore();
@@ -230,6 +612,7 @@ it("refuses the same names on the agent's wire as on the researcher's own", asyn
       "invalid",
       /letters, numbers, dashes and underscores/,
     );
+    const runs = createRunRelay();
     const overTheWire = handleDaemonRoute({
       store,
       changes: changeRecorder({
@@ -243,8 +626,8 @@ it("refuses the same names on the agent's wire as on the researcher's own", asyn
       body: { sessionId: "se_1", name, packages: ["scanpy"] },
       authorization: "Bearer a-real-token",
       now: NOW,
-      envSetups: createEnvSetupRegistry(),
-      runs: createRunRelay(),
+      runs,
+      coordinator: createEnvironmentSetupCoordinator({ store, runs, now: () => NOW }),
     });
     expect(overTheWire!.status).toBe(400);
     expect((overTheWire!.json as { error: string }).error).toMatch(
@@ -367,13 +750,11 @@ it("lets a deleted name be declared again, starting fresh with no lock carried o
 });
 
 // ---------------------------------------------------------------------------
-// `kernelEnvSetup`'s refusals, each against the branch that raises it and
-// each asserting the CODE a client will branch on, not merely that something
-// threw. The direct harness rather than the wire server below: these need a
-// machine held at a chosen `last_seen_ts`, a registry with a chosen wait, and
-// a relay that answers exactly once — none of which a real daemon stub
-// obliges. Distinct runtime ids per test, because `inFlightSetups` coalesces
-// on `${machineId}:${name}` across the whole module.
+// `requestKernelEnvironmentSetup`'s refusals, each against the branch that
+// raises it and each asserting the CODE a client will branch on, not merely
+// that something threw. The direct harness rather than the wire server below:
+// these need a machine held at a chosen `last_seen_ts`, which a real daemon
+// stub does not oblige. Distinct runtime ids per test.
 // ---------------------------------------------------------------------------
 
 it("refuses setup on an offline machine with conflict, before any command is minted", async () => {
@@ -386,12 +767,17 @@ it("refuses setup on an offline machine with conflict, before any command is min
   relay.attach("rt_offline", (_seq, command) => {
     taken.push(command);
   });
-  // A short wait as well, so that a day this guard stops holding this test
-  // says so in one assertion rather than hanging on the machine's silence.
-  const envs = environmentsApi(depsFor(store, { runs: relay, envSetups: waitingOnly(20) }));
+  addResearchTask(store);
+  const envs = environmentsApi(depsFor(store, { runs: relay }));
   await envs.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
 
-  await expectRejection(envs.kernelEnvSetup("rt_offline", "crispr"), "conflict", /is offline/);
+  await expectRejection(
+    envs.requestKernelEnvironmentSetup({
+      taskId: "t_1", machineId: "rt_offline", environmentName: "crispr",
+    }),
+    "conflict",
+    /is offline/,
+  );
   // Refused ahead of the relay, not merely reported: nothing was sent.
   expect(taken).toEqual([]);
 });
@@ -405,7 +791,8 @@ it("refuses with conflict when the declaration names a revision whose lockfile t
   relay.attach("rt_missing", (_seq, command) => {
     taken.push(command);
   });
-  const envs = environmentsApi(depsFor(store, { runs: relay, envSetups: waitingOnly(20) }));
+  addResearchTask(store);
+  const envs = environmentsApi(depsFor(store, { runs: relay }));
   await envs.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
   // A declaration pointing at a pin this lab cannot produce. The machine
   // must not be told to resolve instead: that is exactly the second,
@@ -414,72 +801,22 @@ it("refuses with conflict when the declaration names a revision whose lockfile t
   store.run(`UPDATE kernel_envs SET lock_revision = 3 WHERE name = 'crispr'`);
 
   await expectRejection(
-    envs.kernelEnvSetup("rt_missing", "crispr"),
+    envs.requestKernelEnvironmentSetup({
+      taskId: "t_1", machineId: "rt_missing", environmentName: "crispr",
+    }),
     "conflict",
     /revision 3 is missing from this lab's own store/,
   );
   expect(taken).toEqual([]);
 });
 
-it("refuses with conflict when the machine takes the command and never answers", async () => {
-  const store = freshStore();
-  addOwner(store, "u_ana");
-  addRuntime(store, "rt_silent", "u_ana", NOW);
-  const relay = createRunRelay();
-  // Takes the command and says nothing back, which is what a machine that
-  // died mid-build looks like from here.
-  const detach = relay.attach("rt_silent", () => {});
-  const envs = environmentsApi(depsFor(store, { runs: relay, envSetups: waitingOnly(20) }));
-  await envs.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
-
-  await expectRejection(
-    envs.kernelEnvSetup("rt_silent", "crispr"),
-    "conflict",
-    /did not finish setting up crispr in time/,
-  );
-  detach();
-});
-
-it("reports a failed build as conflict, never unsupported — a build that failed is one that can be retried", async () => {
-  const store = freshStore();
-  addOwner(store, "u_ana");
-  addRuntime(store, "rt_failing", "u_ana", NOW);
-  const relay = createRunRelay();
-  // A real wait, cut short only so a settle that somehow misses fails this
-  // test rather than hanging it.
-  const envSetups = waitingOnly(2000);
-  const detach = relay.attach("rt_failing", (_seq, command) => {
-    if (command.type !== "kernel-env-setup") return;
-    // Deferred: `deliverNow` runs this synchronously, before the caller has
-    // reached `await` and registered anything to settle.
-    setTimeout(() => {
-      envSetups.settle("rt_failing", command.runId, {
-        ok: false,
-        error: "uv pip sync failed: no matching distribution for scanpy==1.9.0",
-      });
-    }, 0);
-  });
-  const envs = environmentsApi(depsFor(store, { runs: relay, envSetups }));
-  await envs.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
-
-  // `unsupported` would read to a client as "this lab cannot manage
-  // environments at all" and take Setup off the surface for good, over what
-  // is a network blip or a package that would not compile today.
-  await expectRejection(
-    envs.kernelEnvSetup("rt_failing", "crispr"),
-    "conflict",
-    /no matching distribution for scanpy==1\.9\.0/,
-  );
-  detach();
-});
-
 // ---------------------------------------------------------------------------
-// The wire: `kernelEnvSetup`/`kernelEnvReclaim` over a real server, a real
-// run relay, and stub daemons standing in for two researchers' own machines.
-// Mirrors the harness `api/kernels.test.ts` builds for `kernelExecute` et
-// al., for the same reason: these tests need the raw store and relay
-// directly, to see what a command actually carried and to settle the
-// server's own wait on a reply the way a real daemon's HTTP calls would.
+// The wire: environment setup and `kernelEnvReclaim` over a real server, a
+// real run relay, and stub daemons standing in for two researchers' own
+// machines. Mirrors the harness `api/kernels.test.ts` builds for
+// `kernelExecute` et al., for the same reason: these tests need the raw store
+// and relay directly, to see what a command actually carried and to settle a
+// build the way a real daemon's HTTP calls would.
 // ---------------------------------------------------------------------------
 
 const servers: Array<{ close(): Promise<void> }> = [];
@@ -493,6 +830,7 @@ function freshWireServer(): Promise<{
   store: Store;
   relay: RunRelay;
   channel: Channel;
+  coordinator: EnvironmentSetupCoordinator;
   close(): Promise<void>;
 }> {
   const dir = mkdtempSync(join(tmpdir(), "lykeion-environments-wire-"));
@@ -505,6 +843,7 @@ function freshWireServer(): Promise<{
   migrate(store);
   const channel = createChannel(store, 1000);
   const relay = createRunRelay();
+  const coordinator = createEnvironmentSetupCoordinator({ store, runs: relay });
   const openStreams = new Set<() => void>();
   const config = { ...readConfig({}), host: "127.0.0.1", port: 0, dataDir: dir, uiDir };
 
@@ -520,7 +859,7 @@ function freshWireServer(): Promise<{
     kernelLists: createKernelListRegistry(),
     titles: createTitleRegistry(),
     pendingCells: createPendingCells(),
-    envSetups: createEnvSetupRegistry(),
+    coordinator,
   });
   const server = createHttpServer(listener);
 
@@ -535,6 +874,7 @@ function freshWireServer(): Promise<{
         store,
         relay,
         channel,
+        coordinator,
         close: () =>
           new Promise<void>((res) => {
             for (const end of openStreams) end();
@@ -556,7 +896,7 @@ function secretPair(): { verifier: string; challenge: string } {
 /** Pairs and reports a machine for whichever `LykeionApi` is handed to it —
  *  the owner's own or an invited member's — enough of `/daemon/report`'s
  *  required fields to bring the runtime online, nothing about its CLI
- *  catalogue, which `kernelEnvSetup`'s own checks never read. */
+ *  catalogue, which a setup ask's own checks never read. */
 async function pairMachine(
   base: string,
   api: LykeionApi,
@@ -644,6 +984,7 @@ function attachEnvStubDaemon(
           const lockRes = await post("/daemon/kernel-env/lock", {
             requestId: command.runId,
             name: command.name,
+            declarationGenerationId: command.declarationGenerationId,
             lockfile,
           });
           ({ lockRevision } = (await lockRes.json()) as { lockRevision: number });
@@ -658,12 +999,61 @@ function attachEnvStubDaemon(
           version: "3.12.7",
           packageCount: 1,
           lockRevision,
+          setupRequestId: command.runId,
+          lockfileFingerprint: environmentLockfileFingerprint(lockfile),
+          packageFingerprint: environmentPackageFingerprint(command.requestedPackages ?? []),
+          declarationGenerationId: command.declarationGenerationId,
+          declarationCreatedTs: command.declarationCreatedTs,
         };
-        await post("/daemon/kernel-env/result", { requestId: command.runId, ok: true, status });
+        await post("/daemon/kernel-env/result", {
+          requestId: command.runId,
+          name: status.name,
+          declarationGenerationId: command.declarationGenerationId,
+          ok: true,
+          status,
+        });
       })().catch(() => {});
     }
   });
   return { taken, detach };
+}
+
+/** A Task of this researcher's own, in a Research of their own — what a
+ *  durable setup ask has to be filed against. The removed per-machine setup
+ *  call needed none of this: it addressed a machine and nothing else. */
+async function taskFor(api: LykeionApi, key: string): Promise<string> {
+  const research = await api.createResearch({ title: `Research ${key}`, key });
+  const task = await api.createTask({
+    researchId: research.id,
+    stage: "background",
+    title: `Set up ${key}`,
+  });
+  return task.id;
+}
+
+/** A Setup click on the durable contract: ask, then wait for the machine's
+ *  stub to have carried the build all the way to a terminal job.
+ *
+ *  The removed per-machine setup call returned the finished status and these
+ *  tests awaited it. The durable call returns the moment the ask is recorded —
+ *  that is the whole
+ *  point of it — so the wait that used to live inside the API call lives here
+ *  instead, and what it waits for is the lab's own record of the build rather
+ *  than a promise held open in this process. */
+async function setupOn(
+  lab: { store: Store },
+  api: LykeionApi,
+  taskId: string,
+  machineId: string,
+  environmentName: string,
+): Promise<StoredEnvironmentSetupJob> {
+  const { jobId } = await api.requestKernelEnvironmentSetup({ taskId, machineId, environmentName });
+  const setups = environmentSetupStore(lab.store);
+  await until(() => {
+    const job = setups.job(jobId);
+    return job !== undefined && (job.state === "ready" || job.state === "failed");
+  });
+  return setups.job(jobId)!;
 }
 
 async function until(check: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -689,11 +1079,13 @@ it("resolves once and replays that lockfile on every later machine — Ben never
   const { machineId: rtBen, token: tokenBen } = await pairMachine(lab.base, ben, "ben-laptop");
 
   await ana.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
+  const anaTask = await taskFor(ana, "ANA");
+  const benTask = await taskFor(ben, "BEN");
 
   const stubAna = attachEnvStubDaemon(lab, rtAna, tokenAna, "scanpy==1.9.0\nanndata==0.10.0\n");
   const stubBen = attachEnvStubDaemon(lab, rtBen, tokenBen, "this-must-never-be-read==0.0.0\n");
 
-  const anaResult = await ana.kernelEnvSetup(rtAna, "crispr");
+  const anaResult = await setupOn(lab, ana, anaTask, rtAna, "crispr");
   expect(anaResult.state).toBe("ready");
   expect(anaResult.lockRevision).toBe(1);
 
@@ -710,7 +1102,7 @@ it("resolves once and replays that lockfile on every later machine — Ben never
   expect(anaSetups[0]!.lockfile).toBeUndefined();
   expect(anaSetups[0]!.packages).toEqual(["scanpy"]);
 
-  const benResult = await ben.kernelEnvSetup(rtBen, "crispr");
+  const benResult = await setupOn(lab, ben, benTask, rtBen, "crispr");
   expect(benResult.state).toBe("ready");
   expect(benResult.lockRevision).toBe(1);
 
@@ -749,19 +1141,20 @@ it("replays a pin that still answers the declaration, and resolves again the mom
   const ana = apiFor(lab.base, ownerCookie);
   const { machineId, token } = await pairMachine(lab.base, ana, "ana-macbook");
   await ana.kernelEnvCreate({ name: "stale", language: "python", packages: ["scanpy"] });
+  const task = await taskFor(ana, "STALE");
   const stub = attachEnvStubDaemon(lab, machineId, token, "scanpy==1.9.0\n");
   const envs = environmentStore(lab.store);
 
   // First: nothing pinned, so this machine resolves — and the lab writes
   // down what it asked to be resolved FROM beside the text that came back.
-  await ana.kernelEnvSetup(machineId, "stale");
+  await setupOn(lab, ana, task, machineId, "stale");
   expect(envs.get("stale")!.lockRevision).toBe(1);
   expect(envs.readLockRequest("stale", 1)).toEqual(["scanpy"]);
 
   // Second, unchanged: the pin still answers the declaration, so this
   // replays. Without this half a "resolve whenever in doubt" implementation
   // passes everything below.
-  await ana.kernelEnvSetup(machineId, "stale");
+  await setupOn(lab, ana, task, machineId, "stale");
   expect(setupsOf(stub.taken)).toHaveLength(2);
   expect(setupsOf(stub.taken)[1]!.lockfile).toBe("scanpy==1.9.0\n");
   expect(setupsOf(stub.taken)[1]!.packages).toBeUndefined();
@@ -771,7 +1164,7 @@ it("replays a pin that still answers the declaration, and resolves again the mom
   // `manage_packages` does to it.
   envs.addPackages("stale", ["anndata"]);
 
-  await ana.kernelEnvSetup(machineId, "stale");
+  await setupOn(lab, ana, task, machineId, "stale");
   const third = setupsOf(stub.taken)[2]!;
   // Resolved, not replayed. Replaying here would build an environment
   // holding no `anndata` at all, on every machine in the lab, with nothing
@@ -782,7 +1175,7 @@ it("replays a pin that still answers the declaration, and resolves again the mom
   expect(envs.get("stale")!.lockRevision).toBe(2);
   expect(envs.readLockRequest("stale", 2)).toEqual(["scanpy", "anndata"]);
 
-  await ana.kernelEnvSetup(machineId, "stale");
+  await setupOn(lab, ana, task, machineId, "stale");
   expect(setupsOf(stub.taken)[3]!.lockRevision).toBe(2);
   expect(setupsOf(stub.taken)[3]!.packages).toBeUndefined();
 
@@ -805,14 +1198,15 @@ it("resolves when the package added sorts after everything already pinned", asyn
   const ana = apiFor(lab.base, ownerCookie);
   const { machineId, token } = await pairMachine(lab.base, ana, "ana-macbook");
   await ana.kernelEnvCreate({ name: "prefix", language: "python", packages: ["anndata"] });
+  const task = await taskFor(ana, "PREFIX");
   const stub = attachEnvStubDaemon(lab, machineId, token, "anndata==0.10.0\n");
   const envs = environmentStore(lab.store);
 
-  await ana.kernelEnvSetup(machineId, "prefix");
+  await setupOn(lab, ana, task, machineId, "prefix");
   expect(envs.readLockRequest("prefix", 1)).toEqual(["anndata"]);
 
   envs.addPackages("prefix", ["scanpy"]);
-  await ana.kernelEnvSetup(machineId, "prefix");
+  await setupOn(lab, ana, task, machineId, "prefix");
 
   const second = setupsOf(stub.taken)[1]!;
   expect(second.lockfile).toBeUndefined();
@@ -823,109 +1217,180 @@ it("resolves when the package added sorts after everything already pinned", asyn
 it("resolves for an add that joined a replay, which resolved nothing at all", async () => {
   // The other direction of the coalescing defect. A researcher clicks Setup on
   // an already-pinned environment, so that build REPLAYS and resolves nothing;
-  // an agent's add lands while it runs and joins it. Without the re-check the
-  // approved packages are not merely built late, they are never resolved —
-  // the build the add joined was a materialize of a lockfile written before
-  // they existed.
+  // an agent's add lands while it runs and joins it. Without the coverage
+  // follow-up the approved packages are not merely built late, they are never
+  // resolved — the build the add joined was a materialize of a lockfile
+  // written before they existed.
   //
-  // Driven through `buildEnvironmentOn` directly rather than the wire, because
-  // what has to be arranged is a second caller arriving mid-build; a stub
-  // daemon that answers as fast as loopback allows cannot hold that window
-  // open.
+  // Driven through the coordinator directly rather than the wire, because what
+  // has to be arranged is a second caller arriving mid-build; a stub daemon
+  // that answers as fast as loopback allows cannot hold that window open.
+  //
+  // The add is `requestRebuild` — what `/daemon/kernel-env/packages` calls —
+  // and the round it earns comes from its Task INTEREST being uncovered by the
+  // replay, which is the durable substitute for the old awaited re-check loop.
   const store = freshStore();
   addOwner(store, "u_ana");
   addRuntime(store, "rt_replayjoin", "u_ana", NOW);
+  addResearchTask(store);
   const relay = createRunRelay();
   const taken: RunCommand[] = [];
   const detach = relay.attach("rt_replayjoin", (_seq, command) => {
     taken.push(command);
   });
-  const envSetups = createEnvSetupRegistry();
   const envs = environmentStore(store);
   envs.declare({
     name: "replayjoin", language: "python", manager: "uv", packages: ["numpy"],
     createdBy: "u_ana", createdTs: NOW,
   });
   envs.writeLock("replayjoin", "numpy==1.0.0\n", NOW, ["numpy"]);
-  const machine = { machineId: "rt_replayjoin", name: "ana-macbook" };
-  const parts = { store, runs: relay, envSetups };
-  const ready = (): KernelEnvStatus => ({
+  const coordinator = createEnvironmentSetupCoordinator({ store, runs: relay, now: () => NOW });
+  const record = () => {};
+  const ready = (command: RunCommand, lockfile: string, lockRevision: number): KernelEnvStatus => ({
     state: "ready", name: "replayjoin", language: "python", manager: "uv",
     platform: "macos-aarch64", root: "/work/envs/replayjoin", version: "3.12.7",
-    packageCount: 1, lockRevision: 1,
+    packageCount: command.requestedPackages?.length ?? 0,
+    lockRevision,
+    setupRequestId: command.runId,
+    lockfileFingerprint: environmentLockfileFingerprint(lockfile),
+    packageFingerprint: environmentPackageFingerprint(command.requestedPackages ?? []),
+    declarationGenerationId: envs.get("replayjoin")!.declarationGenerationId,
+    declarationCreatedTs: NOW,
   });
 
   // The Setup click. Its plan is a replay — the pin still answers the
   // declaration exactly.
-  const click = buildEnvironmentOn(parts, machine, "replayjoin", ["numpy"]);
-  await until(() => taken.length === 1);
+  const click = coordinator.request(
+    { taskId: "t_1", machineId: "rt_replayjoin", environmentName: "replayjoin" },
+    { userId: "u_ana", role: "owner" },
+    record,
+  );
+  expect(taken).toHaveLength(1);
   expect(taken[0]!.lockfile).toBe("numpy==1.0.0\n");
   expect(taken[0]!.packages).toBeUndefined();
 
   // The agent's add, landing mid-build. It appends and joins.
   envs.addPackages("replayjoin", ["scanpy"]);
-  const added = buildEnvironmentOn(
-    parts, machine, "replayjoin", ["numpy", "scanpy"], "scanpy was added to replayjoin",
+  const joined = coordinator.requestRebuild(
+    {
+      machineId: "rt_replayjoin",
+      environmentName: "replayjoin",
+      requestedPackages: ["numpy", "scanpy"],
+      requestedBy: "u_ana",
+      taskId: "t_1",
+      reason: "scanpy was added to replayjoin",
+    },
+    record,
   );
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  // It joined rather than starting a second build over the same directory.
+  expect(joined!.jobId).toBe(click.jobId);
   expect(taken).toHaveLength(1);
 
-  envSetups.settle("rt_replayjoin", taken[0]!.runId, { ok: true, status: ready() });
-  // The click is satisfied by what it asked for and stops there.
-  expect((await click).state).toBe("ready");
+  coordinator.settle("rt_replayjoin", taken[0]!.runId, {
+    ok: true,
+    status: ready(taken[0]!, "numpy==1.0.0\n", 1),
+  }, record);
 
-  // The add is not, and asks for a real resolve.
-  await until(() => taken.length === 2);
+  // The replay covered `numpy` and nothing else, so the interest is uncovered
+  // and earns a round of its own — and that round RESOLVES.
+  expect(taken).toHaveLength(2);
   expect(taken[1]!.lockfile).toBeUndefined();
   expect(taken[1]!.packages).toEqual(["numpy", "scanpy"]);
+  // And it announces the add that earned it. The Setup press this add joined
+  // carried no sentence — a researcher looking at the button they pressed
+  // needs none — so the job it joined had none either, and the add's own
+  // sentence filled that silence. Without that, the kernels this round
+  // restarts are restarted announcing nothing.
   expect(taken[1]!.reason).toBe("scanpy was added to replayjoin");
-  envSetups.settle("rt_replayjoin", taken[1]!.runId, { ok: true, status: ready() });
-  expect((await added).state).toBe("ready");
+  const grownLockfile = "numpy==1.0.0\nscanpy==1.9.0\n";
+  const grownRevision = coordinator.bindResolvedLock(
+    "rt_replayjoin",
+    taken[1]!.runId,
+    "replayjoin",
+    taken[1]!.declarationGenerationId!,
+    grownLockfile,
+    record,
+  );
+  expect(grownRevision).toBe(2);
+  expect(
+    coordinator.settle("rt_replayjoin", taken[1]!.runId, {
+      ok: true,
+      status: ready(taken[1]!, grownLockfile, grownRevision!),
+    }, record),
+  ).toBe(true);
+  // Built, not merely declared: the second round finished ready holding both.
+  expect(environmentSetupStore(store).job(
+    environmentSetupStore(store).jobByRequest(taken[1]!.runId)!.id,
+  )).toMatchObject({ state: "ready" });
+  expect(envs.readLockRequest("replayjoin", 2)).toEqual(["numpy", "scanpy"]);
   detach();
 });
 
-it("gives up in words rather than reporting a build that is not coming", async () => {
-  // The bound on the re-check loop. A caller whose packages keep missing every
-  // build — something appending on a timer — must not spin forever, and must
-  // not be told a build carrying them is on its way. Driven by asking for a
-  // package nothing ever adds to the declaration, which is the same shape from
-  // the loop's point of view.
+it("gives up rather than chasing a build that is never going to carry what was asked for", async () => {
+  // The bound on the coverage follow-up. An interest whose packages keep
+  // missing every build — something appending on a timer — must not spin
+  // forever. Driven by asking for a package nothing ever adds to the
+  // declaration, which is the same shape from the follow-up's point of view.
+  //
+  // The old awaited loop ended by REJECTING the caller in words. There is no
+  // caller left holding a promise to reject: the bound now lives in
+  // `coverage_round`, and what it produces is a capped interest and no fifth
+  // build.
   const store = freshStore();
   addOwner(store, "u_ana");
   addRuntime(store, "rt_giveup", "u_ana", NOW);
+  addResearchTask(store);
   const relay = createRunRelay();
   const taken: RunCommand[] = [];
-  const envSetups = createEnvSetupRegistry();
+  const coordinator = createEnvironmentSetupCoordinator({ store, runs: relay, now: () => NOW });
+  const record = () => {};
   const detach = relay.attach("rt_giveup", (_seq, command) => {
     taken.push(command);
     // Answered immediately and successfully, so what ends this is the bound
     // and nothing else.
-    setTimeout(() => {
-      envSetups.settle("rt_giveup", command.runId, {
-        ok: true,
-        status: {
-          state: "ready", name: "giveup", language: "python", manager: "uv",
-          platform: "macos-aarch64", root: "/work/envs/giveup", version: "3.12.7",
-          packageCount: 0, lockRevision: 0,
-        },
-      });
-    }, 0);
+    const lockfile = command.lockfile ?? "numpy==1.0.0\n";
+    const lockRevision = command.lockRevision ?? coordinator.bindResolvedLock(
+      "rt_giveup",
+      command.runId,
+      "giveup",
+      command.declarationGenerationId!,
+      lockfile,
+      record,
+    )!;
+    coordinator.settle("rt_giveup", command.runId, {
+      ok: true,
+      status: {
+        state: "ready", name: "giveup", language: "python", manager: "uv",
+        platform: "macos-aarch64", root: "/work/envs/giveup", version: "3.12.7",
+        packageCount: command.requestedPackages?.length ?? 0,
+        lockRevision,
+        setupRequestId: command.runId,
+        lockfileFingerprint: environmentLockfileFingerprint(lockfile),
+        packageFingerprint: environmentPackageFingerprint(command.requestedPackages ?? []),
+        declarationGenerationId:
+          environmentStore(store).get("giveup")!.declarationGenerationId,
+        declarationCreatedTs: NOW,
+      },
+    }, record);
   });
   environmentStore(store).declare({
     name: "giveup", language: "python", manager: "uv", packages: ["numpy"],
     createdBy: "u_ana", createdTs: NOW,
   });
 
-  await expectRejection(
-    buildEnvironmentOn(
-      { store, runs: relay, envSetups },
-      { machineId: "rt_giveup", name: "ana-macbook" },
-      "giveup",
-      ["numpy", "never-declared"],
-    ),
-    "conflict",
-    /kept changing while ana-macbook was building it/,
+  coordinator.requestRebuild(
+    {
+      machineId: "rt_giveup",
+      environmentName: "giveup",
+      // `never-declared` is not in the declaration and nothing ever adds it,
+      // so no build can ever cover this interest.
+      requestedPackages: ["numpy", "never-declared"],
+      requestedBy: "u_ana",
+      taskId: "t_1",
+    },
+    record,
   );
+
   // Bounded, and the bound is what stopped it — not one attempt, not endless.
   expect(taken).toHaveLength(4);
   detach();
@@ -943,10 +1408,11 @@ it("does not re-pin the lab because a package list came back in a different orde
   await ana.kernelEnvCreate({
     name: "reordered", language: "python", packages: ["scanpy", "anndata"],
   });
+  const task = await taskFor(ana, "REORDER");
   const stub = attachEnvStubDaemon(lab, machineId, token, "scanpy==1.9.0\n");
   const envs = environmentStore(lab.store);
 
-  await ana.kernelEnvSetup(machineId, "reordered");
+  await setupOn(lab, ana, task, machineId, "reordered");
   expect(envs.get("reordered")!.lockRevision).toBe(1);
 
   // The same two names, the other way round.
@@ -954,7 +1420,7 @@ it("does not re-pin the lab because a package list came back in a different orde
     JSON.stringify(["anndata", "scanpy"]),
   ]);
 
-  await ana.kernelEnvSetup(machineId, "reordered");
+  await setupOn(lab, ana, task, machineId, "reordered");
 
   expect(setupsOf(stub.taken)[1]!.lockfile).toBe("scanpy==1.9.0\n");
   expect(envs.get("reordered")!.lockRevision).toBe(1);
@@ -973,6 +1439,7 @@ it("resolves against a pin this lab cannot name the request for, rather than rep
   const ana = apiFor(lab.base, ownerCookie);
   const { machineId, token } = await pairMachine(lab.base, ana, "ana-macbook");
   await ana.kernelEnvCreate({ name: "unnamed", language: "python", packages: ["scanpy"] });
+  const task = await taskFor(ana, "UNNAMED");
   // Pinned the way a database that predates migration 28 holds one: a real
   // lockfile at a real revision, and no record of the request behind it.
   lab.store.run(
@@ -982,7 +1449,7 @@ it("resolves against a pin this lab cannot name the request for, rather than rep
   lab.store.run(`UPDATE kernel_envs SET lock_revision = 1 WHERE name = 'unnamed'`);
   const stub = attachEnvStubDaemon(lab, machineId, token, "scanpy==1.9.0\n");
 
-  await ana.kernelEnvSetup(machineId, "unnamed");
+  await setupOn(lab, ana, task, machineId, "unnamed");
 
   const setup = setupsOf(stub.taken)[0]!;
   expect(setup.lockfile).toBeUndefined();
@@ -1003,8 +1470,15 @@ it("refuses a machine that is not the caller's own", async () => {
 
   const { machineId: rtAna } = await pairMachine(lab.base, ana, "ana-macbook");
   await ana.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
+  const benTask = await taskFor(ben, "BEN");
 
-  await expectRejection(ben.kernelEnvSetup(rtAna, "crispr"), "forbidden", /paired/);
+  await expectRejection(
+    ben.requestKernelEnvironmentSetup({
+      taskId: benTask, machineId: rtAna, environmentName: "crispr",
+    }),
+    "forbidden",
+    /paired/,
+  );
 });
 
 it("refuses a name this lab has never declared", async () => {
@@ -1013,8 +1487,13 @@ it("refuses a name this lab has never declared", async () => {
   const ownerCookie = await signUpOwner(lab.base);
   const ana = apiFor(lab.base, ownerCookie);
   const { machineId } = await pairMachine(lab.base, ana, "ana-macbook");
+  const task = await taskFor(ana, "NOPE");
 
-  await expectRejection(ana.kernelEnvSetup(machineId, "nope"), "not-found", /nope/);
+  await expectRejection(
+    ana.requestKernelEnvironmentSetup({ taskId: task, machineId, environmentName: "nope" }),
+    "not-found",
+    /nope/,
+  );
 });
 
 it("refuses setup on a machine this lab has never paired", async () => {
@@ -1023,7 +1502,14 @@ it("refuses setup on a machine this lab has never paired", async () => {
   const ownerCookie = await signUpOwner(lab.base);
   const ana = apiFor(lab.base, ownerCookie);
   await ana.kernelEnvCreate({ name: "crispr", language: "python", packages: ["scanpy"] });
-  await expectRejection(ana.kernelEnvSetup("rt_never-paired", "crispr"), "not-found", /rt_never-paired/);
+  const task = await taskFor(ana, "UNPAIRED");
+  await expectRejection(
+    ana.requestKernelEnvironmentSetup({
+      taskId: task, machineId: "rt_never-paired", environmentName: "crispr",
+    }),
+    "not-found",
+    /rt_never-paired/,
+  );
 });
 
 it("collapses two researchers asking the same machine to build the same environment into one command", async () => {
@@ -1041,30 +1527,59 @@ it("collapses two researchers asking the same machine to build the same environm
     // Held open past both requests actually landing on this server, so the
     // race this test is about — two callers arriving before either settles
     // — is not left to however fast a loopback round trip happens to be.
-    void new Promise((resolve) => setTimeout(resolve, 200)).then(() =>
-      fetch(`${lab.base}/daemon/kernel-env/result`, {
+    void new Promise((resolve) => setTimeout(resolve, 200)).then(async () => {
+      const lockfile = "scanpy==1.9.0\n";
+      const lockResponse = await fetch(`${lab.base}/daemon/kernel-env/lock`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
         body: JSON.stringify({
           requestId: command.runId,
+          name: "crispr",
+          declarationGenerationId: command.declarationGenerationId,
+          lockfile,
+        }),
+      });
+      const { lockRevision } = await lockResponse.json() as { lockRevision: number };
+      return fetch(`${lab.base}/daemon/kernel-env/result`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          requestId: command.runId,
+          name: "crispr",
+          declarationGenerationId: command.declarationGenerationId,
           ok: true,
           status: {
             state: "ready", name: "crispr", language: "python", manager: "uv",
             platform: "macos-aarch64", root: "/work/envs/crispr", version: "3.12.7",
-            packageCount: 0, lockRevision: 0,
+            packageCount: command.requestedPackages?.length ?? 0,
+            lockRevision,
+            setupRequestId: command.runId,
+            lockfileFingerprint: environmentLockfileFingerprint(lockfile),
+            packageFingerprint: environmentPackageFingerprint(command.requestedPackages ?? []),
+            declarationGenerationId: command.declarationGenerationId,
+            declarationCreatedTs: command.declarationCreatedTs,
           },
         }),
-      }),
-    ).catch(() => {});
+      });
+    }).catch(() => {});
   });
 
   // Two callers racing in, before either has settled.
+  const anaTask = await taskFor(ana, "RACE1");
+  const otherTask = await taskFor(ana, "RACE2");
   const [first, second] = await Promise.all([
-    ana.kernelEnvSetup(machineId, "crispr"),
-    ana.kernelEnvSetup(machineId, "crispr"),
+    ana.requestKernelEnvironmentSetup({
+      taskId: anaTask, machineId, environmentName: "crispr",
+    }),
+    ana.requestKernelEnvironmentSetup({
+      taskId: otherTask, machineId, environmentName: "crispr",
+    }),
   ]);
+  // One physical job, one command down the wire, one reply — whichever of the
+  // two asks got there first. Both Tasks are recorded as interested in it.
+  expect(first.jobId).toBe(second.jobId);
+  await until(() => replies === 1);
   expect(replies).toBe(1);
-  expect(first).toEqual(second);
   detach();
 });
 
@@ -1112,35 +1627,388 @@ it("reclaims a machine's own copy of the starter even though the starter itself 
   detach();
 });
 
-it("publishes a machine's setup progress lines on KERNEL_SETUP_CHANNEL", async () => {
+it("leaves a Research's default standing when a machine reclaims its own copy of it", async () => {
+  // The counterpart to the delete path, and the reason the two are different
+  // operations. Deleting the declaration sweeps every default naming it,
+  // because nothing could ever resolve one again. Reclaim frees a MACHINE's
+  // gigabytes and leaves the declaration — and so the default goes on naming
+  // something this lab still has, and the next machine to build it makes the
+  // default reachable again.
+  const store = freshStore();
+  addOwner(store, "u_ana");
+  addResearchTask(store);
+  addRuntime(store, "rt_reclaim", "u_ana", NOW);
+  const runs = createRunRelay();
+  // Reclaim is delivered to a connected machine or refused, so the command
+  // stream has to be up before it is asked for.
+  const taken: RunCommand[] = [];
+  const detach = runs.attach("rt_reclaim", (_seq, command) => taken.push(command));
+  const envs = environmentsApi(depsFor(store, { runs }));
+  await envs.kernelEnvCreate({ name: "analysis", language: "python", packages: ["scanpy"] });
+
+  const setups = environmentSetupStore(store);
+  const job = setups.requestJob({
+    studyId: "s_1",
+    taskId: "t_1",
+    runtimeId: "rt_reclaim",
+    environmentName: "analysis",
+    language: "python",
+    manager: "uv",
+    lockRevision: 0,
+    declarationGenerationId: "envgen_reclaim",
+    declarationCreatedTs: NOW,
+    requestId: "req_reclaim",
+    requestedBy: "u_ana",
+    requestedTs: NOW,
+    requestedPackages: ["scanpy"],
+    resolvedFrom: ["scanpy"],
+  }).job;
+  setups.markReady(job.requestId, NOW + 1);
+  const [suggestion] = setups.createSuggestionsForReadyJob(job.id, NOW + 2);
+  await envs.answerEnvironmentDefaultSuggestion(suggestion!.id, true);
+  expect(setups.defaultsForResearch("s_1")).toHaveLength(1);
+
+  await envs.kernelEnvReclaim("rt_reclaim", "analysis");
+
+  expect(taken.map((command) => command.type)).toEqual(["kernel-env-reclaim"]);
+  expect(setups.defaultsForResearch("s_1")).toEqual([
+    { language: "python", environmentName: "analysis", setBy: "u_ana", setTs: NOW },
+  ]);
+  expect(environmentStore(store).get("analysis")).toBeDefined();
+  detach();
+});
+
+it("bounds and redacts a progress line before it reaches this lab's own record of the build", async () => {
+  // A machine's `uv` output is untrusted text that lands in a durable log and
+  // goes out to every open tab. A machine sending a megabyte of it, or a line
+  // carrying a credential out of its own environment, must not be able to make
+  // either this lab's problem.
   const lab = await freshWireServer();
   servers.push(lab);
   const ownerCookie = await signUpOwner(lab.base);
   const ana = apiFor(lab.base, ownerCookie);
   const { machineId, token } = await pairMachine(lab.base, ana, "ana-macbook");
-
-  const seen: KernelSetupProgress[] = [];
-  lab.channel.subscribe(undefined, (s) => {
-    if (s.type === "change" && s.message.kind === KERNEL_SETUP_CHANNEL)
-      seen.push(s.message.payload as KernelSetupProgress);
+  const ownerId = lab.store.get(`SELECT owner_id FROM runtimes WHERE id = ?`, [machineId])!
+    .owner_id as string;
+  const envs = environmentStore(lab.store);
+  const declaration = envs.declare({
+    name: "crispr", language: "python", manager: "uv", packages: ["scanpy"], createdTs: NOW,
   });
+  const requested = environmentSetupStore(lab.store).requestPhysicalJob({
+    runtimeId: machineId,
+    environmentName: "crispr",
+    language: "python",
+    manager: "uv",
+    lockRevision: 0,
+    declarationGenerationId: declaration.declarationGenerationId!,
+    declarationCreatedTs: NOW,
+    requestId: "envsetup_safe_line",
+    requestedTs: NOW,
+    resolvedFrom: ["scanpy"],
+  });
+  expect(ownerId).toBeDefined();
+  const secret = "compatibility-channel-secret with spaces";
 
-  const res = await fetch(`${lab.base}/daemon/kernel-env/progress`, {
+  const response = await fetch(`${lab.base}/daemon/kernel-env/progress`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify({
-      requestId: "envsetup_1",
+      requestId: "envsetup_safe_line",
       name: "crispr",
-      line: "Resolved 12 packages in 340ms",
+      progress: {
+        stage: "installing",
+        line: `${"界".repeat(1_340)} {"AWS_SECRET_ACCESS_KEY": "${secret}"}`,
+      },
     }),
   });
 
-  expect(res.status).toBe(200);
-  // `machineId` in the published payload is the paired machine's own,
-  // read off the bearer token — the one fact a machine cannot misreport
-  // about itself — never trusted from the request body, which carries no
-  // machineId at all.
-  expect(seen).toEqual([{ machineId, name: "crispr", line: "Resolved 12 packages in 340ms" }]);
+  expect(response.status).toBe(200);
+  const log = environmentSetupStore(lab.store).job(requested.job.id)!.log;
+  expect(log).toHaveLength(1);
+  expect(new TextEncoder().encode(log[0]!).byteLength).toBeLessThanOrEqual(4_096);
+  expect(log[0]!).not.toContain(secret);
+  expect(log[0]!).toContain("[redacted]");
+});
+
+it("binds durable progress and refuses a terminal duplicate that does not match", async () => {
+  const lab = await freshWireServer();
+  servers.push(lab);
+  const ownerCookie = await signUpOwner(lab.base);
+  const ana = apiFor(lab.base, ownerCookie);
+  const { machineId, token } = await pairMachine(lab.base, ana, "ana-macbook");
+  const ownerId = lab.store.get(`SELECT owner_id FROM runtimes WHERE id = ?`, [machineId])!
+    .owner_id as string;
+  lab.store.run(
+    `INSERT INTO studies (id, key, title, created_by, created_ts, updated_ts, seq)
+     VALUES ('s_setup', 'SETUP', 'Setup', ?, ?, ?, ?)`,
+    [ownerId, NOW, NOW, nextSeq(lab.store)],
+  );
+  lab.store.run(
+    `INSERT INTO tasks
+       (id, number, study_id, stage, title, status, priority, created_by,
+        created_ts, updated_ts, seq)
+     VALUES ('t_setup', 1, 's_setup', 'background', 'Setup', 'todo', 'no-priority',
+             ?, ?, ?, ?)`,
+    [ownerId, NOW, NOW, nextSeq(lab.store)],
+  );
+  const envs = environmentStore(lab.store);
+  envs.declare({
+    name: "durable", language: "python", manager: "uv", packages: ["scanpy"], createdTs: NOW,
+  });
+  envs.writeLock("durable", "scanpy==1.9.0\n", NOW, ["scanpy"]);
+  const requested = environmentSetupStore(lab.store).requestJob({
+    studyId: "s_setup",
+    taskId: "t_setup",
+    runtimeId: machineId,
+    environmentName: "durable",
+    language: "python",
+    manager: "uv",
+    lockRevision: 1,
+    declarationGenerationId: envs.get("durable")!.declarationGenerationId!,
+    declarationCreatedTs: NOW,
+    requestId: "envsetup_collision",
+    requestedBy: ownerId,
+    requestedTs: NOW,
+    requestedPackages: ["scanpy"],
+  });
+
+  const progress = await fetch(`${lab.base}/daemon/kernel-env/progress`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      requestId: "envsetup_collision",
+      name: "durable",
+      progress: { stage: "installing", line: "installing scanpy" },
+    }),
+  });
+  expect(progress.status).toBe(200);
+  expect(environmentSetupStore(lab.store).job(requested.job.id)).toMatchObject({
+    state: "building",
+    stage: "installing",
+    log: ["installing scanpy"],
+  });
+  for (const progressBody of [
+    { stage: "finalizing", line: "writing marker" },
+    { stage: "installing", line: "late installing line" },
+    { stage: "finalizing", line: "writing marker" },
+  ]) {
+    const response = await fetch(`${lab.base}/daemon/kernel-env/progress`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        requestId: "envsetup_collision",
+        name: "durable",
+        progress: progressBody,
+      }),
+    });
+    expect(response.status).toBe(200);
+  }
+  expect(environmentSetupStore(lab.store).job(requested.job.id)).toMatchObject({
+    stage: "finalizing",
+    log: ["installing scanpy", "writing marker"],
+  });
+
+  const status: KernelEnvStatus = {
+    state: "ready",
+    name: "durable",
+    language: "python",
+    manager: "uv",
+    platform: "macos-aarch64",
+    root: "/work/envs/durable",
+    packageCount: 12,
+    lockRevision: 1,
+    setupRequestId: "envsetup_collision",
+    lockfileFingerprint: environmentLockfileFingerprint("scanpy==1.9.0\n"),
+    packageFingerprint: environmentPackageFingerprint(["scanpy"]),
+    declarationGenerationId: envs.get("durable")!.declarationGenerationId,
+    declarationCreatedTs: NOW,
+  };
+  const generation = envs.get("durable")!.declarationGenerationId!;
+  const postTerminal = (terminal: Record<string, unknown>) => fetch(`${lab.base}/daemon/kernel-env/result`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify(terminal),
+  });
+  const successBody = {
+    requestId: "envsetup_collision",
+    name: "durable",
+    declarationGenerationId: generation,
+    ok: true,
+    status,
+  };
+  const postResult = () => postTerminal(successBody);
+  const missingOuterGeneration = await postTerminal({
+    requestId: "envsetup_collision",
+    name: "durable",
+    ok: true,
+    status,
+  });
+  expect(missingOuterGeneration.status).toBe(400);
+  expect(environmentSetupStore(lab.store).job(requested.job.id)!.state).toBe("building");
+  const malformed = await fetch(`${lab.base}/daemon/kernel-env/result`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      requestId: "envsetup_collision",
+      name: "durable",
+      ok: true,
+      status: { state: "ready", name: "durable" },
+    }),
+  });
+  expect(malformed.status).toBe(400);
+  const wrongFailure = await fetch(`${lab.base}/daemon/kernel-env/result`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      requestId: "envsetup_collision",
+      name: "other",
+      declarationGenerationId: generation,
+      ok: false,
+      error: "spoofed failure",
+    }),
+  });
+  expect(wrongFailure.status).toBe(403);
+  expect(environmentSetupStore(lab.store).job(requested.job.id)!.state).toBe("building");
+  const first = await postResult();
+  expect(first.status).toBe(200);
+  expect(await first.json()).toEqual({ ok: true });
+  const duplicate = await postResult();
+  expect(duplicate.status).toBe(200);
+  expect(await duplicate.json()).toEqual({ ok: true, duplicate: true });
+  expect(environmentSetupStore(lab.store).job(requested.job.id)!.state).toBe("ready");
+  const successFingerprint = environmentSetupStore(lab.store)
+    .job(requested.job.id)!.terminalOutcomeFingerprint;
+  expect(successFingerprint).toMatch(/^[a-f0-9]{64}$/);
+  for (const conflict of [
+    { ...successBody, name: "other" },
+    { ...successBody, declarationGenerationId: "envgen_other" },
+    { ...successBody, status: { ...status, name: "other" } },
+    { ...successBody, status: { ...status, declarationGenerationId: "envgen_other" } },
+    { ...successBody, status: { ...status, language: "r" } },
+    { ...successBody, status: { ...status, manager: "conda" } },
+    { ...successBody, status: { ...status, platform: "linux-x64" } },
+    { ...successBody, status: { ...status, root: "/other/root" } },
+    { ...successBody, status: { ...status, version: "3.13.0" } },
+    { ...successBody, status: { ...status, packageCount: 13 } },
+    { ...successBody, status: { ...status, lockRevision: 2 } },
+    { ...successBody, status: { ...status, declarationCreatedTs: NOW + 1 } },
+    {
+      requestId: successBody.requestId,
+      name: successBody.name,
+      declarationGenerationId: generation,
+      ok: false,
+      error: "conflicting failure",
+    },
+  ]) {
+    expect((await postTerminal(conflict)).status).toBeGreaterThanOrEqual(400);
+  }
+  expect(
+    environmentSetupStore(lab.store).job(requested.job.id)!.terminalOutcomeFingerprint,
+  ).toBe(successFingerprint);
+  const failed = environmentSetupStore(lab.store).requestJob({
+    studyId: "s_setup",
+    taskId: "t_setup",
+    runtimeId: machineId,
+    environmentName: "durable",
+    language: "python",
+    manager: "uv",
+    lockRevision: 1,
+    declarationGenerationId: envs.get("durable")!.declarationGenerationId!,
+    declarationCreatedTs: NOW,
+    requestId: "envsetup_bounded_failure",
+    requestedBy: ownerId,
+    requestedTs: NOW + 1,
+    requestedPackages: ["scanpy"],
+  });
+  const failure = await fetch(`${lab.base}/daemon/kernel-env/result`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      requestId: "envsetup_bounded_failure",
+      name: "durable",
+      declarationGenerationId: generation,
+      ok: false,
+      error: "x".repeat(10_000),
+    }),
+  });
+  expect(failure.status).toBe(200);
+  expect(environmentSetupStore(lab.store).job(failed.job.id)).toMatchObject({
+    state: "failed",
+    errorSummary: "x".repeat(4_096),
+  });
+  const sameFailure = await postTerminal({
+    requestId: "envsetup_bounded_failure",
+    name: "durable",
+    declarationGenerationId: generation,
+    ok: false,
+    error: "x".repeat(10_000),
+  });
+  expect(sameFailure.status).toBe(200);
+  expect(await sameFailure.json()).toEqual({ ok: true, duplicate: true });
+  expect((await postTerminal({
+    requestId: "envsetup_bounded_failure",
+    name: "durable",
+    declarationGenerationId: generation,
+    ok: false,
+    error: "different failure",
+  })).status).toBe(409);
+  expect((await postTerminal({
+    ...successBody,
+    requestId: "envsetup_bounded_failure",
+    status: { ...status, setupRequestId: "envsetup_bounded_failure" },
+  })).status).toBe(409);
+  const legacyTerminal = environmentSetupStore(lab.store).requestJob({
+    studyId: "s_setup",
+    taskId: "t_setup",
+    runtimeId: machineId,
+    environmentName: "durable",
+    language: "python",
+    manager: "uv",
+    lockRevision: 1,
+    declarationGenerationId: generation,
+    declarationCreatedTs: NOW,
+    requestId: "envsetup_legacy_terminal_without_fingerprint",
+    requestedBy: ownerId,
+    requestedTs: NOW + 2,
+    requestedPackages: ["scanpy"],
+  });
+  environmentSetupStore(lab.store).markReady(legacyTerminal.job.requestId, NOW + 3);
+  expect(
+    environmentSetupStore(lab.store).job(legacyTerminal.job.id)?.terminalOutcomeFingerprint,
+  ).toBeUndefined();
+  expect((await postTerminal({
+    ...successBody,
+    requestId: legacyTerminal.job.requestId,
+    status: { ...status, setupRequestId: legacyTerminal.job.requestId },
+  })).status).toBe(409);
+  lab.store.run(
+    `INSERT INTO kernel_env_setup_jobs
+       (id, runtime_id, environment_name, language, manager, lock_revision,
+        declaration_generation_id, declaration_created_ts, request_id, state, stage,
+        requested_ts, started_ts, updated_ts, seq)
+     VALUES ('job_legacy_active_result', ?, 'durable', 'python', 'uv', 1,
+             NULL, ?, 'envsetup_legacy_active_result', 'building', 'installing',
+             ?, ?, ?, ?)`,
+    [machineId, NOW, NOW + 4, NOW + 4, NOW + 4, nextSeq(lab.store)],
+  );
+  const legacyActiveBody = {
+    requestId: "envsetup_legacy_active_result",
+    name: "durable",
+    ok: true,
+    status: {
+      ...status,
+      declarationGenerationId: undefined,
+    },
+  };
+  expect((await postTerminal(legacyActiveBody)).status).toBe(200);
+  expect(environmentSetupStore(lab.store).job("job_legacy_active_result")).toMatchObject({
+    state: "failed",
+    errorSummary: expect.stringMatching(/generation/i),
+  });
+  expect(
+    environmentSetupStore(lab.store).job("job_legacy_active_result")?.terminalOutcomeFingerprint,
+  ).toBeUndefined();
+  expect((await postTerminal(legacyActiveBody)).status).toBe(409);
 });
 
 it("refuses a progress line with no name", async () => {
@@ -1150,11 +2018,6 @@ it("refuses a progress line with no name", async () => {
   const ana = apiFor(lab.base, ownerCookie);
   const { token } = await pairMachine(lab.base, ana, "ana-macbook");
 
-  const seen: unknown[] = [];
-  lab.channel.subscribe(undefined, (s) => {
-    if (s.type === "change" && s.message.kind === KERNEL_SETUP_CHANNEL) seen.push(s.message.payload);
-  });
-
   const res = await fetch(`${lab.base}/daemon/kernel-env/progress`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -1162,5 +2025,8 @@ it("refuses a progress line with no name", async () => {
   });
 
   expect(res.status).toBe(400);
-  expect(seen).toEqual([]);
+  // Refused on its shape, before anything is written anywhere.
+  expect(
+    lab.store.all(`SELECT kind FROM change_log`).map(({ kind }) => kind as string),
+  ).not.toContain("environment-setup-progress");
 });

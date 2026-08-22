@@ -1014,15 +1014,15 @@ export const MIGRATIONS: Migration[] = [
       // declaration, and it drifts from the declaration the first time
       // anything writes one without the other. This column cannot drift: it
       // is what was sent, written beside the lockfile it produced, and
-      // `kernelEnvSetup` compares it against the declaration's `packages` as
+      // the setup plan compares it against the declaration's `packages` as
       // they stand right now.
       //
       // NULL is "this lab cannot name what that pin was resolved from" — a
       // row written before this column existed. Not "resolved from nothing",
       // which is what an invented `'[]'` here would claim, and which would
-      // have `kernelEnvSetup` replay a lockfile against a declaration it
-      // has no evidence matches. See that method for why the absence widens
-      // to a resolve instead.
+      // have a machine replay a lockfile against a declaration this lab has
+      // no evidence matches. See `planFor` for why the absence widens to a
+      // resolve instead.
       store.run(`ALTER TABLE kernel_env_locks ADD COLUMN requested_packages TEXT`);
     },
   },
@@ -1090,6 +1090,504 @@ export const MIGRATIONS: Migration[] = [
           seq        INTEGER NOT NULL UNIQUE
         )`);
       store.run(`CREATE INDEX provenance_by_task ON provenance_envelopes(task_id, seq)`);
+    },
+  },
+  {
+    version: 33,
+    up(store) {
+      store.run(
+        `ALTER TABLE turns ADD COLUMN origin TEXT NOT NULL DEFAULT 'user'
+          CHECK (origin IN ('user', 'system'))`,
+      );
+      store.run(`ALTER TABLE turns ADD COLUMN continuation TEXT`);
+      store.run(`
+        CREATE TABLE kernel_env_setup_jobs (
+          id                TEXT PRIMARY KEY,
+          runtime_id        TEXT NOT NULL REFERENCES runtimes(id),
+          environment_name  TEXT NOT NULL,
+          language          TEXT NOT NULL CHECK (language IN ('python', 'r')),
+          manager           TEXT NOT NULL CHECK (manager IN ('uv', 'conda')),
+          lock_revision     INTEGER NOT NULL,
+          request_id        TEXT NOT NULL UNIQUE,
+          resolved_from     TEXT,
+          reason            TEXT,
+          state             TEXT NOT NULL CHECK (state IN ('requested', 'building', 'ready', 'failed')),
+          stage             TEXT NOT NULL CHECK (stage IN ('waiting-for-machine', 'resolving', 'installing', 'finalizing')),
+          error_summary     TEXT,
+          log               TEXT NOT NULL DEFAULT '[]',
+          requested_ts      INTEGER NOT NULL,
+          started_ts        INTEGER,
+          finished_ts       INTEGER,
+          updated_ts        INTEGER NOT NULL,
+          seq               INTEGER NOT NULL UNIQUE
+        )`);
+      store.run(`
+        CREATE UNIQUE INDEX one_active_environment_build
+          ON kernel_env_setup_jobs(runtime_id, environment_name, lock_revision)
+          WHERE state IN ('requested', 'building')`);
+      store.run(`
+        CREATE TABLE kernel_env_setup_interests (
+          job_id       TEXT NOT NULL REFERENCES kernel_env_setup_jobs(id) ON DELETE CASCADE,
+          study_id     TEXT NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+          task_id      TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          requested_by TEXT NOT NULL REFERENCES users(id),
+          requested_ts INTEGER NOT NULL,
+          PRIMARY KEY (job_id, task_id)
+        )`);
+      // A structured requirement exists before a researcher chooses Set up,
+      // so job_id is intentionally nullable until an exact physical attempt
+      // is requested. The source/environment/runtime uniqueness keeps that
+      // unattached requirement idempotent.
+      store.run(`
+        CREATE TABLE task_env_setup_waiters (
+          id                   TEXT PRIMARY KEY,
+          job_id               TEXT REFERENCES kernel_env_setup_jobs(id) ON DELETE CASCADE,
+          study_id             TEXT NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+          task_id              TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          session_id           TEXT NOT NULL REFERENCES sessions(id),
+          source_turn_id       TEXT NOT NULL REFERENCES turns(id),
+          source_run_id        TEXT NOT NULL,
+          language             TEXT NOT NULL CHECK (language IN ('python', 'r')),
+          environment_name     TEXT NOT NULL,
+          runtime_id           TEXT NOT NULL REFERENCES runtimes(id),
+          state                TEXT NOT NULL CHECK (state IN ('waiting', 'queued', 'resumed', 'cancelled')),
+          continuation_turn_id TEXT UNIQUE REFERENCES turns(id),
+          cancelled_reason     TEXT,
+          created_ts           INTEGER NOT NULL,
+          updated_ts           INTEGER NOT NULL,
+          seq                  INTEGER NOT NULL UNIQUE,
+          UNIQUE (source_turn_id, environment_name, runtime_id)
+        )`);
+      store.run(`
+        CREATE TABLE research_environment_defaults (
+          study_id         TEXT NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+          language         TEXT NOT NULL CHECK (language IN ('python', 'r')),
+          environment_name TEXT NOT NULL,
+          set_by           TEXT NOT NULL REFERENCES users(id),
+          set_ts           INTEGER NOT NULL,
+          PRIMARY KEY (study_id, language)
+        )`);
+      store.run(`
+        CREATE TABLE environment_default_suggestions (
+          id               TEXT PRIMARY KEY,
+          job_id           TEXT NOT NULL REFERENCES kernel_env_setup_jobs(id) ON DELETE CASCADE,
+          study_id         TEXT NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+          task_id          TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          language         TEXT NOT NULL CHECK (language IN ('python', 'r')),
+          environment_name TEXT NOT NULL,
+          state            TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'declined')),
+          created_ts       INTEGER NOT NULL,
+          answered_ts      INTEGER,
+          answered_by      TEXT REFERENCES users(id),
+          seq              INTEGER NOT NULL UNIQUE,
+          UNIQUE (job_id, study_id, language)
+        )`);
+      store.run(`
+        CREATE TABLE session_permission_grants (
+          session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          capability  TEXT NOT NULL CHECK (capability = 'environment-mutation'),
+          target      TEXT NOT NULL,
+          granted_by  TEXT NOT NULL REFERENCES users(id),
+          granted_ts  INTEGER NOT NULL,
+          PRIMARY KEY (session_id, capability, target)
+        )`);
+    },
+  },
+  {
+    version: 34,
+    up(store) {
+      // An early Task 2 build could ask the same Research/language question
+      // once per ready physical attempt. Preserve the oldest visible question
+      // and discard only its still-unanswered duplicates before installing the
+      // invariant that prevents another race.
+      store.run(`
+        DELETE FROM environment_default_suggestions AS duplicate
+         WHERE duplicate.state = 'pending'
+           AND EXISTS (
+             SELECT 1 FROM environment_default_suggestions earlier
+              WHERE earlier.study_id = duplicate.study_id
+                AND earlier.language = duplicate.language
+                AND earlier.state = 'pending'
+                AND earlier.seq < duplicate.seq
+           )`);
+      store.run(`
+        CREATE UNIQUE INDEX one_pending_environment_default_suggestion
+          ON environment_default_suggestions(study_id, language)
+          WHERE state = 'pending'`);
+    },
+  },
+  {
+    version: 35,
+    up(store) {
+      // A coalesced physical attempt can serve several Tasks that arrived
+      // against different declaration snapshots. The job-wide resolve input
+      // cannot say which package set each Task is owed, so each append-only
+      // interest keeps the request it first joined with. Existing interests
+      // predate that distinction and honestly require no named packages.
+      store.run(
+        `ALTER TABLE kernel_env_setup_interests
+           ADD COLUMN requested_packages TEXT NOT NULL DEFAULT '[]'`,
+      );
+    },
+  },
+  {
+    version: 36,
+    up(store) {
+      // Coverage follow-ups are separate durable attempts, linked so a
+      // restart cannot forget how many declaration changes one request has
+      // already absorbed. Retry is deliberately unrelated and starts again
+      // at round one; only an automatic coverage round names a predecessor.
+      store.run(
+        `ALTER TABLE kernel_env_setup_jobs
+           ADD COLUMN previous_job_id TEXT REFERENCES kernel_env_setup_jobs(id)`,
+      );
+      store.run(
+        `ALTER TABLE kernel_env_setup_jobs
+           ADD COLUMN round INTEGER NOT NULL DEFAULT 1 CHECK (round BETWEEN 1 AND 4)`,
+      );
+    },
+  },
+  {
+    version: 37,
+    up(store) {
+      // Automatic declaration coverage belongs to each Task interest, not
+      // to the physical build it happens to share. Explicit requests reset
+      // only their own budget; transfers advance only the interests moved.
+      store.run(
+        `ALTER TABLE kernel_env_setup_interests
+           ADD COLUMN coverage_round INTEGER NOT NULL DEFAULT 1
+           CHECK (coverage_round BETWEEN 1 AND 4)`,
+      );
+      // A lock revision can advance while a resolving build is still active.
+      // Physical exclusivity therefore binds the directory, not the revision
+      // it happened to have when resolution started. A server which raced
+      // before that invariant shipped can already have one active row at the
+      // old revision and another at the new one. Reconcile those rows before
+      // installing the stronger index.
+      const activeScopes = store.all(`
+        SELECT runtime_id, environment_name
+          FROM kernel_env_setup_jobs
+         WHERE state IN ('requested', 'building')
+         GROUP BY runtime_id, environment_name
+         ORDER BY runtime_id, environment_name`);
+      const terminalize = (ids: string[], diagnostic: string, repairTs: number): void => {
+        if (ids.length === 0) return;
+        const placeholders = ids.map(() => "?").join(", ");
+        store.run(
+          `UPDATE kernel_env_setup_jobs
+              SET state = 'failed', error_summary = ?, finished_ts = ?, updated_ts = ?
+            WHERE id IN (${placeholders})`,
+          [diagnostic.slice(0, 4_096), repairTs, repairTs, ...ids],
+        );
+      };
+      const samePackages = (left: string[], right: string[]): boolean => {
+        if (left.length !== right.length) return false;
+        const expected = [...right].sort();
+        return [...left].sort().every((entry, index) => entry === expected[index]);
+      };
+
+      for (const scope of activeScopes) {
+        const jobs = store.all(
+          `SELECT id, language, manager, lock_revision, state, requested_ts, updated_ts, seq
+             FROM kernel_env_setup_jobs
+            WHERE runtime_id = ? AND environment_name = ?
+              AND state IN ('requested', 'building')
+            ORDER BY seq ASC`,
+          [scope.runtime_id, scope.environment_name],
+        );
+        if (jobs.length === 0) continue;
+        const repairTs = Math.max(...jobs.map(({ updated_ts }) => updated_ts as number));
+        const declaration = store.get(
+          `SELECT language, manager, packages, created_ts, lock_revision
+             FROM kernel_envs WHERE name = ?`,
+          [scope.environment_name],
+        );
+        const currentGeneration = declaration === undefined
+          ? []
+          : jobs.filter(
+              ({ language, manager, requested_ts, lock_revision }) =>
+                language === declaration.language &&
+                manager === declaration.manager &&
+                // v36 records only second-resolution timestamps and no
+                // declaration-generation identity. Equality is ambiguous: an
+                // old request and the replacement declaration's first request
+                // can share the same pair, revision zero, and tick. Treat it
+                // as historical so recovery never replays possibly stale work;
+                // preserved waiters provide the explicit retry path.
+                (requested_ts as number) > (declaration.created_ts as number) &&
+                (lock_revision as number) <= (declaration.lock_revision as number),
+            );
+        const historical = jobs.filter((job) => !currentGeneration.includes(job));
+        const needsRepair = jobs.length > 1 || historical.length > 0;
+        if (!needsRepair) continue;
+
+        if (historical.length > 0) {
+          const reason = declaration === undefined
+            ? "there is no current declaration with that name"
+            : historical.some(
+                  ({ language, manager }) =>
+                    language !== declaration.language || manager !== declaration.manager,
+                )
+              ? `the current declaration is ${declaration.language as string}/${declaration.manager as string}`
+              : `it belongs to a historical declaration generation`;
+          terminalize(
+            historical.map(({ id }) => id as string),
+            `Migration 37 terminalized this active environment setup because ${reason}; ` +
+              `its generation-specific Task interests and waiters were preserved.`,
+            repairTs,
+          );
+        }
+        if (currentGeneration.length === 0 || !declaration) continue;
+
+        // A historical `building` identity may still be running on the
+        // daemon even after its durable row is terminal. Starting a merely
+        // requested current-generation identity beside it would recreate the
+        // same physical collision this migration is repairing. If the daemon
+        // has already acknowledged a current-generation request, preserving
+        // that exact request id is safe: recovery is deduplicated by id.
+        const historicalBuildExists = historical.some(({ state }) => state === "building");
+        const currentBuildExists = currentGeneration.some(({ state }) => state === "building");
+        if (historicalBuildExists && !currentBuildExists) {
+          terminalize(
+            currentGeneration.map(({ id }) => id as string),
+            `Migration 37 could not safely recover this environment setup because ` +
+              `a historical generation may still be building on the daemon; its Task ` +
+              `interests and waiters were preserved.`,
+            repairTs,
+          );
+          continue;
+        }
+
+        // A `building` request id has demonstrably reached the daemon. Keep
+        // that identity so recovery replay is suppressed by daemon-side
+        // request-id deduplication. Among several building rows, prefer the
+        // highest revision and newest sequence deterministically; only when
+        // none started may a requested row become canonical.
+        currentGeneration.sort((left, right) => {
+          if (left.state !== right.state) return left.state === "building" ? -1 : 1;
+          if (left.lock_revision !== right.lock_revision)
+            return (right.lock_revision as number) - (left.lock_revision as number);
+          return (right.seq as number) - (left.seq as number);
+        });
+        const survivor = currentGeneration[0]!;
+        const ids = currentGeneration.map(({ id }) => id as string);
+        const redundantIds = ids.filter((id) => id !== survivor.id);
+        const placeholders = ids.map(() => "?").join(", ");
+
+        const declarationPackages = JSON.parse(declaration.packages as string) as string[];
+        const currentRevision = declaration.lock_revision as number;
+        let resolvedFrom: string | null = JSON.stringify(declarationPackages);
+        if (currentRevision > 0) {
+          const lock = store.get(
+            `SELECT lockfile, requested_packages
+               FROM kernel_env_locks WHERE name = ? AND revision = ?`,
+            [scope.environment_name, currentRevision],
+          );
+          if (!lock) {
+            terminalize(
+              ids,
+              `Migration 37 could not recover this active environment setup because ` +
+                `the current declaration's lock revision ${currentRevision} is missing; ` +
+                `its Task interests and waiters were preserved.`,
+              repairTs,
+            );
+            continue;
+          }
+          if (lock.requested_packages !== null) {
+            const lockedPackages = JSON.parse(lock.requested_packages as string) as string[];
+            if (samePackages(lockedPackages, declarationPackages)) resolvedFrom = null;
+          }
+        }
+
+        const merged = new Map<
+          string,
+          {
+            studyId: string;
+            requestedBy: string;
+            requestedTs: number;
+            requestedPackages: string[];
+          }
+        >();
+        const interests = store.all(
+          `SELECT i.study_id, i.task_id, i.requested_by, i.requested_ts,
+                  i.requested_packages, j.seq AS job_seq
+             FROM kernel_env_setup_interests i
+             JOIN kernel_env_setup_jobs j ON j.id = i.job_id
+            WHERE i.job_id IN (${placeholders})
+            ORDER BY i.requested_ts ASC, j.seq ASC, i.task_id ASC`,
+          ids,
+        );
+        for (const interest of interests) {
+          const taskId = interest.task_id as string;
+          const packages = JSON.parse(interest.requested_packages as string) as string[];
+          const existing = merged.get(taskId);
+          if (!existing) {
+            merged.set(taskId, {
+              studyId: interest.study_id as string,
+              requestedBy: interest.requested_by as string,
+              requestedTs: interest.requested_ts as number,
+              requestedPackages: [...new Set(packages)],
+            });
+            continue;
+          }
+          for (const requestedPackage of packages) {
+            if (!existing.requestedPackages.includes(requestedPackage))
+              existing.requestedPackages.push(requestedPackage);
+          }
+        }
+
+        // Delete and recreate only these interests so a Task present on both
+        // attempts becomes one earliest-provenance interest with a stable
+        // package union. All v36 interests start with the new per-Task budget.
+        store.run(
+          `DELETE FROM kernel_env_setup_interests WHERE job_id IN (${placeholders})`,
+          ids,
+        );
+        for (const [taskId, interest] of merged) {
+          store.run(
+            `INSERT INTO kernel_env_setup_interests
+               (job_id, study_id, task_id, requested_by, requested_ts,
+                requested_packages, coverage_round)
+             VALUES (?, ?, ?, ?, ?, ?, 1)`,
+            [
+              survivor.id,
+              interest.studyId,
+              taskId,
+              interest.requestedBy,
+              interest.requestedTs,
+              JSON.stringify(interest.requestedPackages),
+            ],
+          );
+        }
+
+        if (redundantIds.length > 0) {
+          const redundantPlaceholders = redundantIds.map(() => "?").join(", ");
+          store.run(
+            `UPDATE task_env_setup_waiters
+                SET job_id = ?, updated_ts = ?
+              WHERE job_id IN (${redundantPlaceholders})`,
+            [survivor.id, repairTs, ...redundantIds],
+          );
+          const diagnostic =
+            `Migration 37 consolidated this duplicate active environment setup into ` +
+            `${survivor.id as string}; its Task interests and waiters were preserved.`;
+          terminalize(redundantIds, diagnostic, repairTs);
+        }
+
+        // Recovery dispatches only requested rows. Reset transient execution
+        // fields on the canonical row and bind its preserved request id to the
+        // current declaration's exact replay-or-resolve plan.
+        store.run(
+          `UPDATE kernel_env_setup_jobs
+              SET state = 'requested', stage = 'waiting-for-machine',
+                  language = ?, manager = ?, lock_revision = ?, resolved_from = ?,
+                  error_summary = NULL, started_ts = NULL, finished_ts = NULL,
+                  updated_ts = ?
+            WHERE id = ?`,
+          [
+            declaration.language,
+            declaration.manager,
+            currentRevision,
+            resolvedFrom,
+            repairTs,
+            survivor.id,
+          ],
+        );
+      }
+      store.run(`DROP INDEX one_active_environment_build`);
+      store.run(`
+        CREATE UNIQUE INDEX one_active_environment_build
+          ON kernel_env_setup_jobs(runtime_id, environment_name)
+          WHERE state IN ('requested', 'building')`);
+    },
+  },
+  {
+    version: 38,
+    up(store) {
+      // Revision zero is reusable after delete/redeclare, so it cannot name a
+      // build generation by itself. This append-only nullable column keeps
+      // old rows readable while backfilling only jobs provably requested
+      // after the exact current declaration was created. Same-tick and
+      // historical rows remain non-authoritative rather than guessed.
+      store.run(
+        `ALTER TABLE kernel_env_setup_jobs
+           ADD COLUMN declaration_created_ts INTEGER`,
+      );
+      store.run(`
+        UPDATE kernel_env_setup_jobs AS job
+           SET declaration_created_ts = (
+             SELECT env.created_ts FROM kernel_envs env
+              WHERE env.name = job.environment_name
+                AND env.language = job.language
+                AND env.manager = job.manager
+                AND env.lock_revision = job.lock_revision
+                AND job.requested_ts > env.created_ts
+           )
+         WHERE EXISTS (
+             SELECT 1 FROM kernel_envs env
+              WHERE env.name = job.environment_name
+                AND env.language = job.language
+                AND env.manager = job.manager
+                AND env.lock_revision = job.lock_revision
+                AND job.requested_ts > env.created_ts
+           )`);
+    },
+  },
+  {
+    version: 39,
+    up(store) {
+      // Timestamps are evidence, not identity: two declarations can be
+      // deleted and recreated within the same persisted second. Every
+      // declaration that exists at migration time receives a fresh opaque
+      // generation, and every future declaration mints one in the store.
+      store.run(`ALTER TABLE kernel_envs ADD COLUMN declaration_generation_id TEXT`);
+      store.run(
+        `UPDATE kernel_envs
+            SET declaration_generation_id = 'envgen_' || lower(hex(randomblob(16)))`,
+      );
+      store.run(
+        `CREATE UNIQUE INDEX kernel_env_declaration_generation
+           ON kernel_envs(declaration_generation_id)
+         WHERE declaration_generation_id IS NOT NULL`,
+      );
+
+      // No legacy job can be proven to belong to the newly-minted token.
+      // Migration 37 normalized its chosen `building` survivor back to
+      // `requested` and cleared `started_ts`; after that shipped write, a v38
+      // requested row no longer proves that no daemon build is running.
+      // Therefore every null-token active row remains the physical singleton
+      // quarantine until that exact old request settles (or an operator
+      // explicitly terminalizes it). Recovery refuses to dispatch it, and a
+      // current-generation request must not clear this hold implicitly.
+      store.run(
+        `ALTER TABLE kernel_env_setup_jobs
+           ADD COLUMN declaration_generation_id TEXT`,
+      );
+      const migratedTs = Math.floor(Date.now() / 1000);
+      store.run(
+        `UPDATE kernel_env_setup_jobs
+            SET error_summary = ?, updated_ts = ?
+          WHERE state IN ('requested', 'building')
+            AND declaration_generation_id IS NULL`,
+        [
+          `Migration 39 quarantined this active legacy environment setup because ` +
+            `the durable store cannot prove whether its exact daemon request already began; ` +
+            `its physical singleton, Task interests and waiters remain held until that request settles.`,
+          migratedTs,
+        ],
+      );
+    },
+  },
+  {
+    version: 40,
+    up(store) {
+      // Nullable is intentional. Terminal rows from an older server have no
+      // canonical daemon result to hash, so duplicate POSTs against them
+      // must fail closed instead of blessing whichever replay arrives first.
+      store.run(
+        `ALTER TABLE kernel_env_setup_jobs
+           ADD COLUMN terminal_outcome_fingerprint TEXT`,
+      );
     },
   },
 ];

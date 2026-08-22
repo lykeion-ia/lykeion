@@ -239,7 +239,9 @@ def host_with_two_envs(registry: Registry, tmp_path) -> Iterator[Calling]:
 
 
 @pytest.fixture
-def host_with_an_unbuilt_env(registry: Registry, tmp_path) -> Iterator[Calling]:
+def host_with_an_unbuilt_env(
+    registry: Registry, tmp_path, daemon: StubDaemon
+) -> Iterator[Calling]:
     """A session whose lab declared an environment this machine has not built.
 
     The row `host_with_two_envs` cannot hold: both of its names are built
@@ -255,6 +257,7 @@ def host_with_an_unbuilt_env(registry: Registry, tmp_path) -> Iterator[Calling]:
         environments=python_environment() + [built_environment(tmp_path, "crispr")],
         declared=["python", "crispr", "atacseq"],
     )
+    registry.ask_daemon = daemon
     yield from _talking(_agent_reaching(registry))
 
 
@@ -726,6 +729,60 @@ def test_the_environments_tool_names_what_exists_and_marks_what_is_built_here(
     assert "crispr (python) — built on this machine" in answer["text"]
 
 
+@pytest.fixture
+def host_with_research_defaults(
+    registry: Registry, tmp_path, daemon: StubDaemon
+) -> Iterator[Calling]:
+    """A session whose Research has confirmed a default for each language —
+    one this machine built, and one it has not.
+
+    The unbuilt one is the whole reason the defaults arrive as their own map:
+    it is exactly the row that disappears if a default is read off the built
+    entries alone.
+    """
+    registry.configure_session(
+        session_id="se_1",
+        task_id="tk_1",
+        workspace=str(tmp_path),
+        environments=python_environment() + [built_environment(tmp_path, "crispr")],
+        defaults={"python": "crispr", "r": "meta-analysis-r"},
+        declared=["python", "crispr", "meta-analysis-r"],
+    )
+    registry.ask_daemon = daemon
+    yield from _talking(_agent_reaching(registry))
+
+
+def test_the_environments_tool_says_which_row_this_research_defaults_to(
+    host_with_research_defaults: Calling,
+):
+    """The one place an agent can read the Research's own soft default.
+
+    A model deciding whether to name an environment on its next cell needs to
+    know where a cell that names none would land, and this list is the only
+    answer it has. Marked on the row rather than announced in a line of its
+    own, so the default and the environment it points at cannot drift apart
+    in what the agent reads.
+
+    Both halves are exercised: a default this machine BUILT, and one it has
+    not — the second being the row an agent should offer to build, and the
+    one whose sentence is lost entirely if the default is read off the built
+    entries alone.
+    """
+    answer = host_with_research_defaults.call("manage_environments", {"action": "list"})
+
+    assert answer["isError"] is False
+    assert "crispr (python) — built on this machine; default for Python work in this Research" \
+        in answer["text"]
+    assert (
+        "meta-analysis-r — declared by this lab, not built on this machine;"
+        " default for R work in this Research"
+    ) in answer["text"]
+    # And `python`, which this machine's own floor marks `default` but the
+    # Research overrode, keeps a plain row: the floor's claim is not what this
+    # clause reports.
+    assert "python (python) — built on this machine" in answer["text"].splitlines()
+
+
 def test_an_environment_the_tool_calls_unbuilt_is_one_no_cell_can_reach(
     host_with_an_unbuilt_env: Calling,
 ):
@@ -761,7 +818,7 @@ def test_an_environment_the_tool_calls_unbuilt_is_one_no_cell_can_reach(
         assert f"the environment {name} is not built on this machine yet" == refused["text"]
 
 
-def test_the_environments_tool_publishes_two_actions_and_refuses_every_other(
+def test_the_environments_tool_publishes_three_actions_and_refuses_every_other(
     host_with_an_unbuilt_env: Calling,
 ):
     """`create` and `list` are the whole of what this tool does, and the
@@ -778,7 +835,7 @@ def test_the_environments_tool_publishes_two_actions_and_refuses_every_other(
     schema = {tool.name: tool.input_schema for tool in host_with_an_unbuilt_env.tools().tools}[
         "manage_environments"
     ]
-    assert schema["properties"]["action"]["enum"] == ["create", "list"]
+    assert schema["properties"]["action"]["enum"] == ["create", "require", "list"]
 
     for asked in ("delete", "rename"):
         answer = host_with_an_unbuilt_env.call("manage_environments", {"action": asked})
@@ -790,6 +847,44 @@ def test_the_environments_tool_publishes_two_actions_and_refuses_every_other(
         # Nothing answered and nothing done. A refusal that still carried the
         # list would read as an action that half-succeeded.
         assert answer["structured"] is None
+
+
+def test_require_marks_one_declared_unbuilt_environment(
+    host_with_an_unbuilt_env: Calling, daemon: StubDaemon
+):
+    answer = host_with_an_unbuilt_env.call(
+        "manage_environments", {"action": "require", "name": "atacseq"}
+    )
+
+    assert answer["isError"] is False
+    assert answer["text"] == (
+        "This Task is waiting for atacseq to be built on this machine. "
+        "Set it up above the Notebook; the Task will continue automatically when it is ready."
+    )
+    assert answer["cell"] is None
+    assert daemon.asks == [
+        (
+            "environment.require",
+            {"session_id": "se_1", "name": "atacseq"},
+        )
+    ]
+
+
+def test_require_refuses_a_ready_or_undeclared_name_without_calling_the_daemon(
+    host_with_an_unbuilt_env: Calling, daemon: StubDaemon
+):
+    ready = host_with_an_unbuilt_env.call(
+        "manage_environments", {"action": "require", "name": "python"}
+    )
+    missing = host_with_an_unbuilt_env.call(
+        "manage_environments", {"action": "require", "name": "missing"}
+    )
+
+    assert ready["isError"] is True
+    assert "already built" in ready["text"]
+    assert missing["isError"] is True
+    assert "no environment named missing" in missing["text"]
+    assert daemon.asks == []
 
 
 def test_the_environments_tool_says_when_the_lab_was_never_asked(mcp: Calling):

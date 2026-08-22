@@ -11,6 +11,7 @@ import { migrate } from "./store/migrations";
 import { createChannel } from "./channel";
 import { createRunRelay, type RunCommand, type RunRelay } from "./run-relay";
 import { createRequestListener } from "./http";
+import { createEnvironmentSetupCoordinator } from "./environment-setup-coordinator";
 import { apiFor, signUpOwner } from "./test-support/server-api";
 import type { Store } from "./store/store";
 import { failDroppedRuns } from "./run-recovery";
@@ -18,7 +19,8 @@ import { createRevertRegistry } from "./run-revert";
 import { createKernelListRegistry } from "./kernel-list-registry";
 import { createTitleRegistry } from "./title-registry";
 import { createPendingCells } from "./kernel-cells";
-import { createEnvSetupRegistry } from "./env-setup-registry";
+import { recordTurn } from "./store/sessions";
+import { environmentSetupStore } from "./store/environment-setups";
 
 /**
  * A machine that restarts, or simply drops its command-stream connection and
@@ -62,7 +64,8 @@ function freshLabServer(existingDir?: string): Promise<RawServer> {
 
   const listener = createRequestListener({
     store, config, secure: false, indexHtml, channel, openStreams, runs: relay,
-    reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
+    reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({ store, runs: relay }),
   });
   const server = createHttpServer(listener);
 
@@ -506,4 +509,124 @@ it("refuses reconciliation with no bearer token, the same as every other daemon 
     body: JSON.stringify({ runIds: [] }),
   });
   expect(res.status).toBe(401);
+});
+
+/**
+ * A Task blocked on an environment whose build finished: a durable waiter, a
+ * system-origin continuation turn, and that turn's `start-run` handed to the
+ * machine's command stream — the exact state the coordinator commits and
+ * dispatches when a build settles ready.
+ *
+ * Built from the store and the relay rather than by driving a whole
+ * environment setup, because what is under test in this file is RUN RECOVERY,
+ * and recovery's only interest in a continuation is that it is a durable
+ * active run on a machine. `environment-setup-e2e.test.ts` is where one is
+ * minted for real, from a build a machine actually reported finished.
+ */
+function queuedContinuationOn(lab: RecoveryLab): { waiterId: string; runId: string } {
+  const setups = environmentSetupStore(lab.store);
+  const session = lab.store.get(
+    `SELECT s.id, s.study_id FROM turns t JOIN sessions s ON s.id = t.session_id WHERE t.id = ?`,
+    [lab.runId],
+  )!;
+  const waiter = setups.recordRequirement({
+    studyId: session.study_id as string,
+    taskId: lab.taskId,
+    sessionId: session.id as string,
+    sourceTurnId: lab.runId,
+    sourceRunId: lab.runId,
+    language: "r",
+    environmentName: "meta-analysis-r",
+    runtimeId: lab.machineId,
+    createdTs: 1_800_000_000,
+  });
+  const continuationRunId = recordTurn(lab.store, {
+    sessionId: session.id as string,
+    taskId: lab.taskId,
+    prompt: "The environment meta-analysis-r is ready on this machine. Continue the work.",
+    startedTs: 1_800_000_000,
+    origin: "system",
+    continuation: {
+      kind: "environment-setup",
+      waiterId: waiter.id,
+      sourceTurnId: lab.runId,
+      environmentName: "meta-analysis-r",
+      machineId: lab.machineId,
+    },
+  });
+  expect(setups.queueWaiter(waiter.id, continuationRunId, 1_800_000_001)).toBe(true);
+  lab.relay.enqueue(lab.machineId, {
+    type: "start-run",
+    runId: continuationRunId,
+    taskId: lab.taskId,
+    sessionId: session.id as string,
+    agent: "claude",
+    prompt: "continue",
+    continuation: {
+      kind: "environment-setup",
+      waiterId: waiter.id,
+      sourceTurnId: lab.runId,
+      environmentName: "meta-analysis-r",
+      machineId: lab.machineId,
+    },
+  });
+  return { waiterId: waiter.id, runId: continuationRunId };
+}
+
+it("fails an automatic continuation the machine no longer holds, and frees its waiter", async () => {
+  // The regression this guards: a continuation is a turn nobody typed, so
+  // nothing on any screen is waiting for it and nobody would notice it
+  // hanging. Recovery has to end it the same way it ends a researcher's own
+  // run — and the waiter behind it has to stop believing an agent is on its
+  // way, or that Task is blocked on a run that no longer exists anywhere.
+  const lab = await labWithRunInFlight();
+  const { waiterId, runId } = queuedContinuationOn(lab);
+
+  // Both commands acknowledged, then a reconnect holding only the
+  // researcher's own run.
+  const res = await postLive(lab, [lab.runId], lab.token, 2);
+  expect(res.status).toBe(200);
+
+  // Ended, and ended as CANCELLED rather than failed: nothing ever ran in
+  // this turn, and a researcher reading their Task's record is owed "this
+  // did not start" rather than a failure they will look for a cause of in
+  // work they never asked for. A user turn dropped the same way is `failed`,
+  // because a user turn is one somebody was waiting on.
+  expect(lab.store.get(`SELECT origin, status, ended_ts FROM turns WHERE id = ?`, [runId]))
+    .toMatchObject({ origin: "system", status: "cancelled", ended_ts: expect.any(Number) });
+  expect(lab.store.get(`SELECT status FROM turns WHERE id = ?`, [lab.runId])?.status)
+    .toBe("running");
+  expect(lab.relay.liveFor(lab.machineId)).toEqual([lab.runId]);
+
+  // Not left `queued` against a turn that has ended: the requirement is
+  // durably closed, and named as closed before the agent ever ran.
+  expect(lab.store.get(`SELECT state, cancelled_reason FROM task_env_setup_waiters WHERE id = ?`, [waiterId]))
+    .toEqual({ state: "cancelled", cancelled_reason: "continuation-ended-before-start" });
+});
+
+it("leaves a resumed continuation's waiter alone when its run is dropped mid-flight", async () => {
+  // The other half of the same rule. Once the agent has actually started
+  // working, the waiter has done its job — the Task was resumed. A dropped
+  // run is a failed turn, and it must not rewrite that history into
+  // "the continuation never began".
+  const lab = await labWithRunInFlight();
+  const { waiterId, runId } = queuedContinuationOn(lab);
+
+  const executing = await fetch(`${lab.base}/daemon/run/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+    body: JSON.stringify({
+      runId,
+      frames: [{ seq: 1, event: { event: "state", state: { state: "executing" } } }],
+    }),
+  });
+  expect(executing.status).toBe(200);
+  expect(lab.store.get(`SELECT state FROM task_env_setup_waiters WHERE id = ?`, [waiterId]))
+    .toEqual({ state: "resumed" });
+
+  expect((await postLive(lab, [lab.runId], lab.token, 2)).status).toBe(200);
+
+  expect(lab.store.get(`SELECT status FROM turns WHERE id = ?`, [runId])?.status).toBe("failed");
+  expect(lab.store.get(`SELECT state, cancelled_reason FROM task_env_setup_waiters WHERE id = ?`, [waiterId]))
+    .toEqual({ state: "resumed", cancelled_reason: null });
 });

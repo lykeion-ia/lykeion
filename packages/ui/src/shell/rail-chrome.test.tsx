@@ -23,6 +23,7 @@ const research: Research = {
   id: "s_1",
   key: "CMP",
   title: "Plasticity",
+  environmentDefaults: [],
   createdBy: "u_you",
   createdTs: 1,
   updatedTs: 1,

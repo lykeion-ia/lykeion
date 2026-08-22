@@ -83,6 +83,17 @@ export interface KernelEnvStatus {
    *  `KernelEnvState` has no fourth value for it: an older pin is still a
    *  pin, and those kernels keep working. */
   lockRevision?: number;
+  /** Exact setup request whose durable completion marker produced this status. */
+  setupRequestId?: string;
+  /** SHA-256 of the exact authoritative lock bytes this machine replayed. */
+  lockfileFingerprint?: string;
+  /** SHA-256 of the canonical exact requested package set this build covers. */
+  packageFingerprint?: string;
+  /** Exact lab declaration generation this machine built. Older markers do
+   *  not carry it and are therefore non-authoritative for readiness. */
+  declarationGenerationId?: string;
+  /** Legacy evidence only; never authoritative for readiness. */
+  declarationCreatedTs?: number;
 }
 
 /**
@@ -109,6 +120,9 @@ export interface KernelEnvDeclaration {
    *  kernel nobody stopped rather than naming somebody. */
   createdBy?: string;
   createdTs: number;
+  /** Opaque durable identity minted for this exact declaration row. Absent
+   *  only when reading a legacy/non-authoritative declaration. */
+  declarationGenerationId?: string;
   /** Rises by one on every successful resolve. `0` means nothing has been
    *  resolved yet, so no machine can build this from a lockfile. */
   lockRevision: number;

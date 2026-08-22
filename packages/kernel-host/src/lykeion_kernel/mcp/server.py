@@ -310,7 +310,7 @@ EXECUTE_SHELL_CELL = types.Tool(
     },
 )
 
-# `create` and `list`, and the schema says so rather than leaving the argument
+# `create`, `require` and `list`, and the schema says so rather than leaving the argument
 # free-form: what a tool can do is a thing an agent reads before it calls, not
 # a thing it discovers from a refusal.
 #
@@ -331,30 +331,30 @@ MANAGE_ENVIRONMENTS = types.Tool(
     name="manage_environments",
     title="Manage environments",
     description=(
-        "List the named environments this Task can run a cell in, and which of "
-        "them this machine has already built, or ask this lab to declare a new "
-        "one. An environment this lab declared and this machine has not built "
-        "is named too, so it can be offered rather than guessed at. Creating "
-        "one asks the researcher first, and declares it rather than building "
-        "it: no package is installed by this call."
+        "List the named environments this Task can run a cell in and which this "
+        "machine has built, declare a new environment with the researcher's "
+        "permission, or mark a declared unbuilt environment as required by this "
+        "Task. Requiring is non-mutating: it starts no setup and asks no permission."
     ),
     inputSchema={
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "list"],
+                "enum": ["create", "require", "list"],
                 "description": (
                     "`list` names every environment this Task can reach and "
                     "which of them are built on this machine. `create` asks "
                     "this lab to declare a new one, which the researcher has "
-                    "to allow before anything is recorded."
+                    "to allow before anything is recorded. `require` records "
+                    "that this Task is blocked on a declared environment which "
+                    "is not built here; it never starts setup."
                 ),
             },
             "name": {
                 "type": "string",
                 "description": (
-                    "What the environment being created is to be called. "
+                    "What the environment being created or required is called. "
                     "Letters, numbers, dashes and underscores, since every "
                     "machine builds it into a folder of that name."
                 ),
@@ -540,6 +540,13 @@ def _action(arguments: dict[str, Any] | None, published: tuple[str, ...]) -> str
     return value
 
 
+# How each language is written in a sentence an agent reads. The wire token
+# is what everything else here is keyed by; this is the only place a human
+# spelling of one belongs, and an unknown token falls back to itself rather
+# than to a guess.
+_LANGUAGE_NAMES = {"python": "Python", "r": "R"}
+
+
 def _environments_read(listed: dict[str, Any]) -> str:
     """What the agent reads back: one line per environment, saying which of
     the phase's three states it is in.
@@ -572,6 +579,13 @@ def _environments_read(listed: dict[str, Any]) -> str:
             said += (
                 f"; this Task's kernels in it were restarted: {row['restartedBecause']}"
             )
+        # Where a cell of that language which names no environment lands. The
+        # only place a model can read the Research's own soft default, and the
+        # reason it is worth a clause here: a model deciding whether to name
+        # an environment on its next cell has nothing else to ask.
+        if "defaultFor" in row:
+            language = _LANGUAGE_NAMES.get(row["defaultFor"], row["defaultFor"])
+            said += f"; default for {language} work in this Research"
         lines.append(said)
     if not lines:
         lines.append("this Task can reach no environments at all")
@@ -774,6 +788,61 @@ async def _created(reach: Reach, arguments: dict[str, Any] | None) -> types.Call
         # structured half at all where it did not: a shape invented here
         # would be this server describing a record it never saw.
         structuredContent=({"environment": declared} if isinstance(declared, dict) else None),
+    )
+
+
+async def _required(
+    reach: Reach, arguments: dict[str, Any] | None
+) -> types.CallToolResult:
+    """Record one exact declared-but-unbuilt environment as blocking this Task.
+
+    This is deliberately not a mutation permission and not a setup request.
+    The confinement already names every declaration and which are built here,
+    so the host can refuse a ready or unknown name before crossing to the
+    daemon. The daemon then attaches only the run currently owning this
+    session; no source run is inferred at the lab.
+    """
+    value = (arguments or {}).get("name")
+    if not isinstance(value, str) or not value:
+        return _refused(
+            f"requiring an environment needs a name, and {value!r} is not one"
+        )
+    name = value
+    listed = reach.registry.environments_for(reach.identity.session_id)
+    environment = next(
+        (row for row in listed["environments"] if row.get("name") == name), None
+    )
+    if environment is None:
+        return _refused(f"this Task has no environment named {name}")
+    if environment.get("builtHere") is True:
+        return _refused(f"the environment {name} is already built on this machine")
+    ask = reach.registry.ask_daemon
+    if ask is None:
+        return _refused(
+            f"this machine's daemon cannot be asked, so {name} was not recorded as required"
+        )
+    try:
+        await asyncio.to_thread(
+            ask,
+            "environment.require",
+            {"session_id": reach.identity.session_id, "name": name},
+        )
+    except Exception as failure:  # noqa: BLE001 - reported, never swallowed
+        said = str(failure)
+        return _refused(
+            said if name in said else f"{name} was not recorded as required: {said}"
+        )
+    return types.CallToolResult(
+        content=[
+            types.TextContent(
+                type="text",
+                text=(
+                    f"This Task is waiting for {name} to be built on this machine. "
+                    "Set it up above the Notebook; the Task will continue "
+                    "automatically when it is ready."
+                ),
+            )
+        ]
     )
 
 
@@ -1091,6 +1160,8 @@ def server_for(reach: Reach) -> Server[Any]:
                 return _refused(str(refused))
             if action == "create":
                 return await _created(reach, params.arguments)
+            if action == "require":
+                return await _required(reach, params.arguments)
             return _listed(reach)
         # Answered here for the same reason: it runs no cell either. Its
         # `environment` is resolved by `_addressed_environment` rather than by

@@ -16,6 +16,7 @@ function st(id: string, key: string, title: string): Research {
     id,
     key,
     title,
+    environmentDefaults: [],
     createdBy: "u_you",
     createdTs: 1,
     updatedTs: 1,

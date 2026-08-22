@@ -12,7 +12,7 @@ import { createRevertRegistry } from "../run-revert";
 import { createKernelListRegistry } from "../kernel-list-registry";
 import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
-import { createEnvSetupRegistry } from "../env-setup-registry";
+import { createEnvironmentSetupCoordinator } from "../environment-setup-coordinator";
 import { changeRecorder } from "./changes";
 import { configSurfaceApi } from "./config-surface";
 import type { Deps } from "./index";
@@ -75,6 +75,7 @@ function addOwner(store: Store, id: string): void {
 function depsFor(store: Store, now: () => number = () => NOW): Deps {
   const actor = { userId: "u_owner", role: "owner" } as const;
   const channel = createChannel(store, 1000);
+  const runs = createRunRelay();
   return {
     store,
     actor,
@@ -83,9 +84,10 @@ function depsFor(store: Store, now: () => number = () => NOW): Deps {
     // A real channel rather than a stub: it is the cheapest place to leave
     // the recorder's publish path actually exercised.
     channel,
-    runs: createRunRelay(),
+    runs,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({ store, runs, now }),
     changes: changeRecorder({ store, actorId: actor.userId, now, channel }),
   };
 }

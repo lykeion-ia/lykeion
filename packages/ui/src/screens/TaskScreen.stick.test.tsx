@@ -40,6 +40,7 @@ const ROUTE = `#/researches/s_cmp/tasks/${TASK}`;
 /** One persisted turn — the historic transcript a reopened Task replays. */
 const HISTORIC_TURN: TaskTurn = {
   runId: "run-historic",
+  origin: "user",
   sequence: 1,
   ts: 1,
   prompt: "what's in the dataset?",
@@ -71,6 +72,7 @@ function scriptedApi() {
               snapshot: {
                 runId: "run-live",
                 sequence: 2,
+                origin: "user",
                 prompt: "and now?",
                 agent: "default",
                 state: { state: "planning" },

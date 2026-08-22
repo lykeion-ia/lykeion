@@ -24,7 +24,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createInMemoryApi } from "@lykeion/api";
-import type { LykeionApi, NotebookCell } from "@lykeion/api";
+import type { KernelEnvDeclaration, LykeionApi, NotebookCell } from "@lykeion/api";
 import App from "../App";
 import { resetPageLoad } from "../lib/tabs-storage";
 import { resetTabs } from "../lib/tabs";
@@ -146,6 +146,54 @@ async function openNotebook(user: ReturnType<typeof userEvent.setup>) {
   await user.click(button);
   await screen.findByTestId("notebook-panel");
 }
+
+it("opens the notebook's environment bar on this Research's own default", async () => {
+  // The wiring this screen owns. A Research's environment default is read
+  // here, where the Research already is, and handed to the panel — so the bar
+  // opens on what this Research settled on rather than on whichever
+  // declaration the lab happens to list first.
+  const user = userEvent.setup();
+  const base = apiWithNotebooks();
+  const declare = (name: string): KernelEnvDeclaration => ({
+    name,
+    language: "python",
+    manager: "uv",
+    packages: [],
+    createdBy: "u_you",
+    createdTs: 0,
+    lockRevision: 1,
+  });
+  const api: LykeionApi = {
+    ...base,
+    kernelEnvList: async () => [declare("python"), declare("single-cell")],
+    getResearch: async (researchId: string) => {
+      const detail = await base.getResearch(researchId);
+      return {
+        ...detail,
+        research: {
+          ...detail.research,
+          environmentDefaults: [
+            {
+              language: "python",
+              environmentName: "single-cell",
+              setBy: "u_you",
+              setTs: 1,
+            },
+          ],
+        },
+      };
+    },
+  };
+  render(<App api={api} />);
+
+  await openNotebook(user);
+
+  expect(
+    await within(screen.getByTestId("notebook-panel")).findByRole("button", {
+      name: /^Kernel environment: single-cell/,
+    }),
+  ).toBeInTheDocument();
+});
 
 it("takes the conversation along when another Task's notebook is opened", async () => {
   const user = userEvent.setup();

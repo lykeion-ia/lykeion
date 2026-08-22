@@ -397,8 +397,8 @@ export async function runConfinedIn(
     timeoutMs?: number;
     signal?: AbortSignal;
     /** Called once per line of stdout/stderr, as `uv` produces it — the
-     *  progress a multi-minute build reports to `KERNEL_SETUP_CHANNEL`. Fed
-     *  from both streams unless `onLineStreams` narrows it. */
+     *  progress a multi-minute build reports back to its lab. Fed from both
+     *  streams unless `onLineStreams` narrows it. */
     onLine?: (line: string) => void;
     /** Restricts `onLine` to the named stream(s). See `execConfined`'s own
      *  doc comment — this exists for a call whose stdout carries a payload

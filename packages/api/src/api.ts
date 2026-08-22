@@ -37,7 +37,6 @@ import type { Finding } from "./review";
 import type { ArtifactBlob } from "./artifact";
 import type {
   Machine,
-  KernelEnvStatus,
   KernelEnvDeclaration,
   KernelEnvCreateInput,
   NotebookCell,
@@ -58,6 +57,11 @@ import type { Group } from "./group";
 import type { Invite, Member, Role, User } from "./account";
 import type { Usage } from "./usage";
 import type { WorkspaceSettings } from "./settings";
+import type {
+  RequestKernelEnvironmentSetupInput,
+  RequestKernelEnvironmentSetupResult,
+  TaskEnvironmentSetup,
+} from "./environment-setup";
 
 /** Fields accepted when creating a Research. */
 export interface NewResearch {
@@ -306,7 +310,7 @@ export interface LykeionApi {
   /**
    * Declare an environment. Writes the declaration and nothing else: no
    * machine downloads anything until somebody asks it to, which is what
-   * `kernelEnvSetup` is. Refuses a name this lab already has.
+   * `requestKernelEnvironmentSetup` is. Refuses a name this lab already has.
    */
   kernelEnvCreate(input: KernelEnvCreateInput): Promise<KernelEnvDeclaration>;
 
@@ -318,35 +322,15 @@ export interface LykeionApi {
    */
   kernelEnvDelete(name: string): Promise<void>;
 
-  /**
-   * Provision the named managed environment on `machineId` — a `uv venv` and
-   * `uv pip sync` this phase, confined the way every third-party build is
-   * (D5). Both are required: which machine downloads a gigabyte is a real
-   * cost, and inferring "the researcher's own machine" would be Lykeion
-   * silently choosing among a member's several paired computers on the
-   * strength of a heartbeat. The caller always knows — the Notebook knows
-   * which machine its Task runs on, and a Machines row is a machine.
-   *
-   * The first machine to set up a given environment resolves its package
-   * list into a lockfile and this lab keeps it; every later machine (on
-   * this environment's declaration, whichever member's) replays that exact
-   * lockfile rather than resolving afresh (D4) — this is the whole reason
-   * two researchers' numbers match. Long-running on the first machine;
-   * progress lines stream on `KERNEL_SETUP_CHANNEL`. Resolves to the final
-   * status.
-   *
-   * `onProgress` is part of this method's shape and is honoured by no
-   * implementation yet: the HTTP client cannot carry a callback over JSON,
-   * and the in-memory core refuses this call outright rather than pretending
-   * to provision. Lines reach the browser over `KERNEL_SETUP_CHANNEL`
-   * instead, and subscribing to it belongs to the Notebook's Setup surface.
-   * Stated rather than left describing a path that no longer exists.
-   */
-  kernelEnvSetup(
-    machineId: string,
-    name: string,
-    onProgress?: (line: string) => void,
-  ): Promise<KernelEnvStatus>;
+  requestKernelEnvironmentSetup(
+    input: RequestKernelEnvironmentSetupInput,
+  ): Promise<RequestKernelEnvironmentSetupResult>;
+  taskEnvironmentSetups(taskId: string): Promise<TaskEnvironmentSetup[]>;
+  retryKernelEnvironmentSetup(waiterId: string): Promise<RequestKernelEnvironmentSetupResult>;
+  answerEnvironmentDefaultSuggestion(
+    suggestionId: string,
+    useByDefault: boolean,
+  ): Promise<void>;
 
   /**
    * Frees `machineId`'s own copy of `name` — the machine's build, never the

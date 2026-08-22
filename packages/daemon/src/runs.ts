@@ -1,5 +1,13 @@
 import { isAbsolute } from "node:path";
-import type { KernelEnvDeclaration, KernelEnvStatus, RunEvent, RunEventFrame } from "@lykeion/api";
+import type {
+  CanonicalEnvironmentSetupOutcome,
+  EnvironmentSetupStage,
+  KernelEnvDeclaration,
+  KernelEnvStatus,
+  RunEvent,
+  RunEventFrame,
+} from "@lykeion/api";
+import { canonicalEnvironmentSetupOutcome } from "@lykeion/api";
 import { addBounded } from "./bounded-set";
 import {
   backoffDelayMs,
@@ -10,6 +18,7 @@ import {
   postKernelCell,
   postKernelEnvAddPackages,
   postKernelEnvCreate,
+  postKernelEnvRequire,
   postKernelEnvProgress,
   postKernelEnvResult,
   postKernelEnvLock,
@@ -47,10 +56,21 @@ import { startSession, type LiveSession, type McpServer, type StandingGrant } fr
 import {
   provisionerFor,
   materializeEnvironment,
+  readEnvironmentMarker,
   readEnvStatus,
   removeEnvironment,
   resolveEnvironment,
 } from "./environments";
+import {
+  environmentLockfileFingerprint,
+  environmentPackageFingerprint,
+} from "@lykeion/api/environment-setup-evidence";
+import {
+  environmentSetupOutcomeSpool,
+  type EnvironmentSetupOutcome,
+  type EnvironmentSetupProvisioning,
+  type EnvironmentSetupTerminal,
+} from "./environment-setup-outcomes";
 
 /** How long a run's buffered events wait for company before they are posted
  *  on their own. Long enough that a burst of `assistant-text` chunks travels
@@ -88,6 +108,13 @@ export interface RunSubsystem {
    *  from under a running agent. Two sessions on one Task name the same
    *  directory, so a caller comparing against it treats this as a set. */
   liveSessionDirs(): string[];
+  /** Reconsider valid start commands held before an adapter became ready. */
+  adaptersChanged(): void;
+  /** Constant-space command lookahead diagnostics. No control command body
+   * may be retained while a capacity-blocked start waits. */
+  blockedLookaheadState():
+    | { safeThroughSeq: number; retainedControlCommands: number }
+    | undefined;
 }
 
 /** How many of a run's most recent event frames wait in `RunSubsystem`'s own
@@ -112,6 +139,7 @@ const OUTBOUND_QUEUE_LIMIT = 2000;
  *  letting a daemon that outlives thousands of runs let go of the ones long
  *  since forgotten by everyone, including the lab. */
 const STARTED_RUNS_LIMIT = 1000;
+const DEFERRED_STARTS_LIMIT = 1000;
 
 /**
  * How long a session waits for this machine's kernels to be put within reach
@@ -150,6 +178,40 @@ function withDeadline<T>(work: Promise<T>, ms: number, why: string): Promise<T> 
   ]);
 }
 
+/** One environment a Research asks an unaddressed cell of some language to
+ *  land in — the shape the lab sends on a `start-run` and the shape this file
+ *  carries down to the boundary. Not the lab's own record of the decision:
+ *  who confirmed it and when stay in the lab, because a machine resolving a
+ *  cell has no use for either. */
+interface ResearchEnvironmentDefault {
+  language: string;
+  environmentName: string;
+}
+
+/**
+ * Whether two Research default lists say the same thing.
+ *
+ * By order as well as by content, which is exact rather than lazy: the lab
+ * reads these from one table in one order (`defaultsForResearch`, ordered by
+ * language), so two lists differing only in order is not a shape this wire
+ * produces — and treating a reordering as a change would cost one host round
+ * trip, where treating a real change as a reordering would leave a session's
+ * cells landing where the Research no longer says.
+ */
+function sameResearchDefaults(
+  before: ReadonlyArray<ResearchEnvironmentDefault>,
+  after: ReadonlyArray<ResearchEnvironmentDefault>,
+): boolean {
+  return (
+    before.length === after.length &&
+    before.every(
+      (entry, index) =>
+        entry.language === after[index]!.language &&
+        entry.environmentName === after[index]!.environmentName,
+    )
+  );
+}
+
 /**
  * Holds the lab's command stream open, drives one ACP session per Lykeion
  * session id, and streams every turn's events back. The piece that joins the
@@ -169,12 +231,9 @@ export function startRuns(options: {
    * The probe's own account of why an agent it did not vet cannot run —
    * signed out, isolation unproven, waiting on a decision about its adapter.
    *
-   * Absent, or answering nothing, leaves the refusal as it was. What it
-   * replaces is one sentence doing the work of five: a run refused for an
-   * agent this machine cannot start said it had no adapter for it, which is
-   * right for one cause out of several and actively misleading for the
-   * commonest — a CLI whose token lapsed overnight, sending the researcher to
-   * install a bridge they already have.
+   * Retained as probe context for callers that already provide it. A valid
+   * start held before an adapter is available emits no refusal frame; the
+   * exact command remains replayable until capability appears.
    */
   heldBackReason?(agent: string): string | undefined;
   /** The platform whose sandbox backend confines every run here. Production
@@ -206,6 +265,13 @@ export function startRuns(options: {
    *  that arranges its stub after starting the subsystem would otherwise hand
    *  over an empty object and watch its adapter do nothing. */
   extraEnv?: () => Record<string, string>;
+  /** Test-only common checkpoint after either manager has written its exact
+   * ready marker and before a terminal journal promotion. Production omits
+   * it; keeping it above manager-specific code lets crash recovery be proved
+   * once for uv and conda without replacing either provisioner. */
+  environmentSetupCheckpoint?: () => Promise<void>;
+  /** Test-only journal injection for deterministic write-failure coverage. */
+  environmentSetupJournal?: ReturnType<typeof environmentSetupOutcomeSpool>;
 }): RunSubsystem {
   // Two signals rather than one: aborting the command stream the instant
   // `stop` is called must not also cut off a batch of events that is only
@@ -233,6 +299,26 @@ export function startRuns(options: {
   // carrying the old cursor across that boundary would filter its first
   // commands forever.
   let relayGeneration: string | undefined;
+  const setupOutcomeSpool =
+    options.environmentSetupJournal ?? environmentSetupOutcomeSpool(options.dataDir);
+  const recoveredEnvironmentSetupJournals = setupOutcomeSpool.load();
+  const pendingEnvironmentSetupOutcomes = new Map<string, EnvironmentSetupTerminal>(
+    recoveredEnvironmentSetupJournals
+      .filter((journal): journal is EnvironmentSetupTerminal => journal.state === "terminal")
+      .map((outcome) => [outcome.requestId, outcome]),
+  );
+  const provisioningEnvironmentSetups = new Map<string, EnvironmentSetupProvisioning>(
+    recoveredEnvironmentSetupJournals
+      .filter((journal): journal is EnvironmentSetupProvisioning => journal.state === "provisioning")
+      .map((journal) => [journal.requestId, journal]),
+  );
+  // A completed build whose result could not yet be written to the spool.
+  // Exact and unbounded for its lifetime, but deliberately never eligible
+  // for transport: persist-before-POST is the crash-safety boundary.
+  const unpersistedEnvironmentSetupOutcomes = new Map<string, EnvironmentSetupOutcome>();
+  const environmentSetupOutcomeAttempts = new Map<string, number>();
+  const environmentSetupOutcomeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const environmentSetupOutcomePosts = new Set<string>();
   // Every `start-run` this daemon has recently begun handling, bounded by
   // `STARTED_RUNS_LIMIT`. A reconnect can replay a command the lab is not
   // yet sure this daemon saw; without this, a replayed start-run would queue
@@ -240,11 +326,47 @@ export function startRuns(options: {
   // once its `completed` frame ships — renumber its frames from 1 again,
   // colliding with the ones already sent.
   const startedRuns = new Set<string>();
+  // Exact identities currently executing are never pruned with historical
+  // replay tombstones. A daemon can outlive more than STARTED_RUNS_LIMIT
+  // later completions while one prompt or environment build is still live;
+  // evicting that live id would let a relay replay execute it twice.
+  const activeRunStarts = new Set<string>();
+  const activeEnvironmentSetups = new Set<string>();
+  // Valid exact start commands whose agent cannot be started yet. No frame
+  // has been emitted for these and their run ids are deliberately absent
+  // from `startedRuns`, so the same identity remains replayable.
+  const deferredStarts = new Map<string, RunCommand>();
   // Terminal ids outlive their transient outbound `RunPost`: once the lab
   // acknowledges a completed batch that post is freed, but a late ACP
   // rejection (notably during shutdown) must still not recreate seq 1 and
   // publish a second ending. Bounded on the same horizon as replayed starts.
   const terminalRuns = new Set<string>();
+  // A full deferred-start map may hold one exact next command outside the
+  // map while an immediately-contiguous cancellation frees capacity. Its
+  // relay cursor remains at N-1 until this start is accepted.
+  let blockedStart:
+    | { seq: number; command: RunCommand; safeThroughSeq: number }
+    | undefined;
+  // Once lookahead controls have admitted/cancelled the blocked start, the
+  // next unsafe frame belongs on a normal relay connection. Refuse it once
+  // without executing it; the reconnect begins at the now-contiguous cursor.
+  let lookaheadFence = false;
+  // Live reconciliation and every capability-triggered deferred retry share
+  // one serial boundary. This prevents an adapter refresh from starting a
+  // prompt while an older /run/live response that retires it is still in
+  // flight.
+  let liveReconciliationTail: Promise<void> = Promise.resolve();
+  // Completion is not authority. A reset/timeout can happen after the server
+  // has already retired one of our deferred ids, so every failed attempt (and
+  // every closed command stream) keeps capability retries shut until a later
+  // response has been parsed and all of its retirements have finished here.
+  let liveReconciliationApplied = false;
+
+  function serializeLiveReconciliation(action: () => Promise<void> | void): Promise<void> {
+    const next = liveReconciliationTail.then(action, action);
+    liveReconciliationTail = next.catch(() => {});
+    return next;
+  }
 
   // Which kernel host `kernelsFor` last wired `forwardKernelCells` onto, so
   // a listener is registered once per host instance rather than once per
@@ -259,12 +381,18 @@ export function startRuns(options: {
   // for shutdown cleanup, but no later turn can inherit its uncertain state.
   const liveSessions = new Map<string, LiveSession>();
   const retainedSessions = new Set<LiveSession>();
+  // Terminalizing an unacknowledged cancellation does not prove its prompt
+  // process stopped. Retain the exact durable run identity beside that child
+  // so a replay cannot launch the same turn again after bounded history has
+  // moved on.
+  const retainedRunSessions = new Map<string, LiveSession>();
   // A live session's own working directory, kept alongside `liveSessions`
   // and with the same lifetime — `liveSessionDirs()` is what a sweep of
   // stale workspaces checks before removing anything, so this must name
   // every directory a subprocess might still be using, never fewer.
   const sessionDirs = new Map<string, string>();
   const retainedSessionDirs = new Set<string>();
+  const retainedRunDirs = new Map<string, string>();
   // How to describe a live session's environments to the kernel host again,
   // over the socket and token that session's kernels already talk over. Kept
   // alongside `liveSessions` and deleted wherever that map loses an entry:
@@ -273,7 +401,29 @@ export function startRuns(options: {
   //
   // Only sessions that were actually given a kernel appear — a session told
   // about no tool server has no kernels to re-describe.
-  const sessionConfigures = new Map<string, () => Promise<void>>();
+  const sessionConfigures = new Map<
+    string,
+    (next?: ReadonlyArray<ResearchEnvironmentDefault>) => Promise<void>
+  >();
+  /** Which environment an unaddressed cell of each language lands in, per
+   *  session — as the host was last SUCCESSFULLY TOLD, not as the lab last
+   *  said.
+   *
+   *  Written by `configure` itself, after `kernel.configure_session` has
+   *  answered, and nowhere else. That is what makes it safe to compare a
+   *  turn's defaults against: recorded on intent instead, one turn whose
+   *  re-describe threw — or that never reached a configure at all — would
+   *  leave this claiming a delivery that did not happen, and every later turn
+   *  of that session would compare equal, skip the re-describe, and go on
+   *  resolving unaddressed cells against defaults the host never received.
+   *
+   *  Consulted by `configure` when nobody hands it something newer, which is
+   *  what a re-send after a build or a reclaim is: the same defaults again,
+   *  beside whatever else has changed on disk. */
+  const sessionResearchDefaults = new Map<
+    string,
+    ReadonlyArray<ResearchEnvironmentDefault>
+  >();
   // Which language each of a live session's environments is in, by name.
   // Kept alongside `liveSessions` on the same terms as `sessionConfigures`,
   // and written from the very list this machine hands the kernel host — so
@@ -425,6 +575,17 @@ export function startRuns(options: {
   // reap that subprocess and unblock the per-session turn queue.
   const initializations = new Map<string, AbortController>();
   const releasingRuns = new Map<string, Promise<void>>();
+  const releasingRunReports = new Map<string, boolean>();
+  // Physical close is only half of retirement. Keep the exact run id until
+  // a /run/live assembled after that close is authoritatively applied; a
+  // failed response cannot consume this evidence, and bounded history may
+  // have moved more than a thousand newer ids past it while close waited.
+  // `true` means a server retirement must be reported until that exact id is
+  // echoed back as retired. `false` is a local terminalization (notably a
+  // frame conflict), whose authoritative reconciliation is the successful
+  // post-close report that omits it. Both modes retain the exact replay
+  // tombstone until that later response is applied.
+  const releasedRunsAwaitingReconciliation = new Map<string, boolean>();
   // Which session a run belongs to, and which run a session is currently
   // working on. Two maps rather than one, so a decision or cancel naming a
   // run that is only queued — not yet the one a session is actually running
@@ -503,7 +664,19 @@ export function startRuns(options: {
   }
 
   function reportedRunIds(): string[] {
-    const runIds = new Set(sessionOfRun.keys());
+    // Deferred exact starts are held by this daemon even though no agent has
+    // begun. Reporting them prevents reconciliation from misclassifying an
+    // acknowledged-but-unavailable command as a dropped execution on
+    // reconnect; it does not create a frame or mark the server waiter resumed.
+    const runIds = new Set([
+      ...sessionOfRun.keys(),
+      ...deferredStarts.keys(),
+      ...releasingRuns.keys(),
+      ...[...releasedRunsAwaitingReconciliation]
+        .filter(([, reportIdentity]) => reportIdentity)
+        .map(([runId]) => runId),
+      ...retainedRunSessions.keys(),
+    ]);
     // A locally ended run is still live from the server's point of view until
     // its terminal batch is acknowledged. Reporting it missing earlier lets a
     // reconnect synthesize a conflicting failure while the real outcome is
@@ -514,7 +687,14 @@ export function startRuns(options: {
     return [...runIds];
   }
 
-  function releaseRunAfterSessionClose(runId: string): Promise<void> {
+  function releaseRunAfterSessionClose(
+    runId: string,
+    reportIdentity = false,
+  ): Promise<void> {
+    releasingRunReports.set(
+      runId,
+      reportIdentity || (releasingRunReports.get(runId) ?? false),
+    );
     const existing = releasingRuns.get(runId);
     if (existing) return existing;
     let release!: Promise<void>;
@@ -522,6 +702,18 @@ export function startRuns(options: {
       const sessionId = sessionOfRun.get(runId);
       if (sessionId && sessionOfRun.delete(runId)) publishQueue(sessionId);
       if (!sessionId) {
+        const retained = retainedRunSessions.get(runId);
+        if (retained) {
+          try {
+            await retained.close();
+          } finally {
+            retainedRunSessions.delete(runId);
+            retainedSessions.delete(retained);
+            const dir = retainedRunDirs.get(runId);
+            retainedRunDirs.delete(runId);
+            if (dir) retainedSessionDirs.delete(dir);
+          }
+        }
         settlers.get(runId)?.();
         settlers.delete(runId);
         return;
@@ -545,6 +737,7 @@ export function startRuns(options: {
       liveSessions.delete(sessionId);
       sessionConfigures.delete(sessionId);
       sessionEnvLanguages.delete(sessionId);
+      sessionResearchDefaults.delete(sessionId);
       try {
         if (live) await live.close();
       } finally {
@@ -554,14 +747,28 @@ export function startRuns(options: {
         settlers.delete(runId);
       }
     })().finally(() => {
-      if (releasingRuns.get(runId) === release) releasingRuns.delete(runId);
+      if (releasingRuns.get(runId) === release) {
+        // Do not move directly to bounded history. A response already in
+        // flight when close began says nothing about relay commands received
+        // during the delay, and a failed later response says nothing at all.
+        // `reportLive` moves this only after a post-close successful apply.
+        releasedRunsAwaitingReconciliation.set(
+          runId,
+          releasingRunReports.get(runId) ?? reportIdentity,
+        );
+        releasingRunReports.delete(runId);
+        releasingRuns.delete(runId);
+      }
     });
     releasingRuns.set(runId, release);
     return release;
   }
 
   async function retireLocalRun(runId: string): Promise<void> {
+    deferredStarts.delete(runId);
+    activeRunStarts.delete(runId);
     addBounded(terminalRuns, runId, STARTED_RUNS_LIMIT);
+    addBounded(startedRuns, runId, STARTED_RUNS_LIMIT);
     const post = posts.get(runId);
     if (post) {
       post.failed = true;
@@ -571,26 +778,46 @@ export function startRuns(options: {
       post.timer = undefined;
       posts.delete(runId);
     }
-    await releaseRunAfterSessionClose(runId);
+    await releaseRunAfterSessionClose(runId, true);
   }
 
   async function reportLive(): Promise<void> {
-    const report = await postRunLive(
-      options.lab,
-      options.token,
-      reportedRunIds(),
-      relayGeneration,
-      lastCommandSeq,
-      commandsController.signal,
-    );
-    if (
-      report.generation !== undefined &&
-      report.generation !== relayGeneration &&
-      lastCommandSeq !== undefined
-    )
-      lastCommandSeq = undefined;
-    if (report.generation !== undefined) relayGeneration = report.generation;
-    await Promise.all(report.retireRunIds.map((runId) => retireLocalRun(runId)));
+    liveReconciliationApplied = false;
+    for (;;) {
+      // Snapshot before the request. An identity added while this request is
+      // in flight closed after the report was assembled and therefore needs
+      // a strictly later reconciliation, even if this response names it.
+      const releasedAtRequest = new Map(releasedRunsAwaitingReconciliation);
+      const report = await postRunLive(
+        options.lab,
+        options.token,
+        reportedRunIds(),
+        relayGeneration,
+        lastCommandSeq,
+        commandsController.signal,
+      );
+      if (report.generation !== undefined && report.generation !== relayGeneration) {
+        lastCommandSeq = undefined;
+        blockedStart = undefined;
+        lookaheadFence = false;
+      }
+      if (report.generation !== undefined) relayGeneration = report.generation;
+      await Promise.all(report.retireRunIds.map((runId) => retireLocalRun(runId)));
+      const retired = new Set(report.retireRunIds);
+      for (const [runId, reportIdentity] of releasedAtRequest) {
+        // A new close or an upgrade to server-retired landed during this
+        // request; only a request assembled from that newer state can clear.
+        if (releasedRunsAwaitingReconciliation.get(runId) !== reportIdentity) continue;
+        if (reportIdentity && !retired.has(runId)) continue;
+        releasedRunsAwaitingReconciliation.delete(runId);
+        addBounded(terminalRuns, runId, STARTED_RUNS_LIMIT);
+        addBounded(startedRuns, runId, STARTED_RUNS_LIMIT);
+      }
+      const closedAfterRequest = [...releasedRunsAwaitingReconciliation]
+        .some(([runId, mode]) => releasedAtRequest.get(runId) !== mode);
+      if (!closedAfterRequest) break;
+    }
+    liveReconciliationApplied = true;
   }
 
   function waitForReconciliationRetry(ms: number): Promise<void> {
@@ -614,7 +841,7 @@ export function startRuns(options: {
       while (!stopped && !refused && !commandsController.signal.aborted) {
         const reportingVersion = reconciliationVersion;
         try {
-          await reportLive();
+          await serializeLiveReconciliation(reportLive);
           acknowledgedReconciliationVersion = reportingVersion;
           attempt = 0;
           if (acknowledgedReconciliationVersion === reconciliationVersion) return;
@@ -654,6 +881,8 @@ export function startRuns(options: {
     error: LabFrameConflict,
   ): Promise<void> {
     addBounded(terminalRuns, runId, STARTED_RUNS_LIMIT);
+    activeRunStarts.delete(runId);
+    addBounded(startedRuns, runId, STARTED_RUNS_LIMIT);
     post.failed = true;
     post.pending = [];
     post.retryBatch = undefined;
@@ -780,6 +1009,8 @@ export function startRuns(options: {
       `the rest were dropped rather than held without limit`;
     post.pending.push({ seq: post.nextSeq, event: { event: "completed", state: { state: "failed", reason } } });
     addBounded(terminalRuns, runId, STARTED_RUNS_LIMIT);
+    activeRunStarts.delete(runId);
+    addBounded(startedRuns, runId, STARTED_RUNS_LIMIT);
     post.nextSeq += 1;
     post.ended = true;
     lastFailure = reason;
@@ -813,6 +1044,8 @@ export function startRuns(options: {
     post.nextSeq += 1;
     if (event.event === "completed") {
       addBounded(terminalRuns, runId, STARTED_RUNS_LIMIT);
+      activeRunStarts.delete(runId);
+      addBounded(startedRuns, runId, STARTED_RUNS_LIMIT);
       post.ended = true;
       settlers.get(runId)?.();
       settlers.delete(runId);
@@ -822,15 +1055,20 @@ export function startRuns(options: {
     else scheduleFlush(runId);
   }
 
-  function retireSession(sessionId: string, session: LiveSession): void {
+  function retireSession(runId: string, sessionId: string, session: LiveSession): void {
     if (liveSessions.get(sessionId) !== session) return;
     liveSessions.delete(sessionId);
     sessionConfigures.delete(sessionId);
     sessionEnvLanguages.delete(sessionId);
+    sessionResearchDefaults.delete(sessionId);
     retainedSessions.add(session);
+    retainedRunSessions.set(runId, session);
     const dir = sessionDirs.get(sessionId);
     sessionDirs.delete(sessionId);
-    if (dir) retainedSessionDirs.add(dir);
+    if (dir) {
+      retainedSessionDirs.add(dir);
+      retainedRunDirs.set(runId, dir);
+    }
   }
 
   /** Ends a run before it ever reached a session: the single `completed`
@@ -969,6 +1207,11 @@ export function startRuns(options: {
       name,
       packages,
       language,
+      // The answer travels with the act. The lab writes the standing grant
+      // inside the same transaction as the declaration, so the durable record
+      // of "for this conversation" cannot outlive a create that failed — the
+      // same rule `remember()` below keeps on this end.
+      answered.scope,
       eventsController.signal,
     );
     // AFTER the lab wrote the declaration, and this order is the whole of it.
@@ -986,6 +1229,33 @@ export function startRuns(options: {
     // Before returning, never after. See step 5 above.
     await sessionConfigures.get(sessionId)?.();
     return declaration;
+  }
+
+  /** Records a non-mutating requirement against the run which currently owns
+   * this session. `runOfSession`, not `liveSessions`, is the exact source-turn
+   * boundary: a session can stay open between turns, but no older turn may
+   * acquire a future continuation merely because its process survived. */
+  async function serveEnvironmentRequire(params: unknown): Promise<unknown> {
+    const asked = (params ?? {}) as { session_id?: unknown; name?: unknown };
+    const sessionId = asked.session_id;
+    const name = asked.name;
+    if (
+      typeof sessionId !== "string" || sessionId === "" ||
+      typeof name !== "string" || name === ""
+    ) throw new Error("requiring an environment needs a session and a name");
+    const runId = runOfSession.get(sessionId);
+    if (runId === undefined)
+      throw new Error(
+        `this machine has no live source turn for session ${sessionId}, so ${name} cannot be required`,
+      );
+    return postKernelEnvRequire(
+      options.lab,
+      options.token,
+      runId,
+      sessionId,
+      name,
+      eventsController.signal,
+    );
   }
 
   /**
@@ -1079,6 +1349,10 @@ export function startRuns(options: {
       sessionId,
       name,
       packages,
+      // Carried for the reason a create's is: the durable half of "for this
+      // conversation" is written by the lab, inside the transaction that
+      // appends the packages, so an add that was refused leaves nothing.
+      answered.scope,
       eventsController.signal,
     );
     // After the lab wrote it, for the reason `serveEnvironmentCreate` mints
@@ -1119,13 +1393,27 @@ export function startRuns(options: {
    * about one environment: a host speaking a protocol this daemon does not,
    * and a machine on which not one boundary could be rendered. Everything
    * narrower costs its own entry and nothing else.
+   *
+   * `researchDefaults` is what the Research itself confirmed — which
+   * environment a cell of each language that names none lands in. It is
+   * returned as its own map rather than folded into the entries, and that is
+   * the whole point of it: a Research can name a default this machine has not
+   * built, and an entry list has no row to carry it on. Dropped there, the
+   * cell would be refused as a session with no environment of that language —
+   * true about the machine, useless about the work — instead of being refused
+   * by name, which is a sentence a researcher can act on.
    */
   async function kernelEnvironmentsFor(
     host: KernelHost,
     cwd: string,
     taskId: string,
     grants: StandingGrant[],
-  ): Promise<{ environments: EnvironmentEntry[]; declared?: string[] }> {
+    researchDefaults: ReadonlyArray<ResearchEnvironmentDefault>,
+  ): Promise<{
+    environments: EnvironmentEntry[];
+    declared?: string[];
+    defaults: Record<string, string>;
+  }> {
     // The greeting is where this daemon says which machine's state the host
     // is holding kernels for, and the record of every cell it runs belongs
     // in that same state rather than wherever a host with nothing to go on
@@ -1460,6 +1748,11 @@ export function startRuns(options: {
       try {
         const status: KernelEnvStatus = readEnvStatus(options.workDir, declaration);
         if (status.state !== "ready") continue;
+        if (
+          declaration.declarationGenerationId === undefined ||
+          status.declarationGenerationId !== declaration.declarationGenerationId
+        )
+          continue;
         // The prefix of the base THIS venv's `bin/python3` links out to,
         // read off its own `pyvenv.cfg` rather than assumed to be whatever
         // the host process was started from. `uv venv` runs with no
@@ -1553,6 +1846,29 @@ export function startRuns(options: {
     // not. It sends the empty list, as it did before any of this.
     if (entries.size === 0 && unrenderable > 0)
       throw new Error("no kernel on this machine has a boundary that could be rendered");
+    // The Research's own answer to "where does a cell that names nothing
+    // land", applied over what this machine has. Two things happen per
+    // language the Research named one for, and they are separate:
+    //
+    // The FLOOR loses its claim. Whatever this machine happened to discover
+    // first for that language marked itself `default` above, and that mark is
+    // a fact about the machine — right up until the Research says otherwise,
+    // after which leaving it would land every unaddressed cell somewhere the
+    // researcher did not choose, on one machine and not another.
+    //
+    // The named entry GAINS it, where this machine has one. Where it does
+    // not, no entry is marked and none is invented: the name still travels in
+    // the map below, and being unresolvable there is precisely what earns the
+    // refusal that says which environment to build.
+    const defaults: Record<string, string> = {};
+    for (const { language, environmentName } of researchDefaults) {
+      defaults[language] = environmentName;
+      for (const [key, entry] of entries) {
+        if (entry.language !== language) continue;
+        const { default: _inherited, ...rest } = entry;
+        entries.set(key, entry.name === environmentName ? { ...rest, default: true } : rest);
+      }
+    }
     return {
       // In the order they were first named: the floor, then whatever this
       // machine has built that the floor did not already stand for. One
@@ -1562,6 +1878,11 @@ export function startRuns(options: {
       // Absent rather than empty when the ask above failed, all the way out
       // to the wire: `[]` would tell the host this lab declared nothing.
       ...(declared === undefined ? {} : { declared }),
+      // Always present, and empty where the Research confirmed nothing —
+      // unlike `declared`, whose absence means a lab that could not be asked.
+      // Nothing here can fail to know what the lab said about defaults: the
+      // answer rode in on the command that started this turn.
+      defaults,
     };
   }
 
@@ -1606,14 +1927,25 @@ export function startRuns(options: {
     sessionId: string,
     agent: string,
     grants: StandingGrant[],
-  ): Promise<{ servers: McpServer[]; reconfigure?: () => Promise<void> }> {
+    researchDefaults: ReadonlyArray<ResearchEnvironmentDefault>,
+  ): Promise<{
+    servers: McpServer[];
+    reconfigure?: (next?: ReadonlyArray<ResearchEnvironmentDefault>) => Promise<void>;
+  }> {
     if (options.kernelHost === undefined) return { servers: [] };
     const token = kernelSessionToken();
     // Decided before anything is asked of the host, and outside the catch
     // below, so a name that cannot be bound leaves this as a refusal rather
     // than as a session quietly opened with no tools.
     const socket = kernelSocketPath(cwd);
-    const configure = async (): Promise<void> => {
+    /** `next` is what this caller wants the host told — the turn's own
+     *  defaults. Omitted by every re-send that is about something else
+     *  entirely (a build landed, a copy was reclaimed, the host was
+     *  replaced), which must carry the defaults forward rather than silently
+     *  drop them, so those read back what was last delivered. */
+    const configure = async (
+      next?: ReadonlyArray<ResearchEnvironmentDefault>,
+    ): Promise<void> => {
       const host = options.kernelHost!();
       if (cellRoutingHost !== host) {
         forwardKernelCells(
@@ -1631,12 +1963,16 @@ export function startRuns(options: {
         // fact about the process pair, and it would say the opposite of what
         // is true about the handler's lifetime to whoever read it next.
         host.serve("environment.create", serveEnvironmentCreate);
+        host.serve("environment.require", serveEnvironmentRequire);
         // Beside it, on the same guard and for the same reason: what is
         // registered belongs to the HOST rather than to any one session.
         host.serve("environment.add_packages", serveEnvironmentAddPackages);
         cellRoutingHost = host;
       }
-      const { environments, declared } = await kernelEnvironmentsFor(host, cwd, taskId, grants);
+      const sending = next ?? sessionResearchDefaults.get(sessionId) ?? [];
+      const { environments, declared, defaults } = await kernelEnvironmentsFor(
+        host, cwd, taskId, grants, sending,
+      );
       // Recorded from the same list the host is about to be given, so the
       // card and the kernel cannot disagree about what `rstats` is.
       sessionEnvLanguages.set(
@@ -1660,14 +1996,23 @@ export function startRuns(options: {
         task_id: taskId,
         workspace: cwd,
         environments,
+        // Which of them a cell that names none lands in, as this Research
+        // decided. Sent beside the entries rather than only as a flag on one,
+        // so a default naming something this machine has not built survives
+        // the trip and is refused by name at the cell.
+        defaults,
         socket,
         token,
         ...(declared === undefined ? {} : { declared }),
       });
+      // After the host has answered, never before: this is the record of what
+      // it HOLDS, and the one thing a later turn compares its own defaults
+      // against to decide whether the host still needs telling.
+      sessionResearchDefaults.set(sessionId, sending);
     };
     try {
       await withDeadline(
-        configure(),
+        configure(researchDefaults),
         options.kernelReachMs ?? KERNEL_REACH_MS,
         "this machine's kernels did not answer in time",
       );
@@ -1697,6 +2042,16 @@ export function startRuns(options: {
     prompt: string,
     grants: StandingGrant[],
     model: string | undefined,
+    /** Which environment an unaddressed cell of each language lands in, as
+     *  the Research this turn belongs to confirmed it. Carried down to the
+     *  boundary rather than read from anywhere on this machine: only the lab
+     *  knows what a Research decided. */
+    researchDefaults: ReadonlyArray<ResearchEnvironmentDefault>,
+    /** Which environments this conversation already has standing permission
+     *  to change, as the lab holds them. Read by a session this turn OPENS;
+     *  a session already open is holding its own set, which is this one plus
+     *  whatever it has been given since, and nothing here narrows it. */
+    environmentGrants: readonly string[],
   ): Promise<void> {
     if (cancelledQueuedRuns.delete(runId)) {
       if (sessionOfRun.delete(runId)) publishQueue(sessionId);
@@ -1743,10 +2098,19 @@ export function startRuns(options: {
       return;
     }
     let live = liveSessions.get(sessionId);
+    // Whether this turn is joining a conversation that was already open —
+    // read before the boundary check below can retire one, since a session
+    // retired there is replaced by a fresh one that is configured from
+    // scratch and has nothing stale to correct.
+    const joiningOpenSession = live !== undefined && live.boundary === boundary;
     if (live && live.boundary !== boundary) {
       liveSessions.delete(sessionId);
       sessionDirs.delete(sessionId);
       sessionConfigures.delete(sessionId);
+      // With them, on the same discipline: what the host was told about a
+      // session this machine has just retired describes a session that no
+      // longer exists, and the replacement is configured from scratch.
+      sessionResearchDefaults.delete(sessionId);
       if (runOfSession.get(sessionId) === runId) runOfSession.delete(sessionId);
       await live.close();
       live = undefined;
@@ -1785,7 +2149,9 @@ export function startRuns(options: {
       // Held until the session is actually installed below, and filed with
       // it: a session that never opens — cancelled, or stopped, while ACP
       // was still initialising — must leave nothing behind to re-configure.
-      let reconfigure: (() => Promise<void>) | undefined;
+      let reconfigure:
+        | ((next?: ReadonlyArray<ResearchEnvironmentDefault>) => Promise<void>)
+        | undefined;
       try {
         ({ servers: mcpServers, reconfigure } = await kernelsFor(
           cwd,
@@ -1793,6 +2159,7 @@ export function startRuns(options: {
           sessionId,
           agent,
           grants,
+          researchDefaults,
         ));
       } catch (err) {
         refuse(runId, err instanceof Error ? err.message : String(err));
@@ -1810,6 +2177,11 @@ export function startRuns(options: {
           dataDir: options.dataDir,
           ...(options.platform === undefined ? {} : { platform: options.platform }),
           grants,
+          // What this conversation was already allowed to change, so a
+          // session opened by a daemon that restarted — or opened again
+          // because the boundary changed underneath it — does not ask the
+          // researcher about an environment they allowed a turn ago.
+          environmentGrants,
           mcpServers,
           onEvent: (event) => {
             if (liveSessions.get(sessionId) !== created) return;
@@ -1821,7 +2193,7 @@ export function startRuns(options: {
               event.state.state === "cancelled" &&
               event.state.unacknowledged
             )
-              retireSession(sessionId, created!);
+              retireSession(current, sessionId, created!);
           },
           onGrant: (grant) => {
             if (liveSessions.get(sessionId) !== created) return;
@@ -1889,6 +2261,54 @@ export function startRuns(options: {
       if (reconfigure !== undefined) sessionConfigures.set(sessionId, reconfigure);
     }
 
+    // A session that was already open was configured with whatever the
+    // Research had confirmed at the time, and this turn may be the first one
+    // carrying an answer given since. Re-described here, before the prompt,
+    // for the same reason `serveEnvironmentCreate` re-describes before it
+    // returns: the boundary a cell resolves against has to be the current one
+    // by the time a cell can arrive.
+    //
+    // Compared against what the host was last TOLD — `sessionResearchDefaults`
+    // is written by `configure` on success and by nothing else — rather than
+    // against what the last turn intended to tell it. A re-describe that threw
+    // therefore leaves this turn's defaults still owed, and the next turn owes
+    // them again, instead of one failure silencing the default for the rest of
+    // the session's life.
+    //
+    // Only when it actually differs. A re-describe per turn would be a host
+    // round trip on every turn of every conversation, to say what the host
+    // already holds.
+    //
+    // Deadline-bounded, because this sits on turn admission and `runTurn` is
+    // chained on `turnQueues`: `host.call` settles only on a reply or on host
+    // death, so an unbounded wait on a host that is alive but wedged would
+    // hold this turn open forever AND queue every later turn on the session
+    // behind it, with no ending and no event for any of them. The same
+    // deadline `kernelsFor` puts on its own `configure`, which is the whole
+    // reason that one can be said to degrade rather than hang.
+    //
+    // Degraded rather than fatal: a host that will not take a boundary right
+    // now costs this turn the new default — its cells resolve the way the
+    // previous turn's did, and the next turn asks again — where refusing the
+    // turn would cost the researcher the work itself.
+    if (
+      joiningOpenSession &&
+      !sameResearchDefaults(sessionResearchDefaults.get(sessionId) ?? [], researchDefaults)
+    ) {
+      try {
+        await withDeadline(
+          sessionConfigures.get(sessionId)?.(researchDefaults) ?? Promise.resolve(),
+          options.kernelReachMs ?? KERNEL_REACH_MS,
+          "this machine's kernels did not answer in time",
+        );
+      } catch (err) {
+        console.error(
+          `this machine could not tell ${taskId}'s kernels which environments this ` +
+            `Research now defaults to: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     runOfSession.set(sessionId, runId);
     // What backs this workspace, told to the host as the turn begins and once
     // per turn: a tree gets committed to and written in between two of them,
@@ -1917,44 +2337,81 @@ export function startRuns(options: {
     if (sessionOfRun.delete(runId)) publishQueue(sessionId);
   }
 
-  function handleStartRun(command: RunCommand): void {
-    const { runId, agent, studyId, taskId, sessionId, prompt, model } = command;
+  function handleStartRun(command: RunCommand): boolean {
+    const { runId } = command;
     // A reconnect replays commands from its cursor, and the lab cannot always
     // be sure this daemon saw the last one before the connection dropped.
     // Acting on the same run id twice would queue a second turn and, once
     // this run's frames have shipped and its `RunPost` freed, renumber a
     // fresh batch from 1 — colliding with what already went out.
-    if (startedRuns.has(runId)) return;
-    addBounded(startedRuns, runId, STARTED_RUNS_LIMIT);
-
-    const adapter = agent === undefined ? undefined : options.adapterFor(agent);
-    if (agent === undefined || !adapter) {
-      // The probe's own sentence where it has one, because it knows which of
-      // the several ways this happens actually happened and this does not.
-      // The old wording survives for the case it was always right about: an
-      // agent nothing has vetted and nothing has anything to say about.
-      const why = agent === undefined ? undefined : options.heldBackReason?.(agent);
-      refuse(runId, why ?? `this machine has no adapter for "${agent ?? "no agent named"}"`);
-      return;
-    }
     if (
+      terminalRuns.has(runId) ||
+      startedRuns.has(runId) ||
+      activeRunStarts.has(runId) ||
+      releasingRuns.has(runId) ||
+      releasedRunsAwaitingReconciliation.has(runId) ||
+      retainedRunSessions.has(runId) ||
+      posts.has(runId)
+    )
+      return true;
+    // A duplicate cannot rewrite durable intent. If this identity is already
+    // deferred, the first exact command remains the only candidate that may
+    // ever execute.
+    const exact = deferredStarts.get(runId) ?? command;
+    const { agent, studyId, taskId, sessionId, prompt, model } = exact;
+    if (
+      agent === undefined ||
       studyId === undefined ||
       taskId === undefined ||
       sessionId === undefined ||
       prompt === undefined
     ) {
+      deferredStarts.delete(runId);
+      addBounded(startedRuns, runId, STARTED_RUNS_LIMIT);
       refuse(runId, "a start-run command is missing studyId, taskId, sessionId, or a prompt");
-      return;
+      return true;
     }
-    const grants = command.grants ?? [];
+    const adapter = options.adapterFor(agent);
+    if (!adapter) {
+      // Availability is not execution. A terminal frame here would settle
+      // the server turn and consume the continuation identity before any
+      // agent session or prompt had begun.
+      if (deferredStarts.has(runId)) return true;
+      if (deferredStarts.size >= DEFERRED_STARTS_LIMIT) return false;
+      deferredStarts.set(runId, exact);
+      return true;
+    }
+    deferredStarts.delete(runId);
+    activeRunStarts.add(runId);
+    const grants = exact.grants ?? [];
+    // Absent is empty here, deliberately: a lab that sends no defaults is one
+    // whose Research confirmed none, and this machine's own floor answers for
+    // every language — which is what every session had before a Research could
+    // name one at all.
+    const researchDefaults = exact.environmentDefaults ?? [];
+    // Absent is empty for the same reason: a lab that sends none is a
+    // conversation nobody has allowed an environment change in. Never
+    // remembered on this machine — the lab holds these, and a session opened
+    // here is seeded from what arrives with the turn.
+    const environmentGrants = exact.environmentGrants ?? [];
 
     sessionOfRun.set(runId, sessionId);
     publishQueue(sessionId, runId);
     const tail = turnQueues.get(sessionId) ?? Promise.resolve();
     const next = tail
       .catch(() => {})
-      .then(() => runTurn(runId, sessionId, studyId, taskId, agent, adapter, prompt, grants, model));
+      .then(() =>
+        runTurn(
+          runId, sessionId, studyId, taskId, agent, adapter, prompt, grants, model,
+          researchDefaults, environmentGrants,
+        ),
+      );
     turnQueues.set(sessionId, next);
+    return true;
+  }
+
+  function retryDeferredStarts(): void {
+    for (const command of [...deferredStarts.values()]) handleStartRun(command);
   }
 
   /** The live session a run may act on right now — only while that run is
@@ -1967,6 +2424,14 @@ export function startRuns(options: {
   }
 
   function cancelRun(runId: string): void {
+    if (deferredStarts.delete(runId)) {
+      // No execution began, but the lab still needs durable evidence that
+      // this queued identity ended. The server distinguishes this terminal-
+      // only cancellation from a failure after execution evidence.
+      addBounded(startedRuns, runId, STARTED_RUNS_LIMIT);
+      emit(runId, { event: "completed", state: { state: "cancelled" } });
+      return;
+    }
     const live = liveSessionForRun(runId);
     if (live) {
       live.cancel();
@@ -2014,6 +2479,15 @@ export function startRuns(options: {
           liveSessions.delete(sessionId);
           sessionDirs.delete(sessionId);
           sessionConfigures.delete(sessionId);
+          // With them, on the discipline these maps are held to everywhere
+          // else: what the host was told about a session this machine has
+          // just ended describes a session that no longer exists. Inert today
+          // — nothing reads either without a `sessionConfigures` closure, and
+          // that has just gone — but an invariant applied to some of the maps
+          // and not the rest is what makes the next change unsafe, so BOTH go
+          // here, not just the one this block used to name.
+          sessionEnvLanguages.delete(sessionId);
+          sessionResearchDefaults.delete(sessionId);
           if (runOfSession.get(sessionId) === runId) runOfSession.delete(sessionId);
           if (live) await live.close();
         }
@@ -2173,6 +2647,159 @@ export function startRuns(options: {
       );
   }
 
+  function postPendingEnvironmentSetupOutcome(requestId: string): void {
+    if (stopped || environmentSetupOutcomePosts.has(requestId)) return;
+    const outcome = pendingEnvironmentSetupOutcomes.get(requestId);
+    if (outcome === undefined) return;
+    const timer = environmentSetupOutcomeTimers.get(requestId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      environmentSetupOutcomeTimers.delete(requestId);
+    }
+    environmentSetupOutcomePosts.add(requestId);
+    void postKernelEnvResult(
+      options.lab,
+      options.token,
+      requestId,
+      outcome.declarationGenerationId,
+      outcome.result,
+      eventsController.signal,
+    )
+      .then(() => {
+        setupOutcomeSpool.acknowledge(outcome);
+        pendingEnvironmentSetupOutcomes.delete(requestId);
+        environmentSetupOutcomeAttempts.delete(requestId);
+        addBounded(startedRuns, requestId, STARTED_RUNS_LIMIT);
+      })
+      .catch(() => {
+        if (stopped || eventsController.signal.aborted) return;
+        const attempt = (environmentSetupOutcomeAttempts.get(requestId) ?? 0) + 1;
+        environmentSetupOutcomeAttempts.set(requestId, attempt);
+        const retry = setTimeout(() => {
+          environmentSetupOutcomeTimers.delete(requestId);
+          postPendingEnvironmentSetupOutcome(requestId);
+        }, backoffDelayMs(attempt));
+        retry.unref?.();
+        environmentSetupOutcomeTimers.set(requestId, retry);
+      })
+      .finally(() => environmentSetupOutcomePosts.delete(requestId));
+  }
+
+  function retryPendingEnvironmentSetupOutcomes(): void {
+    for (const outcome of unpersistedEnvironmentSetupOutcomes.values())
+      persistEnvironmentSetupOutcome(outcome);
+    for (const requestId of pendingEnvironmentSetupOutcomes.keys())
+      postPendingEnvironmentSetupOutcome(requestId);
+  }
+
+  function persistEnvironmentSetupOutcome(outcome: EnvironmentSetupOutcome): void {
+    try {
+      const safe = setupOutcomeSpool.complete(outcome);
+      unpersistedEnvironmentSetupOutcomes.delete(outcome.requestId);
+      provisioningEnvironmentSetups.delete(outcome.requestId);
+      pendingEnvironmentSetupOutcomes.set(outcome.requestId, safe);
+      postPendingEnvironmentSetupOutcome(outcome.requestId);
+    } catch {
+      unpersistedEnvironmentSetupOutcomes.set(outcome.requestId, outcome);
+      // Disclose no path, package, credential or raw provisioner output.
+      lastFailure = `${outcome.requestId}'s terminal environment setup outcome could not be persisted`;
+    }
+  }
+
+  function quarantineProvisioningEnvironmentSetup(
+    command: RunCommand,
+    journal: EnvironmentSetupProvisioning,
+  ): void {
+    lastFailure =
+      `${journal.requestId}'s interrupted environment setup is quarantined until exact completion evidence exists`;
+    if (command.name === journal.name) {
+      void postKernelEnvProgress(
+        options.lab,
+        options.token,
+        journal.requestId,
+        journal.name,
+        {
+          stage: "finalizing",
+          line: "Interrupted setup retained safely; this machine will not provision it again automatically.",
+        },
+        eventsController.signal,
+      ).catch(() => {});
+    }
+  }
+
+  function reconcileProvisioningEnvironmentSetup(
+    command: RunCommand,
+    journal: EnvironmentSetupProvisioning,
+  ): void {
+    if (
+      command.name !== journal.name ||
+      command.declarationGenerationId !== journal.declarationGenerationId
+    ) {
+      lastFailure =
+        `${journal.requestId}'s replay does not match the provisioning journal retained by this machine`;
+      return;
+    }
+    try {
+      const requestedPackages = command.requestedPackages ?? command.packages;
+      if (
+        requestedPackages === undefined ||
+        requestedPackages.some((entry) => typeof entry !== "string")
+      ) {
+        quarantineProvisioningEnvironmentSetup(command, journal);
+        return;
+      }
+      const manager = command.manager ?? "uv";
+      const marker = readEnvironmentMarker(options.workDir, journal.name);
+      const exactMarker =
+        marker !== undefined &&
+        marker.requestId === journal.requestId &&
+        marker.name === journal.name &&
+        marker.manager === manager &&
+        marker.declarationGenerationId === journal.declarationGenerationId &&
+        marker.packageFingerprint === environmentPackageFingerprint(requestedPackages) &&
+        (command.lockfile === undefined
+          ? command.lockRevision === undefined
+          : command.lockRevision !== undefined &&
+            marker.lockRevision === command.lockRevision &&
+            marker.lockfileFingerprint === environmentLockfileFingerprint(command.lockfile));
+      if (!exactMarker) {
+        quarantineProvisioningEnvironmentSetup(command, journal);
+        return;
+      }
+      const status = readEnvStatus(options.workDir, {
+        name: journal.name,
+        language: command.language ?? "python",
+        manager,
+        packages: requestedPackages,
+        createdTs: command.declarationCreatedTs ?? 0,
+        declarationGenerationId: journal.declarationGenerationId,
+        lockRevision: marker.lockRevision,
+      });
+      const exactReady =
+        status.state === "ready" &&
+        status.name === journal.name &&
+        status.setupRequestId === journal.requestId &&
+        status.declarationGenerationId === journal.declarationGenerationId &&
+        status.lockRevision === marker.lockRevision &&
+        status.lockfileFingerprint === marker.lockfileFingerprint &&
+        status.packageFingerprint === marker.packageFingerprint;
+      if (!exactReady) {
+        quarantineProvisioningEnvironmentSetup(command, journal);
+        return;
+      }
+      const outcome = canonicalEnvironmentSetupOutcome({
+        requestId: journal.requestId,
+        name: journal.name,
+        declarationGenerationId: journal.declarationGenerationId,
+        result: { ok: true, status },
+      });
+      unpersistedEnvironmentSetupOutcomes.set(journal.requestId, outcome);
+      persistEnvironmentSetupOutcome(outcome);
+    } catch {
+      quarantineProvisioningEnvironmentSetup(command, journal);
+    }
+  }
+
   /**
    * Builds (or replays) `name` on this machine, answered back to the lab's
    * own `kernel-env-setup` ask.
@@ -2196,31 +2823,163 @@ export function startRuns(options: {
    */
   function handleKernelEnvSetup(command: RunCommand): void {
     const requestId = command.runId;
+    const pendingOutcome = pendingEnvironmentSetupOutcomes.get(requestId);
+    if (pendingOutcome !== undefined) {
+      if (
+        pendingOutcome.name !== command.name ||
+        pendingOutcome.declarationGenerationId !== command.declarationGenerationId
+      ) {
+        lastFailure =
+          `${requestId}'s replay does not match the environment setup outcome retained by this machine`;
+        return;
+      }
+      postPendingEnvironmentSetupOutcome(requestId);
+      return;
+    }
+    const unpersistedOutcome = unpersistedEnvironmentSetupOutcomes.get(requestId);
+    if (unpersistedOutcome !== undefined) {
+      if (
+        unpersistedOutcome.name !== command.name ||
+        unpersistedOutcome.declarationGenerationId !== command.declarationGenerationId
+      ) {
+        lastFailure =
+          `${requestId}'s replay does not match the environment setup outcome retained by this machine`;
+        return;
+      }
+      persistEnvironmentSetupOutcome(unpersistedOutcome);
+      return;
+    }
+    const provisioningJournal = provisioningEnvironmentSetups.get(requestId);
+    if (provisioningJournal !== undefined) {
+      if (activeEnvironmentSetups.has(requestId)) {
+        if (
+          command.name !== provisioningJournal.name ||
+          command.declarationGenerationId !== provisioningJournal.declarationGenerationId
+        )
+          lastFailure =
+            `${requestId}'s replay does not match the active provisioning journal retained by this machine`;
+        return;
+      }
+      reconcileProvisioningEnvironmentSetup(command, provisioningJournal);
+      return;
+    }
+    if (setupOutcomeSpool.hasRecord(requestId)) {
+      // The exact hashed record exists but did not pass `load`'s bounded
+      // schema. Recovery cannot safely reconstruct an outcome to POST, and
+      // it must not interpret damaged evidence as permission to provision
+      // the same request again. Only an authoritative acknowledgement can
+      // remove the record.
+      lastFailure = `${requestId}'s retained environment setup outcome is unreadable`;
+      return;
+    }
+    // A server restart can replay a requested durable setup with the exact
+    // same id. Applying it twice would run two `uv venv --clear` builds over
+    // one directory and post two terminal answers for one durable attempt.
+    if (startedRuns.has(requestId) || activeEnvironmentSetups.has(requestId)) return;
     const name = command.name;
     if (name === undefined) {
-      // Answered, never dropped. This lab holds the caller's promise open
-      // until something settles it, and the only other thing that will is a
-      // forty-minute timeout — so returning silently here turns a malformed
-      // command into a researcher watching a Setup that was never going to
-      // happen. The same reasoning the kernel host's own loop applies to a
-      // method it does not recognize: a request that gets no reply reads as
-      // a hung machine rather than as a refused message.
+      addBounded(startedRuns, requestId, STARTED_RUNS_LIMIT);
+      // Answered, never dropped. The lab's record of this attempt is durable
+      // now and nothing else will ever settle it: the setup job stays
+      // non-terminal until a machine posts a terminal result for this exact
+      // request id, and there is no timeout anywhere that will do it instead
+      // — so returning silently here turns a malformed command into a Task
+      // blocked forever on a build that was never going to happen. The same
+      // reasoning the kernel host's own loop applies to a method it does not
+      // recognize: a request that gets no reply reads as a hung machine
+      // rather than as a refused message.
       void postKernelEnvResult(
         options.lab,
         options.token,
         requestId,
-        { ok: false, error: "this machine was asked to set up an environment with no name" },
+        command.declarationGenerationId ?? "",
+        { ok: false, name: "", error: "this machine was asked to set up an environment with no name" },
         eventsController.signal,
       ).catch(() => {});
       return;
     }
+    if (command.declarationGenerationId === undefined) {
+      addBounded(startedRuns, requestId, STARTED_RUNS_LIMIT);
+      void postKernelEnvResult(
+        options.lab,
+        options.token,
+        requestId,
+        "",
+        {
+          ok: false,
+          name,
+          error: `${name}'s setup command carries no authoritative declaration generation`,
+        },
+        eventsController.signal,
+      ).catch(() => {});
+      return;
+    }
+    const requestedPackages = command.requestedPackages ?? command.packages;
+    if (
+      requestedPackages === undefined ||
+      requestedPackages.some((entry) => typeof entry !== "string")
+    ) {
+      addBounded(startedRuns, requestId, STARTED_RUNS_LIMIT);
+      void postKernelEnvResult(
+        options.lab,
+        options.token,
+        requestId,
+        command.declarationGenerationId,
+        {
+          ok: false,
+          name,
+          error: `${name}'s setup command carries no exact requested package evidence`,
+        },
+        eventsController.signal,
+      ).catch(() => {});
+      return;
+    }
+    try {
+      const begun = setupOutcomeSpool.begin({
+        requestId,
+        name,
+        declarationGenerationId: command.declarationGenerationId,
+      });
+      provisioningEnvironmentSetups.set(requestId, begun.journal);
+      if (begun.role === "observer") {
+        // The durable create-if-absent result is the provisioning authority.
+        // An identical process-local command is only an observer: it may
+        // promote exact completion evidence left by the owner, but it never
+        // enters either destructive builder phase and it never takes over by
+        // elapsed time, PID, or process restart.
+        reconcileProvisioningEnvironmentSetup(command, begun.journal);
+        return;
+      }
+    } catch {
+      // The write-ahead boundary did not land, so no resolver or materializer
+      // is authorized to run. A replay may try the exact atomic create again.
+      lastFailure = `${requestId}'s provisioning journal could not be persisted`;
+      return;
+    }
+    activeEnvironmentSetups.add(requestId);
+    let stage: EnvironmentSetupStage = "resolving";
+    const reportPhase = async (next: EnvironmentSetupStage, line: string): Promise<void> => {
+      stage = next;
+      await postKernelEnvProgress(
+        options.lab,
+        options.token,
+        requestId,
+        name,
+        { stage, line },
+        eventsController.signal,
+      ).catch(() => {
+        // Progress is best-effort. Awaiting the phase marker only preserves
+        // its ordering against the work it describes; it never turns a
+        // reporting outage into a failed build.
+      });
+    };
     const onLine = (line: string): void => {
       void postKernelEnvProgress(
         options.lab,
         options.token,
         requestId,
         name,
-        line,
+        { stage, line },
         eventsController.signal,
       ).catch(
         () => {
@@ -2230,15 +2989,20 @@ export function startRuns(options: {
       );
     };
     void (async () => {
+      let result:
+        | { ok: true; status: KernelEnvStatus }
+        | { ok: false; name: string; error: string };
       try {
         let lockfile = command.lockfile;
         let lockRevision = command.lockRevision;
         if (lockfile === undefined) {
+          await reportPhase("resolving", `Resolving ${name}`);
           const resolved = await resolveEnvironment({
+            requestId,
             workDir: options.workDir,
             dataDir: options.dataDir,
             name,
-            packages: command.packages ?? [],
+            packages: requestedPackages,
             // Same fallback `readEnvStatus`'s own `manager` field gets below —
             // D1 means this is always `"uv"` today, but the default lives
             // here rather than upstream so a command that predates this
@@ -2253,18 +3017,26 @@ export function startRuns(options: {
             options.token,
             requestId,
             name,
+            command.declarationGenerationId!,
             lockfile,
             eventsController.signal,
           ));
         }
         if (lockRevision === undefined)
           throw new Error(`${name}'s setup command carried a lockfile with no revision to build it under`);
+        await reportPhase("installing", `Installing ${name}`);
         await materializeEnvironment({
+          requestId,
           workDir: options.workDir,
           dataDir: options.dataDir,
           name,
           lockfile,
           lockRevision,
+          declarationGenerationId: command.declarationGenerationId!,
+          requestedPackages,
+          ...(command.declarationCreatedTs === undefined
+            ? {}
+            : { declarationCreatedTs: command.declarationCreatedTs }),
           manager: command.manager ?? "uv",
           ...(options.platform === undefined ? {} : { platform: options.platform }),
           onLine,
@@ -2282,10 +3054,24 @@ export function startRuns(options: {
           name,
           language: command.language ?? "python",
           manager: command.manager ?? "uv",
-          packages: [],
-          createdTs: 0,
+          packages: requestedPackages,
+          createdTs: command.declarationCreatedTs ?? 0,
+          ...(command.declarationGenerationId === undefined
+            ? {}
+            : { declarationGenerationId: command.declarationGenerationId }),
           lockRevision,
         });
+        if (
+          status.state !== "ready" ||
+          status.setupRequestId !== requestId ||
+          status.declarationGenerationId !== command.declarationGenerationId ||
+          status.lockRevision !== lockRevision ||
+          status.lockfileFingerprint !== environmentLockfileFingerprint(lockfile) ||
+          status.packageFingerprint !== environmentPackageFingerprint(requestedPackages)
+        )
+          throw new Error(`${name}'s exact completion marker could not be verified`);
+        await options.environmentSetupCheckpoint?.();
+        await reportPhase("finalizing", `Finalizing ${name}`);
         // Before the result and not after. The result is what releases the
         // lab's own wait and unblocks the researcher's Setup, and a session
         // still confined by the map it was opened with would refuse the very
@@ -2344,25 +3130,44 @@ export function startRuns(options: {
         } catch {
           // See above.
         }
-        await postKernelEnvResult(
-          options.lab,
-          options.token,
-          requestId,
-          { ok: true, status },
-          eventsController.signal,
-        );
+        result = { ok: true, status };
       } catch (err) {
-        await postKernelEnvResult(
-          options.lab,
-          options.token,
+        result = {
+          ok: false,
+          name,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+      // Persist before transport. A success marker can prove a build
+      // happened, but cannot reconstruct the exact result payload; a failure
+      // has no marker at all. The spool is therefore the replay source for
+      // both outcomes across daemon process restart.
+      let outcome: CanonicalEnvironmentSetupOutcome;
+      try {
+        outcome = canonicalEnvironmentSetupOutcome({
           requestId,
-          { ok: false, error: err instanceof Error ? err.message : String(err) },
-          eventsController.signal,
-        ).catch(() => {
-          // The lab's own wait times out on this the same way it would on a
-          // machine that vanished mid-build — there is nothing more this
-          // call can do about a lab it cannot currently reach.
+          name,
+          declarationGenerationId: command.declarationGenerationId,
+          result,
         });
+      } catch {
+        outcome = canonicalEnvironmentSetupOutcome({
+          requestId,
+          name,
+          declarationGenerationId: command.declarationGenerationId,
+          result: {
+            ok: false,
+            name,
+            error: "environment setup produced an invalid terminal result",
+          },
+        });
+      }
+      unpersistedEnvironmentSetupOutcomes.set(requestId, outcome);
+      try {
+        persistEnvironmentSetupOutcome(outcome);
+      } finally {
+        activeEnvironmentSetups.delete(requestId);
+        addBounded(startedRuns, requestId, STARTED_RUNS_LIMIT);
       }
     })();
   }
@@ -2465,20 +3270,81 @@ export function startRuns(options: {
       });
   }
 
-  function handleCommand(seq: number, command: RunCommand): void {
+  function handleCommand(seq: number, command: RunCommand): boolean | "lookahead" {
+    // A crash-window replay of a control whose contiguous cursor already
+    // landed is harmless. More importantly it must not move the cursor
+    // backwards and make an earlier start eligible again.
+    if (lastCommandSeq !== undefined && seq <= lastCommandSeq) return true;
+
+    if (lookaheadFence) {
+      // This frame was read only because the relay had already buffered past
+      // the controls that freed/cancelled the head. Leave it unexecuted and
+      // ask again from the newly committed cursor on a normal connection.
+      lookaheadFence = false;
+      return false;
+    }
+
+    if (blockedStart !== undefined) {
+      if (seq === blockedStart.seq) {
+        if (!handleStartRun(blockedStart.command)) return "lookahead";
+        lastCommandSeq = blockedStart.safeThroughSeq;
+        blockedStart = undefined;
+        lookaheadFence = true;
+        return "lookahead";
+      }
+      // Look past N through a contiguous run of replay-safe cancellations.
+      // They may be harmless individually: N+1 can target something already
+      // gone while N+2 is the control that actually frees capacity. No later
+      // start, prompt, permission answer, revert or kernel command may jump
+      // the durable start this daemon has not accepted.
+      const safeCancellation =
+        (command.type === "cancel" ||
+          (command.type === "decision" && command.decision?.action === "cancel"));
+      if (!safeCancellation) return false;
+      if (seq <= blockedStart.safeThroughSeq) return "lookahead";
+      const expectedSeq = blockedStart.safeThroughSeq + 1;
+      if (seq !== expectedSeq) return false;
+
+      if (command.runId === blockedStart.command.runId) {
+        // The blocked command was never inserted into `deferredStarts`, so
+        // ordinary `cancelRun` has nothing to target. Terminalize this exact
+        // not-yet-accepted start directly and commit it with the control.
+        emit(command.runId, { event: "completed", state: { state: "cancelled" } });
+        lastCommandSeq = seq;
+        blockedStart = undefined;
+        lookaheadFence = true;
+        return "lookahead";
+      }
+
+      cancelRun(command.runId);
+      // Only the contiguous prefix endpoint is retained. Each cancellation
+      // is idempotently applied before advancing it, so a crash/replay may
+      // repeat harmless work but can never skip an unsafe later command.
+      blockedStart.safeThroughSeq = seq;
+      if (!handleStartRun(blockedStart.command)) return "lookahead";
+      lastCommandSeq = blockedStart.safeThroughSeq;
+      blockedStart = undefined;
+      lookaheadFence = true;
+      return "lookahead";
+    }
+
+    if (command.type === "start-run" && !handleStartRun(command)) {
+      blockedStart = { seq, command, safeThroughSeq: seq };
+      return "lookahead";
+    }
+    if (command.type === "decision") handleDecision(command);
+    if (command.type === "cancel") handleCancel(command);
+    if (command.type === "revert") handleRevert(command);
+    if (command.type === "kernel-interrupt") handleKernelInterrupt(command);
+    if (command.type === "kernel-stop") handleKernelStop(command);
+    if (command.type === "kernel-restart") handleKernelRestart(command);
+    if (command.type === "kernel-execute") handleKernelExecute(command);
+    if (command.type === "kernel-list") handleKernelList(command);
+    if (command.type === "kernel-env-setup") handleKernelEnvSetup(command);
+    if (command.type === "kernel-env-reclaim") handleKernelEnvReclaim(command);
+    if (command.type === "name-task") handleNameTask(command);
     lastCommandSeq = seq;
-    if (command.type === "start-run") return handleStartRun(command);
-    if (command.type === "decision") return handleDecision(command);
-    if (command.type === "cancel") return handleCancel(command);
-    if (command.type === "revert") return handleRevert(command);
-    if (command.type === "kernel-interrupt") return handleKernelInterrupt(command);
-    if (command.type === "kernel-stop") return handleKernelStop(command);
-    if (command.type === "kernel-restart") return handleKernelRestart(command);
-    if (command.type === "kernel-execute") return handleKernelExecute(command);
-    if (command.type === "kernel-list") return handleKernelList(command);
-    if (command.type === "kernel-env-setup") return handleKernelEnvSetup(command);
-    if (command.type === "kernel-env-reclaim") return handleKernelEnvReclaim(command);
-    if (command.type === "name-task") return handleNameTask(command);
+    return true;
   }
 
   const retries = createRetryLoop({
@@ -2493,8 +3359,14 @@ export function startRuns(options: {
   async function connectLoop(): Promise<void> {
     while (!stopped && !refused) {
       await retries.run(options.lab, "run commands", async () => {
-        await reportLive();
-        await openCommands(
+        // A reconnect is itself a real capability replay boundary: the probe
+        // may have refreshed adapters while the old stream was down.
+        await serializeLiveReconciliation(async () => {
+          await reportLive();
+          retryPendingEnvironmentSetupOutcomes();
+          retryDeferredStarts();
+        });
+        const outcome = await openCommands(
           options.lab,
           options.token,
           lastCommandSeq,
@@ -2502,6 +3374,12 @@ export function startRuns(options: {
           () => {},
           commandsController.signal,
         );
+        // No open relay means no authoritative retirement ordering for a
+        // newly-available adapter. The next connection's successful report is
+        // what opens this again.
+        liveReconciliationApplied = false;
+        if (outcome === "backpressure")
+          await waitForReconciliationRetry(100);
       });
     }
   }
@@ -2509,10 +3387,32 @@ export function startRuns(options: {
   const loop = connectLoop();
 
   return {
+    blockedLookaheadState() {
+      if (blockedStart === undefined) return undefined;
+      return {
+        safeThroughSeq: blockedStart.safeThroughSeq,
+        retainedControlCommands: 0,
+      };
+    },
+    adaptersChanged() {
+      if (!stopped)
+        void serializeLiveReconciliation(async () => {
+          // A capability refresh is another execution trigger, so it earns
+          // authority the same way a reconnect does: from a fresh successful
+          // reconciliation applied before any deferred prompt. Remembering a
+          // response from an older stream is not enough after the server may
+          // have retired work in the meantime.
+          await reportLive();
+          retryPendingEnvironmentSetupOutcomes();
+          if (!stopped && liveReconciliationApplied) retryDeferredStarts();
+        });
+    },
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
       commandsController.abort();
+      for (const timer of environmentSetupOutcomeTimers.values()) clearTimeout(timer);
+      environmentSetupOutcomeTimers.clear();
       for (const initialization of initializations.values()) initialization.abort();
       retries.stop();
       await loop;
@@ -2555,9 +3455,13 @@ export function startRuns(options: {
       ]);
       liveSessions.clear();
       sessionConfigures.clear();
+      sessionResearchDefaults.clear();
       retainedSessions.clear();
+      retainedRunSessions.clear();
+      releasedRunsAwaitingReconciliation.clear();
       sessionDirs.clear();
       retainedSessionDirs.clear();
+      retainedRunDirs.clear();
       for (const runId of posts.keys()) flush(runId);
       await Promise.race([drainInFlightFlushes(), delay(FINAL_FLUSH_GRACE_MS)]);
       eventsController.abort();

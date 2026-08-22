@@ -11,14 +11,14 @@ import { migrate } from "./store/migrations";
 import { createChannel } from "./channel";
 import { createRunRelay, type RunRelay } from "./run-relay";
 import { createRequestListener } from "./http";
+import { createEnvironmentSetupCoordinator } from "./environment-setup-coordinator";
 import { apiFor, signUpOwner } from "./test-support/server-api";
 import type { Store } from "./store/store";
-import { recordRunFrames } from "./store/sessions";
+import { recordRunFrames, recordTurn } from "./store/sessions";
 import { createRevertRegistry } from "./run-revert";
 import { createKernelListRegistry } from "./kernel-list-registry";
 import { createTitleRegistry } from "./title-registry";
 import { createPendingCells } from "./kernel-cells";
-import { createEnvSetupRegistry } from "./env-setup-registry";
 
 const dirs: string[] = [];
 const servers: Array<{ close(): Promise<void> }> = [];
@@ -79,7 +79,8 @@ function freshLabServer(existingDir?: string): Promise<{
     indexHtml,
     channel,
     openStreams,
-    runs: relay, reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
+    runs: relay, reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({ store: routedStore, runs: relay }),
   });
   const server = createHttpServer(listener);
 
@@ -212,14 +213,52 @@ async function labWithRunInFlight(): Promise<RunStreamLab> {
 }
 
 /** POSTs a batch of run frames to `/daemon/run/events`, bearing the paired
- *  machine's token — the way the daemon that actually holds the run does. */
-async function postFrames(lab: RunStreamLab, frames: RunEventFrame[]): Promise<void> {
+ *  machine's token — the way the daemon that actually holds the run does.
+ *  `runId` defaults to this lab's own turn; the continuation cases below pass
+ *  the system-origin turn they minted instead. */
+async function postFrames(
+  lab: RunStreamLab,
+  frames: RunEventFrame[],
+  runId = lab.runId,
+): Promise<void> {
   const res = await fetch(`${lab.base}/daemon/run/events`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
-    body: JSON.stringify({ runId: lab.runId, frames }),
+    body: JSON.stringify({ runId, frames }),
   });
   if (!res.ok) throw new Error(`postFrames answered ${res.status}`);
+}
+
+/**
+ * A system-origin continuation turn on the same Task, session and machine as
+ * this lab's own run — the shape a Task resumed by a finished environment
+ * build actually holds.
+ *
+ * Recorded straight into the store rather than driven through a whole
+ * environment setup, because what is under test in this file is the run
+ * STREAM, and the stream's entire interest in a continuation is that it is a
+ * turn like any other. `environment-setup-e2e.test.ts` is where one is minted
+ * for real, out of a build a machine actually reported finished.
+ */
+function continuationTurnOn(lab: RunStreamLab): string {
+  const session = lab.store.get(
+    `SELECT s.id, s.runtime_id FROM turns t JOIN sessions s ON s.id = t.session_id WHERE t.id = ?`,
+    [lab.runId],
+  )!;
+  return recordTurn(lab.store, {
+    sessionId: session.id as string,
+    taskId: lab.taskId,
+    prompt: "The environment meta-analysis-r is ready on this machine. Continue the work.",
+    startedTs: 1_800_000_000,
+    origin: "system",
+    continuation: {
+      kind: "environment-setup",
+      waiterId: "wait_1",
+      sourceTurnId: lab.runId,
+      environmentName: "meta-analysis-r",
+      machineId: session.runtime_id as string,
+    },
+  });
 }
 
 /** Opens `/runs/<runId>/events` as the owner and hands every `event: frame`
@@ -601,4 +640,85 @@ it("keeps a run's frames out of the workspace change log", async () => {
   }));
   await postFrames(lab, frames);
   expect(lab.store.get(`SELECT COUNT(*) AS n FROM change_log`)!.n).toBe(before);
+});
+
+it("opens an automatic continuation's stream on the same authoritative snapshot a user turn gets", async () => {
+  // A browser that arrives while the agent is already picking the work back
+  // up learns from the stream itself that this turn is not one the researcher
+  // typed — and exactly which requirement it continues. Nothing about the
+  // stream's own contract changes for it.
+  const lab = await labWithRunInFlight();
+  const continuationRunId = continuationTurnOn(lab);
+
+  const seen: RunEventFrame[] = [];
+  await openRunStream(lab, continuationRunId, undefined, (f) => seen.push(f));
+  await until(() => seen.length === 1);
+
+  expect(seen[0]).toEqual(expect.objectContaining({
+    seq: 0,
+    event: expect.objectContaining({
+      event: "snapshot",
+      snapshot: expect.objectContaining({
+        runId: continuationRunId,
+        origin: "system",
+        continuation: {
+          kind: "environment-setup",
+          waiterId: "wait_1",
+          sourceTurnId: lab.runId,
+          environmentName: "meta-analysis-r",
+          machineId: lab.store.get(
+            `SELECT runtime_id FROM sessions WHERE id = (SELECT session_id FROM turns WHERE id = ?)`,
+            [continuationRunId],
+          )!.runtime_id,
+        },
+        lastEventSeq: 0,
+      }),
+    }),
+  }));
+});
+
+it("publishes a retried continuation batch to a live subscriber exactly once", async () => {
+  // The idempotency rule a user turn is held to, on the turn nobody typed. A
+  // daemon retrying an unacknowledged batch must not make a watching browser
+  // draw the same prose twice — and must not move the run's own sequence
+  // past frames it already folded.
+  const lab = await labWithRunInFlight();
+  const continuationRunId = continuationTurnOn(lab);
+
+  const seen: RunEventFrame[] = [];
+  await openRunStream(lab, continuationRunId, undefined, (f) => seen.push(f));
+  await until(() => seen.length === 1);
+
+  const batch: RunEventFrame[] = [
+    { seq: 1, event: { event: "state", state: { state: "executing", plan: { steps: [] } } } },
+    { seq: 2, event: { event: "assistant-text", text: "Back on it.", partial: false } },
+  ];
+  await postFrames(lab, batch, continuationRunId);
+  await until(() => seen.length === 3);
+  await postFrames(lab, batch, continuationRunId);
+
+  // A third frame would have to arrive before this one does, so a second
+  // publish of the retried batch cannot hide behind the wait.
+  await postFrames(
+    lab,
+    [{ seq: 3, event: { event: "assistant-text-final" } }],
+    continuationRunId,
+  );
+  await until(() => seen.length === 4);
+
+  expect(seen.map((frame) => frame.seq)).toEqual([0, 1, 2, 3]);
+  expect(lab.store.get(`SELECT last_frame_seq FROM turns WHERE id = ?`, [continuationRunId]))
+    .toEqual({ last_frame_seq: 3 });
+
+  // And a browser reloading onto it is handed one copy of the prose, not two.
+  const reloaded: RunEventFrame[] = [];
+  await openRunStream(lab, continuationRunId, undefined, (f) => reloaded.push(f));
+  await until(() => reloaded.length === 1);
+  expect(reloaded[0]!.event).toEqual(expect.objectContaining({
+    event: "snapshot",
+    snapshot: expect.objectContaining({
+      origin: "system",
+      stream: [{ kind: "text", text: "Back on it.", block: "final" }],
+    }),
+  }));
 });

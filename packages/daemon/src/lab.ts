@@ -1,4 +1,14 @@
-import type { KernelEnvDeclaration, KernelEnvStatus, Language, RunDecision, RunEvent } from "@lykeion/api";
+import {
+  boundedRedactedUtf8,
+  ENVIRONMENT_SETUP_OUTCOME_LIMITS,
+  type EnvironmentSetupStage,
+  type KernelEnvDeclaration,
+  type KernelEnvStatus,
+  type Language,
+  type RunDecision,
+  type RunEvent,
+  type TaskTurn,
+} from "@lykeion/api";
 import type { ProbedCli } from "./probe";
 import type { StandingGrant } from "./session";
 
@@ -252,6 +262,28 @@ export interface RunCommand {
   /** Which of the agent's own advertised choices this turn asked for. */
   model?: string;
   grants?: StandingGrant[];
+  /** Which environment an unaddressed cell of each language runs in, as the
+   *  Research this turn belongs to has confirmed. Structured rather than
+   *  interpolated into `prompt`: this machine hands it to the kernel host as
+   *  `kernel.configure_session`'s own `defaults`, where a cell that names no
+   *  environment is actually resolved, and a sentence in a prompt could not
+   *  resolve anything.
+   *
+   *  Omitted where the Research has confirmed none, which this machine reads
+   *  as the same thing an empty list would say: its own floor answers for
+   *  every language, exactly as it did before a Research could name one. */
+  environmentDefaults?: Array<{
+    language: "python" | "r";
+    environmentName: string;
+  }>;
+  /** Which environments this session already has standing permission to
+   *  change, so a rebuild the researcher already allowed is not asked about
+   *  again on the next turn of the same conversation. */
+  environmentGrants?: string[];
+  /** Why this turn exists, when it is not a researcher's own. The lab is the
+   *  only end that knows — this machine cannot say which waiter a system turn
+   *  continues — so it arrives whole rather than being re-derived here. */
+  continuation?: TaskTurn["continuation"];
   decision?: RunDecision;
   /** Which kernel a `kernel-execute`, `kernel-interrupt`, `kernel-stop` or
    *  `kernel-restart` command addresses. */
@@ -280,6 +312,8 @@ export interface RunCommand {
    *  Present only when there is nothing to replay yet; absent whenever
    *  `lockfile` is present. */
   packages?: string[];
+  /** Exact requested set the bound lock covers, present for resolve and replay. */
+  requestedPackages?: string[];
   /** The lockfile a `kernel-env-setup` command asks this machine to
    *  MATERIALIZE from, rather than resolve — D4. Absent only on the very
    *  first setup of a declaration, which is what tells this machine to
@@ -289,6 +323,10 @@ export interface RunCommand {
    *  records the revision it actually built from. Absent exactly when
    *  `lockfile` is. */
   lockRevision?: number;
+  /** Exact declaration generation the setup must stamp into its marker. */
+  declarationGenerationId?: string;
+  /** Legacy evidence only; never authoritative for readiness. */
+  declarationCreatedTs?: number;
   /** Why a `kernel-env-setup` is happening, in words — "scanpy was added to
    *  python". Carried into the ending of every kernel this rebuild displaces,
    *  so a namespace that vanishes says what took it.
@@ -337,10 +375,10 @@ export async function openCommands(
   lab: string,
   token: string,
   cursor: number | undefined,
-  onCommand: (seq: number, command: RunCommand) => void,
+  onCommand: (seq: number, command: RunCommand) => boolean | "lookahead" | void,
   onClose: () => void,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<"closed" | "backpressure"> {
   const url = new URL("/daemon/commands", lab);
   if (cursor !== undefined) url.searchParams.set("cursor", String(cursor));
 
@@ -363,19 +401,50 @@ export async function openCommands(
   }
   if (!res.body) {
     onClose();
-    return;
+    return "closed";
   }
 
   let buffered = "";
+  let outcome: "closed" | "backpressure" = "closed";
+  let lookingAhead = false;
+  const reader = res.body.getReader();
   try {
-    for await (const chunk of res.body) {
-      buffered += Buffer.from(chunk as Uint8Array).toString("utf8");
+    commandStream: while (true) {
+      const pending = reader.read().then(
+        (result) => ({ kind: "read" as const, result }),
+        () => ({ kind: "error" as const }),
+      );
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const arrived = lookingAhead
+        ? await Promise.race([
+            pending,
+            new Promise<{ kind: "timeout" }>((resolve) => {
+              timer = setTimeout(() => resolve({ kind: "timeout" }), 75);
+              timer.unref?.();
+            }),
+          ])
+        : await pending;
+      if (timer !== undefined) clearTimeout(timer);
+      if (arrived.kind === "timeout") {
+        outcome = "backpressure";
+        await reader.cancel().catch(() => {});
+        break;
+      }
+      if (arrived.kind === "error" || arrived.result.done) break;
+      buffered += Buffer.from(arrived.result.value).toString("utf8");
       let cut = buffered.indexOf("\n\n");
       while (cut !== -1) {
         const block = buffered.slice(0, cut);
         buffered = buffered.slice(cut + 2);
         const frame = commandFrom(block);
-        if (frame) onCommand(frame.seq, frame.command);
+        if (frame) {
+          const disposition = onCommand(frame.seq, frame.command);
+          if (disposition === false) {
+            outcome = "backpressure";
+            break commandStream;
+          }
+          lookingAhead = disposition === "lookahead";
+        }
         cut = buffered.indexOf("\n\n");
       }
     }
@@ -384,7 +453,9 @@ export async function openCommands(
     // connection and an abort both land here. Either way the stream is over,
     // which `onClose` below says regardless of which one it was.
   }
+  reader.releaseLock();
   onClose();
+  return outcome;
 }
 
 /** Posts the events one run produced since the last post, numbered by this
@@ -589,6 +660,20 @@ export async function fetchKernelEnvDeclarations(
 }
 
 /**
+ * How far an environment card's answer reaches, as the two routes that change
+ * an environment carry it.
+ *
+ * The whole set: an environment card offers `once` and `conversation` and
+ * nothing wider, because "remembered across all projects" on this card would
+ * be a permanent, unasked grant to run other people's build scripts on
+ * colleagues' machines. The daemon refuses a decision carrying anything else
+ * before the act is attempted, and the lab refuses it again on arrival —
+ * neither narrows it, because a researcher told "for this Study" and given
+ * one call would believe the wrong thing.
+ */
+export type EnvironmentPermissionScope = "once" | "conversation";
+
+/**
  * Asks this lab to declare one environment, on behalf of a researcher who
  * has just allowed it on a card.
  *
@@ -629,13 +714,21 @@ export async function postKernelEnvCreate(
   // disagree with itself. The caller has already refused anything else by
   // value, so the type is the whole of what can arrive.
   language: "python" | "r",
+  // What the researcher answered the card with. Carried because the grant
+  // behind "for this conversation" is the LAB's to keep — this process ends,
+  // and the conversation does not — and because it has to be written in the
+  // same transaction as the declaration: a create the lab refuses must leave
+  // no standing permission behind it. The two values an environment card
+  // takes are the whole of what can arrive; the lab refuses anything else
+  // rather than narrowing it.
+  permissionScope: EnvironmentPermissionScope,
   signal?: AbortSignal,
 ): Promise<KernelEnvDeclaration> {
   const res = await callLab(
     lab,
     "/daemon/kernel-env/create",
     token,
-    { sessionId, name, packages, language },
+    { sessionId, name, packages, language, permissionScope },
     signal,
   );
   const body = (await res.json().catch(() => ({}))) as { declaration?: unknown };
@@ -645,6 +738,31 @@ export async function postKernelEnvCreate(
   if (typeof body.declaration !== "object" || body.declaration === null)
     throw new Error(`${lab} answered /daemon/kernel-env/create with no declaration`);
   return body.declaration as KernelEnvDeclaration;
+}
+
+/** Records that the exact live source run currently owning `sessionId` is
+ * blocked on a declared environment this machine has not built. The route is
+ * intentionally separate from create/setup: it asks no permission and starts
+ * no physical work. */
+export async function postKernelEnvRequire(
+  lab: string,
+  token: string,
+  runId: string,
+  sessionId: string,
+  environmentName: string,
+  signal?: AbortSignal,
+): Promise<{ waiterId: string }> {
+  const res = await callLab(
+    lab,
+    "/daemon/kernel-env/require",
+    token,
+    { runId, sessionId, environmentName },
+    signal,
+  );
+  const body = (await res.json().catch(() => ({}))) as { waiterId?: unknown };
+  if (typeof body.waiterId !== "string" || body.waiterId === "")
+    throw new Error(`${lab} answered /daemon/kernel-env/require with no waiter`);
+  return { waiterId: body.waiterId };
 }
 
 /** What this lab did with an ask to add packages to an environment it
@@ -677,13 +795,18 @@ export async function postKernelEnvAddPackages(
   sessionId: string,
   name: string,
   packages: string[],
+  /** What the researcher answered the card with, on the same terms as a
+   *  create's — see `postKernelEnvCreate`. An add the lab refuses, for a
+   *  declaration deleted between the card and the answer, leaves no standing
+   *  permission behind it. */
+  permissionScope: EnvironmentPermissionScope,
   signal?: AbortSignal,
 ): Promise<KernelEnvPackagesAdded> {
   const res = await callLab(
     lab,
     "/daemon/kernel-env/packages",
     token,
-    { sessionId, name, packages },
+    { sessionId, name, packages, permissionScope },
     signal,
   );
   const body = (await res.json().catch(() => ({}))) as {
@@ -715,6 +838,7 @@ export async function postKernelEnvLock(
   token: string,
   requestId: string,
   name: string,
+  declarationGenerationId: string,
   lockfile: string,
   signal?: AbortSignal,
 ): Promise<{ lockRevision: number }> {
@@ -722,7 +846,13 @@ export async function postKernelEnvLock(
   // refuses a pin from a machine it did not ask — a lockfile is the one
   // thing every other machine later replays verbatim, so writing one is not
   // something a bearer token alone should authorize.
-  const res = await callLab(lab, "/daemon/kernel-env/lock", token, { requestId, name, lockfile }, signal);
+  const res = await callLab(
+    lab,
+    "/daemon/kernel-env/lock",
+    token,
+    { requestId, name, declarationGenerationId, lockfile },
+    signal,
+  );
   const body = (await res.json().catch(() => ({}))) as { lockRevision?: unknown };
   if (typeof body.lockRevision !== "number")
     throw new Error(`${lab} answered /daemon/kernel-env/lock with no lockRevision`);
@@ -730,41 +860,60 @@ export async function postKernelEnvLock(
 }
 
 /** One `uv` output line from a `kernel-env-setup` this machine is carrying
- *  out, forwarded live so a researcher watching the Notebook's Setup
- *  surface sees it rather than waiting out the whole build in silence.
- *  `name` rides along because `KERNEL_SETUP_CHANNEL` is one lab-wide
- *  channel, not one per build — without it, two environments building at
- *  once (on this machine or another) would interleave into one
- *  undifferentiated log. `runtimeId` is not this call's to send; the lab
- *  already knows which machine is calling from the bearer token, which is
- *  the one thing here a machine cannot misreport about itself. Best-effort:
- *  a progress line this lab never receives costs nothing but itself, unlike
- *  the final result below, which the waiting `kernelEnvSetup` call actually
- *  depends on. */
+ *  out, forwarded live so a researcher watching the Task's environment bar
+ *  sees it rather than waiting out the whole build in silence. `name` rides
+ *  along because a request id alone does not say which environment the line
+ *  came from — without it, two environments building at once (on this
+ *  machine or another) would interleave into one undifferentiated log.
+ *  `runtimeId` is not this call's to send; the lab already knows which
+ *  machine is calling from the bearer token, which is the one thing here a
+ *  machine cannot misreport about itself. Best-effort: a progress line this
+ *  lab never receives costs nothing but itself, unlike the final result
+ *  below, which the lab's own record of the build depends on. */
 export async function postKernelEnvProgress(
   lab: string,
   token: string,
   requestId: string,
   name: string,
-  line: string,
+  progress: { stage: EnvironmentSetupStage; line: string },
   signal?: AbortSignal,
 ): Promise<void> {
-  await callLab(lab, "/daemon/kernel-env/progress", token, { requestId, name, line }, signal);
+  const safeProgress = {
+    ...progress,
+    line: boundedRedactedUtf8(
+      progress.line,
+      ENVIRONMENT_SETUP_OUTCOME_LIMITS.errorBytes,
+    ),
+  };
+  await callLab(
+    lab,
+    "/daemon/kernel-env/progress",
+    token,
+    { requestId, name, progress: safeProgress },
+    signal,
+  );
 }
 
 /** What a `kernel-env-setup` this machine was carrying out finally came to
- *  — settling the lab's own wait on it (`kernelEnvSetup`'s returned
- *  promise), unlike every other kernel command's reply, which nothing here
- *  waits on. `ok: false` is the honest outcome of a resolve or a
- *  materialize that failed; the lab surfaces `error` as the reason the
- *  researcher's own call rejects with, rather than leaving it to time out
- *  with no explanation. */
+ *  — the one reply that terminalizes the lab's durable record of the build,
+ *  unlike every other kernel command's reply, which nothing here waits on.
+ *  `ok: false` is the honest outcome of a resolve or a materialize that
+ *  failed; the lab surfaces `error` as the reason the setup failed, rather
+ *  than leaving the researcher watching a build that never comes back. */
 export async function postKernelEnvResult(
   lab: string,
   token: string,
   requestId: string,
-  result: { ok: true; status: KernelEnvStatus } | { ok: false; error: string },
+  declarationGenerationId: string,
+  result: { ok: true; status: KernelEnvStatus } | { ok: false; name: string; error: string },
   signal?: AbortSignal,
 ): Promise<void> {
-  await callLab(lab, "/daemon/kernel-env/result", token, { requestId, ...result }, signal);
+  const name = result.ok ? result.status.name : result.name;
+  await callLab(
+    lab,
+    "/daemon/kernel-env/result",
+    token,
+    { requestId, name, declarationGenerationId, ...result },
+    signal,
+  );
 }

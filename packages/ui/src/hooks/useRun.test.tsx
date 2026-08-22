@@ -25,6 +25,7 @@ function initialSnapshot(runId: string, prompt = "do it"): RunEvent {
     snapshot: {
       runId,
       sequence: 1,
+      origin: "user",
       prompt,
       agent: "default",
       state: { state: "planning" },
@@ -398,6 +399,7 @@ it("does not duplicate a compatibility whole frame after recovery between delta 
       snapshot: {
         runId: "run-driven",
         sequence: 1,
+        origin: "user",
         prompt: "do it",
         agent: "codex",
         state: { state: "planning" },

@@ -33,6 +33,7 @@ function scriptedApi() {
               snapshot: {
                 runId: "run-live",
                 sequence: 3,
+                origin: "user",
                 prompt: "which candidates responded?",
                 agent: "default",
                 state: { state: "planning" },

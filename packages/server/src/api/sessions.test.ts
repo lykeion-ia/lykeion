@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
-import type { LykeionApi, RunEvent, RunEventFrame } from "@lykeion/api";
+import { MAX_TURNS_OUTSTANDING, type LykeionApi, type RunEvent, type RunEventFrame } from "@lykeion/api";
 import { readConfig } from "../config";
 import { openStore } from "../store/sqlite";
 import { migrate } from "../store/migrations";
@@ -14,13 +14,15 @@ import { createRevertRegistry } from "../run-revert";
 import { createKernelListRegistry } from "../kernel-list-registry";
 import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
-import { createEnvSetupRegistry } from "../env-setup-registry";
+import { createEnvironmentSetupCoordinator } from "../environment-setup-coordinator";
 import { createRequestListener } from "../http";
 import { apiFor, signUpOwner } from "../test-support/server-api";
 import { changeRecorder } from "./changes";
 import { sessionsApi } from "./sessions";
 import type { Deps } from "./index";
 import type { Store } from "../store/store";
+import { environmentSetupStore } from "../store/environment-setups";
+import { recordTurn } from "../store/sessions";
 
 const dirs: string[] = [];
 const servers: Array<{ close(): Promise<void> }> = [];
@@ -34,6 +36,9 @@ interface RawServer {
   base: string;
   store: Store;
   relay: RunRelay;
+  /** Where this lab's SQLite file lives, so a test about surviving a restart
+   *  can reopen the very same one. */
+  dir: string;
   close(): Promise<void>;
 }
 
@@ -58,7 +63,8 @@ function freshLabServer(now: () => number): Promise<RawServer> {
 
   const listener = createRequestListener({
     store, config, secure: false, indexHtml, channel, openStreams, runs: relay,
-    reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(), now,
+    reverts: createRevertRegistry(), kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), now,
+    coordinator: createEnvironmentSetupCoordinator({ store, runs: relay, now }),
   });
   const server = createHttpServer(listener);
 
@@ -72,6 +78,7 @@ function freshLabServer(now: () => number): Promise<RawServer> {
         base: `http://127.0.0.1:${port}`,
         store,
         relay,
+        dir,
         close: () =>
           new Promise<void>((res) => {
             for (const end of openStreams) end();
@@ -194,6 +201,12 @@ interface SessionsLab {
   researchId: string;
   taskId: string;
   clock: { advance(seconds: number): void };
+  /** This lab's own directory — the SQLite file a test reopens to prove what
+   *  survives the process that wrote it. */
+  dir: string;
+  /** Ends this lab, closing its store, so the file can be reopened by
+   *  something that did not write it. Idempotent with `afterEach`. */
+  close(): Promise<void>;
 }
 
 /** A lab with an owner and a member, a machine the owner has paired and
@@ -235,6 +248,12 @@ async function labWithPairedMachine(): Promise<SessionsLab> {
         clock += seconds;
       },
     },
+    dir: server.dir,
+    close: async () => {
+      const held = servers.indexOf(server);
+      if (held !== -1) servers.splice(held, 1);
+      await server.close();
+    },
   };
 }
 
@@ -254,6 +273,22 @@ async function completeRun(lab: SessionsLab, runId: string): Promise<Response> {
       runId,
       frames: [{ seq: 1, event: { event: "completed", state: { state: "completed" } } }],
     }),
+  });
+}
+
+function pendingRequirement(lab: SessionsLab, sourceRunId: string, name = "analysis") {
+  const sessionId = lab.store.get(`SELECT session_id FROM turns WHERE id = ?`, [sourceRunId])!
+    .session_id as string;
+  return environmentSetupStore(lab.store).recordRequirement({
+    studyId: lab.researchId,
+    taskId: lab.taskId,
+    sessionId,
+    sourceTurnId: sourceRunId,
+    sourceRunId,
+    language: "python",
+    environmentName: name,
+    runtimeId: lab.machineId,
+    createdTs: 1_800_000_002,
   });
 }
 
@@ -317,6 +352,175 @@ it("refuses a turn that would switch agent mid-conversation, naming the one it i
   ).rejects.toMatchObject({ code: "conflict" });
 });
 
+it("does not cancel pending continuation intent when an agent switch is rejected", async () => {
+  const lab = await labWithPairedMachine();
+  const source = await lab.ownerApi.startRun({
+    researchId: lab.researchId,
+    taskId: lab.taskId,
+    prompt: "first",
+    options: { planMode: false, agent: "claude" },
+  });
+  const waiter = pendingRequirement(lab, source.runId);
+  lab.store.run(`UPDATE runtime_clis SET cli_id = 'codex' WHERE cli_id = 'claude'`);
+
+  await expect(
+    lab.ownerApi.startRun({
+      researchId: lab.researchId,
+      taskId: lab.taskId,
+      prompt: "rejected switch",
+      options: { planMode: false, agent: "codex" },
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
+
+  expect(environmentSetupStore(lab.store).waiter(waiter.id)).toMatchObject({ state: "waiting" });
+  expect(lab.store.get(`SELECT COUNT(*) AS count FROM turns WHERE task_id = ?`, [lab.taskId])!.count)
+    .toBe(1);
+});
+
+it("does not cancel pending continuation intent when the turn queue limit rejects a start", async () => {
+  const lab = await labWithPairedMachine();
+  const source = await lab.ownerApi.startRun({
+    researchId: lab.researchId,
+    taskId: lab.taskId,
+    prompt: "first",
+    options: { planMode: false, agent: "claude" },
+  });
+  const waiter = pendingRequirement(lab, source.runId);
+  const sessionId = lab.store.get(`SELECT session_id FROM turns WHERE id = ?`, [source.runId])!
+    .session_id as string;
+  for (let index = 1; index < MAX_TURNS_OUTSTANDING; index += 1) {
+    recordTurn(lab.store, {
+      sessionId,
+      taskId: lab.taskId,
+      prompt: `already queued ${index}`,
+      startedTs: 1_800_000_002 + index,
+    });
+  }
+
+  await expect(
+    lab.ownerApi.startRun({
+      researchId: lab.researchId,
+      taskId: lab.taskId,
+      prompt: "one too many",
+      options: { planMode: false, agent: "claude" },
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
+
+  expect(environmentSetupStore(lab.store).waiter(waiter.id)).toMatchObject({ state: "waiting" });
+  expect(lab.store.get(`SELECT COUNT(*) AS count FROM turns WHERE task_id = ?`, [lab.taskId])!.count)
+    .toBe(MAX_TURNS_OUTSTANDING);
+});
+
+it("accepts an agent switch after atomically superseding the only queued system turn", async () => {
+  const lab = await labWithPairedMachine();
+  const source = await lab.ownerApi.startRun({
+    researchId: lab.researchId,
+    taskId: lab.taskId,
+    prompt: "wait for the environment",
+    options: { planMode: false, agent: "claude" },
+  });
+  expect((await completeRun(lab, source.runId)).status).toBe(200);
+  const waiter = pendingRequirement(lab, source.runId, "switch-env");
+  const sessionId = lab.store.get(`SELECT session_id FROM turns WHERE id = ?`, [source.runId])!
+    .session_id as string;
+  const continuationTurnId = recordTurn(lab.store, {
+    sessionId,
+    taskId: lab.taskId,
+    prompt: "internal continuation",
+    startedTs: 1_800_000_003,
+    origin: "system",
+    continuation: {
+      kind: "environment-setup",
+      waiterId: waiter.id,
+      sourceTurnId: source.runId,
+      environmentName: "switch-env",
+      machineId: lab.machineId,
+    },
+  });
+  expect(environmentSetupStore(lab.store).queueWaiter(waiter.id, continuationTurnId)).toBe(true);
+  lab.relay.enqueue(lab.machineId, {
+    type: "start-run",
+    runId: continuationTurnId,
+    studyId: lab.researchId,
+    taskId: lab.taskId,
+    sessionId,
+    agent: "claude",
+    prompt: "internal continuation",
+  });
+  lab.store.run(`UPDATE runtime_clis SET cli_id = 'codex' WHERE cli_id = 'claude'`);
+  const commands: RunCommand[] = [];
+  lab.relay.attach(lab.machineId, (_seq, command) => commands.push(command));
+
+  const started = await lab.ownerApi.startRun({
+    researchId: lab.researchId,
+    taskId: lab.taskId,
+    prompt: "take over with Codex",
+    options: { planMode: false, agent: "codex" },
+  });
+
+  expect(environmentSetupStore(lab.store).waiter(waiter.id)).toMatchObject({ state: "cancelled" });
+  expect(lab.store.get(`SELECT agent FROM sessions WHERE id = (SELECT session_id FROM turns WHERE id = ?)`, [started.runId]))
+    .toMatchObject({ agent: "codex" });
+  const cancelAt = commands.findIndex(
+    (command) => command.type === "cancel" && command.runId === continuationTurnId,
+  );
+  const startAt = commands.findIndex(
+    (command) => command.type === "start-run" && command.runId === started.runId,
+  );
+  expect(cancelAt).toBeGreaterThan(-1);
+  expect(startAt).toBeGreaterThan(cancelAt);
+});
+
+it("accepts a user turn at the limit when cancelling one queued continuation makes room", async () => {
+  const lab = await labWithPairedMachine();
+  const source = await lab.ownerApi.startRun({
+    researchId: lab.researchId,
+    taskId: lab.taskId,
+    prompt: "first",
+    options: { planMode: false, agent: "claude" },
+  });
+  const waiter = pendingRequirement(lab, source.runId, "limit-env");
+  const sessionId = lab.store.get(`SELECT session_id FROM turns WHERE id = ?`, [source.runId])!
+    .session_id as string;
+  for (let index = 1; index < MAX_TURNS_OUTSTANDING - 1; index += 1) {
+    recordTurn(lab.store, {
+      sessionId,
+      taskId: lab.taskId,
+      prompt: `already queued ${index}`,
+      startedTs: 1_800_000_002 + index,
+    });
+  }
+  const continuationTurnId = recordTurn(lab.store, {
+    sessionId,
+    taskId: lab.taskId,
+    prompt: "internal continuation",
+    startedTs: 1_800_000_010,
+    origin: "system",
+    continuation: {
+      kind: "environment-setup",
+      waiterId: waiter.id,
+      sourceTurnId: source.runId,
+      environmentName: "limit-env",
+      machineId: lab.machineId,
+    },
+  });
+  expect(environmentSetupStore(lab.store).queueWaiter(waiter.id, continuationTurnId)).toBe(true);
+  expect(lab.store.get(`SELECT COUNT(*) AS count FROM turns WHERE ended_ts IS NULL AND task_id = ?`, [lab.taskId])!.count)
+    .toBe(MAX_TURNS_OUTSTANDING);
+
+  const started = await lab.ownerApi.startRun({
+    researchId: lab.researchId,
+    taskId: lab.taskId,
+    prompt: "replace the automatic continuation",
+    options: { planMode: false, agent: "claude" },
+  });
+
+  expect(started.runId).toEqual(expect.any(String));
+  expect(environmentSetupStore(lab.store).waiter(waiter.id)).toMatchObject({ state: "cancelled" });
+  expect(lab.store.get(`SELECT COUNT(*) AS count FROM turns WHERE ended_ts IS NULL AND task_id = ?`, [lab.taskId])!.count)
+    .toBe(MAX_TURNS_OUTSTANDING);
+});
+
 it("allows different Tasks in one Research to run concurrently", async () => {
   const lab = await labWithPairedMachine();
   const sibling = await lab.ownerApi.createTask({
@@ -359,9 +563,29 @@ it("resumes an owned active turn and reveals it to no other member", async () =>
     researchId: lab.researchId, taskId: lab.taskId, prompt: "first",
     options: { planMode: false, agent: "claude" },
   });
+  const continuation = {
+    kind: "environment-setup" as const,
+    waiterId: "wait_1",
+    sourceTurnId: "turn_source",
+    environmentName: "analysis",
+    machineId: lab.machineId,
+  };
+  lab.store.run(`UPDATE turns SET origin = 'system', continuation = ? WHERE id = ?`, [
+    JSON.stringify(continuation),
+    first.runId,
+  ]);
   const resumed = await lab.ownerApi.resumeRuns(lab.taskId);
-  expect(resumed.map((run) => ({ runId: run.runId, prompt: run.snapshot.prompt }))).toEqual([
-    { runId: first.runId, prompt: "first" },
+  expect(
+    resumed.map((run) => ({
+      runId: run.runId,
+      prompt: run.snapshot.prompt,
+      origin: (run.snapshot as typeof run.snapshot & { origin?: string }).origin,
+      continuation: (
+        run.snapshot as typeof run.snapshot & { continuation?: typeof continuation }
+      ).continuation,
+    })),
+  ).toEqual([
+    { runId: first.runId, prompt: "first", origin: "system", continuation },
   ]);
   expect(await lab.memberApi.resumeRuns(lab.taskId)).toEqual([]);
 });
@@ -415,6 +639,54 @@ it("carries the Research's standing folder grants in the command", async () => {
     options: { planMode: false, agent: "claude" },
   });
   expect(taken[0]!.grants).toEqual([{ path: "/work/rna-seq", mode: "write" }]);
+});
+
+it("carries the Research's confirmed environment defaults as structured context, never as prose", async () => {
+  // A default is a fact about the Research, not a sentence in somebody's
+  // turn. Interpolated into the prompt it would be indistinguishable from
+  // what the researcher typed — unremovable, re-read by the agent every
+  // turn, and wrong the moment the default changes.
+  const lab = await labWithPairedMachine();
+  // Declared, because a setup job in production always names one this lab
+  // holds — and a suggestion is only ever raised about an environment the lab
+  // still declares.
+  await lab.ownerApi.kernelEnvCreate({
+    name: "meta-analysis-r",
+    language: "r",
+    packages: ["metafor"],
+  });
+  const setups = environmentSetupStore(lab.store);
+  const job = setups.requestJob({
+    studyId: lab.researchId,
+    taskId: lab.taskId,
+    runtimeId: lab.machineId,
+    environmentName: "meta-analysis-r",
+    language: "r",
+    manager: "conda",
+    lockRevision: 0,
+    declarationGenerationId: "envgen_default",
+    declarationCreatedTs: 1_800_000_000,
+    requestId: "req_default",
+    requestedBy: lab.ownerId,
+    requestedTs: 1_800_000_000,
+    requestedPackages: ["metafor"],
+    resolvedFrom: ["metafor"],
+  }).job;
+  setups.markReady(job.requestId, 1_800_000_001);
+  const [suggestion] = setups.createSuggestionsForReadyJob(job.id, 1_800_000_002);
+  await lab.ownerApi.answerEnvironmentDefaultSuggestion(suggestion!.id, true);
+  const taken: RunCommand[] = [];
+  lab.relay.attach(lab.machineId, (_seq, c) => taken.push(c));
+
+  await lab.ownerApi.startRun({
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "pool the trials",
+    options: { planMode: false, agent: "claude" },
+  });
+
+  expect(taken[0]!.environmentDefaults).toEqual([
+    { language: "r", environmentName: "meta-analysis-r" },
+  ]);
+  expect(taken[0]!.prompt).toBe("pool the trials");
 });
 
 // ---- the three /daemon/ routes, over real HTTP rather than against the
@@ -630,6 +902,7 @@ it("reopens a completed turn with prose and execution steps in their durable arr
   expect(reopened.turns).toEqual([
     {
       runId,
+      origin: "user",
       sequence: lab.store.get(`SELECT seq FROM turns WHERE id = ?`, [runId])!.seq,
       ts: 1_800_000_000,
       prompt: "inspect counts",
@@ -793,6 +1066,160 @@ it("records an unacknowledged stop distinctly, and runHistory reports the flag a
   expect(nextSession).not.toBe(firstSession);
 });
 
+it("maps stored system provenance and continuation context into runHistory", async () => {
+  const lab = await labWithPairedMachine();
+  const { runId } = await lab.ownerApi.startRun({
+    researchId: lab.researchId,
+    taskId: lab.taskId,
+    prompt: "continue after setup",
+    options: { planMode: false, agent: "claude" },
+  });
+  const continuation = {
+    kind: "environment-setup" as const,
+    waiterId: "wait_1",
+    sourceTurnId: "turn_source",
+  };
+  lab.store.run(
+    `UPDATE turns
+        SET origin = 'system', continuation = ?, status = 'ok', ended_ts = ?
+      WHERE id = ?`,
+    [JSON.stringify(continuation), 1_800_000_001, runId],
+  );
+
+  expect((await lab.ownerApi.runHistory(lab.taskId))[0]).toMatchObject({
+    runId,
+    origin: "system",
+    continuation,
+  });
+});
+
+it("cancels waiting and queued continuations before recording a newer user turn", async () => {
+  const lab = await labWithPairedMachine();
+  const source = await lab.ownerApi.startRun({
+    researchId: lab.researchId,
+    taskId: lab.taskId,
+    prompt: "analyze after atacseq is available",
+    options: { planMode: false, agent: "claude" },
+  });
+  const sessionId = lab.store.get(`SELECT session_id FROM turns WHERE id = ?`, [source.runId])!
+    .session_id as string;
+  const setups = environmentSetupStore(lab.store);
+  const requirement = (environmentName: string) =>
+    setups.recordRequirement({
+      studyId: lab.researchId,
+      taskId: lab.taskId,
+      sessionId,
+      sourceTurnId: source.runId,
+      sourceRunId: source.runId,
+      language: "python",
+      environmentName,
+      runtimeId: lab.machineId,
+      createdTs: 1_800_000_002,
+    });
+  const waiting = requirement("waiting-env");
+  const queued = requirement("queued-env");
+  const queuedTurnId = recordTurn(lab.store, {
+    sessionId,
+    taskId: lab.taskId,
+    prompt: "queued continuation",
+    startedTs: 1_800_000_003,
+    origin: "system",
+    continuation: {
+      kind: "environment-setup",
+      waiterId: queued.id,
+      sourceTurnId: source.runId,
+      environmentName: "queued-env",
+      machineId: lab.machineId,
+    },
+  });
+  expect(setups.queueWaiter(queued.id, queuedTurnId, 1_800_000_003)).toBe(true);
+  lab.relay.enqueue(lab.machineId, {
+    type: "start-run",
+    runId: queuedTurnId,
+    studyId: lab.researchId,
+    taskId: lab.taskId,
+    sessionId,
+    agent: "claude",
+    prompt: "queued continuation",
+  });
+
+  const resumed = requirement("resumed-env");
+  const resumedTurnId = recordTurn(lab.store, {
+    sessionId,
+    taskId: lab.taskId,
+    prompt: "already resumed continuation",
+    startedTs: 1_800_000_004,
+    origin: "system",
+    continuation: {
+      kind: "environment-setup",
+      waiterId: resumed.id,
+      sourceTurnId: source.runId,
+      environmentName: "resumed-env",
+      machineId: lab.machineId,
+    },
+  });
+  expect(setups.queueWaiter(resumed.id, resumedTurnId, 1_800_000_004)).toBe(true);
+  expect(setups.markWaiterResumed(resumedTurnId, 1_800_000_005)).toBe(true);
+
+  const commands: RunCommand[] = [];
+  lab.relay.attach(lab.machineId, (_seq, command) => commands.push(command));
+  const channel = createChannel(lab.store, 1000);
+  const deps: Deps = {
+    store: lab.store,
+    actor: { userId: lab.ownerId, role: "owner" },
+    now: () => 1_800_000_010,
+    config: readConfig({}),
+    channel,
+    runs: lab.relay,
+    reverts: createRevertRegistry(),
+    kernelLists: createKernelListRegistry(),
+    titles: createTitleRegistry(),
+    pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({
+      store: lab.store,
+      runs: lab.relay,
+      now: () => 1_800_000_010,
+    }),
+    changes: changeRecorder({
+      store: lab.store,
+      actorId: lab.ownerId,
+      now: () => 1_800_000_010,
+      channel,
+    }),
+  };
+
+  const newer = await sessionsApi(deps).startRun({
+    researchId: lab.researchId,
+    taskId: lab.taskId,
+    prompt: "take a different direction",
+    options: { planMode: false, agent: "claude" },
+  });
+
+  expect(setups.waiter(waiting.id)).toMatchObject({
+    state: "cancelled",
+    cancelledReason: "superseded-by-user-turn",
+  });
+  expect(setups.waiter(queued.id)).toMatchObject({
+    state: "cancelled",
+    cancelledReason: "superseded-by-user-turn",
+  });
+  expect(setups.waiter(resumed.id)).toMatchObject({ state: "resumed" });
+  expect(lab.store.get(`SELECT status, ended_ts FROM turns WHERE id = ?`, [queuedTurnId]))
+    .toMatchObject({ status: "cancelled", ended_ts: 1_800_000_010 });
+  expect(lab.store.get(`SELECT ended_ts FROM turns WHERE id = ?`, [resumedTurnId])!.ended_ts)
+    .toBeNull();
+  const cancelAt = commands.findIndex(
+    (command) => command.type === "cancel" && command.runId === queuedTurnId,
+  );
+  const userStartAt = commands.findIndex(
+    (command) => command.type === "start-run" && command.runId === newer.runId,
+  );
+  expect(cancelAt).toBeGreaterThan(-1);
+  expect(userStartAt).toBeGreaterThan(cancelAt);
+  expect(commands.some((command) => command.type === "cancel" && command.runId === resumedTurnId))
+    .toBe(false);
+});
+
 it("refuses a malformed /daemon/run/events body", async () => {
   const lab = await labWithPairedMachine();
   const res = await fetch(`${lab.base}/daemon/run/events`, {
@@ -817,7 +1244,8 @@ it("wires the returned handle's onEvent/submit/close to the relay for an in-proc
     channel,
     runs: lab.relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({ store: lab.store, runs: lab.relay, now: () => 1_800_000_010 }),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
 
@@ -868,7 +1296,8 @@ it("stops a fresh handle's queued replay when its callback detaches", async () =
     channel,
     runs: lab.relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({ store: lab.store, runs: lab.relay, now: () => 1_800_000_010 }),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
   const handle = await sessionsApi(deps).startRun({
@@ -931,7 +1360,8 @@ it("resumed in-process handles use their durable cursor, route decisions per mac
     channel,
     runs: lab.relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({ store: lab.store, runs: lab.relay, now: () => 1_800_000_010 }),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   };
   const resumed = [
@@ -999,7 +1429,8 @@ it("stops synchronous replay when a resumed handle closes from its first frame",
     channel,
     runs: lab.relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({ store: lab.store, runs: lab.relay, now: () => 1_800_000_010 }),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   });
   const [resumed] = await api.resumeRuns(lab.taskId);
@@ -1048,7 +1479,8 @@ it("does not queue handle or RPC commands after a run is already terminal", asyn
     channel,
     runs: lab.relay,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({ store: lab.store, runs: lab.relay, now: () => 1_800_000_010 }),
     changes: changeRecorder({ store: lab.store, actorId: lab.ownerId, now: () => 1_800_000_600, channel }),
   });
   const handle = await api.startRun({
@@ -1188,8 +1620,119 @@ it("refuses a turn that is not the newest, and one with no snapshot", async () =
   await expect(lab.ownerApi.revertTurn(newest)).rejects.toThrow(/no snapshot/);
 });
 
+it("discards a turn that recorded an environment requirement, and takes the requirement with it", async () => {
+  // The seam between revert and the durable environment lifecycle. An agent
+  // that called `manage_environments require` during a turn left a waiter
+  // row naming that turn — and a waiter names its turn through a foreign key
+  // with no `ON DELETE`, in a store that runs with `PRAGMA foreign_keys` on.
+  // Reverting the turn restores the files first and truncates second, so a
+  // truncate that fails here is the worst possible failure: the work is gone
+  // from disk, the transcript still claims it happened, and every later
+  // Revert repeats the cycle.
+  const lab = await labWithPairedMachine();
+  const newest = await settledRunWithSnapshot(lab, "use analysis");
+  const waiter = pendingRequirement(lab, newest);
+  expect(
+    lab.store.get(`SELECT state FROM task_env_setup_waiters WHERE id = ?`, [waiter.id]),
+  ).toMatchObject({ state: "waiting" });
+
+  const taken: RunCommand[] = [];
+  lab.relay.attach(lab.machineId, (_seq, c) => taken.push(c));
+  const reverting = lab.ownerApi.revertTurn(newest);
+  await until(() => taken.some((c) => c.type === "revert"));
+  await daemonPost(lab, "/daemon/run/reverted", { runId: newest, ok: true });
+  await reverting;
+
+  // The turn is gone from the record, which is what revert promises.
+  expect((await lab.ownerApi.getTask(lab.taskId)).turns).toEqual([]);
+  // And so is what it asked for: discarding the turn that recorded a
+  // requirement is exactly what discarding the requirement means, and a
+  // waiter kept beyond it could never be resumed into a turn nobody has.
+  expect(
+    lab.store.get(`SELECT id FROM task_env_setup_waiters WHERE id = ?`, [waiter.id]),
+  ).toBeUndefined();
+  // Nothing was recalled: this waiter never owned a continuation, so there
+  // was no run on a machine to stop.
+  expect(taken.filter((c) => c.type === "cancel")).toEqual([]);
+});
+
 it("refuses a revert from anyone but the member who started the run", async () => {
   const lab = await labWithPairedMachine();
   const newest = await settledRunWithSnapshot(lab, "only");
   await expect(lab.memberApi.revertTurn(newest)).rejects.toThrow(/only the member/);
+});
+
+it("carries an environment grant into a later turn of the same conversation, across a restart", async () => {
+  // What "for this conversation" has to mean once a lab can be restarted
+  // under a conversation that is still open. The grant was written by the
+  // daemon route that carried out the change the researcher approved; the
+  // process that wrote it is gone by the time the next turn starts, so the
+  // next turn's command has to be built from what the FILE holds.
+  //
+  // And only that environment. A grant is kept by name: a researcher who
+  // allowed changes to `rstats` allowed nothing at all about `other-r`, and
+  // the daemon still has to raise a card for the second.
+  const lab = await labWithPairedMachine();
+  await lab.ownerApi.startRun({
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "make me an R environment",
+    options: { planMode: false, agent: "claude" },
+  });
+  const sessionId = lab.store.get(`SELECT id FROM sessions`)!.id as string;
+
+  // The two changes an agent asked for and a researcher answered — one for
+  // this conversation, one for this call only — over the real daemon route,
+  // since that is what writes the grant.
+  const change = (name: string, permissionScope: string) =>
+    fetch(`${lab.base}/daemon/kernel-env/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${lab.token}` },
+      body: JSON.stringify({
+        sessionId,
+        name,
+        packages: [],
+        language: "r",
+        permissionScope,
+      }),
+    });
+  expect((await change("rstats", "conversation")).status).toBe(200);
+  expect((await change("other-r", "once")).status).toBe(200);
+
+  // The lab goes down, and comes back up over the same file — a new store, a
+  // new relay, a new coordinator, and an API built from none of what the
+  // first one held in memory.
+  const dir = lab.dir;
+  const machineId = lab.machineId;
+  await lab.close();
+
+  const store = openStore(join(dir, "workspace.db"));
+  migrate(store);
+  const relay = createRunRelay();
+  const channel = createChannel(store, 1000);
+  const now = () => 1_800_000_010;
+  const deps: Deps = {
+    store,
+    actor: { userId: lab.ownerId, role: "owner" },
+    now,
+    config: readConfig({}),
+    channel,
+    runs: relay,
+    reverts: createRevertRegistry(),
+    kernelLists: createKernelListRegistry(),
+    titles: createTitleRegistry(),
+    pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({ store, runs: relay, now }),
+    changes: changeRecorder({ store, actorId: lab.ownerId, now, channel }),
+  };
+  const commands: RunCommand[] = [];
+  relay.attach(machineId, (_seq, command) => commands.push(command));
+
+  await sessionsApi(deps).startRun({
+    researchId: lab.researchId, taskId: lab.taskId, prompt: "now add ggplot2",
+    options: { planMode: false, agent: "claude" },
+  });
+  store.close();
+
+  expect(commands).toHaveLength(1);
+  expect(commands[0]!.sessionId).toBe(sessionId);
+  expect(commands[0]!.environmentGrants).toEqual(["rstats"]);
 });

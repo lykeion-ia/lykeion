@@ -16,6 +16,7 @@ import {
   openTurnCountForTask,
   appendStep,
   taskTurnsForTask,
+  turnsForTask,
   runSnapshot,
   addGrant,
   listGrants,
@@ -91,6 +92,48 @@ it("initializes a fresh turn with an empty versioned recovery snapshot", () => {
   });
 });
 
+it("persists system origin and structured continuation through every turn reader", () => {
+  const store = freshStore();
+  const sessionId = openSession(store, {
+    researchId: "s_1",
+    machineId: "rt_1",
+    agent: "claude",
+    openedBy: "u_1",
+    openedTs: 1,
+  });
+  const continuation = {
+    kind: "environment-setup" as const,
+    waiterId: "wait_1",
+    sourceTurnId: "run_source",
+    environmentName: "analysis",
+    machineId: "rt_1",
+  };
+  const turnId = recordTurn(store, {
+    sessionId,
+    taskId: "t_1",
+    prompt: "continue",
+    startedTs: 2,
+    origin: "system",
+    continuation,
+  });
+
+  expect(runSnapshot(store, turnId)).toMatchObject({ origin: "system", continuation });
+  finishTurn(store, turnId, { endedTs: 3, status: "ok" });
+  expect(taskTurnsForTask(store, "t_1")[0]).toMatchObject({ origin: "system", continuation });
+  expect(turnsForTask(store, "t_1")[0]).toMatchObject({ origin: "system", continuation });
+});
+
+it("defaults durable turn origin to user and stores no continuation", () => {
+  const store = freshStore();
+  const { turnId } = freshTurn(store);
+  finishTurn(store, turnId, { endedTs: 3, status: "ok" });
+
+  expect(runSnapshot(store, turnId)).toMatchObject({ origin: "user" });
+  expect(runSnapshot(store, turnId)).not.toHaveProperty("continuation");
+  expect(taskTurnsForTask(store, "t_1")[0]).toMatchObject({ origin: "user" });
+  expect(turnsForTask(store, "t_1")[0]).toMatchObject({ origin: "user" });
+});
+
 it("persists progressive state, plan, transcript, live, and review snapshots", () => {
   const store = freshStore();
   const { sessionId, turnId } = freshTurn(store);
@@ -121,6 +164,7 @@ it("persists progressive state, plan, transcript, live, and review snapshots", (
     runId: turnId,
     sequence: store.get(`SELECT seq FROM turns WHERE id = ?`, [turnId])!.seq,
     prompt: "go",
+    origin: "user",
     agent: "claude",
     state: { state: "executing", plan },
     plan,

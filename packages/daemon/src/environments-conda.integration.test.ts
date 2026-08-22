@@ -88,6 +88,7 @@ const declaration = (name: string): KernelEnvDeclaration => ({
   manager: "conda",
   packages: ["r-base", "jsonlite"],
   createdTs: 0,
+  declarationGenerationId: `envgen_integration_${name}`,
   lockRevision: 1,
 });
 
@@ -103,6 +104,7 @@ const declaration = (name: string): KernelEnvDeclaration => ({
     // halves of that rule are exercised by this one call reaching a solver
     // that would fail on `r-r-base`.
     const { lockfile } = await resolveEnvironment({
+      requestId: "envsetup_conda_integration",
       manager: "conda",
       dataDir,
       workDir,
@@ -121,12 +123,15 @@ const declaration = (name: string): KernelEnvDeclaration => ({
     for (const line of pinned) expect(line).toMatch(/#[0-9a-f]{32}$/);
 
     const built = await materializeEnvironment({
+      requestId: "envsetup_conda_integration",
       manager: "conda",
       dataDir,
       workDir,
       name: "rstats",
       lockfile,
       lockRevision: 1,
+      declarationGenerationId: declaration("rstats").declarationGenerationId!,
+      requestedPackages: ["r-base", "jsonlite"],
       path: process.env.PATH,
       timeoutMs: 900_000,
     });
@@ -175,12 +180,15 @@ const declaration = (name: string): KernelEnvDeclaration => ({
     // package, and an R that can load the library.
     const second = fresh();
     const replayed = await materializeEnvironment({
+      requestId: "envsetup_conda_integration_replay",
       manager: "conda",
       dataDir,
       workDir: second,
       name: "rstats",
       lockfile,
       lockRevision: 1,
+      declarationGenerationId: declaration("rstats").declarationGenerationId!,
+      requestedPackages: ["r-base", "jsonlite"],
       path: process.env.PATH,
       timeoutMs: 900_000,
     });

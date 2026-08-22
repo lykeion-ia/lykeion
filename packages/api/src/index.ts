@@ -24,6 +24,8 @@ export * from "./usage";
 export * from "./settings";
 export * from "./http";
 export * from "./provenance";
+export * from "./environment-setup";
+export * from "./environment-setup-outcome";
 // Also its own entry point, `@lykeion/api/routes`, so that the daemon can read
 // the register without pulling in the rest of this package to get it.
 export * from "./routes";
@@ -87,7 +89,10 @@ export const Commands = {
   pairMachine: "pair_machine",
   removeMachine: "remove_machine",
   kernelEnvList: "kernel_env_list",
-  kernelEnvSetup: "kernel_env_setup",
+  requestKernelEnvironmentSetup: "request_kernel_environment_setup",
+  taskEnvironmentSetups: "task_environment_setups",
+  retryKernelEnvironmentSetup: "retry_kernel_environment_setup",
+  answerEnvironmentDefaultSuggestion: "answer_environment_default_suggestion",
   kernelEnvReclaim: "kernel_env_reclaim",
   kernelEnvCreate: "kernel_env_create",
   kernelEnvDelete: "kernel_env_delete",
@@ -120,21 +125,5 @@ export const Commands = {
 export { MAX_TURNS_OUTSTANDING } from "./run";
 
 export const RUN_EVENT_CHANNEL = "lykeion://run-event";
-
-/** The event channel carrying managed-env provisioning progress, one `uv`
- * output line per payload, for the Setup UI: `{ machineId, name, line }`.
- * `machineId` and `name` are which machine and which environment the line
- * came from — without them two builds running at once (two researchers,
- * or one on two machines) interleave into one undifferentiated log with no
- * way to tell them apart, since this is one lab-wide channel rather than
- * one per build. */
-export const KERNEL_SETUP_CHANNEL = "lykeion://kernel-setup";
-
-/** One payload on `KERNEL_SETUP_CHANNEL`. */
-export interface KernelSetupProgress {
-  machineId: string;
-  name: string;
-  line: string;
-}
 
 export type CommandName = (typeof Commands)[keyof typeof Commands];

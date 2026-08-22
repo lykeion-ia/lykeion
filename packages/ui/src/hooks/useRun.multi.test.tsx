@@ -24,6 +24,7 @@ const snapshot = (
 ): ActiveRunSnapshot => ({
   runId,
   sequence,
+  origin: "user",
   agent,
   prompt,
   state: { state: "executing", plan: { steps: [], raw: "" } },

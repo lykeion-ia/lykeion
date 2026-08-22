@@ -6,6 +6,7 @@ import { TaskTranscript, groupTaskTurns } from "./TaskTranscript";
 
 const turn = (over: Partial<TaskTurn> = {}): TaskTurn => ({
   runId: "run_1",
+  origin: "user",
   ts: 1,
   prompt: "segment the ROIs",
   messages: ["Done — 512 ROIs."],
@@ -36,6 +37,39 @@ describe("grouping a transcript's turns", () => {
 });
 
 describe("the transcript", () => {
+  it("renders a system continuation as one neutral status row, never as a user bubble", () => {
+    const { container } = render(
+      <TaskTranscript
+        history={[
+          turn({
+            runId: "run_continue",
+            origin: "system",
+            prompt: "The environment atacseq is ready on this machine. Continue the work blocked in the source turn. Do not ask the researcher to repeat the request, and do not repeat completed work.",
+            continuation: {
+              kind: "environment-setup",
+              waiterId: "wait_1",
+              sourceTurnId: "run_source",
+              environmentName: "atacseq",
+              machineId: "rt_1",
+            },
+            messages: ["Continuing the analysis."],
+          }),
+        ]}
+        viewTurns={[]}
+        onRevertTurn={async () => {}}
+        onEditTurn={async () => {}}
+      />,
+    );
+
+    expect(screen.getByTestId("environment-continuation-status")).toHaveTextContent(
+      "atacseq is ready",
+    );
+    expect(screen.getByText("Continuing the analysis.")).toBeInTheDocument();
+    expect(container.querySelectorAll(".msg--user")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Revert" })).not.toBeInTheDocument();
+  });
+
   it("renders each persisted turn's prompt and reply", () => {
     render(<TaskTranscript history={[turn()]} viewTurns={[]} />);
     expect(screen.getByText("segment the ROIs")).toBeInTheDocument();

@@ -8,7 +8,7 @@ import type { RevertRegistry } from "../run-revert";
 import type { KernelListRegistry } from "../kernel-list-registry";
 import type { TitleRegistry } from "../title-registry";
 import type { PendingCells } from "../kernel-cells";
-import type { EnvSetupRegistry } from "../env-setup-registry";
+import type { EnvironmentSetupCoordinator } from "../environment-setup-coordinator";
 import type { ChangeRecorder } from "./changes";
 import { absentApi } from "./absent";
 import { accountApi } from "./account";
@@ -49,10 +49,9 @@ export interface Deps {
    *  to be told the outcome of. Held for the process's lifetime, like
    *  `runs`. */
   pendingCells: PendingCells;
-  /** `kernel-env-setup` asks waiting on the machine they were sent to, so
-   *  `/daemon/kernel-env/result` can settle the one it names. Held for the
-   *  process's lifetime, like `runs`. */
-  envSetups: EnvSetupRegistry;
+  /** Durable environment setup intent, lifecycle, recovery, and daemon
+   *  binding. One coordinator per server/store. */
+  coordinator: EnvironmentSetupCoordinator;
   /**
    * Where a family records what it changed. One per request, handed to
    * every family, and flushed by the request once its writes have settled.

@@ -1,20 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   KernelEnvDeclaration,
   Language,
   MachineCompute,
   NotebookCell,
+  ResearchEnvironmentDefault,
   RunningKernel,
   Machine,
+  TaskEnvironmentSetup,
 } from "@lykeion/api";
-import { useApi } from "../../api/ApiContext";
+import { useApi, useDataVersion, useInvalidateData } from "../../api/ApiContext";
 import { CloseIcon, NotebookIcon } from "../icons";
+import { EnvironmentBar } from "./EnvironmentBar";
 import { NotebookAxis } from "./NotebookAxis";
 import { NotebookStatusBar } from "./NotebookStatusBar";
 import { NotebookLedger } from "./NotebookLedger";
 import {
   buildNotebookContexts,
-  contextLabel,
   kernelFor,
   languageLabel,
   languagesOf,
@@ -44,6 +46,13 @@ const POLL_MS = 1500;
 interface NotebookPanelProps {
   taskId: string;
   sessionLabel: string;
+  /** What this Task's Research has confirmed it defaults to, per language.
+   *  Passed in rather than read here: the screen above already holds the
+   *  Research, and a second read for one soft preference would be a second
+   *  answer to go stale. Absent on a Task whose Research has not been read —
+   *  which is not the same as a Research with no default, so nothing here
+   *  treats it as one. */
+  environmentDefaults?: ResearchEnvironmentDefault[];
   onClose?: () => void;
   embedded?: boolean;
 }
@@ -59,10 +68,16 @@ export function NotebookPanel(props: NotebookPanelProps) {
 function NotebookPanelForTask({
   taskId,
   sessionLabel,
+  environmentDefaults,
   onClose,
   embedded,
 }: NotebookPanelProps) {
   const api = useApi();
+  // The app-wide read signal, both ways round: every read below re-runs when
+  // it moves, and the three commands this panel sends move it once each has
+  // returned. Nothing here derives a setup state to fill the gap in between.
+  const version = useDataVersion();
+  const invalidate = useInvalidateData();
   const requestGeneration = useRef(0);
   const [cells, setCells] = useState<NotebookCell[]>([]);
   const [cellsLoaded, setCellsLoaded] = useState(false);
@@ -84,24 +99,27 @@ function NotebookPanelForTask({
    *  guess here is the product silently deciding which of a member's several
    *  paired computers downloads a gigabyte. */
   const [pickedMachine, setPickedMachine] = useState<string | null>(null);
-  const [envs, setEnvs] = useState<KernelEnvDeclaration[]>([]);
-  const [activeEnv, setActiveEnv] = useState<string | null>(null);
+  /** The lab's declarations, `null` until the first read lands. `null` is not
+   *  `[]` for the same reason it is not on `machines`: a lab nobody has asked
+   *  yet and a lab that has declared nothing are different facts, and the bar
+   *  below states the second one out loud. */
+  const [envs, setEnvs] = useState<KernelEnvDeclaration[] | null>(null);
+  /** Which environment the researcher chose, keyed by the language lens they
+   *  chose it under. Per language because the lens IS which language they are
+   *  working in: a choice made while reading the R cells is not an answer
+   *  about what the Python ones should run in. */
+  const [chosenEnv, setChosenEnv] = useState<Record<string, string>>({});
+  /** Every durable setup this Task has, exactly as the server projects them.
+   *  This is the whole of what this panel knows about provisioning — there is
+   *  no second copy here to disagree with it, and no local flag that a press
+   *  flips ahead of the server. */
+  const [setups, setSetups] = useState<TaskEnvironmentSetup[]>([]);
   const [activeName, setActiveName] = useState<string | null>(null);
   const [activeLang, setActiveLang] = useState<Language | null>(null);
   /** Why the last Interrupt or Restart did not happen. Kept visible rather
    *  than swallowed: those are the two controls on this surface that act, and
    *  one that silently fails reads as one that did nothing. */
   const [kernelError, setKernelError] = useState<string | null>(null);
-  /** Which environments are building right now, by name. Panel-wide would
-   *  say "Setting up…" on every row while one of them builds, which is a
-   *  sentence about the wrong environment: each row provisions its own, and
-   *  a row nobody has pressed is not busy. */
-  const [building, setBuilding] = useState<string[]>([]);
-  /** Kept beside the environment each belongs to, for the same reason: two
-   *  builds in flight would otherwise interleave into one log and one error
-   *  line with nothing saying which is which. */
-  const [setupErrors, setSetupErrors] = useState<Record<string, string>>({});
-  const [setupLogs, setSetupLogs] = useState<Record<string, string[]>>({});
 
   // A keyed Task change unmounts this state owner. Invalidate every read it
   // started before any late completion can attempt to publish stale truth.
@@ -169,26 +187,47 @@ function NotebookPanelForTask({
     }
   }, [api]);
 
-  // Poll the document, the running kernels, the machines and the env list
-  // while the panel is mounted, so the agent's cells appear as they run.
+  /** What the server says is being built for this Task, and the only place
+   *  this panel learns it. Never cleared on a failed read: a poll that did
+   *  not answer is not a Task with no builds, and blanking the bar on one
+   *  would be this surface guessing about the very thing it does not own. */
+  const refreshSetups = useCallback(async () => {
+    const generation = requestGeneration.current;
+    try {
+      const next = await api.taskEnvironmentSetups(taskId);
+      if (generation !== requestGeneration.current) return;
+      setSetups(next);
+    } catch {
+      /* transient — the next poll retries */
+    }
+  }, [api, taskId]);
+
+  // Poll the document, the running kernels, the machines, the env list and
+  // this Task's setups while the panel is mounted, so the agent's cells
+  // appear as they run and a build moves without anybody pressing anything.
+  //
+  // `version` is in the dependency list, so every write anywhere in the app —
+  // including this panel's own Set up, once its command has returned, and
+  // including a change the server pushed down the change stream — re-reads
+  // all five at once rather than waiting out the poll.
   useEffect(() => {
     let alive = true;
-    void refreshCells();
-    void refreshKernels();
-    void refreshMachines();
-    void refreshEnvs();
-    const t = setInterval(() => {
-      if (!alive) return;
+    const readAll = () => {
       void refreshCells();
       void refreshKernels();
       void refreshMachines();
       void refreshEnvs();
+      void refreshSetups();
+    };
+    readAll();
+    const t = setInterval(() => {
+      if (alive) readAll();
     }, POLL_MS);
     return () => {
       alive = false;
       clearInterval(t);
     };
-  }, [refreshCells, refreshKernels, refreshMachines, refreshEnvs]);
+  }, [refreshCells, refreshKernels, refreshMachines, refreshEnvs, refreshSetups, version]);
 
   const contexts = useMemo(() => buildNotebookContexts(kernels, cells), [kernels, cells]);
 
@@ -226,10 +265,6 @@ function NotebookPanelForTask({
       : all.filter((cell) => cell.language === activeLang);
   }, [selectedContext, activeLang]);
 
-  /** The environments a cell of the language now being viewed could actually
-   *  run in. `kernelEnvList` is lab-wide and carries both languages, and an
-   *  R environment is not a thing a Python cell can be run in — offering it
-   *  is offering a choice whose only outcome is a refusal by name. */
   /** The distinct machines this Task's own kernels are running on. One of
    *  them is an answer; two of them are a question. Taking the first of two
    *  would be the same silent pick this surface exists to refuse, wearing a
@@ -257,150 +292,140 @@ function NotebookPanelForTask({
     return machines?.find((m) => m.machineId === pickedMachine)?.machineId ?? null;
   }, [runningMachines, machines, pickedMachine]);
 
-  /** What this machine has NOT built, by name — read off the same snapshot
-   *  `setupOffer` reads, so the picker and the Setup button below it cannot
-   *  disagree about which environments are missing. Empty until a machine is
-   *  settled on and has reported: a machine that has said nothing is not a
-   *  machine holding nothing, and guessing here would put build targets in
-   *  front of a researcher for environments nobody knows are absent. */
-  const unbuiltHere = useMemo(() => {
-    const held = machines?.find((m) => m.machineId === chosenMachineId)?.environments;
-    if (held === undefined) return new Set<string>();
-    return new Set(
-      held.filter((e) => e.state === "absent" || e.state === "broken").map((e) => e.name),
-    );
-  }, [machines, chosenMachineId]);
-
-  const envsHere = useMemo(
+  /** The machines a build could be sent to, by the name their owner gave
+   *  them. A researcher choosing between two is choosing between "laptop"
+   *  and "workstation", not between two opaque ids — and a machine whose
+   *  name this poll could not read is still offered, under the id, rather
+   *  than dropped for want of a label. */
+  const machineOptions = useMemo(
     () =>
-      shownLang === null
-        ? envs
-        : envs.filter(
-            (e) =>
-              e.language === shownLang ||
-              // Plus anything this machine has not built, whatever language
-              // it is in. Selecting one is the ONLY route to building it:
-              // `neededEnvs` is this notebook's cells plus the selection, an
-              // environment that was never built can be in no cell, and this
-              // panel holds the product's only `kernelEnvSetup` call. Scoped
-              // to the viewed language alone, a Task with one Python cell
-              // could not build the lab's `r` starter at all.
-              //
-              // Safe to offer to a cell, because there is no cell to offer it
-              // to: nothing runs in an environment that does not exist here,
-              // so naming one can only ever produce the refusal it already
-              // produces — while leaving it out produces an environment
-              // nobody can build. It leaves this list the moment it is built.
-              unbuiltHere.has(e.name),
-          ),
-    [envs, shownLang, unbuiltHere],
+      (machines ?? []).map((m) => ({
+        machineId: m.machineId,
+        label: pairedMachines.find((r) => r.id === m.machineId)?.name ?? m.machineId,
+      })),
+    [machines, pairedMachines],
   );
-
-  // Keeps the selection inside `envsHere`. Reconciled here rather than in
-  // `refreshEnvs` so switching the language lens re-picks a valid
-  // environment rather than leaving the previous language's selection
-  // standing. The `cur && envsHere.some(...)` guard makes this a no-op
-  // whenever the current pick is already valid for the language being
-  // viewed, so it does not fight the picker's own `onClick`.
-  useEffect(() => {
-    setActiveEnv((cur) =>
-      cur && envsHere.some((e) => e.name === cur) ? cur : (envsHere[0]?.name ?? null),
-    );
-  }, [envsHere]);
-
-  /** Which environments this Task needs: every one its own cells have named,
-   *  and whichever one the researcher currently has selected. Derived from
-   *  the cells this panel already holds — `NotebookCell.environment` names
-   *  it — so the names worth offering to build are the names this notebook
-   *  has actually used. */
-  const neededEnvs = useMemo(() => {
-    const names = new Set(cells.map((c) => c.environment).filter((name) => name !== ""));
-    if (activeEnv !== null) names.add(activeEnv);
-    return [...names];
-  }, [cells, activeEnv]);
 
   /**
-   * What the Setup surface has to say, or nothing at all.
+   * Which language's choice of environment this is.
    *
-   * `MachineCompute.environments` being absent is the case this turns on: it
-   * means the machine has NOT reported, which is not the same fact as a
-   * machine holding none. A machine that has not said must not be shown as
-   * one holding nothing, and must not have Setup offered for environments
-   * nobody knows it lacks.
+   * Keyed on `shownLang` — the notebook's EFFECTIVE language, the one the
+   * status bar is describing — rather than on the raw lens. `All` is a lens
+   * on the ledger, not a third language to have an opinion about: reading a
+   * Python notebook unnarrowed and then narrowing it to Python is the same
+   * notebook, and a choice made in one of those must not be forgotten in the
+   * other. `"all"` is reached only where `shownLang` is null, which is a Task
+   * that has run no code in any language at all.
    */
-  const setupOffer = useMemo<SetupOffer | null>(() => {
-    if (neededEnvs.length === 0) return null;
-    // Nothing read yet is not an answer — this says nothing until the first
-    // snapshot lands.
-    if (machines === null) return null;
-    if (chosenMachineId === null) {
-      if (machines.length === 0) return { kind: "nowhere" };
-      return {
-        kind: "choose",
-        // Which silence they are being asked about: no kernel anywhere is a
-        // different fact from kernels on two machines at once, and a
-        // researcher reading "nothing is holding a kernel" while two of
-        // theirs are would rightly stop believing this surface.
-        why: runningMachines.length > 1 ? "several-machines" : "no-kernel",
-        machines: machines.map((m) => ({
-          machineId: m.machineId,
-          label: pairedMachines.find((r) => r.id === m.machineId)?.name ?? m.machineId,
-        })),
-      };
-    }
-    const held = machines.find((m) => m.machineId === chosenMachineId)?.environments;
-    if (held === undefined) return { kind: "unreported" };
-    const stateOf = (name: string) => held.find((e) => e.name === name)?.state;
-    // Partitioned rather than filtered on "not ready". The two are one
-    // button and two different sentences: `absent` has never been built
-    // here, `broken` is a provision that started and was interrupted — and
-    // telling a researcher their half-built environment was never built is
-    // telling them something false about their own machine.
-    const absent = neededEnvs.filter((name) => stateOf(name) === "absent");
-    const broken = neededEnvs.filter((name) => stateOf(name) === "broken");
-    return absent.length === 0 && broken.length === 0
-      ? null
-      : { kind: "build", absent, broken };
-  }, [neededEnvs, chosenMachineId, machines, machines, runningMachines]);
+  const langKey = shownLang ?? "all";
 
-  const runSetup = useCallback(
-    async (name: string) => {
-      // Never inferred here: the surface offers this button only where a
-      // machine has already been settled on, and a Setup with no machine to
-      // name would be `kernelEnvSetup` picking one.
-      if (chosenMachineId === null) return;
-      // Its own row is already disabled while it builds; this is the guard
-      // against a second click arriving before React has drawn that.
-      if (building.includes(name)) return;
-      setBuilding((names) => [...names, name]);
-      setSetupErrors(({ [name]: _cleared, ...rest }) => rest);
-      setSetupLogs((logs) => ({ ...logs, [name]: [] }));
-      try {
-        await api.kernelEnvSetup(chosenMachineId, name, (line: string) =>
-          setSetupLogs((logs) => ({
-            ...logs,
-            [name]: [...(logs[name] ?? []).slice(-200), line],
-          })),
-        );
-        await refreshEnvs();
-        await refreshMachines();
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        setSetupErrors((errors) => ({ ...errors, [name]: message }));
-      } finally {
-        setBuilding((names) => names.filter((n) => n !== name));
-      }
+  /** What this Research has confirmed for the language being viewed, if
+   *  anything. Soft: it seeds the selection and is overridden the moment the
+   *  researcher picks something else. */
+  const researchDefault = useMemo(() => {
+    if (shownLang === null) return undefined;
+    return environmentDefaults?.find((d) => d.language === shownLang)?.environmentName;
+  }, [environmentDefaults, shownLang]);
+
+  /**
+   * Which environment the bar is about.
+   *
+   * Four rules in order, and the first is the researcher's own: a choice they
+   * made stands until the environment leaves this lab's declarations, which
+   * is the only thing that can make it stop naming anything. Then what this
+   * Research confirmed, then the language's starter — the one Lykeion itself
+   * declared, which carries no `createdBy` — and only then the first
+   * declaration, preferring one of the language being viewed, because an R
+   * notebook opening onto a Python environment because Python happened to be
+   * declared first is the panel answering a question nobody asked.
+   */
+  const selectedEnv = useMemo(() => {
+    const declared = envs ?? [];
+    if (declared.length === 0) return null;
+    const declaredHas = (name: string | undefined): name is string =>
+      name !== undefined && declared.some((e) => e.name === name);
+    const chosen = chosenEnv[langKey];
+    if (declaredHas(chosen)) return chosen;
+    if (declaredHas(researchDefault)) return researchDefault;
+    if (shownLang !== null) {
+      const starter = declared.find(
+        (e) => e.language === shownLang && e.createdBy === undefined,
+      );
+      if (starter) return starter.name;
+      const firstOfLanguage = declared.find((e) => e.language === shownLang);
+      if (firstOfLanguage) return firstOfLanguage.name;
+    }
+    return declared[0]?.name ?? null;
+  }, [envs, chosenEnv, langKey, researchDefault, shownLang]);
+
+  /**
+   * What the chosen machine reports about the chosen environment.
+   *
+   * `undefined` is this surface not knowing, in either of the two ways it can
+   * fail to: that machine has said nothing at all
+   * (`MachineCompute.environments` absent), or it reported a list this
+   * environment is not in — which a declaration made since its last report
+   * looks exactly like. Neither is the same fact as a machine reporting it
+   * holds none, which is `state: "absent"`, and the bar is required to tell
+   * that apart from both. The two silences are treated alike on purpose: a
+   * build offered on the strength of either would be asking for a gigabyte on
+   * the strength of not having been told, and the next report settles it.
+   */
+  const envStatus = useMemo(() => {
+    if (selectedEnv === null || chosenMachineId === null) return undefined;
+    return machines
+      ?.find((m) => m.machineId === chosenMachineId)
+      ?.environments?.find((e) => e.name === selectedEnv);
+  }, [machines, chosenMachineId, selectedEnv]);
+
+  /** The durable setup for exactly this environment on exactly this machine,
+   *  latest report first. A Task can have several — one per environment it
+   *  has ever asked for — and a bar showing another one's progress would be
+   *  describing a build the researcher is not looking at. */
+  const selectedSetup = useMemo(() => {
+    if (selectedEnv === null || chosenMachineId === null) return undefined;
+    return setups
+      .filter(
+        (s) =>
+          s.job.environmentName === selectedEnv && s.job.machineId === chosenMachineId,
+      )
+      .sort((a, b) => b.job.updatedTs - a.job.updatedTs)[0];
+  }, [setups, selectedEnv, chosenMachineId]);
+
+  /**
+   * Ask the server to provision it. A direct press IS the authorization for
+   * this disclosed operation, so no agent permission card stands between the
+   * researcher and their own button.
+   *
+   * The read signal moves only once the command has answered, and nothing
+   * here writes a state in the meantime: the job that comes back down is the
+   * first and only word on whether this is building.
+   */
+  const requestSetup = useCallback(async () => {
+    if (chosenMachineId === null || selectedEnv === null) return;
+    await api.requestKernelEnvironmentSetup({
+      taskId,
+      machineId: chosenMachineId,
+      environmentName: selectedEnv,
+    });
+    invalidate();
+  }, [api, taskId, chosenMachineId, selectedEnv, invalidate]);
+
+  const retrySetup = useCallback(
+    async (waiterId: string) => {
+      await api.retryKernelEnvironmentSetup(waiterId);
+      invalidate();
     },
-    [api, chosenMachineId, building, refreshEnvs, refreshMachines],
+    [api, invalidate],
   );
 
-  // Whether an environment this Task needs has still to be provisioned. It
-  // decides whether the Setup surface is offered and nothing else: the
-  // cells, their tabs, the kernel strip and the REPL all describe kernels a
-  // machine is already holding, and gating them on this would hide every one
-  // of them behind a button that provisions an environment none of them is
-  // in.
-  const needsSetup = setupOffer !== null;
+  const answerSuggestion = useCallback(
+    async (suggestionId: string, useByDefault: boolean) => {
+      await api.answerEnvironmentDefaultSuggestion(suggestionId, useByDefault);
+      invalidate();
+    },
+    [api, invalidate],
+  );
 
   const restart = useCallback(async () => {
     if (!selectedKernel) return;
@@ -467,8 +492,6 @@ function NotebookPanelForTask({
         // that failed still opens itself — and this is simply no longer a
         // caller of it.
         autoOpenCellId={null}
-        contextLabel={selectedContext ? contextLabel(selectedContext.name) : null}
-        writable={selectedKernel !== undefined}
         {...(activeLang !== null
           ? {
               emptyNote: `No ${languageLabel(activeLang)} cells in this context. Choose All to see the rest.`,
@@ -476,45 +499,29 @@ function NotebookPanelForTask({
           : {})}
       />
 
-      {/* Outside the Setup surface, deliberately. This row is the only
-          control that can add a name to the set this Task needs, and inside
-          a surface that renders only where an offer already exists it could
-          never produce one: an environment a colleague declared and no cell
-          here has used yet would have no way to be selected, and therefore
-          no way to be built — on the only screen in this product where
-          building happens.
-
-          Bounded, because this panel is dense and keyboard-first: one
-          declared environment for the language being viewed is already the
-          selected one, so a permanent row for it would be a control with
-          nothing to choose between. */}
-      {envsHere.length > 1 && (
-        <div className="nbp-envrow">
-          <div className="nbp-envpick" role="tablist" aria-label="Kernel environment">
-            {envsHere.map((env) => (
-              <button
-                key={env.name}
-                type="button"
-                role="tab"
-                aria-selected={env.name === activeEnv}
-                className={`nbp-envchip${env.name === activeEnv ? " is-active" : ""}`}
-                onClick={() => setActiveEnv(env.name)}
-              >
-                {env.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {needsSetup && setupOffer !== null && (
-        <SetupState
-          offer={setupOffer}
-          building={building}
-          errors={setupErrors}
-          logs={setupLogs}
-          onPickMachine={setPickedMachine}
-          onSetup={runSetup}
+      {/* The one environment control, and the one place a build is asked
+          for. Drawn once both the lab's declarations and the machines'
+          snapshot have landed: before that there is no true sentence for it
+          to say, and "no machine is paired with this lab" is a false one to
+          flash at somebody whose laptop is about to appear in it. */}
+      {envs !== null && machines !== null && (
+        <EnvironmentBar
+          taskId={taskId}
+          language={shownLang}
+          environments={envs}
+          selectedEnvironment={selectedEnv}
+          {...(researchDefault === undefined ? {} : { defaultEnvironment: researchDefault })}
+          machineOptions={machineOptions}
+          selectedMachineId={chosenMachineId}
+          {...(envStatus === undefined ? {} : { status: envStatus })}
+          {...(selectedSetup === undefined ? {} : { setup: selectedSetup })}
+          onSelectEnvironment={(name) =>
+            setChosenEnv((chosen) => ({ ...chosen, [langKey]: name }))
+          }
+          onSelectMachine={setPickedMachine}
+          onSetup={requestSetup}
+          onRetry={retrySetup}
+          onAnswerSuggestion={answerSuggestion}
         />
       )}
 
@@ -538,198 +545,5 @@ function NotebookPanelForTask({
         onRestart={() => void restart()}
       />
     </section>
-  );
-}
-
-/**
- * What the Setup surface has to say about the environments this Task needs.
- *
- * Four different things, and none of them is a rewording of another. Only
- * `build` names something a researcher can act on; the other three each say
- * why nothing here can offer that yet, which is the honest alternative to a
- * button that cannot work.
- */
-type SetupOffer =
-  /** Declared in this lab, and this machine cannot start a kernel in them.
-   *  Two lists rather than one: `absent` has never been built here, and
-   *  `broken` is a provision that began and was interrupted. One button
-   *  fixes either — `kernelEnvSetup` — and the two are owed different
-   *  sentences, because "never built" is false about a half-built copy. */
-  | { kind: "build"; absent: string[]; broken: string[] }
-  /** The machine has not said what it holds — NOT that it holds none. */
-  | { kind: "unreported" }
-  /** Nothing here can name one machine: either no kernel is running to name
-   *  one, or this Task's kernels name more than one. */
-  | {
-      kind: "choose";
-      why: "no-kernel" | "several-machines";
-      machines: Array<{ machineId: string; label: string }>;
-    }
-  /** No machine is paired with this lab at all. */
-  | { kind: "nowhere" };
-
-/** The managed-env surface: which environments this Task needs that the
- *  machine it runs on does not hold, and the one control that builds each. */
-function SetupState({
-  offer,
-  building,
-  errors,
-  logs,
-  onPickMachine,
-  onSetup,
-}: {
-  offer: SetupOffer;
-  building: string[];
-  errors: Record<string, string>;
-  logs: Record<string, string[]>;
-  onPickMachine: (machineId: string) => void;
-  onSetup: (name: string) => void;
-}) {
-  return (
-    <div className="nbp-setup" data-testid="notebook-setup">
-      {offer.kind === "build" && (
-        <>
-          {offer.absent.map((name) => (
-            <SetupRow
-              key={name}
-              name={name}
-              action={`Set up ${name}`}
-              acting="Setting up…"
-              building={building.includes(name)}
-              error={errors[name] ?? null}
-              log={logs[name] ?? []}
-              onSetup={onSetup}
-            >
-              <strong>{name}</strong> is declared in this lab and has never been
-              built on this machine. Building it installs an isolated
-              interpreter and the packages this lab pinned — a few hundred MB
-              on first run, and nothing already on this machine is touched.
-            </SetupRow>
-          ))}
-          {/* A different fact and a different sentence. This environment WAS
-              built here and the build was interrupted, so the remedy is to
-              provision it again rather than for the first time — and the
-              sentence above, which the state filter used to swallow this case
-              into, would be telling a researcher something false about their
-              own machine. */}
-          {offer.broken.map((name) => (
-            <SetupRow
-              key={name}
-              name={name}
-              action={`Rebuild ${name}`}
-              acting="Rebuilding…"
-              building={building.includes(name)}
-              error={errors[name] ?? null}
-              log={logs[name] ?? []}
-              onSetup={onSetup}
-            >
-              <strong>{name}</strong> was built on this machine and the build was
-              interrupted, so nothing can start a kernel in it. Rebuilding
-              replaces the half-built copy from the same lockfile this lab has
-              pinned — nothing else on this machine is touched.
-            </SetupRow>
-          ))}
-        </>
-      )}
-      {/* Said rather than guessed at. A machine that has not reported is not
-          a machine holding nothing, so nothing here offers to download a
-          gigabyte onto it on the strength of silence. */}
-      {offer.kind === "unreported" && (
-        <div className="nbp-setup-row">
-          <span className="nbp-setup-lead">
-            This Task's machine has not said which environments it holds, so
-            nothing here knows whether any of them still need building. It
-            says the next time its daemon reports.
-          </span>
-        </div>
-      )}
-      {/* The researcher picks. Inferring it would be this product silently
-          choosing which of their several paired computers downloads a
-          gigabyte. */}
-      {offer.kind === "choose" && (
-        <>
-          <div className="nbp-setup-row">
-            {offer.why === "no-kernel" ? (
-              <span className="nbp-setup-lead">
-                Nothing is holding a kernel for this Task, so there is no
-                machine to read this Task's environments from. Choose which of
-                your machines should build them.
-              </span>
-            ) : (
-              <span className="nbp-setup-lead">
-                This Task's kernels are running on more than one of your
-                machines, so nothing here can say which of them these
-                environments belong on. Choose which should build them.
-              </span>
-            )}
-          </div>
-          <div className="nbp-envpick" role="group" aria-label="Which machine">
-            {offer.machines.map((machine) => (
-              <button
-                key={machine.machineId}
-                type="button"
-                className="nbp-envchip"
-                onClick={() => onPickMachine(machine.machineId)}
-              >
-                {machine.label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-      {offer.kind === "nowhere" && (
-        <div className="nbp-setup-row">
-          <span className="nbp-setup-lead">
-            No machine is paired with this lab, so there is nowhere to build an
-            environment. Pair one from the Machines screen first.
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** One environment, the sentence that says why it needs building, and the
- *  control that builds it — with its own progress and its own error.
- *
- *  Everything here is scoped to this one environment on purpose. A build is
- *  per-environment, so a panel-wide "Setting up…" would put that sentence on
- *  rows nobody pressed, and a panel-wide log would interleave two builds into
- *  one stream with nothing saying which line came from which. */
-function SetupRow({
-  name,
-  action,
-  acting,
-  building,
-  error,
-  log,
-  onSetup,
-  children,
-}: {
-  name: string;
-  action: string;
-  acting: string;
-  building: boolean;
-  error: string | null;
-  log: string[];
-  onSetup: (name: string) => void;
-  children: ReactNode;
-}) {
-  return (
-    <>
-      <div className="nbp-setup-row">
-        <span className="nbp-setup-lead">{children}</span>
-        <button
-          type="button"
-          className="nbp-setup-btn"
-          onClick={() => onSetup(name)}
-          disabled={building}
-        >
-          {building ? acting : action}
-        </button>
-      </div>
-      {error !== null && <p className="nbp-repl-error">{error}</p>}
-      {log.length > 0 && <pre className="nbp-setup-log">{log.join("\n")}</pre>}
-    </>
   );
 }

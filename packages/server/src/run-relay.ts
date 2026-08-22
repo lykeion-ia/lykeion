@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Language, RunDecision, RunEventFrame } from "@lykeion/api";
+import type { Language, RunDecision, RunEventFrame, TaskTurn } from "@lykeion/api";
 import type { StandingGrant } from "./store/sessions";
 
 /**
@@ -49,6 +49,35 @@ export interface RunCommand {
   /** Which of the agent's own advertised choices this turn asked for. */
   model?: string;
   grants?: StandingGrant[];
+  /**
+   * Which environment an unaddressed cell of each language runs in, as this
+   * Research has confirmed. Structured, and never folded into `prompt`: a
+   * default interpolated into the researcher's own words would be
+   * indistinguishable from something they typed — unremovable, re-read by the
+   * agent every turn, and still there after the default changed. It reaches
+   * the kernel host as `kernel.configure_session`'s own `defaults`, which is
+   * where a cell that names no environment is actually resolved.
+   *
+   * Omitted where the Research has confirmed none, and omitted means exactly
+   * what an empty list would — unlike `declared` on the kernel wire, there is
+   * no third "nobody asked" state to keep apart here, because the lab reads
+   * this from its own table and always has an answer. The machine's own floor
+   * is what decides for a language nothing is named for.
+   */
+  environmentDefaults?: Array<{
+    language: "python" | "r";
+    environmentName: string;
+  }>;
+  /** Which environments this durable session already has standing permission
+   *  to change, so a rebuild the researcher already allowed is not asked
+   *  about again on the next turn of the same conversation. Names alone: what
+   *  a grant permits is one capability, and the target is the whole of what
+   *  varies. */
+  environmentGrants?: string[];
+  /** Why this turn exists, when it is not a researcher's own. Carried as the
+   *  same shape the durable turn holds — never re-derived on the machine,
+   *  which cannot know which waiter a system turn continues. */
+  continuation?: TaskTurn["continuation"];
   decision?: RunDecision;
   /** Which kernel a `kernel-execute`, `kernel-interrupt`, `kernel-stop` or
    *  `kernel-restart` command addresses. */
@@ -84,6 +113,8 @@ export interface RunCommand {
    *  `lockfile` is present: a machine handed a lockfile materializes from
    *  it and never resolves (D4). */
   packages?: string[];
+  /** Exact requested set the bound lock covers, present for resolve and replay. */
+  requestedPackages?: string[];
   /** The lockfile a `kernel-env-setup` command asks the machine to
    *  MATERIALIZE from, replayed from this lab's own store rather than
    *  resolved again — D4's whole point. Absent only on the very first
@@ -97,6 +128,10 @@ export interface RunCommand {
    *  `/daemon/kernel-env/lock`'s reply instead, since nothing here can name
    *  it before that resolve has even run. */
   lockRevision?: number;
+  /** Exact declaration generation this setup command materializes. */
+  declarationGenerationId?: string;
+  /** Legacy evidence only; never authoritative for readiness. */
+  declarationCreatedTs?: number;
   /** Why a `kernel-env-setup` is happening, in words — "scanpy was added to
    *  python". The machine carries it into the ending of every kernel the
    *  rebuild displaces, so a namespace that vanishes says what took it.
@@ -192,6 +227,11 @@ export interface RunRelay {
    *  same daemon's very next process, on its first reconnect after this one
    *  restarted it. */
   deliverNow(machineId: string, command: RunCommand): boolean;
+  /** Removes a durable non-turn command once its own result has been
+   *  committed, so a daemon process that reconnects later cannot rebuild an
+   *  already-terminal environment merely because no run frame existed to
+   *  prune the command through `publish`. */
+  retireCommand(machineId: string, runId: string): void;
   /** Attaches the one live listener for a machine's command stream: every
    *  command already queued is replayed to it immediately, in order —
    *  joining the machine's `live` set as it goes, for any `start-run` among
@@ -319,6 +359,12 @@ export function createRunRelay(): RunRelay {
       queue.seq += 1;
       queue.subscriber(queue.seq, command);
       return true;
+    },
+
+    retireCommand(machineId, runId) {
+      const queue = machines.get(machineId);
+      if (!queue) return;
+      queue.commands = queue.commands.filter((entry) => entry.command.runId !== runId);
     },
 
     attach(machineId, send) {

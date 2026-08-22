@@ -19,6 +19,7 @@ afterEach(cleanup);
 const activeSnapshot = (runId = "run-live"): ActiveRunSnapshot => ({
   runId,
   sequence: 3,
+  origin: "user",
   prompt: "resume this turn",
   agent: "claude",
   state: { state: "executing", plan: { steps: [], raw: "" } },
@@ -68,6 +69,7 @@ describe("Task transcript recovery", () => {
     let resolveHistory!: (detail: TaskDetail) => void;
     const settledTurn: TaskTurn = {
       runId: "run-live",
+      origin: "user",
       sequence: 3,
       ts: 30,
       prompt: "resume this turn",
@@ -128,6 +130,7 @@ describe("Task transcript recovery", () => {
     let resolveHistory!: (detail: TaskDetail) => void;
     const settledTurn: TaskTurn = {
       runId: "run-race-cancelled",
+      origin: "user",
       sequence: 3,
       ts: 30,
       prompt: "resume this turn",
@@ -266,6 +269,7 @@ describe("Task transcript recovery", () => {
     const resumed = recoverable(activeSnapshot("run-unacknowledged"));
     const settledTurn: TaskTurn = {
       runId: "run-unacknowledged",
+      origin: "user",
       sequence: 3,
       ts: 30,
       prompt: "resume this turn",
@@ -362,6 +366,7 @@ describe("Task transcript recovery", () => {
     let resolveFirstRefresh!: (detail: TaskDetail) => void;
     const firstTurn: TaskTurn = {
       runId: "run-first",
+      origin: "user",
       sequence: 3,
       ts: 30,
       prompt: "resume this turn",
@@ -412,6 +417,7 @@ describe("Task transcript recovery", () => {
     const secondDetail = await base.getTask("t_4");
     const currentTurn: TaskTurn = {
       runId: "run-current-task",
+      origin: "user",
       sequence: 1,
       ts: 40,
       prompt: "current Task prompt",
@@ -422,6 +428,7 @@ describe("Task transcript recovery", () => {
     };
     const staleTurn: TaskTurn = {
       runId: "run-stale-task",
+      origin: "user",
       sequence: 9,
       ts: 90,
       prompt: "stale Task prompt",

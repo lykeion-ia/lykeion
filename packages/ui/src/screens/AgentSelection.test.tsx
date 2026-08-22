@@ -40,6 +40,7 @@ const TODO_TASK = "#/researches/s_cmp/tasks/t_5";
  *  surface reads to know which conversation it is continuing. */
 const turnOn = (agent: string): TaskTurn => ({
   runId: `run-on-${agent}`,
+  origin: "user",
   sequence: 1,
   ts: 1,
   prompt: "the turn before this one",

@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import {
   chmodSync,
@@ -6,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -23,11 +25,13 @@ import type { KernelHost } from "./kernel-host";
 import { PROTOCOL_VERSION } from "./kernel-protocol";
 import { startRuns, type RunSubsystem } from "./runs";
 import { envRoot } from "./environments";
+import { environmentSetupOutcomeSpool } from "./environment-setup-outcomes";
 
 const STUB = join(import.meta.dirname, "test-support", "stub-acp-agent.ts");
 const running: RunSubsystem[] = [];
 const servers: Server[] = [];
 const dirs: string[] = [];
+const fixtureGeneration = (name: string): string => `envgen_fixture_${name}`;
 
 afterEach(async () => {
   for (const r of running.splice(0)) await r.stop();
@@ -52,11 +56,21 @@ async function stubLab(commands: unknown[]) {
   const cells: Record<string, unknown>[] = [];
   const kernelListReplies: Array<{ requestId: string; kernels: unknown[] }> = [];
   const titleReplies: Array<{ requestId: string; title: string | null }> = [];
-  const kernelEnvLocks: Array<{ requestId: string; name: string; lockfile: string }> = [];
+  const kernelEnvLocks: Array<{
+    requestId: string;
+    name: string;
+    declarationGenerationId: string;
+    lockfile: string;
+  }> = [];
   /** Every declaration this lab was asked for, in order — the whole of what
    *  a card's "allow" is supposed to produce, and the whole of what its
    *  "deny" is supposed not to. */
-  const kernelEnvCreates: Array<{ sessionId: string; name: string; packages: string[] }> = [];
+  const kernelEnvCreates: Array<{
+    sessionId: string;
+    name: string;
+    packages: string[];
+    permissionScope?: string;
+  }> = [];
   /** How this lab answers `/daemon/kernel-env/create`: `refusal` makes it
    *  refuse in the lab's own words, `rawBody` is written verbatim under a 200
    *  instead — a failure wearing a success code, which is what a proxy's own
@@ -67,7 +81,12 @@ async function stubLab(commands: unknown[]) {
   /** Every add this lab was asked for, in order — the whole of what a
    *  `manage_packages` card's "allow" is supposed to produce, and the whole
    *  of what its "deny" is supposed not to. */
-  const kernelEnvPackages: Array<{ sessionId: string; name: string; packages: string[] }> = [];
+  const kernelEnvPackages: Array<{
+    sessionId: string;
+    name: string;
+    packages: string[];
+    permissionScope?: string;
+  }> = [];
   /** How this lab answers `/daemon/kernel-env/packages`: `refusal` refuses in
    *  the lab's own words, `added` is what it reports as genuinely new (an
    *  empty list being everything asked for already being declared, which
@@ -75,8 +94,18 @@ async function stubLab(commands: unknown[]) {
    *  under a 200 instead — a failure wearing a success code, which is what a
    *  proxy's own page or a truncated response arrives as. */
   const kernelEnvPackagesAdd: { refusal?: string; added?: string[]; rawBody?: string } = {};
+  const kernelEnvRequirements: Array<{
+    runId: string;
+    sessionId: string;
+    environmentName: string;
+  }> = [];
   const kernelEnvResults: Array<Record<string, unknown>> = [];
-  const kernelEnvProgress: Array<{ requestId: string; line: string }> = [];
+  const kernelEnvResult = { failuresRemaining: 0, conflictsRemaining: 0 };
+  const kernelEnvProgress: Array<{
+    requestId: string;
+    name: string;
+    progress: { stage: "resolving" | "installing" | "finalizing"; line: string };
+  }> = [];
   /** What `/daemon/kernel-envs` answers with — this lab's declaration list,
    *  which the daemon asks for before it confines a session. `null` makes
    *  the endpoint fail, which is how a test stands in for a lab that cannot
@@ -92,6 +121,9 @@ async function stubLab(commands: unknown[]) {
     if (req.url?.startsWith("/daemon/commands")) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       commandStream = res;
+      res.on("close", () => {
+        if (commandStream === res) commandStream = undefined;
+      });
       for (const c of commands) {
         seq += 1;
         res.write(`event: command\ndata: ${JSON.stringify({ seq, command: c })}\n\n`);
@@ -111,7 +143,12 @@ async function stubLab(commands: unknown[]) {
       if (req.url === "/daemon/task/title")
         titleReplies.push(parsed as { requestId: string; title: string | null });
       if (req.url === "/daemon/kernel-env/lock") {
-        kernelEnvLocks.push(parsed as { requestId: string; name: string; lockfile: string });
+        kernelEnvLocks.push(parsed as {
+          requestId: string;
+          name: string;
+          declarationGenerationId: string;
+          lockfile: string;
+        });
         lockRevision += 1;
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ lockRevision }));
@@ -129,12 +166,36 @@ async function stubLab(commands: unknown[]) {
           return;
         }
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ declarations: kernelEnvDeclarations.list }));
+        res.end(JSON.stringify({
+          // Production declarations have an opaque generation. Most of this
+          // older test fixture predates that field, so supply a deterministic
+          // one at the fake-server boundary; tests about stale/missing marker
+          // identity still spell their exact tokens explicitly below.
+          declarations: kernelEnvDeclarations.list.map((declaration) => {
+            if (
+              typeof declaration === "object" && declaration !== null &&
+              typeof (declaration as { name?: unknown }).name === "string" &&
+              (declaration as { declarationGenerationId?: unknown }).declarationGenerationId === undefined
+            )
+              return {
+                ...declaration,
+                declarationGenerationId: fixtureGeneration(
+                  (declaration as { name: string }).name,
+                ),
+              };
+            return declaration;
+          }),
+        }));
         return;
       }
       if (req.url === "/daemon/kernel-env/create") {
         kernelEnvCreates.push(
-          parsed as unknown as { sessionId: string; name: string; packages: string[] },
+          parsed as unknown as {
+            sessionId: string;
+            name: string;
+            packages: string[];
+            permissionScope?: string;
+          },
         );
         kernelEnvCreate.onCall?.();
         if (kernelEnvCreate.refusal !== undefined) {
@@ -165,7 +226,12 @@ async function stubLab(commands: unknown[]) {
       }
       if (req.url === "/daemon/kernel-env/packages") {
         kernelEnvPackages.push(
-          parsed as unknown as { sessionId: string; name: string; packages: string[] },
+          parsed as unknown as {
+            sessionId: string;
+            name: string;
+            packages: string[];
+            permissionScope?: string;
+          },
         );
         if (kernelEnvPackagesAdd.refusal !== undefined) {
           res.writeHead(404, { "content-type": "application/json" });
@@ -196,9 +262,35 @@ async function stubLab(commands: unknown[]) {
         );
         return;
       }
-      if (req.url === "/daemon/kernel-env/result") kernelEnvResults.push(parsed);
+      if (req.url === "/daemon/kernel-env/require") {
+        kernelEnvRequirements.push(
+          parsed as unknown as {
+            runId: string;
+            sessionId: string;
+            environmentName: string;
+          },
+        );
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ waiterId: "wait_1" }));
+        return;
+      }
+      if (req.url === "/daemon/kernel-env/result") {
+        kernelEnvResults.push(parsed);
+        if (kernelEnvResult.conflictsRemaining > 0) {
+          kernelEnvResult.conflictsRemaining -= 1;
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "terminal outcome fingerprint conflict" }));
+          return;
+        }
+        if (kernelEnvResult.failuresRemaining > 0) {
+          kernelEnvResult.failuresRemaining -= 1;
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "temporary result transport failure" }));
+          return;
+        }
+      }
       if (req.url === "/daemon/kernel-env/progress")
-        kernelEnvProgress.push(parsed as { requestId: string; line: string });
+        kernelEnvProgress.push(parsed as (typeof kernelEnvProgress)[number]);
       res.writeHead(200, { "content-type": "application/json" });
       res.end("{}");
     });
@@ -222,11 +314,17 @@ async function stubLab(commands: unknown[]) {
     kernelEnvCreate,
     kernelEnvPackages,
     kernelEnvPackagesAdd,
+    kernelEnvRequirements,
     kernelEnvResults,
+    kernelEnvResult,
     kernelEnvProgress,
     kernelEnvDeclarations,
     commandConnected(): boolean {
       return commandStream !== undefined;
+    },
+    disconnectCommands(): void {
+      commandStream?.end();
+      commandStream = undefined;
     },
     send(command: unknown): void {
       if (!commandStream) throw new Error("the command stream is not connected");
@@ -267,19 +365,45 @@ function markerIn(dataDir: string, name: string): string {
  *  rather than a flag on it, because the difference between the two shapes
  *  IS what several of these tests are about — a helper that could produce
  *  either from one argument invites a test asserting the wrong one. */
-function rEnvOnDisk(workDir: string, name: string, finished: boolean): string {
+function rEnvOnDisk(
+  workDir: string,
+  name: string,
+  finished: boolean,
+  generation: string | null = fixtureGeneration(name),
+): string {
   const root = envRoot(workDir, name);
   mkdirSync(join(root, "bin"), { recursive: true });
   writeFileSync(join(root, "bin", "Rscript"), "");
   if (finished)
     writeFileSync(
       join(root, ".lykeion-env.json"),
-      JSON.stringify({ lockRevision: 3, packageCount: 99, version: "4.4.1" }),
+      JSON.stringify({
+        ...(generation === null
+          ? {}
+          : {
+              schemaVersion: 2,
+              requestId: `envsetup_fixture_${name}`,
+              name,
+              manager: "conda",
+              lockfileFingerprint: "a".repeat(64),
+              packageFingerprint: "b".repeat(64),
+            }),
+        lockRevision: 3,
+        packageCount: 99,
+        version: "4.4.1",
+        ...(generation === null ? {} : { declarationGenerationId: generation }),
+      }),
     );
   return root;
 }
 
-function envOnDisk(workDir: string, name: string, finished: boolean, base?: string): string {
+function envOnDisk(
+  workDir: string,
+  name: string,
+  finished: boolean,
+  base?: string,
+  generation: string | null = fixtureGeneration(name),
+): string {
   const root = envRoot(workDir, name);
   mkdirSync(join(root, "bin"), { recursive: true });
   writeFileSync(join(root, "bin", "python3"), "");
@@ -288,7 +412,22 @@ function envOnDisk(workDir: string, name: string, finished: boolean, base?: stri
   if (finished)
     writeFileSync(
       join(root, ".lykeion-env.json"),
-      JSON.stringify({ lockRevision: 3, packageCount: 12, version: "3.12.7" }),
+      JSON.stringify({
+        ...(generation === null
+          ? {}
+          : {
+              schemaVersion: 2,
+              requestId: `envsetup_fixture_${name}`,
+              name,
+              manager: "uv",
+              lockfileFingerprint: "a".repeat(64),
+              packageFingerprint: "b".repeat(64),
+            }),
+        lockRevision: 3,
+        packageCount: 12,
+        version: "3.12.7",
+        ...(generation === null ? {} : { declarationGenerationId: generation }),
+      }),
     );
   return root;
 }
@@ -354,13 +493,19 @@ const stubEnv = (): Record<string, string> =>
  * what the lab is told) rather than a real network resolve. No test here
  * resolves from PyPI.
  */
-function stubUv(lockfile: string): string {
+function stubUv(
+  lockfile: string,
+  options: { invocationLog?: string; failAt?: "compile" | "sync" } = {},
+): string {
   const dir = mkdtempSync(join(tmpdir(), "lyk-runs-uv-"));
   dirs.push(dir);
   writeFileSync(join(dir, "stub-lockfile.txt"), lockfile);
   const script = [
     "#!/bin/sh",
     'here="$(cd "$(dirname "$0")" && pwd)"',
+    ...(options.invocationLog === undefined
+      ? []
+      : [`printf '%s\\n' "$*" >> ${JSON.stringify(options.invocationLog)}`]),
     'if [ "$1" = "venv" ]; then',
     '  target="$2"',
     '  mkdir -p "$target/bin"',
@@ -370,10 +515,16 @@ function stubUv(lockfile: string): string {
     "  exit 0",
     "fi",
     'if [ "$1" = "pip" ] && [ "$2" = "compile" ]; then',
+    ...(options.failAt === "compile"
+      ? ['  echo "stub resolve failed" >&2', "  exit 17"]
+      : []),
     '  cat "$here/stub-lockfile.txt"',
     '  exit 0',
     "fi",
     'if [ "$1" = "pip" ] && [ "$2" = "sync" ]; then',
+    ...(options.failAt === "sync"
+      ? ['  echo "stub install failed" >&2', "  exit 19"]
+      : []),
     '  exit 0',
     "fi",
     'echo "unhandled stub uv invocation: $*" >&2',
@@ -382,6 +533,31 @@ function stubUv(lockfile: string): string {
   ].join("\n");
   writeFileSync(join(dir, "uv"), script);
   chmodSync(join(dir, "uv"), 0o755);
+  return dir;
+}
+
+/** Minimal micromamba replay used to prove the journal checkpoint sits
+ * above both provisioners. The command carries an explicit lock, so no
+ * solver or network access is involved. */
+function stubMicromamba(invocationLog: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "lyk-runs-micromamba-"));
+  dirs.push(dir);
+  const script = [
+    "#!/bin/sh",
+    `printf '%s\\n' "$*" >> ${JSON.stringify(invocationLog)}`,
+    'if [ "$1" = "create" ]; then',
+    '  target="$6"',
+    '  mkdir -p "$target/bin"',
+    "  printf '#!/bin/sh\\necho \"Rscript (R) version 4.4.1 (2024-06-14)\"\\n' > \"$target/bin/Rscript\"",
+    '  chmod +x "$target/bin/Rscript"',
+    "  exit 0",
+    "fi",
+    'echo "unhandled stub micromamba invocation: $*" >&2',
+    "exit 1",
+    "",
+  ].join("\n");
+  writeFileSync(join(dir, "micromamba"), script);
+  chmodSync(join(dir, "micromamba"), 0o755);
   return dir;
 }
 
@@ -407,6 +583,10 @@ function subsystem(
   dataDir: string,
   kernelHost?: () => KernelHost,
   kernelReachMs?: number,
+  environmentSetup?: Pick<
+    Parameters<typeof startRuns>[0],
+    "environmentSetupCheckpoint" | "environmentSetupJournal"
+  >,
 ) {
   const r = startRuns({
     lab: base,
@@ -419,6 +599,7 @@ function subsystem(
     }),
     ...(kernelHost === undefined ? {} : { kernelHost }),
     ...(kernelReachMs === undefined ? {} : { kernelReachMs }),
+    ...environmentSetup,
     extraEnv: stubEnv,
   });
   running.push(r);
@@ -431,6 +612,32 @@ async function until(check: () => boolean, what: string): Promise<void> {
     await new Promise((r) => setTimeout(r, 10));
   }
   throw new Error(`${what} never happened`);
+}
+
+/** Whether a run actually RAN and finished — not merely whether the lab has
+ *  heard anything about it, and not merely whether it ended.
+ *
+ *  Two different false-passes are shut here, and both were live. A turn queued
+ *  behind another publishes a `queued` state frame the moment it is accepted,
+ *  so "this lab has an event for that run id" is true long before the turn has
+ *  done anything at all. And `refuse` ends a run that never reached a session
+ *  with a `completed` frame of its own carrying `state: "failed"` — so a turn
+ *  this machine turned away looks, to a predicate that reads only the event
+ *  name, exactly like a turn that ran to the end. A test whose whole subject
+ *  is what happens DURING a turn has to be able to tell those apart, or it
+ *  goes green on the machine never having got that far. */
+function hasRunToCompletion(
+  lab: { events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }> },
+  runId: string,
+): boolean {
+  return lab.events
+    .filter((post) => post.runId === runId)
+    .flatMap((post) => post.frames)
+    .map((frame) => frame.event)
+    .some(
+      (event): boolean =>
+        event.event === "completed" && event.state.state === "completed",
+    );
 }
 
 /** Every `ahead` a run's `queued` frames have carried, in the order they were
@@ -625,6 +832,14 @@ function stubKernelHost(
      *  session's confinement, not one that has fallen over. */
     refuseConfiguresFor(sessionId: string): void {
       refusingFor.add(sessionId);
+    },
+    /** Undoes both refusals — a host that has come back. What a test needs to
+     *  ask "and afterwards?": a machine that gave up on something the first
+     *  time it was refused looks identical, while it is being refused, to one
+     *  that will try again. */
+    allowConfigures(): void {
+      answering.refusing = false;
+      refusingFor.clear();
     },
     /** Parks every later boundary that names `env` before recording it, so a
      *  test can hold one re-send's arrival open while another runs to
@@ -896,6 +1111,49 @@ it("hands over nothing for a declared environment this machine has only half bui
   // Declared, so the host can say "not built here yet" rather than "no such
   // environment" — and offered by nobody, so it cannot be started.
   expect(configured.declared).toEqual(["crispr"]);
+  expect(configured.environments.map((entry) => entry.name)).toEqual(["python"]);
+});
+
+it("keeps stale and generationless ready markers declared but unbuilt in kernel configuration", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  lab.kernelEnvDeclarations.list = [
+    {
+      name: "stale",
+      language: "python",
+      manager: "uv",
+      packages: ["numpy"],
+      createdTs: 2,
+      lockRevision: 3,
+      declarationGenerationId: "envgen_current_stale",
+    },
+    {
+      name: "missing",
+      language: "python",
+      manager: "uv",
+      packages: ["numpy"],
+      createdTs: 3,
+      lockRevision: 3,
+      declarationGenerationId: "envgen_current_missing",
+    },
+  ];
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const workDir = `${data}-work`;
+  dirs.push(workDir);
+  envOnDisk(workDir, "stale", true, undefined, "envgen_previous_stale");
+  envOnDisk(workDir, "missing", true, undefined, null);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_generation_marker_gate"));
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    declared?: string[];
+    environments: Array<{ name: string }>;
+  };
+  expect(configured.declared).toEqual(["stale", "missing"]);
   expect(configured.environments.map((entry) => entry.name)).toEqual(["python"]);
 });
 
@@ -1793,6 +2051,257 @@ it("still confines a session when the lab will not say what it has declared", as
   expect(params.mcpServers.map((server) => server.name)).toEqual(["notebook"]);
 });
 
+it("hands the host this Research's default, clearing the floor's own and marking what it names", async () => {
+  // The soft default's whole shape on this side of the wire. A Research that
+  // has confirmed one is naming which environment an unaddressed cell of
+  // that language lands in, and the machine's own floor no longer gets to
+  // answer that question — otherwise the researcher confirms `python-3-13`
+  // and every cell they do not address keeps running in whatever this
+  // machine happened to discover first.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    { language: "python", environment: "python", interpreter: "/usr/bin/python3", reads: [] },
+    {
+      language: "python",
+      environment: "python-3-13",
+      interpreter: "/usr/local/bin/python3.13",
+      reads: [],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send({
+    ...startRunOn("run_research_default"),
+    environmentDefaults: [{ language: "python", environmentName: "python-3-13" }],
+  });
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    defaults?: Record<string, string>;
+    environments: Array<{ name: string; default?: boolean }>;
+  };
+  expect(configured.defaults).toEqual({ python: "python-3-13" });
+  expect(
+    configured.environments.map((entry) => ({ name: entry.name, default: entry.default === true })),
+  ).toEqual([
+    { name: "python", default: false },
+    { name: "python-3-13", default: true },
+  ]);
+});
+
+it("tells a session already open about a default confirmed since it opened", async () => {
+  // The moment the whole soft default turns on, and the one a captured copy
+  // would miss. A researcher confirms the default only AFTER the build that
+  // suggested it — which is after the session that asked for the environment
+  // was configured — so the first turn carrying that answer arrives on a
+  // conversation this machine has had open the whole time. Without this the
+  // confirmed default reaches the host on no turn of this Task at all, and a
+  // cell that names nothing goes on landing wherever the machine's own floor
+  // put it.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    { language: "python", environment: "python", interpreter: "/usr/bin/python3", reads: [] },
+    {
+      language: "python",
+      environment: "python-3-13",
+      interpreter: "/usr/local/bin/python3.13",
+      reads: [],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send(startRunOn("run_before_default"));
+  await until(() => kernels.configurations.length === 1, "the first boundary");
+
+  lab.send({
+    ...startRunOn("run_after_default"),
+    environmentDefaults: [{ language: "python", environmentName: "python-3-13" }],
+  });
+  await until(() => kernels.configurations.length === 2, "the second boundary");
+
+  const second = kernels.configurations[1]! as {
+    session_id: string;
+    defaults?: Record<string, string>;
+    environments: Array<{ name: string; default?: boolean }>;
+  };
+  // The same session, re-described — not a new one, which would have cost the
+  // researcher the notebook state the conversation was carrying.
+  expect(second.session_id).toBe("se_1");
+  expect(second.defaults).toEqual({ python: "python-3-13" });
+  expect(second.environments.find((entry) => entry.name === "python-3-13")?.default).toBe(true);
+
+  // And a third turn saying the same thing costs no round trip at all: the
+  // host already holds this, and re-sending it every turn would be a message
+  // per turn of every conversation on this machine.
+  lab.send({
+    ...startRunOn("run_same_default"),
+    environmentDefaults: [{ language: "python", environmentName: "python-3-13" }],
+  });
+  await until(
+    () => hasRunToCompletion(lab, "run_same_default"),
+    "the third turn running to the end",
+  );
+  expect(kernels.configurations.length).toBe(2);
+});
+
+it("still owes the default on the next turn when the host would not take it on this one", async () => {
+  // What "degraded rather than fatal" has to mean. A host that refuses one
+  // re-describe leaves the session resolving unaddressed cells the old way —
+  // that is the accepted cost. What is NOT acceptable is this machine
+  // recording the delivery anyway: every later turn would then compare equal,
+  // skip the re-describe, and the confirmed default would never reach the
+  // host again for the whole life of that session. The record is written by
+  // `configure` on success and by nothing else, so a refusal leaves the
+  // default still owed.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    { language: "python", environment: "python", interpreter: "/usr/bin/python3", reads: [] },
+    {
+      language: "python",
+      environment: "python-3-13",
+      interpreter: "/usr/local/bin/python3.13",
+      reads: [],
+    },
+  ]);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send(startRunOn("run_owed_before"));
+  await until(() => kernels.configurations.length === 1, "the first boundary");
+
+  // The host loses this session's confinement between turns.
+  kernels.refuseConfiguresFor("se_1");
+  lab.send({
+    ...startRunOn("run_owed_refused"),
+    environmentDefaults: [{ language: "python", environmentName: "python-3-13" }],
+  });
+  // The turn runs anyway — a boundary this machine could not re-send must not
+  // cost the researcher the work. Run to COMPLETION, not merely ended: a
+  // refusal ends a turn too, and one would mean this machine had turned the
+  // turn away rather than carried it through without the new default.
+  await until(
+    () => hasRunToCompletion(lab, "run_owed_refused"),
+    "the turn whose re-describe was refused running to the end",
+  );
+  expect(kernels.configurations.length).toBe(1);
+
+  kernels.allowConfigures();
+  lab.send({
+    ...startRunOn("run_owed_after"),
+    environmentDefaults: [{ language: "python", environmentName: "python-3-13" }],
+  });
+  await until(() => kernels.configurations.length === 2, "the boundary owed since the refusal");
+
+  const delivered = kernels.configurations[1]! as {
+    session_id: string;
+    defaults?: Record<string, string>;
+  };
+  expect(delivered.session_id).toBe("se_1");
+  expect(delivered.defaults).toEqual({ python: "python-3-13" });
+});
+
+it("gives up on a wedged host rather than holding the turn and everything behind it", async () => {
+  // The re-describe sits on turn admission and `runTurn` is chained on
+  // `turnQueues`, so an unbounded wait here is not one slow turn — it is that
+  // turn never ending and every later turn on the session queued behind it,
+  // with no ending and no event for any of them. `host.call` settles only on
+  // a reply or on host death, so a host that is alive and wedged produces
+  // exactly that. The deadline is what turns it back into one turn that
+  // resolves cells the old way.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0, PROTOCOL_VERSION, [
+    { language: "python", environment: "python", interpreter: "/usr/bin/python3", reads: [] },
+    {
+      language: "python",
+      environment: "python-3-13",
+      interpreter: "/usr/local/bin/python3.13",
+      reads: [],
+    },
+  ]);
+  // A short reach deadline so the wedged wait below is observable in a test
+  // rather than in ninety seconds. It bounds this daemon's every configure,
+  // which is why the first turn's own boundary is waited for explicitly
+  // before anything is wedged.
+  subsystem(lab.base, data, () => kernels.host, 500);
+  await until(() => lab.commandConnected(), "the command stream");
+
+  lab.send(startRunOn("run_wedged_before"));
+  await until(() => kernels.configurations.length === 1, "the first boundary");
+
+  // Answers nothing from here on: the barrier waits for a second boundary
+  // that this test never sends, so the re-describe below is handed to a host
+  // that is alive and will not reply.
+  kernels.barrierAt(2);
+  lab.send({
+    ...startRunOn("run_wedged"),
+    environmentDefaults: [{ language: "python", environmentName: "python-3-13" }],
+  });
+
+  // Sent while the wedged turn is still inside its re-describe, so it really
+  // does queue behind it on `turnQueues` — which is the half of the harm that
+  // is about more than one turn. Sent after the wait instead, it would join an
+  // empty queue and prove nothing about being stuck behind anything.
+  lab.send(startRunOn("run_behind_wedged"));
+
+  await until(
+    () => hasRunToCompletion(lab, "run_wedged"),
+    "the wedged turn running to the end rather than hanging",
+  );
+  await until(
+    () => hasRunToCompletion(lab, "run_behind_wedged"),
+    "the turn queued behind the wedged one running to the end too",
+  );
+  // Read back rather than assumed from the send order: this turn was told it
+  // had something in front of it, which is what "behind the wedged one"
+  // means. Without it, a send that happened to land on an empty queue would
+  // prove only that a lone turn can run.
+  expect(queuedPositions(lab, "run_behind_wedged")).toContain(1);
+});
+
+it("keeps a Research default this machine has not built, so the refusal can still name it", async () => {
+  // The unbuilt case, and the reason the map is sent separately from the
+  // entries at all. A Research whose R default is not built here still HAS
+  // that default: the cell resolves to `meta-analysis-r` and is refused by
+  // name, which is a sentence a researcher can act on. Dropped for want of a
+  // matching entry, the same cell would be refused as a session with no R
+  // environment — true of the machine, and useless about the work.
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ endTurn: "end_turn" }]);
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send({
+    ...startRunOn("run_unbuilt_default"),
+    environmentDefaults: [{ language: "r", environmentName: "meta-analysis-r" }],
+  });
+
+  await until(() => kernels.configured !== undefined, "the boundary landing");
+  const configured = kernels.configured as unknown as {
+    defaults?: Record<string, string>;
+    environments: Array<{ name: string; default?: boolean }>;
+  };
+  expect(configured.defaults).toEqual({ r: "meta-analysis-r" });
+  expect(configured.environments.some((entry) => entry.name === "meta-analysis-r")).toBe(false);
+  // And python is untouched: this Research said nothing about it, so the
+  // machine's own floor still answers for a cell that names none.
+  expect(configured.environments.find((entry) => entry.name === "python")?.default).toBe(true);
+});
+
 it("leaves the declaration list absent when the lab's answer cannot be read", async () => {
   // The same failure as the test above, wearing a 200. A proxy's error page,
   // a truncated body, a `declarations` that is not a list — none of them is
@@ -2121,7 +2630,7 @@ it("retires a local run the rebuilt server reports already terminal", async () =
         const report = parsed.runIds ?? [];
         liveReports.push(report);
         res.end(JSON.stringify(
-          liveReports.length === 2
+          report.includes("run_migrated_terminal")
             ? { retireRunIds: ["run_migrated_terminal"] }
             : {},
         ));
@@ -2137,12 +2646,289 @@ it("retires a local run the rebuilt server reports already terminal", async () =
       resolve(typeof address === "object" && address ? address.port : 0);
     });
   });
-  subsystem(`http://127.0.0.1:${port}`, data);
+  const r = startRuns({
+    lab: `http://127.0.0.1:${port}`,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () => undefined,
+  });
+  running.push(r);
 
-  await until(() => liveReports.length >= 3, "the post-retirement live report");
+  await until(() => liveReports.length >= 3, "the post-close retirement reconciliation");
   await new Promise((resolve) => setTimeout(resolve, 350));
   expect(liveReports[1]).toContain("run_migrated_terminal");
-  expect(liveReports[2]).toEqual([]);
+  // The response at index 1 initiated physical close, so it cannot also be
+  // the post-close watermark. The next request reports the exact identity
+  // once more; only its successful retirement echo allows bounded cleanup.
+  expect(liveReports[2]).toContain("run_migrated_terminal");
+  r.adaptersChanged();
+  await until(() => liveReports.length >= 4, "the cleaned live report");
+  expect(liveReports.at(-1)).toEqual([]);
+  expect(existsSync(promptMarker)).toBe(false);
+  finalStream?.end();
+});
+
+it("never resurrects a retired deferred run when an adapter later appears", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ emit: "echo_prompt" }, { endTurn: "end_turn" }]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const promptMarker = markerIn(data, "retired-deferred-prompt");
+  process.env.LYKEION_STUB_PROMPT_MARKER = promptMarker;
+  const liveReports: Array<{ runIds: string[]; commandCursor?: number }> = [];
+  let commandConnections = 0;
+  let finalStream: import("node:http").ServerResponse | undefined;
+  const command = {
+    type: "start-run",
+    runId: "run_retired_deferred",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_retired_deferred",
+    agent: "claude",
+    prompt: "this command must remain retired",
+    grants: [],
+  };
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      commandConnections += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (commandConnections === 1) {
+        res.write(`event: command\ndata: ${JSON.stringify({ seq: 1, command })}\n\n`);
+        res.end();
+      } else if (commandConnections === 2) {
+        res.end();
+      } else {
+        finalStream = res;
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as { runIds?: string[]; commandCursor?: number };
+      res.writeHead(200, { "content-type": "application/json" });
+      if (req.url === "/daemon/run/live") {
+        liveReports.push({
+          runIds: parsed.runIds ?? [],
+          ...(parsed.commandCursor === undefined ? {} : { commandCursor: parsed.commandCursor }),
+        });
+        res.end(JSON.stringify(
+          parsed.runIds?.includes(command.runId)
+            ? { retireRunIds: [command.runId] }
+            : {},
+        ));
+      } else {
+        res.end("{}");
+      }
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  let available = false;
+  const r = startRuns({
+    lab: `http://127.0.0.1:${port}`,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () =>
+      available
+        ? { command: process.execPath, args: ["--experimental-strip-types", STUB] }
+        : undefined,
+    extraEnv: stubEnv,
+  });
+  running.push(r);
+
+  await until(
+    () => liveReports.some((report) => report.runIds.includes(command.runId)),
+    "the deferred identity to be reported live",
+  );
+  await until(
+    () => liveReports.some((report) => report.commandCursor === 1 && report.runIds.length === 0),
+    "the retired identity to disappear from the next live report",
+  );
+  available = true;
+  r.adaptersChanged();
+  finalStream?.write(`event: command\ndata: ${JSON.stringify({ seq: 2, command })}\n\n`);
+  await new Promise((resolve) => setTimeout(resolve, 350));
+
+  expect(existsSync(promptMarker)).toBe(false);
+  finalStream?.end();
+});
+
+it("does not retry deferred work until the current live reconciliation has retired it", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { emit: "echo_prompt" },
+    { endTurn: "end_turn" },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const promptMarker = markerIn(data, "reconciliation-gated-prompt");
+  process.env.LYKEION_STUB_PROMPT_MARKER = promptMarker;
+  const command = {
+    type: "start-run",
+    runId: "run_reconciliation_gated",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_reconciliation_gated",
+    agent: "claude",
+    prompt: "must be retired before capability retry",
+    grants: [],
+  };
+  let commandConnections = 0;
+  let retirementResponse: import("node:http").ServerResponse | undefined;
+  let retirementRequestSeen = false;
+  let finalStream: import("node:http").ServerResponse | undefined;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      commandConnections += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (commandConnections === 1) {
+        res.write(`event: command\ndata: ${JSON.stringify({ seq: 1, command })}\n\n`);
+        res.end();
+      } else {
+        finalStream = res;
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as { runIds?: string[] };
+      if (req.url === "/daemon/run/live" && parsed.runIds?.includes(command.runId)) {
+        retirementRequestSeen = true;
+        retirementResponse = res;
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  let available = false;
+  const r = startRuns({
+    lab: `http://127.0.0.1:${port}`,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () =>
+      available
+        ? { command: process.execPath, args: ["--experimental-strip-types", STUB] }
+        : undefined,
+    extraEnv: stubEnv,
+  });
+  running.push(r);
+
+  await until(() => retirementRequestSeen, "the delayed live reconciliation");
+  available = true;
+  r.adaptersChanged();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(existsSync(promptMarker)).toBe(false);
+
+  retirementResponse!.writeHead(200, { "content-type": "application/json" });
+  retirementResponse!.end(JSON.stringify({ retireRunIds: [command.runId] }));
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(existsSync(promptMarker)).toBe(false);
+  finalStream?.end();
+});
+
+it("keeps deferred work gated after a lost retirement response until a later reconciliation succeeds", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { emit: "echo_prompt" },
+    { endTurn: "end_turn" },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const promptMarker = markerIn(data, "lost-reconciliation-gated-prompt");
+  process.env.LYKEION_STUB_PROMPT_MARKER = promptMarker;
+  const command = {
+    type: "start-run",
+    runId: "run_lost_reconciliation_gated",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_lost_reconciliation_gated",
+    agent: "claude",
+    prompt: "must remain retired after a lost response",
+    grants: [],
+  };
+  let commandConnections = 0;
+  let lostRetirementResponse = false;
+  let laterSuccessfulResponse: import("node:http").ServerResponse | undefined;
+  let finalStream: import("node:http").ServerResponse | undefined;
+  let available = false;
+  let r!: RunSubsystem;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      commandConnections += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (commandConnections === 1) {
+        res.write(`event: command\ndata: ${JSON.stringify({ seq: 1, command })}\n\n`);
+        res.end();
+      } else {
+        finalStream = res;
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as { runIds?: string[] };
+      if (req.url === "/daemon/run/live" && parsed.runIds?.includes(command.runId)) {
+        if (!lostRetirementResponse) {
+          // The durable server processed the retirement, but the response was
+          // reset before the daemon could apply it. Capability appearing in
+          // this window must not turn response loss into permission to prompt.
+          lostRetirementResponse = true;
+          available = true;
+          queueMicrotask(() => r.adaptersChanged());
+          res.destroy();
+          return;
+        }
+        laterSuccessfulResponse = res;
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  r = startRuns({
+    lab: `http://127.0.0.1:${port}`,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () =>
+      available
+        ? { command: process.execPath, args: ["--experimental-strip-types", STUB] }
+        : undefined,
+    extraEnv: stubEnv,
+  });
+  running.push(r);
+
+  await until(() => lostRetirementResponse, "the processed retirement response to be lost");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(existsSync(promptMarker)).toBe(false);
+
+  await until(() => laterSuccessfulResponse !== undefined, "the later reconciliation attempt");
+  laterSuccessfulResponse!.writeHead(200, { "content-type": "application/json" });
+  laterSuccessfulResponse!.end(JSON.stringify({ retireRunIds: [command.runId] }));
+  await new Promise((resolve) => setTimeout(resolve, 250));
   expect(existsSync(promptMarker)).toBe(false);
   finalStream?.end();
 });
@@ -2226,6 +3012,302 @@ it("closes a retired active child before releasing its same-session successor", 
   finalStream?.end();
 });
 
+it("keeps an active turn exact after more than the bounded terminal-history horizon", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ wait: "cancel", timeoutMs: 10_000 }]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const promptMarker = markerIn(data, "active-turn-prompt");
+  process.env.LYKEION_STUB_PROMPT_MARKER = promptMarker;
+  let commandStream: import("node:http").ServerResponse | undefined;
+  const events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }> = [];
+  const command = {
+    type: "start-run",
+    runId: "run_active_beyond_history",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_active_beyond_history",
+    agent: "claude",
+    prompt: "execute exactly once",
+    grants: [],
+  };
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      commandStream = res;
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as typeof events[number];
+      if (req.url === "/daemon/run/events") events.push(parsed);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  subsystem(`http://127.0.0.1:${port}`, data);
+  await until(() => commandStream !== undefined, "the command stream");
+  commandStream!.write(`event: command\ndata: ${JSON.stringify({ seq: 1, command })}\n\n`);
+  await until(() => existsSync(promptMarker), "the active prompt");
+
+  for (let index = 0; index < 1_001; index += 1) {
+    commandStream!.write(`event: command\ndata: ${JSON.stringify({
+      seq: index + 2,
+      command: { type: "start-run", runId: `run_historical_${index}` },
+    })}\n\n`);
+  }
+  commandStream!.write(`event: command\ndata: ${JSON.stringify({ seq: 1_003, command })}\n\n`);
+  commandStream!.write(`event: command\ndata: ${JSON.stringify({
+    seq: 1_004,
+    command: { type: "cancel", runId: command.runId },
+  })}\n\n`);
+
+  await until(
+    () => events.some((post) =>
+      post.runId === command.runId &&
+      post.frames.some((frame) => frame.event.event === "completed"),
+    ),
+    "the active turn to be cancelled",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(readFileSync(promptMarker, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(1);
+  commandStream?.end();
+}, 15_000);
+
+it("keeps a released run exact through failed post-close reconciliation beyond history", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ wait: "cancel", timeoutMs: 10_000 }]);
+  process.env.LYKEION_STUB_EXIT_DELAY_MS = "800";
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const promptMarker = markerIn(data, "releasing-run-prompt");
+  const exitMarker = markerIn(data, "releasing-run-exited");
+  process.env.LYKEION_STUB_PROMPT_MARKER = promptMarker;
+  process.env.LYKEION_STUB_EXIT_MARKER = exitMarker;
+  let commandStream: import("node:http").ServerResponse | undefined;
+  let conflicted = false;
+  let retirementAnswered = false;
+  let lastHistoryPosted = false;
+  let postCloseReconciliationLost = false;
+  let postCloseReconciliationApplied = false;
+  let r!: RunSubsystem;
+  const command = {
+    type: "start-run",
+    runId: "run_releasing_beyond_history",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_releasing_beyond_history",
+    agent: "claude",
+    prompt: "execute exactly once while the old child closes",
+    grants: [],
+  };
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      commandStream = res;
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as { runId?: string };
+      if (req.url === "/daemon/run/events" && parsed.runId === "run_release_history_1000")
+        lastHistoryPosted = true;
+      if (req.url === "/daemon/run/live" && conflicted && !retirementAnswered) {
+        retirementAnswered = true;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ retireRunIds: [command.runId] }));
+        return;
+      }
+      if (req.url === "/daemon/run/live" && retirementAnswered && existsSync(exitMarker)) {
+        if (!postCloseReconciliationLost) {
+          postCloseReconciliationLost = true;
+          res.destroy();
+          return;
+        }
+        postCloseReconciliationApplied = true;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ retireRunIds: [command.runId] }));
+        return;
+      }
+      if (req.url === "/daemon/run/events" && parsed.runId === command.runId && !conflicted) {
+        conflicted = true;
+        // Start retirement reconciliation before the 409 reaches the daemon
+        // and begins physical close. Its eventual success cannot stand in
+        // for the post-close report required to release exact identity.
+        queueMicrotask(() => r.adaptersChanged());
+        res.writeHead(409, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "the durable run is already terminal" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  r = subsystem(`http://127.0.0.1:${port}`, data);
+  await until(() => commandStream !== undefined, "the command stream");
+  commandStream!.write(`event: command\ndata: ${JSON.stringify({ seq: 1, command })}\n\n`);
+  await until(
+    () => conflicted && retirementAnswered && existsSync(promptMarker),
+    "the run to enter delayed reconciled release",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  for (let index = 0; index < 1_001; index += 1) {
+    commandStream!.write(`event: command\ndata: ${JSON.stringify({
+      seq: index + 2,
+      command: { type: "start-run", runId: `run_release_history_${index}` },
+    })}\n\n`);
+  }
+  await until(() => lastHistoryPosted, "the newer history to be processed during release");
+  await until(() => existsSync(exitMarker), "the delayed child to exit");
+  await until(() => postCloseReconciliationLost, "the post-close reconciliation response to be lost");
+
+  commandStream!.write(`event: command\ndata: ${JSON.stringify({ seq: 1_003, command })}\n\n`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(readFileSync(promptMarker, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(1);
+
+  await until(() => postCloseReconciliationApplied, "the later post-close reconciliation to apply");
+  commandStream?.end();
+}, 20_000);
+
+it("keeps a cancelled-unacknowledged run exact while its subprocess may still be alive", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ sleep: 2_000 }, { endTurn: "end_turn" }]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const promptMarker = markerIn(data, "cancelled-unacknowledged-replay-prompt");
+  process.env.LYKEION_STUB_PROMPT_MARKER = promptMarker;
+  const lab = await stubLab([]);
+  const command = {
+    type: "start-run",
+    runId: "run_cancelled_unack_beyond_history",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_cancelled_unack_beyond_history",
+    agent: "claude",
+    prompt: "execute once while the abandoned prompt is outstanding",
+    grants: [],
+  };
+  const r = startRuns({
+    lab: lab.base,
+    token: "machine-token",
+    workDir: `${data}-work`,
+    dataDir: data,
+    cancelGraceMs: 20,
+    adapterFor: () => ({ command: process.execPath, args: ["--experimental-strip-types", STUB] }),
+    extraEnv: stubEnv,
+  });
+  running.push(r);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(command);
+  await until(() => existsSync(promptMarker), "the first prompt");
+  lab.send({ type: "cancel", runId: command.runId });
+  await until(
+    () => lab.events.some((post) =>
+      post.runId === command.runId &&
+      post.frames.some((frame) =>
+        frame.event.event === "completed" &&
+        frame.event.state.state === "cancelled" &&
+        frame.event.state.unacknowledged,
+      ),
+    ),
+    "the unacknowledged cancellation",
+  );
+
+  for (let index = 0; index < 1_001; index += 1)
+    lab.send({ type: "start-run", runId: `run_cancelled_unack_history_${index}` });
+  lab.send(command);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  expect(readFileSync(promptMarker, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(1);
+}, 15_000);
+
+it("keeps a terminal frame awaiting acknowledgement exact beyond the history horizon", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { emit: "echo_prompt" },
+    { endTurn: "end_turn" },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const promptMarker = markerIn(data, "unacknowledged-terminal-prompt");
+  process.env.LYKEION_STUB_PROMPT_MARKER = promptMarker;
+  let commandStream: import("node:http").ServerResponse | undefined;
+  let heldTerminal: import("node:http").ServerResponse | undefined;
+  const command = {
+    type: "start-run",
+    runId: "run_terminal_awaiting_ack",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_terminal_awaiting_ack",
+    agent: "claude",
+    prompt: "execute once while the terminal frame is held",
+    grants: [],
+  };
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      commandStream = res;
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as {
+        runId?: string;
+        frames?: Array<{ event: RunEvent }>;
+      };
+      if (
+        req.url === "/daemon/run/events" &&
+        parsed.runId === command.runId &&
+        parsed.frames?.some((frame) => frame.event.event === "completed")
+      ) {
+        heldTerminal = res;
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  subsystem(`http://127.0.0.1:${port}`, data);
+  await until(() => commandStream !== undefined, "the command stream");
+  commandStream!.write(`event: command\ndata: ${JSON.stringify({ seq: 1, command })}\n\n`);
+  await until(() => heldTerminal !== undefined, "the unacknowledged terminal frame");
+
+  for (let index = 0; index < 1_001; index += 1) {
+    commandStream!.write(`event: command\ndata: ${JSON.stringify({
+      seq: index + 2,
+      command: { type: "start-run", runId: `run_terminal_history_${index}` },
+    })}\n\n`);
+  }
+  commandStream!.write(`event: command\ndata: ${JSON.stringify({ seq: 1_003, command })}\n\n`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  expect(readFileSync(promptMarker, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(1);
+  heldTerminal!.writeHead(200, { "content-type": "application/json" });
+  heldTerminal!.end("{}");
+  commandStream?.end();
+}, 15_000);
+
 it("takes a start-run command and posts the turn's events back", async () => {
   process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ emit: "agent_message_chunk", text: "hi" }]);
   const lab = await stubLab([
@@ -2255,23 +3337,777 @@ it("takes a start-run command and posts the turn's events back", async () => {
   expect(new Set(frames.map((f) => f.seq)).size).toBe(frames.length);
 });
 
-it("refuses a start-run for an agent this machine has no adapter for", async () => {
+it("keeps an unavailable start-run identity replayable and starts it once capability appears", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { emit: "agent_message_chunk", text: "continued once" },
+    { endTurn: "end_turn" },
+  ]);
   const lab = await stubLab([
-    { type: "start-run", runId: "run_2", studyId: "s_cmp", sessionId: "se_2", agent: "nope", prompt: "go", grants: [] },
+    { type: "start-run", runId: "run_2", studyId: "s_cmp", taskId: "t_cmp", sessionId: "se_2", agent: "claude", prompt: "go", grants: [] },
   ]);
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
-  const r = startRuns({ lab: lab.base, token: "t", workDir: `${data}-work`, dataDir: data, adapterFor: () => undefined });
+  let available = false;
+  const r = startRuns({
+    lab: lab.base,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () =>
+      available
+        ? { command: process.execPath, args: ["--experimental-strip-types", STUB] }
+        : undefined,
+    extraEnv: stubEnv,
+  });
   running.push(r);
+  await until(() => lab.commandConnected(), "the command stream");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(lab.events).toEqual([]);
+
+  available = true;
+  r.adaptersChanged();
+  r.adaptersChanged();
   await until(
     () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
-    "a refusal",
+    "the deferred turn",
   );
-  const done = lab.events
-    .flatMap((e) => e.frames)
-    .find((f) => f.event.event === "completed") as { event: { state: { state: string; reason?: string } } };
-  expect(done.event.state.state).toBe("failed");
-  expect(done.event.state.reason).toMatch(/nope/);
+  const frames = lab.events.flatMap((e) => e.frames);
+  expect(frames.filter((f) => f.event.event === "assistant-text")).toHaveLength(1);
+  expect(frames.filter((f) => f.event.event === "completed")).toHaveLength(1);
+});
+
+it("preserves the first exact deferred command when its run id is delivered twice", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { emit: "echo_prompt" },
+    { endTurn: "end_turn" },
+  ]);
+  const first = {
+    type: "start-run",
+    runId: "run_duplicate_deferred",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_duplicate_deferred",
+    agent: "claude",
+    prompt: "first exact command",
+    grants: [],
+  };
+  const lab = await stubLab([first, { ...first, prompt: "overwriting duplicate" }]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  let available = false;
+  const r = startRuns({
+    lab: lab.base,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () =>
+      available
+        ? { command: process.execPath, args: ["--experimental-strip-types", STUB] }
+        : undefined,
+    extraEnv: stubEnv,
+  });
+  running.push(r);
+  await until(() => lab.commandConnected(), "the command stream");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  available = true;
+  r.adaptersChanged();
+  await until(
+    () => lab.events.some((post) => post.frames.some((frame) => frame.event.event === "completed")),
+    "the first exact deferred command",
+  );
+
+  const assistant = lab.events
+    .flatMap((post) => post.frames)
+    .filter((frame) => frame.event.event === "assistant-text")
+    .map((frame) => frame.event.event === "assistant-text" ? frame.event.text : "");
+  expect(assistant).toEqual(["first exact command"]);
+});
+
+it("backpressures deferred capacity without advancing the rejected command cursor", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { emit: "echo_prompt" },
+    { endTurn: "end_turn" },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const commands = Array.from({ length: 1_001 }, (_, index) => ({
+    seq: index + 1,
+    command: {
+      type: "start-run",
+      runId: `run_deferred_capacity_${index + 1}`,
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: `se_deferred_capacity_${index + 1}`,
+      agent: index === 1_000 ? "claude" : "held-back",
+      prompt: index === 1_000 ? "the exact command after capacity frees" : `held ${index + 1}`,
+      grants: [],
+    },
+  }));
+  const reports: Array<{ runIds: string[]; commandCursor?: number }> = [];
+  const events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }> = [];
+  let finalStream: import("node:http").ServerResponse | undefined;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const cursor = Number(new URL(req.url, "http://127.0.0.1").searchParams.get("cursor") ?? 0);
+      if (cursor < 1_001) {
+        for (const frame of commands.slice(cursor))
+          res.write(`event: command\ndata: ${JSON.stringify(frame)}\n\n`);
+        res.end();
+      } else {
+        finalStream = res;
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as {
+        runIds?: string[];
+        commandCursor?: number;
+        runId?: string;
+        frames?: Array<{ seq: number; event: RunEvent }>;
+      };
+      res.writeHead(200, { "content-type": "application/json" });
+      if (req.url === "/daemon/run/live") {
+        reports.push({
+          runIds: parsed.runIds ?? [],
+          ...(parsed.commandCursor === undefined ? {} : { commandCursor: parsed.commandCursor }),
+        });
+        res.end(JSON.stringify(
+          parsed.commandCursor === 1_000
+            ? { retireRunIds: ["run_deferred_capacity_1"] }
+            : {},
+        ));
+      } else {
+        if (req.url === "/daemon/run/events") {
+          events.push(parsed as typeof events[number]);
+        }
+        res.end("{}");
+      }
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  let available = false;
+  const r = startRuns({
+    lab: `http://127.0.0.1:${port}`,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: (agent) =>
+      available && agent === "claude"
+        ? { command: process.execPath, args: ["--experimental-strip-types", STUB] }
+        : undefined,
+    extraEnv: stubEnv,
+  });
+  running.push(r);
+
+  await until(
+    () => reports.some((report) => report.commandCursor === 1_001),
+    "the post-capacity command to be accepted after reconnect",
+  );
+  const full = reports.find((report) => report.commandCursor === 1_000);
+  expect(full).toBeDefined();
+  expect(full!.runIds).toHaveLength(1_000);
+  expect(full!.runIds).toContain("run_deferred_capacity_1");
+  expect(full!.runIds).not.toContain("run_deferred_capacity_1001");
+  const afterRetirement = reports.find((report) => report.commandCursor === 1_001)!;
+  expect(afterRetirement.runIds).not.toContain("run_deferred_capacity_1");
+  expect(afterRetirement.runIds).toContain("run_deferred_capacity_1001");
+
+  available = true;
+  r.adaptersChanged();
+  await until(
+    () => events.some((post) =>
+      post.runId === "run_deferred_capacity_1001" &&
+      post.frames.some((frame) => frame.event.event === "completed"),
+    ),
+    "the exact rejected command to start after capacity frees",
+  );
+  const exactFrames = events
+    .filter((post) => post.runId === "run_deferred_capacity_1001")
+    .flatMap((post) => post.frames);
+  expect(exactFrames.filter((frame) => frame.event.event === "assistant-text"))
+    .toHaveLength(1);
+  expect(exactFrames.filter((frame) => frame.event.event === "completed"))
+    .toHaveLength(1);
+  finalStream?.end();
+});
+
+it("looks past a capacity-blocked start only far enough to apply a replay-safe cancellation", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const frames = Array.from({ length: 1_001 }, (_, index) => ({
+    seq: index + 1,
+    command: {
+      type: "start-run",
+      runId: `run_hol_${index + 1}`,
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: `se_hol_${index + 1}`,
+      agent: "held-back",
+      prompt: `held ${index + 1}`,
+      grants: [],
+    },
+  }));
+  const cancelFrame = {
+    seq: 1_002,
+    command: { type: "cancel", runId: "run_hol_1" },
+  };
+  const reports: Array<{ runIds: string[]; commandCursor?: number }> = [];
+  const events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }> = [];
+  let finalStream: import("node:http").ServerResponse | undefined;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const cursor = Number(new URL(req.url, "http://127.0.0.1").searchParams.get("cursor") ?? 0);
+      if (cursor < cancelFrame.seq) {
+        for (const frame of frames.slice(cursor))
+          res.write(`event: command\ndata: ${JSON.stringify(frame)}\n\n`);
+        // The duplicate is the crash-window replay: applying this exact
+        // idempotent control twice must be harmless, and must not skip its
+        // one durable completion frame or move the cursor past a command
+        // that was never accepted.
+        setTimeout(() => {
+          if (res.destroyed) return;
+          res.write(`event: command\ndata: ${JSON.stringify(cancelFrame)}\n\n`);
+          res.write(`event: command\ndata: ${JSON.stringify(cancelFrame)}\n\n`);
+          res.end();
+        }, 25);
+      } else if (reports.at(-1)?.runIds.includes("run_hol_1")) {
+        // The cancellation frame can still be in flight on the first report
+        // carrying cursor 1002. Reconnect once more to observe its durable
+        // acknowledgement release the terminal identity.
+        res.end();
+      } else {
+        finalStream = res;
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as {
+        runIds?: string[];
+        commandCursor?: number;
+        runId?: string;
+        frames?: Array<{ seq: number; event: RunEvent }>;
+      };
+      if (req.url === "/daemon/run/live") {
+        reports.push({
+          runIds: parsed.runIds ?? [],
+          ...(parsed.commandCursor === undefined ? {} : { commandCursor: parsed.commandCursor }),
+        });
+      }
+      if (req.url === "/daemon/run/events") events.push(parsed as typeof events[number]);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  const r = startRuns({
+    lab: `http://127.0.0.1:${port}`,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () => undefined,
+    extraEnv: stubEnv,
+  });
+  running.push(r);
+
+  await until(
+    () => reports.some((report) =>
+      report.commandCursor === cancelFrame.seq && !report.runIds.includes("run_hol_1"),
+    ),
+    "the blocked start and cancellation to be committed contiguously",
+  );
+  const settled = reports.find((report) =>
+    report.commandCursor === cancelFrame.seq && !report.runIds.includes("run_hol_1"),
+  )!;
+  expect(settled.runIds).toHaveLength(1_000);
+  expect(settled.runIds).not.toContain("run_hol_1");
+  expect(settled.runIds).toContain("run_hol_1001");
+  const cancellationFrames = events
+    .filter((post) => post.runId === "run_hol_1")
+    .flatMap((post) => post.frames)
+    .filter((frame) => frame.event.event === "completed");
+  expect(cancellationFrames).toHaveLength(1);
+  finalStream?.end();
+}, 15_000);
+
+it("authoritatively cancels the capacity-blocked start itself and advances the cursor", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const starts = Array.from({ length: 1_001 }, (_, index) => ({
+    seq: index + 1,
+    command: {
+      type: "start-run",
+      runId: `run_blocked_target_${index + 1}`,
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: `se_blocked_target_${index + 1}`,
+      agent: "held-back",
+      prompt: `held ${index + 1}`,
+      grants: [],
+    },
+  }));
+  const cancel = { seq: 1_002, command: { type: "cancel", runId: "run_blocked_target_1001" } };
+  const reports: Array<{ runIds: string[]; commandCursor?: number }> = [];
+  const events: Array<{ runId: string; frames: Array<{ seq: number; event: RunEvent }> }> = [];
+  let connections = 0;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      connections += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (connections === 1) {
+        for (const frame of starts) res.write(`event: command\ndata: ${JSON.stringify(frame)}\n\n`);
+        res.write(`event: command\ndata: ${JSON.stringify(cancel)}\n\n`);
+        res.write(`event: command\ndata: ${JSON.stringify(cancel)}\n\n`);
+        res.end();
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as {
+        runIds?: string[];
+        commandCursor?: number;
+        runId?: string;
+        frames?: Array<{ seq: number; event: RunEvent }>;
+      };
+      if (req.url === "/daemon/run/live")
+        reports.push({
+          runIds: parsed.runIds ?? [],
+          ...(parsed.commandCursor === undefined ? {} : { commandCursor: parsed.commandCursor }),
+        });
+      if (req.url === "/daemon/run/events") events.push(parsed as typeof events[number]);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  const r = startRuns({
+    lab: `http://127.0.0.1:${port}`,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () => undefined,
+  });
+  running.push(r);
+
+  await until(() => reports.some((report) => report.commandCursor !== undefined), "the replay cursor report");
+  expect(reports.at(-1)?.commandCursor).toBe(cancel.seq);
+  const completions = events
+    .filter((post) => post.runId === cancel.command.runId)
+    .flatMap((post) => post.frames)
+    .filter((frame) => frame.event.event === "completed");
+  expect(completions).toHaveLength(1);
+  expect(completions[0]?.event).toMatchObject({
+    event: "completed",
+    state: { state: "cancelled" },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const reportCount = reports.length;
+  r.adaptersChanged();
+  await until(() => reports.length > reportCount, "the acknowledged cancellation reconciliation");
+  expect(reports.at(-1)?.runIds).toHaveLength(1_000);
+  expect(reports.at(-1)?.runIds).not.toContain(cancel.command.runId);
+}, 15_000);
+
+it("scans contiguous harmless and freeing controls without executing later unsafe work", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  const frames = Array.from({ length: 1_001 }, (_, index) => ({
+    seq: index + 1,
+    command: {
+      type: "start-run",
+      runId: `run_multi_control_${index + 1}`,
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: `se_multi_control_${index + 1}`,
+      agent: "held-back",
+      prompt: `held ${index + 1}`,
+      grants: [],
+    },
+  }));
+  const controls = [
+    { seq: 1_002, command: { type: "cancel", runId: "run_unknown_harmless" } },
+    { seq: 1_003, command: { type: "decision", runId: "run_multi_control_1", decision: { action: "cancel" } } },
+    { seq: 1_004, command: { type: "kernel-interrupt", runId: "unsafe", kernelId: "k_must_wait" } },
+  ];
+  const reports: Array<{ runIds: string[]; commandCursor?: number }> = [];
+  let connections = 0;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      connections += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (connections === 1) {
+        for (const frame of [...frames, ...controls])
+          res.write(`event: command\ndata: ${JSON.stringify(frame)}\n\n`);
+        res.end();
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as { runIds?: string[]; commandCursor?: number };
+      if (req.url === "/daemon/run/live")
+        reports.push({
+          runIds: parsed.runIds ?? [],
+          ...(parsed.commandCursor === undefined ? {} : { commandCursor: parsed.commandCursor }),
+        });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  const r = startRuns({
+    lab: `http://127.0.0.1:${port}`,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () => undefined,
+    kernelHost: () => kernels.host,
+  });
+  running.push(r);
+
+  await until(() => reports.some((report) => report.commandCursor !== undefined), "the control cursor report");
+  expect(reports.at(-1)?.commandCursor).toBe(1_003);
+  expect(reports.at(-1)?.runIds).toHaveLength(1_000);
+  expect(kernels.calls).not.toContainEqual({
+    method: "kernel.interrupt",
+    params: { kernel_id: "k_must_wait" },
+  });
+}, 15_000);
+
+it("retains O(1) state across thousands of harmless controls before the freeing cancel", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  const starts = Array.from({ length: 1_001 }, (_, index) => ({
+    seq: index + 1,
+    command: {
+      type: "start-run",
+      runId: `run_stress_control_${index + 1}`,
+      studyId: "s_cmp",
+      taskId: "t_cmp",
+      sessionId: `se_stress_control_${index + 1}`,
+      agent: "held-back",
+      prompt: `held ${index + 1}`,
+      grants: [],
+    },
+  }));
+  const harmlessCount = 5_000;
+  const harmless = Array.from({ length: harmlessCount }, (_, index) => ({
+    seq: 1_002 + index,
+    command: { type: "cancel", runId: `run_unknown_stress_${index}` },
+  }));
+  const freeing = {
+    seq: 1_002 + harmlessCount,
+    command: { type: "cancel", runId: "run_stress_control_1" },
+  };
+  const unsafe = {
+    seq: freeing.seq + 1,
+    command: { type: "kernel-interrupt", runId: "unsafe", kernelId: "k_stress_must_wait" },
+  };
+  const reports: Array<{ runIds: string[]; commandCursor?: number }> = [];
+  let firstStream: import("node:http").ServerResponse | undefined;
+  let finalStream: import("node:http").ServerResponse | undefined;
+  let connections = 0;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      connections += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (connections === 1) {
+        firstStream = res;
+        for (const frame of [...starts, ...harmless])
+          res.write(`event: command\ndata: ${JSON.stringify(frame)}\n\n`);
+      } else {
+        finalStream = res;
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as { runIds?: string[]; commandCursor?: number };
+      if (req.url === "/daemon/run/live")
+        reports.push({
+          runIds: parsed.runIds ?? [],
+          ...(parsed.commandCursor === undefined ? {} : { commandCursor: parsed.commandCursor }),
+        });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  const runs = startRuns({
+    lab: `http://127.0.0.1:${port}`,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () => undefined,
+    kernelHost: () => kernels.host,
+  });
+  running.push(runs);
+
+  const harmlessThrough = harmless.at(-1)!.seq;
+  await until(
+    () => runs.blockedLookaheadState()?.safeThroughSeq === harmlessThrough,
+    "all harmless controls to form one contiguous safe prefix",
+  );
+  expect(runs.blockedLookaheadState()).toEqual({
+    safeThroughSeq: harmlessThrough,
+    retainedControlCommands: 0,
+  });
+
+  firstStream!.write(`event: command\ndata: ${JSON.stringify(freeing)}\n\n`);
+  firstStream!.write(`event: command\ndata: ${JSON.stringify(unsafe)}\n\n`);
+  firstStream!.end();
+  await until(
+    () => reports.some((report) => report.commandCursor === freeing.seq),
+    "the freeing control to commit the contiguous cursor",
+  );
+  expect(reports.find((report) => report.commandCursor === freeing.seq)?.runIds).toHaveLength(1_000);
+  expect(kernels.calls).not.toContainEqual({
+    method: "kernel.interrupt",
+    params: { kernel_id: unsafe.command.kernelId },
+  });
+  expect(runs.blockedLookaheadState()).toBeUndefined();
+  finalStream?.end();
+}, 20_000);
+
+it("discards blocked lookahead from an old relay generation before using new relay frames", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  let liveReports = 0;
+  let commandConnections = 0;
+  let newStreamOpenedAfterLive = false;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      commandConnections += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (commandConnections === 1) {
+        for (let index = 0; index < 1_001; index += 1) {
+          const frame = {
+            seq: index + 1,
+            command: {
+              type: "start-run",
+              runId: `run_old_generation_${index + 1}`,
+              studyId: "s_cmp",
+              taskId: "t_cmp",
+              sessionId: `se_old_generation_${index + 1}`,
+              agent: "held-back",
+              prompt: `old ${index + 1}`,
+              grants: [],
+            },
+          };
+          res.write(`event: command\ndata: ${JSON.stringify(frame)}\n\n`);
+        }
+        res.end();
+      } else {
+        newStreamOpenedAfterLive = liveReports >= 2;
+        res.write(`event: command\ndata: ${JSON.stringify({
+          seq: 1,
+          command: { type: "kernel-interrupt", runId: "new_control", kernelId: "k_new_generation" },
+        })}\n\n`);
+      }
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      if (req.url === "/daemon/run/live") {
+        liveReports += 1;
+        res.end(JSON.stringify({ generation: liveReports === 1 ? "relay-old" : "relay-new" }));
+      } else {
+        res.end("{}");
+      }
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  const r = startRuns({
+    lab: `http://127.0.0.1:${port}`,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () => undefined,
+    kernelHost: () => kernels.host,
+  });
+  running.push(r);
+
+  await until(() => commandConnections >= 2, "the new generation command stream");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(newStreamOpenedAfterLive).toBe(true);
+  expect(kernels.calls).toContainEqual({
+    method: "kernel.interrupt",
+    params: { kernel_id: "k_new_generation" },
+  });
+}, 15_000);
+
+it("emits durable cancellation evidence when Stop targets a deferred run", async () => {
+  const command = {
+    type: "start-run",
+    runId: "run_cancelled_while_deferred",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_cancelled_while_deferred",
+    agent: "claude",
+    prompt: "must never start",
+    grants: [],
+  };
+  const lab = await stubLab([command]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const r = startRuns({
+    lab: lab.base,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () => undefined,
+    extraEnv: stubEnv,
+  });
+  running.push(r);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send({ type: "decision", runId: command.runId, decision: { action: "cancel" } });
+
+  await until(
+    () => lab.events.some((post) =>
+      post.runId === command.runId &&
+      post.frames.some((frame) => frame.event.event === "completed"),
+    ),
+    "the deferred cancellation frame",
+  );
+  const completions = lab.events
+    .filter((post) => post.runId === command.runId)
+    .flatMap((post) => post.frames)
+    .filter((frame) => frame.event.event === "completed");
+  expect(completions).toHaveLength(1);
+  expect(completions[0]?.event).toEqual({
+    event: "completed",
+    state: { state: "cancelled" },
+  });
+});
+
+it("replays an unavailable exact start when reconnect observes the adapter", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([
+    { emit: "agent_message_chunk", text: "reconnected once" },
+    { endTurn: "end_turn" },
+  ]);
+  const command = {
+    type: "start-run",
+    runId: "run_reconnected_available",
+    studyId: "s_cmp",
+    taskId: "t_cmp",
+    sessionId: "se_reconnected_available",
+    agent: "claude",
+    prompt: "go",
+    grants: [],
+  };
+  const lab = await stubLab([command]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  let available = false;
+  const r = startRuns({
+    lab: lab.base,
+    token: "t",
+    workDir: `${data}-work`,
+    dataDir: data,
+    adapterFor: () =>
+      available
+        ? { command: process.execPath, args: ["--experimental-strip-types", STUB] }
+        : undefined,
+    extraEnv: stubEnv,
+  });
+  running.push(r);
+  await until(() => lab.commandConnected(), "the first command stream");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(lab.events).toEqual([]);
+
+  available = true;
+  lab.disconnectCommands();
+  await until(
+    () => lab.live.some((runIds) => runIds.includes(command.runId)),
+    "the held run in the reconnect report",
+  );
+  await until(
+    () => lab.events.some((post) =>
+      post.runId === command.runId &&
+      post.frames.some((frame) => frame.event.event === "completed"),
+    ),
+    "the reconnect-triggered continuation",
+  );
+  const frames = lab.events
+    .filter((post) => post.runId === command.runId)
+    .flatMap((post) => post.frames);
+  expect(frames.filter((frame) => frame.event.event === "assistant-text")).toHaveLength(1);
+  expect(frames.filter((frame) => frame.event.event === "completed")).toHaveLength(1);
+});
+
+it("terminalizes a genuine prompt failure after execution has begun", async () => {
+  process.env.LYKEION_STUB_SCRIPT = JSON.stringify([{ failTurn: "model unavailable" }]);
+  const lab = await stubLab([
+    { type: "start-run", runId: "run_started_failure", studyId: "s_cmp", taskId: "t_cmp", sessionId: "se_failure", agent: "claude", prompt: "go", grants: [] },
+  ]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  subsystem(lab.base, data);
+
+  await until(
+    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
+    "the started failure",
+  );
+  const frames = lab.events.flatMap((e) => e.frames);
+  expect(frames).toContainEqual(
+    expect.objectContaining({ event: { event: "state", state: { state: "planning" } } }),
+  );
+  expect(frames).toContainEqual(
+    expect.objectContaining({
+      event: { event: "completed", state: { state: "failed", reason: "model unavailable" } },
+    }),
+  );
 });
 
 it("refuses a start-run command missing required fields", async () => {
@@ -4511,13 +6347,11 @@ it("names one Task at a time, declining the rest rather than forking an agent pe
   expect(lab.titleReplies.find((r) => r.requestId === "ntreq_a")?.title).toBe("The one that ran");
 });
 
-it("says why a run cannot start, when the probe knows something better than \"no adapter\"", async () => {
-  // The message this replaces was the one bug report worth fixing twice: a
-  // researcher whose Claude token lapsed overnight was told their machine had
-  // no adapter for it, went looking for a bridge that was already installed,
-  // and never learned the thing that would have fixed it in a minute.
+it("does not terminalize a held-back run before its agent can start", async () => {
+  // A researcher whose token lapses during a long build can restore capability
+  // after the build without losing the exact continuation identity.
   const lab = await stubLab([
-    { type: "start-run", runId: "run_held", studyId: "s_h", sessionId: "se_h", agent: "claude", prompt: "go", grants: [] },
+    { type: "start-run", runId: "run_held", studyId: "s_h", taskId: "t_h", sessionId: "se_h", agent: "claude", prompt: "go", grants: [] },
   ]);
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
@@ -4530,24 +6364,16 @@ it("says why a run cannot start, when the probe knows something better than \"no
     heldBackReason: (agent) => (agent === "claude" ? "sign in to Claude Code to run it" : undefined),
   });
   running.push(r);
-  await until(
-    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
-    "a refusal",
-  );
-  const done = lab.events
-    .flatMap((e) => e.frames)
-    .find((f) => f.event.event === "completed") as { event: { state: { state: string; reason?: string } } };
-  expect(done.event.state.state).toBe("failed");
-  expect(done.event.state.reason).toBe("sign in to Claude Code to run it");
-  // And it does NOT say the thing that was wrong.
-  expect(done.event.state.reason).not.toMatch(/no adapter/);
+  await until(() => lab.commandConnected(), "the command stream");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(lab.events).toEqual([]);
 });
 
-it("still says there is no adapter when that is what is true", async () => {
-  // The other half. An agent nothing has ever vetted and nothing has anything
-  // to say about is exactly what the old sentence described, and it survives.
+it("does not consume an unknown agent's run id with a pre-start terminal frame", async () => {
+  // Unknown and temporarily held-back agents share the same safe pre-start
+  // state: no frame is invented before an adapter can execute the prompt.
   const lab = await stubLab([
-    { type: "start-run", runId: "run_none", studyId: "s_n", sessionId: "se_n", agent: "nope", prompt: "go", grants: [] },
+    { type: "start-run", runId: "run_none", studyId: "s_n", taskId: "t_n", sessionId: "se_n", agent: "nope", prompt: "go", grants: [] },
   ]);
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
@@ -4560,14 +6386,9 @@ it("still says there is no adapter when that is what is true", async () => {
     heldBackReason: () => undefined,
   });
   running.push(r);
-  await until(
-    () => lab.events.some((e) => e.frames.some((f) => f.event.event === "completed")),
-    "a refusal",
-  );
-  const done = lab.events
-    .flatMap((e) => e.frames)
-    .find((f) => f.event.event === "completed") as { event: { state: { state: string; reason?: string } } };
-  expect(done.event.state.reason).toMatch(/no adapter for "nope"/);
+  await until(() => lab.commandConnected(), "the command stream");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(lab.events).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -4591,6 +6412,7 @@ it("resolves when the command carries no lockfile, hands the lockfile to the lab
       name: "crispr",
       language: "python",
       manager: "uv",
+      declarationGenerationId: fixtureGeneration("crispr"),
       packages: ["scanpy"],
     });
 
@@ -4601,7 +6423,12 @@ it("resolves when the command carries no lockfile, hands the lockfile to the lab
     // did not ask: a lockfile is the one thing every other machine later
     // replays verbatim, so a bearer token alone must not authorize writing one.
     expect(lab.kernelEnvLocks).toEqual([
-      { requestId: "envsetup_1", name: "crispr", lockfile: "scanpy==1.9.0\nanndata==0.10.0\n" },
+      {
+        requestId: "envsetup_1",
+        name: "crispr",
+        declarationGenerationId: fixtureGeneration("crispr"),
+        lockfile: "scanpy==1.9.0\nanndata==0.10.0\n",
+      },
     ]);
     const result = lab.kernelEnvResults[0]!;
     expect(result.ok).toBe(true);
@@ -4610,8 +6437,840 @@ it("resolves when the command carries no lockfile, hands the lockfile to the lab
     expect(status.lockRevision).toBe(1);
     expect(status.packageCount).toBe(2);
     expect(existsSync(join(envRoot(workDir, "crispr"), "bin", "python3"))).toBe(true);
+    expect(
+      lab.kernelEnvProgress
+        .map(({ progress }) => progress.stage)
+        .filter((stage, index, stages) => stage !== stages[index - 1]),
+    ).toEqual(["resolving", "installing", "finalizing"]);
   });
 });
+
+it("deduplicates a replayed durable environment setup request id", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const uvDir = stubUv("scanpy==1.9.0\n");
+
+  await withStubUvOnPath(uvDir, async () => {
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the command stream");
+    const command = {
+      type: "kernel-env-setup",
+      runId: "envsetup_replayed",
+      name: "crispr",
+      language: "python",
+      manager: "uv",
+      declarationGenerationId: fixtureGeneration("crispr"),
+      packages: ["scanpy"],
+    };
+
+    lab.send(command);
+    lab.send(command);
+
+    await until(() => lab.kernelEnvResults.length > 0, "the setup's own result");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lab.kernelEnvLocks).toHaveLength(1);
+    expect(lab.kernelEnvResults).toHaveLength(1);
+  });
+});
+
+it("keeps an in-flight environment build exact beyond the terminal-history horizon", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  let commandStream: import("node:http").ServerResponse | undefined;
+  const heldProgress: import("node:http").ServerResponse[] = [];
+  const command = {
+    type: "kernel-env-setup",
+    runId: "envsetup_active_beyond_history",
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    declarationGenerationId: fixtureGeneration("crispr"),
+    packages: ["scanpy"],
+  };
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      commandStream = res;
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      const parsed = JSON.parse(body || "{}") as { requestId?: string };
+      if (
+        req.url === "/daemon/kernel-env/progress" &&
+        parsed.requestId === command.runId
+      ) {
+        heldProgress.push(res);
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  subsystem(`http://127.0.0.1:${port}`, data);
+  await until(() => commandStream !== undefined, "the command stream");
+  commandStream!.write(`event: command\ndata: ${JSON.stringify({ seq: 1, command })}\n\n`);
+  await until(() => heldProgress.length === 1, "the first build to be in flight");
+
+  for (let index = 0; index < 1_001; index += 1) {
+    commandStream!.write(`event: command\ndata: ${JSON.stringify({
+      seq: index + 2,
+      command: { type: "start-run", runId: `run_build_history_${index}` },
+    })}\n\n`);
+  }
+  commandStream!.write(`event: command\ndata: ${JSON.stringify({
+    seq: 1_003,
+    command,
+  })}\n\n`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const progressRequestsBeforeRelease = heldProgress.length;
+  for (const response of heldProgress) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  }
+  expect(progressRequestsBeforeRelease).toBe(1);
+  commandStream?.end();
+}, 15_000);
+
+it("never reposts a successful build as failed when result transport rejects", async () => {
+  const lab = await stubLab([]);
+  lab.kernelEnvResult.failuresRemaining = 1;
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const uvDir = stubUv("scanpy==1.9.0\n");
+
+  await withStubUvOnPath(uvDir, async () => {
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send({
+      type: "kernel-env-setup",
+      runId: "envsetup_result_transport",
+      name: "crispr",
+      language: "python",
+      manager: "uv",
+      declarationGenerationId: fixtureGeneration("crispr"),
+      packages: ["scanpy"],
+    });
+
+    await until(() => lab.kernelEnvResults.length > 0, "the rejected success report");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lab.kernelEnvResults).toHaveLength(1);
+    expect(lab.kernelEnvResults[0]).toMatchObject({
+      requestId: "envsetup_result_transport",
+      name: "crispr",
+      ok: true,
+    });
+  });
+});
+
+it("keeps the exact terminal spool after an acknowledgement conflict and removes it only after acceptance", async () => {
+  const lab = await stubLab([]);
+  lab.kernelEnvResult.conflictsRemaining = 1;
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const uvDir = stubUv("scanpy==1.9.0\n");
+  const command = {
+    type: "kernel-env-setup",
+    runId: "envsetup_result_conflict_spool",
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    lockfile: "scanpy==1.9.0\n",
+    lockRevision: 7,
+    requestedPackages: ["scanpy"],
+    declarationGenerationId: "envgen_result_conflict_spool",
+    declarationCreatedTs: 50,
+  };
+
+  await withStubUvOnPath(uvDir, async () => {
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send(command);
+    await until(() => lab.kernelEnvResults.length === 1, "the conflicting acknowledgement");
+
+    expect(lab.kernelEnvResults[0]).toMatchObject({
+      requestId: command.runId,
+      name: command.name,
+      declarationGenerationId: command.declarationGenerationId,
+      ok: true,
+    });
+    expect(environmentSetupOutcomeSpool(data).load()).toHaveLength(1);
+
+    await until(() => lab.kernelEnvResults.length === 2, "the accepted exact retry");
+    expect(lab.kernelEnvResults[1]).toEqual(lab.kernelEnvResults[0]);
+    await until(
+      () => environmentSetupOutcomeSpool(data).load().length === 0,
+      "the exact accepted acknowledgement to remove the spool",
+    );
+  });
+}, 10_000);
+
+it("reposts the exact successful setup outcome after daemon restart without rematerializing", async () => {
+  const lab = await stubLab([]);
+  lab.kernelEnvResult.failuresRemaining = 1;
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const invocationLog = join(envRoot(`${data}-work`, "crispr"), "stub-invocations");
+  const uvDir = stubUv("scanpy==1.9.0\n", { invocationLog });
+  const command = {
+    type: "kernel-env-setup",
+    runId: "envsetup_success_restart",
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    lockfile: "scanpy==1.9.0\n",
+    lockRevision: 8,
+    requestedPackages: ["scanpy"],
+    declarationGenerationId: "envgen_success_restart",
+    declarationCreatedTs: 51,
+  };
+
+  await withStubUvOnPath(uvDir, async () => {
+    const first = subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the first command stream");
+    lab.send(command);
+    await until(() => lab.kernelEnvResults.length === 1, "the lost success result");
+    for (let index = 0; index < 1_001; index += 1)
+      lab.send({ type: "start-run", runId: `run_success_spool_history_${index}` });
+    await first.stop();
+    await until(() => !lab.commandConnected(), "the first daemon to disconnect");
+
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the restarted command stream");
+    lab.send(command);
+    await until(() => lab.kernelEnvResults.length === 2, "the exact success result to be reposted");
+
+    expect(lab.kernelEnvResults[1]).toEqual(lab.kernelEnvResults[0]);
+    expect(readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(2);
+  });
+}, 20_000);
+
+it("reposts the exact failed setup outcome after daemon restart without rematerializing", async () => {
+  const lab = await stubLab([]);
+  lab.kernelEnvResult.failuresRemaining = 1;
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const invocationLog = join(envRoot(`${data}-work`, "crispr"), "stub-invocations");
+  const uvDir = stubUv("scanpy==1.9.0\n", { invocationLog, failAt: "sync" });
+  const command = {
+    type: "kernel-env-setup",
+    runId: "envsetup_failure_restart",
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    lockfile: "scanpy==1.9.0\n",
+    lockRevision: 9,
+    requestedPackages: ["scanpy"],
+    declarationGenerationId: "envgen_failure_restart",
+    declarationCreatedTs: 52,
+  };
+
+  await withStubUvOnPath(uvDir, async () => {
+    const first = subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the first command stream");
+    lab.send(command);
+    await until(() => lab.kernelEnvResults.length === 1, "the lost failure result");
+    expect(lab.kernelEnvResults[0]).toMatchObject({
+      requestId: command.runId,
+      name: command.name,
+      ok: false,
+    });
+    for (let index = 0; index < 1_001; index += 1)
+      lab.send({ type: "start-run", runId: `run_failure_spool_history_${index}` });
+    await first.stop();
+    await until(() => !lab.commandConnected(), "the first daemon to disconnect");
+
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the restarted command stream");
+    lab.send(command);
+    await until(() => lab.kernelEnvResults.length === 2, "the exact failure result to be reposted");
+
+    expect(lab.kernelEnvResults[1]).toEqual(lab.kernelEnvResults[0]);
+    expect(readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(2);
+  });
+}, 20_000);
+
+it("fails a corrupt exact setup spool closed without provisioning or leaking its bytes", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const requestId = "envsetup_corrupt_restart";
+  const generation = "envgen_corrupt_restart";
+  const spool = environmentSetupOutcomeSpool(data);
+  const corruptOutcome = {
+    requestId,
+    name: "crispr",
+    declarationGenerationId: generation,
+    result: { ok: false, name: "crispr", error: "original bounded result" },
+  } as const;
+  spool.begin(corruptOutcome);
+  spool.complete(corruptOutcome);
+  const spoolRoot = join(data, "environment-setup-outcomes");
+  const corruptSecret = "truncated-spool-secret-must-not-leak";
+  writeFileSync(
+    join(spoolRoot, readdirSync(spoolRoot)[0]!),
+    `{"version":1,"requestId":"${requestId}","secret":"${corruptSecret}`,
+    { mode: 0o600 },
+  );
+  const invocationLog = join(data, "corrupt-spool-uv-invocations");
+  const uvDir = stubUv("scanpy==1.9.0\n", { invocationLog });
+
+  await withStubUvOnPath(uvDir, async () => {
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send({
+      type: "kernel-env-setup",
+      runId: requestId,
+      name: "crispr",
+      language: "python",
+      manager: "uv",
+      lockfile: "scanpy==1.9.0\n",
+      lockRevision: 10,
+      requestedPackages: ["scanpy"],
+      declarationGenerationId: generation,
+      declarationCreatedTs: 53,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(existsSync(invocationLog)).toBe(false);
+    expect(lab.kernelEnvResults).toEqual([]);
+    expect(JSON.stringify(lab.kernelEnvResults)).not.toContain(corruptSecret);
+  });
+});
+
+it("does not call either provision phase when the initial exact journal write fails", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const invocationLog = join(data, "journal-failure-invocations");
+  const uvDir = stubUv("scanpy==1.9.0\n", { invocationLog });
+  const journal = environmentSetupOutcomeSpool(data);
+  const refusingJournal = {
+    ...journal,
+    begin(): never {
+      throw new Error("injected journal write failure");
+    },
+  };
+
+  await withStubUvOnPath(uvDir, async () => {
+    const runs = subsystem(lab.base, data, undefined, undefined, {
+      environmentSetupJournal: refusingJournal,
+    });
+    await until(() => lab.commandConnected(), "the command stream");
+    lab.send({
+      type: "kernel-env-setup",
+      runId: "envsetup_initial_journal_failure",
+      name: "crispr",
+      language: "python",
+      manager: "uv",
+      lockfile: "scanpy==1.9.0\n",
+      lockRevision: 11,
+      requestedPackages: ["scanpy"],
+      declarationGenerationId: "envgen_initial_journal_failure",
+    });
+
+    await until(() => runs.lastFailure()?.includes("journal") === true, "the bounded journal diagnostic");
+    expect(existsSync(invocationLog)).toBe(false);
+    expect(journal.load()).toEqual([]);
+    expect(lab.kernelEnvResults).toEqual([]);
+  });
+});
+
+it("lets only the durable journal owner provision when two daemon processes receive the same request", async () => {
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const invocationLog = join(envRoot(`${data}-work`, "crispr"), "stub-invocations");
+  const uvDir = stubUv("scanpy==1.9.0\n", { invocationLog });
+  const streams: import("node:http").ServerResponse[] = [];
+  const results: Record<string, unknown>[] = [];
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/daemon/commands")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      streams.push(res);
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+    req.on("end", () => {
+      if (req.url === "/daemon/kernel-env/result")
+        results.push(JSON.parse(body || "{}") as Record<string, unknown>);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  servers.push(server);
+  const port = await new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  const command = {
+    type: "kernel-env-setup",
+    runId: "envsetup_two_daemons_one_owner",
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    lockfile: "scanpy==1.9.0\n",
+    lockRevision: 17,
+    requestedPackages: ["scanpy"],
+    declarationGenerationId: "envgen_two_daemons_one_owner",
+  };
+
+  await withStubUvOnPath(uvDir, async () => {
+    const base = `http://127.0.0.1:${port}`;
+    // Both process-local snapshots intentionally miss the other's just-created
+    // record before `begin`; the filesystem O_EXCL claim, not a racy pre-read,
+    // must still choose exactly one owner.
+    const firstSpool = environmentSetupOutcomeSpool(data);
+    const secondSpool = environmentSetupOutcomeSpool(data);
+    const first = subsystem(base, data, undefined, undefined, {
+      environmentSetupJournal: { ...firstSpool, hasRecord: () => false },
+    });
+    const second = subsystem(base, data, undefined, undefined, {
+      environmentSetupJournal: { ...secondSpool, hasRecord: () => false },
+    });
+    await until(() => streams.length === 2, "both independent daemon command streams");
+    for (const stream of streams)
+      stream.write(`event: command\ndata: ${JSON.stringify({ seq: 1, command })}\n\n`);
+
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+    const invocations = existsSync(invocationLog)
+      ? readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)
+      : [];
+    const failures = [first.lastFailure(), second.lastFailure()].filter(
+      (failure): failure is string => failure !== undefined,
+    );
+    expect({ invocations: invocations.length, results: results.length }).toEqual({
+      invocations: 2,
+      results: 1,
+    });
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatch(/quarantined/);
+  });
+}, 20_000);
+
+it("does not promote an older same-generation marker for a new resolve request with package growth", async () => {
+  for (const fixture of [
+    { manager: "uv" as const, language: "python" as const, interpreter: "python3" },
+    { manager: "conda" as const, language: "r" as const, interpreter: "Rscript" },
+  ]) {
+    const lab = await stubLab([]);
+    const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+    dirs.push(data, `${data}-work`);
+    const name = fixture.manager === "uv" ? "crispr" : "rstats";
+    const generation = `envgen_package_growth_${fixture.manager}`;
+    const root = envRoot(`${data}-work`, name);
+    mkdirSync(join(root, "bin"), { recursive: true });
+    writeFileSync(join(root, "bin", fixture.interpreter), "");
+    writeFileSync(
+      join(root, ".lykeion-env.json"),
+      JSON.stringify({
+        requestId: `envsetup_old_${fixture.manager}`,
+        name,
+        manager: fixture.manager,
+        declarationGenerationId: generation,
+        lockRevision: 22,
+        lockfileFingerprint: "a".repeat(64),
+        packageFingerprint: "b".repeat(64),
+        packageCount: 1,
+        version: fixture.manager === "uv" ? "3.12.7" : "4.4.1",
+      }),
+    );
+    const requestId = `envsetup_new_${fixture.manager}`;
+    const spool = environmentSetupOutcomeSpool(data);
+    expect(spool.begin({ requestId, name, declarationGenerationId: generation }).role).toBe("owner");
+
+    const runs = subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), `${fixture.manager}'s command stream`);
+    lab.send({
+      type: "kernel-env-setup",
+      runId: requestId,
+      name,
+      language: fixture.language,
+      manager: fixture.manager,
+      declarationGenerationId: generation,
+      packages: fixture.manager === "uv" ? ["scanpy", "numpy"] : ["jsonlite", "ggplot2"],
+    });
+    await until(
+      () => lab.kernelEnvResults.length > 0 || runs.lastFailure() !== undefined,
+      `${fixture.manager}'s recovery decision`,
+    );
+
+    expect(lab.kernelEnvResults).toEqual([]);
+    expect(runs.lastFailure()).toMatch(/quarantined/);
+    expect(spool.load()).toEqual([
+      { requestId, name, declarationGenerationId: generation, state: "provisioning" },
+    ]);
+  }
+});
+
+it("reconciles an exact ready marker after a post-provision crash without a second provision call", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const invocationLog = join(envRoot(`${data}-work`, "crispr"), "stub-invocations");
+  const uvDir = stubUv("scanpy==1.9.0\n", { invocationLog });
+  const never = new Promise<void>(() => {});
+  const command = {
+    type: "kernel-env-setup",
+    runId: "envsetup_crash_after_provision",
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    lockfile: "scanpy==1.9.0\n",
+    lockRevision: 12,
+    requestedPackages: ["scanpy"],
+    declarationGenerationId: "envgen_crash_after_provision",
+    declarationCreatedTs: 54,
+  };
+
+  await withStubUvOnPath(uvDir, async () => {
+    const first = subsystem(lab.base, data, undefined, undefined, {
+      environmentSetupCheckpoint: () => never,
+    });
+    await until(() => lab.commandConnected(), "the first command stream");
+    lab.send(command);
+    await until(
+      () => existsSync(join(envRoot(`${data}-work`, "crispr"), ".lykeion-env.json")),
+      "the exact ready marker before the crash checkpoint",
+    );
+    expect(environmentSetupOutcomeSpool(data).load()).toEqual([
+      {
+        requestId: command.runId,
+        name: command.name,
+        declarationGenerationId: command.declarationGenerationId,
+        state: "provisioning",
+      },
+    ]);
+    await first.stop();
+    await until(() => !lab.commandConnected(), "the first daemon to disconnect");
+
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the restarted command stream");
+    lab.send(command);
+    await until(() => lab.kernelEnvResults.length === 1, "the marker-reconciled success");
+
+    expect(lab.kernelEnvResults[0]).toMatchObject({
+      requestId: command.runId,
+      name: command.name,
+      declarationGenerationId: command.declarationGenerationId,
+      ok: true,
+    });
+    expect(readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(2);
+  });
+}, 20_000);
+
+it("uses the same post-marker crash journal seam for conda without a second materialization", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const invocationLog = join(`${data}-work`, ".mamba-cache", "stub-invocations");
+  const micromambaDir = stubMicromamba(invocationLog);
+  const never = new Promise<void>(() => {});
+  const command = {
+    type: "kernel-env-setup",
+    runId: "envsetup_conda_crash_after_provision",
+    name: "rstats",
+    language: "r",
+    manager: "conda",
+    lockfile:
+      "@EXPLICIT\nhttps://conda.anaconda.org/conda-forge/osx-arm64/r-base-4.4.1.tar.bz2#0123456789abcdef0123456789abcdef\n",
+    lockRevision: 15,
+    requestedPackages: ["r-base"],
+    declarationGenerationId: "envgen_conda_crash_after_provision",
+    declarationCreatedTs: 57,
+  };
+
+  await withStubUvOnPath(micromambaDir, async () => {
+    const first = subsystem(lab.base, data, undefined, undefined, {
+      environmentSetupCheckpoint: () => never,
+    });
+    await until(() => lab.commandConnected(), "the first command stream");
+    lab.send(command);
+    await until(
+      () => existsSync(join(envRoot(`${data}-work`, "rstats"), ".lykeion-env.json")),
+      "the conda exact ready marker before the crash checkpoint",
+    );
+    expect(
+      JSON.parse(
+        readFileSync(join(envRoot(`${data}-work`, "rstats"), ".lykeion-env.json"), "utf8"),
+      ),
+    ).toMatchObject({
+      schemaVersion: 2,
+      requestId: command.runId,
+      name: command.name,
+      manager: command.manager,
+      declarationGenerationId: command.declarationGenerationId,
+      lockRevision: command.lockRevision,
+      lockfileFingerprint: createHash("sha256").update(command.lockfile).digest("hex"),
+      packageFingerprint: createHash("sha256")
+        .update(JSON.stringify([...command.requestedPackages].sort()))
+        .digest("hex"),
+    });
+    await first.stop();
+    await until(() => !lab.commandConnected(), "the first daemon to disconnect");
+
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the restarted command stream");
+    lab.send(command);
+    await until(() => lab.kernelEnvResults.length === 1, "the conda marker-reconciled success");
+    expect(lab.kernelEnvResults[0]).toMatchObject({
+      requestId: command.runId,
+      declarationGenerationId: command.declarationGenerationId,
+      ok: true,
+      status: { manager: "conda", language: "r", lockRevision: 15 },
+    });
+    expect(readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(1);
+  });
+}, 20_000);
+
+it("reconciles an exact ready marker after terminal journal promotion fails without provisioning again", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const invocationLog = join(envRoot(`${data}-work`, "crispr"), "stub-invocations");
+  const uvDir = stubUv("scanpy==1.9.0\n", { invocationLog });
+  const journal = environmentSetupOutcomeSpool(data);
+  const refusingJournal = {
+    ...journal,
+    complete(): never {
+      throw new Error("injected terminal journal promotion failure");
+    },
+  };
+  const command = {
+    type: "kernel-env-setup",
+    runId: "envsetup_success_terminal_write_failure",
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    lockfile: "scanpy==1.9.0\n",
+    lockRevision: 14,
+    requestedPackages: ["scanpy"],
+    declarationGenerationId: "envgen_success_terminal_write_failure",
+    declarationCreatedTs: 56,
+  };
+
+  await withStubUvOnPath(uvDir, async () => {
+    const first = subsystem(lab.base, data, undefined, undefined, {
+      environmentSetupJournal: refusingJournal,
+    });
+    await until(() => lab.commandConnected(), "the first command stream");
+    lab.send(command);
+    await until(
+      () => first.lastFailure()?.includes("terminal environment setup outcome") === true,
+      "the failed terminal promotion",
+    );
+    expect(journal.load()[0]?.state).toBe("provisioning");
+    expect(lab.kernelEnvResults).toEqual([]);
+    await first.stop();
+    await until(() => !lab.commandConnected(), "the first daemon to disconnect");
+
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the restarted command stream");
+    lab.send(command);
+    await until(() => lab.kernelEnvResults.length === 1, "the reconciled success result");
+    expect(lab.kernelEnvResults[0]).toMatchObject({
+      requestId: command.runId,
+      declarationGenerationId: command.declarationGenerationId,
+      ok: true,
+    });
+    expect(readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(2);
+  });
+}, 20_000);
+
+it("reposts a terminal claim left by a crash before main promotion without provisioning again", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const invocationLog = join(envRoot(`${data}-work`, "crispr"), "stub-invocations");
+  const uvDir = stubUv("scanpy==1.9.0\n", { invocationLog });
+  const crashingJournal = environmentSetupOutcomeSpool(data, {
+    afterTerminalClaim() {
+      throw new Error("injected crash after immutable terminal claim");
+    },
+  });
+  const command = {
+    type: "kernel-env-setup",
+    runId: "envsetup_terminal_claim_crash",
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    lockfile: "scanpy==1.9.0\n",
+    lockRevision: 16,
+    requestedPackages: ["scanpy"],
+    declarationGenerationId: "envgen_terminal_claim_crash",
+    declarationCreatedTs: 58,
+  };
+
+  await withStubUvOnPath(uvDir, async () => {
+    const first = subsystem(lab.base, data, undefined, undefined, {
+      environmentSetupJournal: crashingJournal,
+    });
+    await until(() => lab.commandConnected(), "the first command stream");
+    lab.send(command);
+    await until(
+      () => first.lastFailure()?.includes("terminal environment setup outcome") === true,
+      "the crash after the terminal claim",
+    );
+    expect(crashingJournal.load()).toEqual([
+      expect.objectContaining({
+        requestId: command.runId,
+        declarationGenerationId: command.declarationGenerationId,
+        state: "terminal",
+      }),
+    ]);
+    expect(lab.kernelEnvResults).toEqual([]);
+    await first.stop();
+    await until(() => !lab.commandConnected(), "the first daemon to disconnect");
+
+    subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the restarted command stream");
+    await until(() => lab.kernelEnvResults.length === 1, "the claimed terminal replay");
+    expect(lab.kernelEnvResults[0]).toMatchObject({
+      requestId: command.runId,
+      declarationGenerationId: command.declarationGenerationId,
+      ok: true,
+    });
+    expect(readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(2);
+    await until(
+      () => environmentSetupOutcomeSpool(data).hasRecord(command.runId) === false,
+      "the exact claim acknowledgement",
+    );
+  });
+}, 20_000);
+
+it("converges restart cleanup after a crash following either acknowledgement unlink", async () => {
+  for (const phase of ["main", "claim"] as const) {
+    const lab = await stubLab([]);
+    const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+    dirs.push(data, `${data}-work`);
+    const invocationLog = join(envRoot(`${data}-work`, "crispr"), "stub-invocations");
+    const uvDir = stubUv("scanpy==1.9.0\n", { invocationLog });
+    let crashed = false;
+    const journal = environmentSetupOutcomeSpool(data, {
+      afterAckMainUnlink() {
+        if (phase === "main" && !crashed) {
+          crashed = true;
+          throw new Error("injected crash after main acknowledgement unlink");
+        }
+      },
+      afterAckClaimUnlink() {
+        if (phase === "claim" && !crashed) {
+          crashed = true;
+          throw new Error("injected crash after claim acknowledgement unlink");
+        }
+      },
+    });
+    const command = {
+      type: "kernel-env-setup",
+      runId: `envsetup_ack_unlink_${phase}`,
+      name: "crispr",
+      language: "python",
+      manager: "uv",
+      lockfile: "scanpy==1.9.0\n",
+      lockRevision: phase === "main" ? 18 : 19,
+      requestedPackages: ["scanpy"],
+      declarationGenerationId: `envgen_ack_unlink_${phase}`,
+    };
+
+    await withStubUvOnPath(uvDir, async () => {
+      const first = subsystem(lab.base, data, undefined, undefined, {
+        environmentSetupJournal: journal,
+      });
+      await until(() => lab.commandConnected(), `${phase}'s first command stream`);
+      lab.send(command);
+      await until(() => crashed, `${phase}'s injected acknowledgement crash`);
+      expect(lab.kernelEnvResults).toHaveLength(1);
+      await first.stop();
+      await until(() => !lab.commandConnected(), `${phase}'s first daemon disconnect`);
+
+      subsystem(lab.base, data);
+      await until(() => lab.commandConnected(), `${phase}'s restarted command stream`);
+      if (phase === "main")
+        await until(() => lab.kernelEnvResults.length === 2, "the claim-only exact repost");
+      else
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      await until(
+        () => environmentSetupOutcomeSpool(data).hasRecord(command.runId) === false,
+        `${phase}'s acknowledged cleanup`,
+      );
+      expect(lab.kernelEnvResults).toHaveLength(phase === "main" ? 2 : 1);
+      expect(readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(2);
+    });
+  }
+}, 20_000);
+
+it("keeps a terminal-write failure without an exact ready marker quarantined after restart", async () => {
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data, `${data}-work`);
+  const invocationLog = join(envRoot(`${data}-work`, "crispr"), "stub-invocations");
+  const uvDir = stubUv("scanpy==1.9.0\n", { invocationLog, failAt: "sync" });
+  const journal = environmentSetupOutcomeSpool(data);
+  const refusingJournal = {
+    ...journal,
+    complete(): never {
+      throw new Error("injected terminal journal write failure");
+    },
+  };
+  const command = {
+    type: "kernel-env-setup",
+    runId: "envsetup_terminal_write_failure",
+    name: "crispr",
+    language: "python",
+    manager: "uv",
+    lockfile: "scanpy==1.9.0\n",
+    lockRevision: 13,
+    requestedPackages: ["scanpy"],
+    declarationGenerationId: "envgen_terminal_write_failure",
+    declarationCreatedTs: 55,
+  };
+
+  await withStubUvOnPath(uvDir, async () => {
+    const first = subsystem(lab.base, data, undefined, undefined, {
+      environmentSetupJournal: refusingJournal,
+    });
+    await until(() => lab.commandConnected(), "the first command stream");
+    lab.send(command);
+    await until(
+      () => first.lastFailure()?.includes("terminal environment setup outcome") === true,
+      "the terminal write diagnostic",
+    );
+    expect(environmentSetupOutcomeSpool(data).load()).toEqual([
+      {
+        requestId: command.runId,
+        name: command.name,
+        declarationGenerationId: command.declarationGenerationId,
+        state: "provisioning",
+      },
+    ]);
+    await first.stop();
+    await until(() => !lab.commandConnected(), "the first daemon to disconnect");
+
+    const restarted = subsystem(lab.base, data);
+    await until(() => lab.commandConnected(), "the restarted command stream");
+    lab.send(command);
+    await until(
+      () => restarted.lastFailure()?.includes("quarantined") === true,
+      "the unresolved provisioning quarantine",
+    );
+
+    expect(lab.kernelEnvResults).toEqual([]);
+    expect(readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)).toHaveLength(2);
+    expect(environmentSetupOutcomeSpool(data).load()[0]?.state).toBe("provisioning");
+  });
+}, 20_000);
 
 it("materializes from the lockfile a command already carries, and never resolves — D4's whole point", async () => {
   const lab = await stubLab([]);
@@ -4634,6 +7293,9 @@ it("materializes from the lockfile a command already carries, and never resolves
       manager: "uv",
       lockfile: "onlyone==1.0.0\n",
       lockRevision: 5,
+      requestedPackages: ["onlyone"],
+      declarationGenerationId: "envgen_exact_command",
+      declarationCreatedTs: 41,
     });
 
     await until(() => lab.kernelEnvResults.length > 0, "the setup's own result reaching the lab");
@@ -4642,9 +7304,17 @@ it("materializes from the lockfile a command already carries, and never resolves
     expect(lab.kernelEnvLocks).toEqual([]);
     const result = lab.kernelEnvResults[0]!;
     expect(result.ok).toBe(true);
-    const status = result.status as { state: string; lockRevision: number; packageCount: number };
+    const status = result.status as {
+      state: string;
+      lockRevision: number;
+      declarationGenerationId: string;
+      declarationCreatedTs: number;
+      packageCount: number;
+    };
     // Carried straight through from the command, not derived.
     expect(status.lockRevision).toBe(5);
+    expect(status.declarationGenerationId).toBe("envgen_exact_command");
+    expect(status.declarationCreatedTs).toBe(41);
     // Built from the ONE package the given lockfile actually named.
     expect(status.packageCount).toBe(1);
   });
@@ -4673,6 +7343,7 @@ it("reports failure rather than hanging the lab's wait when materializing fails"
       name: "crispr",
       language: "python",
       manager: "uv",
+      declarationGenerationId: fixtureGeneration("crispr"),
       packages: ["scanpy"],
     });
 
@@ -4707,13 +7378,12 @@ it("frees this machine's own copy of an environment on kernel-env-reclaim", asyn
 });
 
 it("refuses a kernel-env-setup command carrying no name, rather than leaving the lab waiting on it", async () => {
-  // The lab holds the caller's `kernelEnvSetup` promise open until something
-  // settles it, and the only other thing that ever will is a forty-minute
-  // timeout — so returning silently here would leave a researcher watching a
-  // Setup that was never going to happen. Answered, never dropped, for the
-  // reason the kernel host's own loop answers a method it does not know: a
-  // request with no reply reads as a hung machine rather than a refused
-  // message.
+  // The lab's durable record of this build stays non-terminal until a result
+  // settles it, and nothing else ever will — so returning silently here would
+  // leave a researcher watching a Setup that was never going to finish.
+  // Answered, never dropped, for the reason the kernel host's own loop answers
+  // a method it does not know: a request with no reply reads as a hung machine
+  // rather than a refused message.
   const lab = await stubLab([]);
   const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
   dirs.push(data);
@@ -4738,6 +7408,7 @@ const CRISPR_DECLARED = {
   packages: ["scanpy"],
   createdTs: 2,
   lockRevision: 3,
+  declarationGenerationId: fixtureGeneration("crispr"),
 };
 
 /** The command the lab sends when a researcher clicks Setup on a refusal, in
@@ -4751,6 +7422,8 @@ const setupCrispr = (runId: string) => ({
   manager: "uv",
   lockfile: "onlyone==1.0.0\n",
   lockRevision: 3,
+  requestedPackages: ["onlyone"],
+  declarationGenerationId: fixtureGeneration("crispr"),
 });
 
 it("restarts the rebuilt environment's kernels once the build has succeeded, and says why", async () => {
@@ -5419,6 +8092,51 @@ it("refuses to create an environment for a session this machine is not running",
   expect(cardsOf(lab)).toEqual([]);
 });
 
+it("records a non-mutating environment requirement for the exact live source run", async () => {
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_require"));
+  await until(() => turnStarted(lab, "run_env_require"), "the turn starting");
+
+  await expect(
+    kernels.ask("environment.require", { session_id: "se_1", name: "atacseq" }),
+  ).resolves.toEqual({ waiterId: "wait_1" });
+
+  expect(lab.kernelEnvRequirements).toEqual([
+    {
+      runId: "run_env_require",
+      sessionId: "se_1",
+      environmentName: "atacseq",
+    },
+  ]);
+  expect(cardsOf(lab)).toEqual([]);
+  expect(lab.kernelEnvCreates).toEqual([]);
+  expect(lab.kernelEnvPackages).toEqual([]);
+});
+
+it("refuses an environment requirement when its session has no live source run", async () => {
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send(startRunOn("run_env_require_none"));
+  await until(() => turnStarted(lab, "run_env_require_none"), "the turn starting");
+
+  await expect(
+    kernels.ask("environment.require", { session_id: "se_gone", name: "atacseq" }),
+  ).rejects.toThrow(/live source turn/i);
+  expect(lab.kernelEnvRequirements).toEqual([]);
+  expect(cardsOf(lab)).toEqual([]);
+});
+
 it("does not ask the lab for an environment the researcher denied", async () => {
   // Asserted on the LAB rather than on the thrown sentence: a version that
   // declared the environment and then threw would satisfy a test that only
@@ -5489,7 +8207,16 @@ it("declares an allowed environment and only then re-describes the session", asy
     // the lab route's — each defaulting for a caller older than the field.
     // An earlier version of this comment said there was exactly one, which
     // would make this test prove something it cannot see.
-    { sessionId: "se_1", name: "crispr", packages: ["scanpy"], language: "python" },
+    // `permissionScope` is on this body now, and it is what the researcher
+    // answered THIS card with — `once` here, so the lab writes no standing
+    // grant for the name.
+    {
+      sessionId: "se_1",
+      name: "crispr",
+      packages: ["scanpy"],
+      language: "python",
+      permissionScope: "once",
+    },
   ]);
   const declaredAt = kernels.asked.indexOf("the lab declared it");
   expect(declaredAt).toBeGreaterThan(-1);
@@ -5531,7 +8258,13 @@ it("carries an R create through the card and on to the lab as R", async () => {
 
   await asked;
   expect(lab.kernelEnvCreates).toEqual([
-    { sessionId: "se_1", name: "rstats", packages: ["ggplot2"], language: "r" },
+    {
+      sessionId: "se_1",
+      name: "rstats",
+      packages: ["ggplot2"],
+      language: "r",
+      permissionScope: "once",
+    },
   ]);
 });
 
@@ -5634,6 +8367,61 @@ it("asks once for an environment allowed for this conversation, not twice", asyn
   expect(lab.kernelEnvCreates).toHaveLength(2);
   // One card, for two creates. Nothing was asked the second time.
   expect(cardsOf(lab)).toHaveLength(1);
+  // And the answer travelled with the change it authorised, so the lab can
+  // hold this conversation's grant past the life of this process. The
+  // SECOND call carries `once`: it was covered by the grant the first one
+  // minted, nobody answered anything, and a scope reported wider than what
+  // was answered would be authority minted off a card that was never shown.
+  expect(lab.kernelEnvCreates.map((call) => call.permissionScope)).toEqual([
+    "conversation",
+    "once",
+  ]);
+});
+
+it("asks nothing about an environment the lab says this conversation already allowed", async () => {
+  // The daemon end of a grant that survives a restart. A researcher answered
+  // "for this conversation" on a turn this process never saw — a daemon that
+  // has since restarted, or a session retired when its boundary changed — and
+  // the lab, which is where that answer is kept, sends it back with the turn.
+  // Read off the command rather than remembered here, because a conversation
+  // outlives every process that carries it.
+  process.env.LYKEION_STUB_SCRIPT = HOLD_THE_TURN_OPEN;
+  const lab = await stubLab([]);
+  const data = mkdtempSync(join(tmpdir(), "lykeion-runs-"));
+  dirs.push(data);
+  const kernels = stubKernelHost(0);
+  subsystem(lab.base, data, () => kernels.host);
+  await until(() => lab.commandConnected(), "the command stream");
+  lab.send({ ...startRunOn("run_env_seeded"), environmentGrants: ["crispr"] });
+  await until(() => turnStarted(lab, "run_env_seeded"), "the turn starting");
+
+  await kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "crispr",
+    packages: ["scanpy"],
+  });
+
+  // No card at all, and the change went through on the strength of the grant
+  // the lab was already holding.
+  expect(cardsOf(lab)).toEqual([]);
+  expect(lab.kernelEnvPackages).toEqual([
+    // `once`, because nobody answered anything here: the grant that covered
+    // this is already durable, and re-declaring one off a card that was never
+    // shown is not this machine's to do.
+    { sessionId: "se_1", name: "crispr", packages: ["scanpy"], permissionScope: "once" },
+  ]);
+
+  // And only that environment: a grant is kept by name, so an environment
+  // nobody was asked about is still a question.
+  const other = kernels.ask("environment.add_packages", {
+    session_id: "se_1",
+    name: "atacseq",
+    packages: ["scanpy"],
+  });
+  await until(() => cardsOf(lab).length > 0, "a permission card for the other environment");
+  expect(environmentTargetOf(cardsOf(lab)[0]!)).toMatchObject({ name: "atacseq" });
+  lab.send(decideOn("run_env_seeded", cardsOf(lab)[0]!.id, { decision: "deny" }));
+  await expect(other).rejects.toThrow(/atacseq/);
 });
 
 it("carries the lab's own reason back for a create it refused", async () => {
@@ -6073,7 +8861,7 @@ it("raises the card under manage_packages, carrying what was asked for and not w
   lab.send(decideOn("run_pkg_card", card.id, { decision: "allow", scope: "once" }));
   await asked;
   expect(lab.kernelEnvPackages).toEqual([
-    { sessionId: "se_1", name: "python", packages: ["scanpy"] },
+    { sessionId: "se_1", name: "python", packages: ["scanpy"], permissionScope: "once" },
   ]);
 });
 

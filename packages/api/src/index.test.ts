@@ -22,6 +22,12 @@ describe("UI ↔ core contract", () => {
   it("maps every command to its snake_case name", () => {
     expect(Commands.coreInfo).toBe("core_info");
     expect(Commands.resumeRuns).toBe("resume_runs");
+    expect(Commands.requestKernelEnvironmentSetup).toBe("request_kernel_environment_setup");
+    expect(Commands.taskEnvironmentSetups).toBe("task_environment_setups");
+    expect(Commands.retryKernelEnvironmentSetup).toBe("retry_kernel_environment_setup");
+    expect(Commands.answerEnvironmentDefaultSuggestion).toBe(
+      "answer_environment_default_suggestion",
+    );
     for (const name of Object.values(Commands)) {
       expect(name).toMatch(/^[a-z][a-z0-9_]*$/);
     }
@@ -84,6 +90,53 @@ describe("in-memory API", () => {
         list[i].conversation.updatedTs,
       );
     }
+  });
+
+  it("answers every Research read with the defaults the lab holds, not an empty literal", async () => {
+    // The browser core is the UI's own data layer wherever no workspace
+    // server is behind the page, so a Research default has to reach the same
+    // reads there that it reaches on a server. It used to be hardcoded `[]`
+    // at every construction site, which made a seed that stated one
+    // unreadable through any path at all.
+    const seed = emptySeed();
+    seed.researches.push({
+      id: "s_meta",
+      key: "MET",
+      title: "Meta-analysis",
+      environmentDefaults: [
+        {
+          language: "r",
+          environmentName: "meta-analysis-r",
+          setBy: "u_you",
+          setTs: 1,
+        },
+      ],
+      createdBy: "u_you",
+      createdTs: 1,
+      updatedTs: 1,
+    });
+    const api = createInMemoryApi(seed);
+
+    const listed = (await api.listResearches()).find((s) => s.id === "s_meta")!;
+    expect(listed.environmentDefaults).toEqual([
+      { language: "r", environmentName: "meta-analysis-r", setBy: "u_you", setTs: 1 },
+    ]);
+    expect((await api.getResearch("s_meta")).research.environmentDefaults).toEqual(
+      listed.environmentDefaults,
+    );
+    const renamed = await api.updateResearch("s_meta", { title: "Meta-analysis II" });
+    expect(renamed.environmentDefaults).toEqual(listed.environmentDefaults);
+    expect((await api.archiveResearch("s_meta")).environmentDefaults).toEqual(
+      listed.environmentDefaults,
+    );
+    expect((await api.restoreResearch("s_meta")).environmentDefaults).toEqual(
+      listed.environmentDefaults,
+    );
+
+    // A Research nobody has confirmed anything for answers with none — read
+    // from the same store, rather than asserted by the create path.
+    const fresh = await api.createResearch({ key: "NEW", title: "Fresh" });
+    expect(fresh.environmentDefaults).toEqual([]);
   });
 
   it("a thread opened now outranks every seeded one", async () => {
@@ -1783,6 +1836,7 @@ describe("a Task's transcript (in-memory)", () => {
       id: "s_ord",
       key: "ORD",
       title: "Out-of-order store",
+      environmentDefaults: [],
       createdBy: "u_you",
       createdTs: 10,
       updatedTs: 10,

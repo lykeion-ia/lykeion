@@ -323,30 +323,6 @@
   border-radius: 6px;
 }
 
-.nbp-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 5px 12px;
-  border-top: 1px solid var(--hairline);
-  font-size: var(--type-micro);
-  color: var(--ink-tertiary);
-  flex: 0 0 auto;
-  min-width: 0;
-}
-
-.nbp-footer > span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.nbp-footer-count {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-}
-
 .notebook-panel {
   display: flex;
   flex-direction: column;
@@ -423,87 +399,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.nbp-setup {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border-top: 1px solid var(--hairline);
-  background: var(--surface-2);
-  flex: 0 0 auto;
-}
-
-.nbp-setup-row { display: flex; align-items: flex-start; gap: 10px; }
-
-.nbp-setup-lead {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: var(--type-micro);
-  line-height: 1.45;
-  color: var(--ink-tertiary);
-}
-
-.nbp-setup-btn {
-  flex: 0 0 auto;
-  appearance: none;
-  border: 1px solid var(--hairline);
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--type-meta);
-  color: var(--ink);
-  background: var(--surface-3);
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 7px;
-}
-
-.nbp-setup-btn:hover:not(:disabled) { background: var(--surface-4); }
-.nbp-setup-btn:disabled { opacity: 0.45; cursor: default; }
-.nbp-envpick { display: flex; gap: 2px; flex-wrap: wrap; }
-
-/* The environment chips as a row of the panel in their own right, rather
-   than a row inside the Setup surface: choosing an environment is how a
-   researcher reaches one this Task has not used yet, which is the state
-   where no Setup surface exists to hold the chips. */
-.nbp-envrow {
-  padding: 6px 12px;
-  border-top: 1px solid var(--hairline);
-  background: var(--surface-2);
-  flex: 0 0 auto;
-}
-
-.nbp-envchip {
-  appearance: none;
-  border: 1px solid transparent;
-  background: none;
-  cursor: pointer;
-  font: inherit;
-  font-family: var(--font-mono);
-  font-size: var(--type-micro);
-  color: var(--ink-tertiary);
-  padding: 0 7px;
-  height: 22px;
-  border-radius: 6px;
-}
-
-.nbp-envchip:hover { color: var(--ink); background: var(--surface-3); }
-.nbp-envchip.is-active { color: var(--ink); background: var(--surface-3); border-color: var(--hairline); }
-
-.nbp-setup-log {
-  margin: 0;
-  max-height: 160px;
-  overflow-y: auto;
-  font-family: var(--font-mono);
-  font-size: var(--type-micro);
-  line-height: 1.5;
-  color: var(--ink-tertiary);
-  background: var(--surface-1);
-  border: 1px solid var(--hairline);
-  border-radius: 7px;
-  padding: 6px 8px;
-  white-space: pre-wrap;
-}
-
 /* What a cell installed into its own kernel and nothing else. Sits between
    the source and the outputs, because that is the order it happened in: the
    cell ran, it installed something, and then it printed. Warn-coloured
@@ -522,4 +417,296 @@
 .nbp-cell-installed-names {
   font-family: var(--font-mono);
   color: var(--ink-muted);
+}
+
+/* ─── The environment bar ────────────────────────────────────────────────
+   One fixed line of the panel, in every state. It never grows into a modal,
+   never raises a toast, and never moves: a build that finishes while the
+   researcher is reading the transcript should change a word and a colour on
+   a line they are not looking at, and nothing else. */
+.envbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+.envbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.envbar-picker {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.envbar-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  appearance: none;
+  border: 1px solid var(--hairline);
+  background: var(--surface-3);
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  color: var(--ink);
+  padding: 0 7px;
+  height: 22px;
+  border-radius: 6px;
+  max-width: 220px;
+}
+
+.envbar-trigger:hover { background: var(--surface-4); }
+
+.envbar-trigger-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.envbar-caret {
+  flex: 0 0 auto;
+  font-size: var(--type-micro);
+  line-height: 1;
+  color: var(--ink-tertiary);
+}
+
+.envbar-list {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 3px;
+  list-style: none;
+  min-width: 180px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+}
+
+.envbar-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  color: var(--ink-subtle);
+}
+
+.envbar-option:hover,
+.envbar-option.is-active {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.envbar-option.is-selected { color: var(--ink); font-weight: 550; }
+
+.envbar-option-note {
+  flex: 0 0 auto;
+  font-family: var(--font-sans, inherit);
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
+}
+
+/* The state line. Colour is supplemental everywhere below — the icon beside
+   the words says the same thing, so nothing here depends on telling green
+   from red. */
+.envbar-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: var(--type-micro);
+  color: var(--ink-tertiary);
+}
+
+.envbar-state-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.envbar-icon { flex: 0 0 auto; }
+.envbar-icon--spin { animation: envbar-spin 1.4s linear infinite; }
+
+.envbar-state--ready { color: var(--success); }
+.envbar-state--failed { color: var(--danger); }
+.envbar-state--needed,
+.envbar-state--no-machine,
+.envbar-state--no-environment { color: var(--warn); }
+.envbar-state--progress,
+.envbar-state--unreported { color: var(--ink-subtle); }
+
+.envbar-continuing {
+  flex: 0 0 auto;
+  color: var(--ink-tertiary);
+  white-space: nowrap;
+}
+
+.envbar-elapsed {
+  flex: 0 0 auto;
+  font-size: var(--type-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-tertiary);
+}
+
+.envbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.envbar-btn {
+  appearance: none;
+  border: 1px solid var(--hairline);
+  background: var(--surface-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--type-micro);
+  color: var(--ink);
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 7px;
+  white-space: nowrap;
+}
+
+.envbar-btn:hover { background: var(--surface-4); }
+.envbar-btn--primary { font-weight: 550; }
+.envbar-btn--quiet { background: none; color: var(--ink-subtle); }
+/* Refusing, not gone. The element keeps its place in the focus order so the
+   finger that pressed it stays where it was while the build runs. */
+.envbar-btn[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.envbar-btn[aria-disabled="true"]:hover { background: var(--surface-3); }
+
+/* Indeterminate, and 3px of it. A percentage is the one number nobody
+   upstream can honestly produce for a package solve, so this says "still
+   going" and declines to say how far. */
+.envbar-progress {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--surface-4);
+}
+
+.envbar-progress__indicator {
+  position: absolute;
+  inset-block: 0;
+  width: 35%;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: envbar-slide 1.6s ease-in-out infinite;
+}
+
+@keyframes envbar-slide {
+  0% { left: -35%; }
+  100% { left: 100%; }
+}
+
+@keyframes envbar-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .envbar-progress__indicator { animation: none; width: 35%; }
+  .envbar-icon--spin { animation: none; }
+}
+
+.envbar-alert {
+  margin: 0;
+  font-size: var(--type-micro);
+  color: var(--danger);
+}
+
+/* Wrapped, not clipped. A solver's complaint about an unsatisfiable pin is
+   one long line, and a researcher who cannot read the end of it has been
+   handed a failure with the reason cut off. */
+.envbar-excerpt {
+  margin: 0;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.envbar-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.envbar-suggestion-question {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--type-micro);
+  color: var(--ink-subtle);
+}
+
+.envbar-suggestion-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+
+.envbar-details { font-size: var(--type-micro); }
+
+.envbar-summary {
+  cursor: pointer;
+  color: var(--ink-tertiary);
+  list-style: none;
+}
+
+.envbar-summary::-webkit-details-marker { display: none; }
+.envbar-summary::before { content: "› "; }
+.envbar-details[open] .envbar-summary::before { content: "⌄ "; }
+
+.envbar-details-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+}
+
+.envbar-packages {
+  margin: 0;
+  color: var(--ink-tertiary);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.envbar-detail-head { color: var(--ink-subtle); font-weight: 550; }
+
+/* Readable rather than decorative: this is where a researcher reads a build
+   that went wrong, and long solver lines wrap instead of running off. */
+.envbar-log {
+  margin: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  line-height: 1.5;
+  color: var(--ink-subtle);
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

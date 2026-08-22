@@ -11,7 +11,7 @@ import { createRevertRegistry } from "../run-revert";
 import { createKernelListRegistry } from "../kernel-list-registry";
 import { createTitleRegistry } from "../title-registry";
 import { createPendingCells } from "../kernel-cells";
-import { createEnvSetupRegistry } from "../env-setup-registry";
+import { createEnvironmentSetupCoordinator } from "../environment-setup-coordinator";
 import { changeRecorder } from "./changes";
 import type { Deps } from "./index";
 import type { Store } from "../store/store";
@@ -39,15 +39,17 @@ const NOW = 1_800_000_000;
 function depsFor(store: Store): Deps {
   const actor = { userId: "u_1", role: "owner" } as const;
   const channel = createChannel(store, 1000);
+  const runs = createRunRelay();
   return {
     store,
     actor,
     now: () => NOW,
     config: readConfig({}),
     channel,
-    runs: createRunRelay(),
+    runs,
     reverts: createRevertRegistry(),
-    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(), envSetups: createEnvSetupRegistry(),
+    kernelLists: createKernelListRegistry(), titles: createTitleRegistry(), pendingCells: createPendingCells(),
+    coordinator: createEnvironmentSetupCoordinator({ store, runs, now: () => NOW }),
     changes: changeRecorder({ store, actorId: actor.userId, now: () => NOW, channel }),
   };
 }
